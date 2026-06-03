@@ -17,10 +17,13 @@ const BORDER: &str = "#30343A";
 const FRAME_BG: &str = "#0D0F15";
 const GRID_BG: &str = "#101215";
 const WARNING: &str = "#FF6B5F";
-const INTRO_WIDTH: f32 = 280.0;
-const CARD_WIDTH: f32 = 440.0;
-const CARD_CONTENT_WIDTH: f32 = 404.0;
-const GRID_CONTENT_WIDTH: f32 = 380.0;
+const SCREEN_WIDTH: f32 = 860.0;
+const CONTENT_HEIGHT: f32 = 640.0;
+const SIDE_PADDING: f32 = 40.0;
+const INTRO_WIDTH: f32 = 300.0;
+const CARD_WIDTH: f32 = 360.0;
+const CARD_CONTENT_WIDTH: f32 = 324.0;
+const GRID_CONTENT_WIDTH: f32 = 300.0;
 const SEED_WORDS: [&str; 12] = [
   "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access",
   "accident",
@@ -44,22 +47,22 @@ fn word_cell(index: usize, word: &str) -> Row {
   Row::new()
     .flex(1.0)
     .align_items(Alignment::Center)
-    .spacing(6.0)
+    .spacing(5.0)
     .child(text(
       &format!("{:02}", index + 1),
       "JetBrains Mono",
-      10.0,
+      9.0,
       FontWeight::Bold,
       "#7D766C",
       1.2,
     ))
-    .child(text(word, "JetBrains Mono", 11.0, FontWeight::Medium, "#F4F4F2", 1.2))
+    .child(text(word, "JetBrains Mono", 10.0, FontWeight::Medium, "#F4F4F2", 1.2))
 }
 
 fn seed_row(start: usize) -> Row {
   Row::new()
     .width(GRID_CONTENT_WIDTH)
-    .spacing(8.0)
+    .spacing(6.0)
     .child(word_cell(start, SEED_WORDS[start]))
     .child(word_cell(start + 1, SEED_WORDS[start + 1]))
     .child(word_cell(start + 2, SEED_WORDS[start + 2]))
@@ -103,18 +106,18 @@ impl Component for SeedPhraseDisplay {
 
   fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
     Column::new()
-      .width(960.0)
+      .width(SCREEN_WIDTH)
       .height(690.0)
       .background(FRAME_BG)
       .clip()
       .child(
         Row::new()
-          .width(960.0)
-          .height(640.0)
+          .width(SCREEN_WIDTH)
+          .height(CONTENT_HEIGHT)
           .align_items(Alignment::Center)
           .justify(Justify::Center)
-          .spacing(40.0)
-          .padding_horizontal(72.0)
+          .spacing(32.0)
+          .padding_horizontal(SIDE_PADDING)
           .background(BackgroundColor::Palette(theme::BG_PRIMARY))
           .child(
             Column::new()
