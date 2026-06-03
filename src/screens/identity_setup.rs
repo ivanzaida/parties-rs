@@ -1,19 +1,21 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Rect, Row, Spacer, Text},
+  core::Signal,
   layout::{Alignment, layout_kind::Justify},
-  node::{BackgroundColor, Element, color::Color, dimension::Dimension},
+  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
 use crate::{screens::icon, theme};
 
 const BORDER: &str = "#30343A";
+const STEP_SEED_PHRASE: u8 = 1;
 
 fn dot(color: impl Into<BackgroundColor>) -> Rect {
   Rect::new(8.0, 8.0).rounded(4.0).background(color)
 }
 
-fn option_row(title: &str, desc: &str, active: bool) -> Row {
+fn option_row(title: &str, desc: &str, active: bool, next_step: Option<Signal<u8>>) -> Row {
   let bg = if active {
     BackgroundColor::Palette(theme::GREEN_MUTED)
   } else {
@@ -22,7 +24,7 @@ fn option_row(title: &str, desc: &str, active: bool) -> Row {
   let stroke = if active { "#42D28B" } else { BORDER };
   let state_color = if active { "#42D28B" } else { "#7D766C" };
 
-  Row::new()
+  let row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
     .spacing(12.0)
@@ -38,7 +40,16 @@ fn option_row(title: &str, desc: &str, active: bool) -> Row {
         .child(Text::new(title).variant(theme::TYP_BUTTON))
         .child(Text::new(desc).variant(theme::TYP_LINK)),
     )
-    .child(icon("chevron-right", 14.0, state_color))
+    .child(icon("chevron-right", 14.0, state_color));
+
+  if let Some(next_step) = next_step {
+    row
+      .cursor(CursorIcon::Pointer)
+      .hovered_style(Style::new().background("#132D20"))
+      .on_click(move |_| next_step.set(STEP_SEED_PHRASE))
+  } else {
+    row
+  }
 }
 
 pub struct IdentitySetup;
@@ -50,7 +61,9 @@ impl Component for IdentitySetup {
     Self
   }
 
-  fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let step = ctx.use_context::<Signal<u8>>();
+
     Row::new()
       .width(960.0)
       .height(640.0)
@@ -95,16 +108,19 @@ impl Component for IdentitySetup {
             "Generate new identity",
             "Creates a seed phrase and a new peer fingerprint.",
             true,
+            step,
           ))
           .child(option_row(
             "Restore seed phrase",
             "Use a saved 12-word backup from another install.",
             false,
+            None,
           ))
           .child(option_row(
             "Import private key",
             "Paste a raw 64-character private key.",
             false,
+            None,
           ))
           .child(
             Row::new()
