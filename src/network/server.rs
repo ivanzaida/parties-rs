@@ -1,0 +1,430 @@
+use std::fmt;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use quinn::{Connection, Endpoint};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use tokio::sync::Mutex;
+
+use super::protocol::{
+    C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, UserId, VideoCodecId,
+    control::{
+        AuthIdentity, ChatSendAttachment, ScreenShareMetadata, VoiceState,
+        MAX_CONTROL_MESSAGE_LEN,
+    },
+    data::{FileStreamRequest, VideoControl, VoicePacket},
+    S2C,
+};
+
+#[derive(Debug)]
+pub enum ServerError {
+    Protocol(DecodeError),
+    Connection(quinn::ConnectionError),
+    Connect(quinn::ConnectError),
+    Write(quinn::WriteError),
+    Read(quinn::ReadExactError),
+    Datagram(quinn::SendDatagramError),
+    Io(std::io::Error),
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Protocol(e) => write!(f, "protocol: {e}"),
+            Self::Connection(e) => write!(f, "connection: {e}"),
+            Self::Connect(e) => write!(f, "connect: {e}"),
+            Self::Write(e) => write!(f, "write: {e}"),
+            Self::Read(e) => write!(f, "read: {e}"),
+            Self::Datagram(e) => write!(f, "datagram: {e}"),
+            Self::Io(e) => write!(f, "io: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ServerError {}
+
+impl From<DecodeError> for ServerError {
+    fn from(e: DecodeError) -> Self {
+        Self::Protocol(e)
+    }
+}
+impl From<quinn::ConnectionError> for ServerError {
+    fn from(e: quinn::ConnectionError) -> Self {
+        Self::Connection(e)
+    }
+}
+impl From<quinn::ConnectError> for ServerError {
+    fn from(e: quinn::ConnectError) -> Self {
+        Self::Connect(e)
+    }
+}
+impl From<quinn::WriteError> for ServerError {
+    fn from(e: quinn::WriteError) -> Self {
+        Self::Write(e)
+    }
+}
+impl From<quinn::ReadExactError> for ServerError {
+    fn from(e: quinn::ReadExactError) -> Self {
+        Self::Read(e)
+    }
+}
+impl From<quinn::SendDatagramError> for ServerError {
+    fn from(e: quinn::SendDatagramError) -> Self {
+        Self::Datagram(e)
+    }
+}
+impl From<std::io::Error> for ServerError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+#[derive(Debug)]
+struct AcceptAnyCert;
+
+impl ServerCertVerifier for AcceptAnyCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+pub struct Server {
+    _endpoint: Endpoint,
+    connection: Connection,
+    control_send: Mutex<quinn::SendStream>,
+    control_recv: Mutex<quinn::RecvStream>,
+}
+
+impl Server {
+    pub async fn connect(addr: SocketAddr) -> Result<Self, ServerError> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let mut crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+            .with_no_client_auth();
+        crypto.alpn_protocols = vec![super::protocol::ALPN.to_vec()];
+
+        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+            .expect("valid TLS config");
+        let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+
+        let mut transport = quinn::TransportConfig::default();
+        transport.max_idle_timeout(Some(
+            quinn::IdleTimeout::try_from(Duration::from_secs(60)).expect("valid timeout"),
+        ));
+        client_config.transport_config(Arc::new(transport));
+
+        let bind_addr = if addr.is_ipv6() {
+            SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0))
+        } else {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        };
+        let mut endpoint = Endpoint::client(bind_addr)?;
+        endpoint.set_default_client_config(client_config);
+
+        let connection = endpoint.connect(addr, "parties")?.await?;
+        let (control_send, control_recv) = connection.open_bi().await?;
+
+        Ok(Self {
+            _endpoint: endpoint,
+            connection,
+            control_send: Mutex::new(control_send),
+            control_recv: Mutex::new(control_recv),
+        })
+    }
+
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    async fn send_control(&self, msg: C2S) -> Result<(), ServerError> {
+        let frame = msg.encode()?;
+        let bytes = frame.encode()?;
+        self.control_send.lock().await.write_all(&bytes).await?;
+        Ok(())
+    }
+
+    pub async fn recv(&self) -> Result<S2C, ServerError> {
+        let mut recv = self.control_recv.lock().await;
+
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await?;
+        let msg_len = u32::from_le_bytes(len_buf) as usize;
+
+        if !(2..=MAX_CONTROL_MESSAGE_LEN).contains(&msg_len) {
+            return Err(DecodeError::InvalidLength {
+                len: msg_len,
+                max: MAX_CONTROL_MESSAGE_LEN,
+            }
+            .into());
+        }
+
+        let mut msg_buf = vec![0u8; msg_len];
+        recv.read_exact(&mut msg_buf).await?;
+
+        let raw_ty = u16::from_le_bytes([msg_buf[0], msg_buf[1]]);
+        let ty = ControlMessageType::from_u16(raw_ty)
+            .ok_or(DecodeError::InvalidMessageType(raw_ty))?;
+
+        let frame = ControlFrame {
+            ty,
+            payload: msg_buf[2..].to_vec(),
+        };
+
+        Ok(S2C::decode(&frame)?)
+    }
+
+    // -- auth --
+
+    pub async fn authenticate(&self, identity: AuthIdentity) -> Result<(), ServerError> {
+        self.send_control(C2S::Auth(identity)).await
+    }
+
+    // -- channels --
+
+    pub async fn join_channel(&self, channel_id: ChannelId) -> Result<(), ServerError> {
+        self.send_control(C2S::ChannelJoin { channel_id }).await
+    }
+
+    pub async fn leave_channel(&self) -> Result<(), ServerError> {
+        self.send_control(C2S::ChannelLeave).await
+    }
+
+    // -- voice --
+
+    pub async fn update_voice_state(
+        &self,
+        muted: bool,
+        deafened: bool,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::VoiceStateUpdate(VoiceState { muted, deafened }))
+            .await
+    }
+
+    pub fn send_voice(&self, sequence: u16, opus: Vec<u8>) -> Result<(), ServerError> {
+        let data = VoicePacket { sequence, opus }.encode();
+        self.connection.send_datagram(data.into())?;
+        Ok(())
+    }
+
+    // -- screen share --
+
+    pub async fn start_screen_share(
+        &self,
+        codec: VideoCodecId,
+        width: u16,
+        height: u16,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ScreenShareStart(ScreenShareMetadata { codec, width, height }))
+            .await
+    }
+
+    pub async fn stop_screen_share(&self) -> Result<(), ServerError> {
+        self.send_control(C2S::ScreenShareStop).await
+    }
+
+    pub async fn view_screen_share(&self, target_user_id: UserId) -> Result<(), ServerError> {
+        self.send_control(C2S::ScreenShareView { target_user_id }).await
+    }
+
+    pub async fn unsubscribe_screen_share(&self) -> Result<(), ServerError> {
+        self.send_control(C2S::ScreenShareView { target_user_id: 0 }).await
+    }
+
+    pub async fn update_screen_share(
+        &self,
+        codec: VideoCodecId,
+        width: u16,
+        height: u16,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ScreenShareUpdate(ScreenShareMetadata { codec, width, height }))
+            .await
+    }
+
+    pub fn send_video_control(&self, control: VideoControl) -> Result<(), ServerError> {
+        let data = control.encode_datagram();
+        self.connection.send_datagram(data.into())?;
+        Ok(())
+    }
+
+    pub fn request_keyframe(&self, user_id: UserId) -> Result<(), ServerError> {
+        self.send_video_control(VideoControl::Pli { user_id })
+    }
+
+    // -- admin: channels --
+
+    pub async fn create_channel(
+        &self,
+        name: String,
+        max_users: u32,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminCreateChannel { name, max_users }).await
+    }
+
+    pub async fn delete_channel(&self, channel_id: ChannelId) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminDeleteChannel { channel_id }).await
+    }
+
+    pub async fn rename_channel(
+        &self,
+        channel_id: ChannelId,
+        new_name: String,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminRenameChannel { channel_id, new_name }).await
+    }
+
+    // -- admin: users --
+
+    pub async fn set_role(
+        &self,
+        target_user_id: UserId,
+        role: Role,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminSetRole { target_user_id, role }).await
+    }
+
+    pub async fn kick_user(&self, target_user_id: UserId) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminKickUser { target_user_id }).await
+    }
+
+    // -- chat --
+
+    pub async fn send_chat(
+        &self,
+        channel_id: ChannelId,
+        text: String,
+        attachments: Vec<ChatSendAttachment>,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatSend { channel_id, text, attachments }).await
+    }
+
+    pub async fn send_chat_text(
+        &self,
+        channel_id: ChannelId,
+        text: String,
+    ) -> Result<(), ServerError> {
+        self.send_chat(channel_id, text, Vec::new()).await
+    }
+
+    pub async fn request_chat_history(
+        &self,
+        channel_id: ChannelId,
+        before_id: u64,
+        limit: u16,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatHistoryReq { channel_id, before_id, limit }).await
+    }
+
+    pub async fn pin_message(&self, message_id: u64) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatPin { message_id }).await
+    }
+
+    pub async fn unpin_message(&self, message_id: u64) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatUnpin { message_id }).await
+    }
+
+    pub async fn delete_message(&self, message_id: u64) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatDelete { message_id }).await
+    }
+
+    pub async fn request_file_upload(
+        &self,
+        message_id: u64,
+        file_index: u8,
+        file_size: u64,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatFileUploadReq { message_id, file_index, file_size }).await
+    }
+
+    pub async fn request_file_download(&self, file_id: u64) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatFileDownloadReq { file_id }).await
+    }
+
+    pub async fn upload_file(
+        &self,
+        attachment_id: u64,
+        data: Vec<u8>,
+    ) -> Result<(), ServerError> {
+        let payload = FileStreamRequest::Upload { attachment_id, data }.encode();
+        let mut stream = self.connection.open_uni().await?;
+        stream.write_all(&payload).await?;
+        stream.finish().map_err(|_| ServerError::Write(quinn::WriteError::ClosedStream))?;
+        Ok(())
+    }
+
+    pub async fn download_file(&self, attachment_id: u64) -> Result<(), ServerError> {
+        let payload = FileStreamRequest::Download { attachment_id }.encode();
+        let mut stream = self.connection.open_uni().await?;
+        stream.write_all(&payload).await?;
+        stream.finish().map_err(|_| ServerError::Write(quinn::WriteError::ClosedStream))?;
+        Ok(())
+    }
+
+    pub async fn search_chat(
+        &self,
+        channel_id: ChannelId,
+        query: String,
+        before_id: u64,
+        limit: u16,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatSearch { channel_id, query, before_id, limit }).await
+    }
+
+    pub async fn request_pinned_messages(
+        &self,
+        channel_id: ChannelId,
+    ) -> Result<(), ServerError> {
+        self.send_control(C2S::ChatPinnedReq { channel_id }).await
+    }
+
+    // -- admin: text channels --
+
+    pub async fn create_text_channel(&self, name: String) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminCreateTextChannel { name }).await
+    }
+
+    pub async fn delete_text_channel(&self, channel_id: ChannelId) -> Result<(), ServerError> {
+        self.send_control(C2S::AdminDeleteTextChannel { channel_id }).await
+    }
+
+    // -- keepalive --
+
+    pub async fn ping(&self) -> Result<(), ServerError> {
+        self.send_control(C2S::KeepalivePing).await
+    }
+}

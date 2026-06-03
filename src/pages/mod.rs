@@ -1,0 +1,13 @@
+pub mod connect;
+pub mod identity_generate;
+pub mod identity_import;
+pub mod identity_restore;
+pub mod lobby;
+pub mod lobby_screen_share;
+pub mod seed_phrase;
+pub mod servers;
+pub mod settings;
+pub mod settings_about;
+pub mod settings_appearance;
+pub mod settings_identity;
+pub mod tofu_warning;

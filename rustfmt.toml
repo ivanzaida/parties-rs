@@ -1,0 +1,22 @@
+edition = "2021"
+max_width = 120
+tab_spaces = 2
+newline_style = "Unix"
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Trailing commas / semicolons
+trailing_comma = "Vertical"
+trailing_semicolon = true
+
+# Comments
+wrap_comments = true
+comment_width = 120
+normalize_comments = false
+
+# Misc
+use_field_init_shorthand = true
+use_try_shorthand = true
+condense_wildcard_suffixes = true

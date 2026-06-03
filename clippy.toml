@@ -1,0 +1,11 @@
+# Clippy configuration
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Maximum allowed complexity for a single function
+cognitive-complexity-threshold = 30
+
+# Allow slightly longer lines in clippy's own output
+too-many-lines-threshold = 120
+
+# Minimum chars before suggesting a `&str` → `impl Into<String>` param
+too-many-arguments-threshold = 10
