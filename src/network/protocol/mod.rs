@@ -33,41 +33,41 @@ pub type ChannelKeyBytes = [u8; CHANNEL_KEY_LEN];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Role {
-    Owner = 0,
-    Admin = 1,
-    Moderator = 2,
-    User = 3,
+  Owner = 0,
+  Admin = 1,
+  Moderator = 2,
+  User = 3,
 }
 
 impl Role {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Owner),
-            1 => Some(Self::Admin),
-            2 => Some(Self::Moderator),
-            3 => Some(Self::User),
-            _ => None,
-        }
+  pub fn from_u8(value: u8) -> Option<Self> {
+    match value {
+      0 => Some(Self::Owner),
+      1 => Some(Self::Admin),
+      2 => Some(Self::Moderator),
+      3 => Some(Self::User),
+      _ => None,
     }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum VideoCodecId {
-    Av1 = 0x01,
-    H265 = 0x02,
-    H264 = 0x03,
+  Av1 = 0x01,
+  H265 = 0x02,
+  H264 = 0x03,
 }
 
 impl VideoCodecId {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0x01 => Some(Self::Av1),
-            0x02 => Some(Self::H265),
-            0x03 => Some(Self::H264),
-            _ => None,
-        }
+  pub fn from_u8(value: u8) -> Option<Self> {
+    match value {
+      0x01 => Some(Self::Av1),
+      0x02 => Some(Self::H265),
+      0x03 => Some(Self::H264),
+      _ => None,
     }
+  }
 }
 
 pub const VIDEO_FLAG_KEYFRAME: u8 = 0x01;
