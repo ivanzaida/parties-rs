@@ -27,6 +27,19 @@ pub const RED_MUTED: PaletteId = PaletteId::new(17);
 pub const ORANGE: PaletteId = PaletteId::new(18);
 pub const BLUE: PaletteId = PaletteId::new(19);
 
+pub const ACCENT_COLOR: Color = Color::new(66, 210, 139, 255);
+pub const ACCENT_HOVER_COLOR: Color = Color::new(87, 224, 156, 255);
+pub const ACCENT_MUTED_COLOR: Color = Color::new(16, 37, 26, 255);
+pub const BG_ELEVATED_COLOR: Color = Color::new(27, 30, 35, 255);
+pub const BG_INPUT_COLOR: Color = Color::new(23, 26, 30, 255);
+pub const BORDER_COLOR: Color = Color::new(48, 52, 58, 255);
+pub const BORDER_LIGHT_COLOR: Color = Color::new(62, 74, 64, 255);
+pub const GREEN_MUTED_COLOR: Color = Color::new(16, 37, 26, 255);
+pub const TEXT_PRIMARY_COLOR: Color = Color::new(244, 244, 242, 255);
+pub const TEXT_SECONDARY_COLOR: Color = Color::new(183, 178, 170, 255);
+pub const TEXT_MUTED_COLOR: Color = Color::new(125, 118, 108, 255);
+pub const TEXT_INVERSE_COLOR: Color = Color::new(11, 12, 14, 255);
+
 pub const RADIUS_S: RadiusId = RadiusId::new(0);
 pub const RADIUS_M: RadiusId = RadiusId::new(1);
 pub const RADIUS_L: RadiusId = RadiusId::new(2);
@@ -45,22 +58,22 @@ pub const TYP_LINK: TypographyId = TypographyId::new(10);
 
 pub fn setup(theme: &Theme) {
   theme.set_palette(ThemePalette::from_colors([
-    (ACCENT, Color::from_hex("#42D28B")),
-    (ACCENT_HOVER, Color::from_hex("#57E09C")),
-    (ACCENT_MUTED, Color::from_hex("#10251A")),
+    (ACCENT, ACCENT_COLOR),
+    (ACCENT_HOVER, ACCENT_HOVER_COLOR),
+    (ACCENT_MUTED, ACCENT_MUTED_COLOR),
     (BG_PRIMARY, Color::from_hex("#0B0C0E")),
     (BG_SECONDARY, Color::from_hex("#111316")),
     (BG_TERTIARY, Color::from_hex("#15171A")),
-    (BG_ELEVATED, Color::from_hex("#1B1E23")),
-    (BG_INPUT, Color::from_hex("#171A1E")),
-    (BORDER, Color::from_hex("#30343A")),
-    (BORDER_LIGHT, Color::from_hex("#3E4A40")),
-    (TEXT_PRIMARY, Color::from_hex("#F4F4F2")),
-    (TEXT_SECONDARY, Color::from_hex("#B7B2AA")),
-    (TEXT_MUTED, Color::from_hex("#7D766C")),
-    (TEXT_INVERSE, Color::from_hex("#0B0C0E")),
-    (GREEN, Color::from_hex("#42D28B")),
-    (GREEN_MUTED, Color::from_hex("#10251A")),
+    (BG_ELEVATED, BG_ELEVATED_COLOR),
+    (BG_INPUT, BG_INPUT_COLOR),
+    (BORDER, BORDER_COLOR),
+    (BORDER_LIGHT, BORDER_LIGHT_COLOR),
+    (TEXT_PRIMARY, TEXT_PRIMARY_COLOR),
+    (TEXT_SECONDARY, TEXT_SECONDARY_COLOR),
+    (TEXT_MUTED, TEXT_MUTED_COLOR),
+    (TEXT_INVERSE, TEXT_INVERSE_COLOR),
+    (GREEN, ACCENT_COLOR),
+    (GREEN_MUTED, GREEN_MUTED_COLOR),
     (RED, Color::from_hex("#F05D5E")),
     (RED_MUTED, Color::from_hex("#2A1A1C")),
     (ORANGE, Color::from_hex("#D6B25E")),
