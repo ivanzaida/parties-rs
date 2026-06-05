@@ -35,6 +35,8 @@ pub const BG_INPUT_COLOR: Color = Color::new(23, 26, 30, 255);
 pub const BORDER_COLOR: Color = Color::new(48, 52, 58, 255);
 pub const BORDER_LIGHT_COLOR: Color = Color::new(62, 74, 64, 255);
 pub const GREEN_MUTED_COLOR: Color = Color::new(16, 37, 26, 255);
+pub const RED_COLOR: Color = Color::new(240, 93, 94, 255);
+pub const RED_MUTED_COLOR: Color = Color::new(42, 26, 28, 255);
 pub const TEXT_PRIMARY_COLOR: Color = Color::new(244, 244, 242, 255);
 pub const TEXT_SECONDARY_COLOR: Color = Color::new(183, 178, 170, 255);
 pub const TEXT_MUTED_COLOR: Color = Color::new(125, 118, 108, 255);
@@ -74,8 +76,8 @@ pub fn setup(theme: &Theme) {
     (TEXT_INVERSE, TEXT_INVERSE_COLOR),
     (GREEN, ACCENT_COLOR),
     (GREEN_MUTED, GREEN_MUTED_COLOR),
-    (RED, Color::from_hex("#F05D5E")),
-    (RED_MUTED, Color::from_hex("#2A1A1C")),
+    (RED, RED_COLOR),
+    (RED_MUTED, RED_MUTED_COLOR),
     (ORANGE, Color::from_hex("#D6B25E")),
     (BLUE, Color::from_hex("#69A7FF")),
   ]));

@@ -8,7 +8,7 @@ pub fn setup(i18n: &I18n) {
     "translation",
     [
       ("identity.action.back", "Back"),
-      ("identity.action.continue_saved", "I saved it - continue"),
+      ("identity.action.continue_saved", "Save to clipboard and continue"),
       ("identity.action.import_key", "Import key"),
       ("identity.action.restore", "Restore identity"),
       ("identity.import.caption", "IMPORT"),
@@ -19,16 +19,16 @@ pub fn setup(i18n: &I18n) {
       ("identity.import.field_label", "HEX PRIVATE KEY"),
       ("identity.import.heading", "Private key"),
       (
+        "identity.import.warning",
+        "Never paste keys from chat or unknown files.",
+      ),
+      (
         "identity.import.meta_desc",
         "Prefer seed restore unless you explicitly exported a private key.",
       ),
       ("identity.import.meta_title", "Advanced path"),
       ("identity.import.placeholder", "a3f1b2c4d5e691cc..."),
       ("identity.import.status.accepted", "Private key format accepted."),
-      (
-        "identity.import.status.empty",
-        "Never paste keys from chat or unknown files.",
-      ),
       (
         "identity.import.status.invalid",
         "Invalid private key. Must be 64 hex characters.",
@@ -42,6 +42,7 @@ pub fn setup(i18n: &I18n) {
       ),
       ("identity.restore.field_label", "SEED PHRASE"),
       ("identity.restore.heading", "Seed phrase"),
+      ("identity.restore.help", "12 words required. Extra spaces are ignored."),
       (
         "identity.restore.meta_desc",
         "The phrase is checked locally before any network call.",
@@ -52,10 +53,6 @@ pub fn setup(i18n: &I18n) {
         "abandon ability able about above absent ...",
       ),
       ("identity.restore.status.accepted", "Seed phrase format accepted."),
-      (
-        "identity.restore.status.empty",
-        "12 words required. Extra spaces are ignored.",
-      ),
       (
         "identity.restore.status.invalid",
         "Invalid seed phrase. Enter 12 known words.",
@@ -68,8 +65,18 @@ pub fn setup(i18n: &I18n) {
         "This phrase is the only recovery path for your identity. Store it before joining servers.",
       ),
       ("identity.seed.heading", "Recovery phrase"),
+      (
+        "identity.seed.copy_failed_desc",
+        "Copy failed. Use the copy button before continuing.",
+      ),
+      ("identity.seed.copy_failed_title", "Clipboard unavailable"),
       ("identity.seed.meta_desc", "The app cannot recover a lost seed phrase."),
       ("identity.seed.meta_title", "Backup required"),
+      (
+        "identity.seed.recovery_failed_desc",
+        "Generate a new identity before continuing.",
+      ),
+      ("identity.seed.recovery_failed_title", "Recovery phrase unavailable"),
       (
         "identity.seed.save_failed_desc",
         "SQLite storage is unavailable. Try again before continuing.",
@@ -127,6 +134,7 @@ pub fn setup(i18n: &I18n) {
       ("loading.status.title", "Loading identity and servers"),
       ("loading.title", "Loading workspace"),
       ("server_connect.action.connect", "Connect"),
+      ("server_connect.address.error_required", "Server address is required."),
       ("server_connect.address.label", "SERVER ADDRESS"),
       ("server_connect.address.placeholder", "127.0.0.1:7800"),
       ("server_connect.caption", "CONNECT"),

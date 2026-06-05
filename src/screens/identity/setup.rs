@@ -1,20 +1,20 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Spacer, Text},
-  core::Signal,
   layout::Alignment,
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  router::Navigator,
 };
 
 use crate::{
   screens::shared::{
-    self, BORDER, CARD_WIDTH, INTRO_WIDTH, STEP_IMPORT_PRIVATE_KEY, STEP_RESTORE_IDENTITY, STEP_SEED_PHRASE,
+    self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE,
   },
   storage::Storage,
   theme,
 };
 
-fn option_row(title: &str, desc: &str, active: bool, step: Option<Signal<u8>>, target_step: u8) -> Row {
+fn option_row(title: &str, desc: &str, active: bool, navigator: Option<Navigator>, target_route: &'static str) -> Row {
   let bg = if active {
     BackgroundColor::Palette(theme::GREEN_MUTED)
   } else {
@@ -41,11 +41,11 @@ fn option_row(title: &str, desc: &str, active: bool, step: Option<Signal<u8>>, t
     )
     .child(shared::icon("chevron-right", 14.0, state_color));
 
-  if let Some(step) = step {
+  if let Some(navigator) = navigator {
     row
       .cursor(CursorIcon::Pointer)
       .hovered_style(Style::new().background("#132D20"))
-      .on_click(move |_| step.set(target_step))
+      .on_click(move |_| navigator.push(target_route))
   } else {
     row
   }
@@ -61,9 +61,9 @@ impl Component for IdentitySetup {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let step = ctx.use_context::<Signal<u8>>();
+    let navigator = ctx.navigator();
     let storage_available = ctx.use_context::<Storage>().is_some();
-    let action_step = if storage_available { step.clone() } else { None };
+    let action_navigator = if storage_available { navigator.clone() } else { None };
     let storage_note = if storage_available {
       ctx.t("identity.setup.storage_note")
     } else {
@@ -117,22 +117,22 @@ impl Component for IdentitySetup {
           &ctx.t("identity.setup.option.generate_title"),
           &ctx.t("identity.setup.option.generate_desc"),
           storage_available,
-          action_step.clone(),
-          STEP_SEED_PHRASE,
+          action_navigator.clone(),
+          ROUTE_SEED_PHRASE,
         ))
         .child(option_row(
           &ctx.t("identity.setup.option.restore_title"),
           &ctx.t("identity.setup.option.restore_desc"),
           false,
-          action_step.clone(),
-          STEP_RESTORE_IDENTITY,
+          action_navigator.clone(),
+          ROUTE_RESTORE_IDENTITY,
         ))
         .child(option_row(
           &ctx.t("identity.setup.option.import_title"),
           &ctx.t("identity.setup.option.import_desc"),
           false,
-          action_step,
-          STEP_IMPORT_PRIVATE_KEY,
+          action_navigator,
+          ROUTE_IMPORT_PRIVATE_KEY,
         ))
         .child(
           Row::new()

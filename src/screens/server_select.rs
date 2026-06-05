@@ -4,10 +4,11 @@ use lurq::{
   core::Signal,
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  router::Navigator,
 };
 
 use crate::{
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, STEP_CONNECT_SERVER, STEP_IDENTITY_SETUP, styled_text},
+  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, styled_text},
   storage::Storage,
   theme,
 };
@@ -51,7 +52,7 @@ const SAVED_SERVERS: &[SavedServer] = &[
   },
 ];
 
-fn add_server_button(label: &str, step: Option<Signal<u8>>) -> Row {
+fn add_server_button(label: &str, navigator: Option<Navigator>) -> Row {
   let row = Row::new()
     .width(58.0)
     .height(34.0)
@@ -64,14 +65,19 @@ fn add_server_button(label: &str, step: Option<Signal<u8>>) -> Row {
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::BG_INPUT)))
     .child(Text::new(label).variant(theme::TYP_BUTTON));
 
-  if let Some(step) = step {
-    row.on_click(move |_| step.set(STEP_CONNECT_SERVER))
+  if let Some(navigator) = navigator {
+    row.on_click(move |_| navigator.push(ROUTE_CONNECT_SERVER))
   } else {
     row
   }
 }
 
-fn drop_identity_button(label: &str, storage: Option<Storage>, step: Option<Signal<u8>>, failed: Signal<bool>) -> Row {
+fn drop_identity_button(
+  label: &str,
+  storage: Option<Storage>,
+  navigator: Option<Navigator>,
+  failed: Signal<bool>,
+) -> Row {
   Row::new()
     .width(Dimension::Pct(100.0))
     .height(34.0)
@@ -92,8 +98,8 @@ fn drop_identity_button(label: &str, storage: Option<Storage>, step: Option<Sign
         .unwrap_or(false);
 
       failed.set(!dropped);
-      if dropped && let Some(step) = &step {
-        step.set(STEP_IDENTITY_SETUP);
+      if dropped && let Some(navigator) = &navigator {
+        navigator.replace(ROUTE_IDENTITY_SETUP);
       }
     })
 }
@@ -207,7 +213,7 @@ impl Component for ServerSelect {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let step = ctx.use_context::<Signal<u8>>();
+    let navigator = ctx.navigator();
     let storage = ctx.use_context::<Storage>();
 
     shared::identity_screen(
@@ -235,7 +241,7 @@ impl Component for ServerSelect {
             .spacing(12.0)
             .child(Text::new(&ctx.t("server_select.heading")).variant(theme::TYP_HEADING))
             .child(Row::new().height(1.0).flex(1.0))
-            .child(add_server_button(&ctx.t("server_select.action.add"), step.clone())),
+            .child(add_server_button(&ctx.t("server_select.action.add"), navigator.clone())),
         )
         .child(server_row(&SAVED_SERVERS[0]))
         .child(server_row(&SAVED_SERVERS[1]))
@@ -248,7 +254,7 @@ impl Component for ServerSelect {
         .child(drop_identity_button(
           &ctx.t("server_select.action.drop_identity"),
           storage,
-          step,
+          navigator,
           self.drop_failed.clone(),
         )),
     )

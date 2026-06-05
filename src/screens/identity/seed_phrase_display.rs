@@ -1,7 +1,7 @@
 use lurq::{
   animation::{Easing, Transition},
   app::{component::Component, ctx::Ctx},
-  components::{Column, Row, Text},
+  components::{Column, FormHandle, FormOptions, FormProps, Row, Text, validators},
   core::Signal,
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
@@ -10,7 +10,7 @@ use lurq::{
 use crate::{
   identity,
   identity::LocalIdentity,
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, STEP_CHOOSE_SERVER, action_button, styled_text},
+  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_CHOOSE_SERVER, styled_text},
   storage::Storage,
   theme,
 };
@@ -104,8 +104,11 @@ fn copy_phrase_icon_button(seed_phrase: Option<&str>, copied: Signal<bool>) -> R
 }
 
 pub struct SeedPhraseDisplay {
+  form: FormHandle,
   identity: Result<LocalIdentity, String>,
   copied: Signal<bool>,
+  copy_failed: Signal<bool>,
+  recovery_failed: Signal<bool>,
   save_failed: Signal<bool>,
 }
 
@@ -113,18 +116,53 @@ impl Component for SeedPhraseDisplay {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let identity = identity::generate_identity().map_err(|error| error.to_string());
+    let seed_phrase = identity
+      .as_ref()
+      .ok()
+      .and_then(|identity| identity.seed_phrase.as_ref())
+      .cloned()
+      .unwrap_or_default();
+
     Self {
-      identity: identity::generate_identity().map_err(|error| error.to_string()),
+      form: ctx.form(
+        FormOptions::new()
+          .field("seed_phrase", seed_phrase)
+          .validate_string("seed_phrase", validators::required("Recovery phrase is unavailable.")),
+      ),
+      identity,
       copied: ctx.signal(false),
+      copy_failed: ctx.signal(false),
+      recovery_failed: ctx.signal(false),
       save_failed: ctx.signal(false),
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let step = ctx.use_context::<Signal<u8>>();
-    let next_step = step.clone();
+    let navigator = ctx.navigator();
+    let next_navigator = navigator.clone();
     let storage = ctx.use_context::<Storage>();
+    let recovery_failed = self.recovery_failed.get();
+    let copy_failed = self.copy_failed.get();
     let save_failed = self.save_failed.get();
+    let meta_title_key = if recovery_failed {
+      "identity.seed.recovery_failed_title"
+    } else if copy_failed {
+      "identity.seed.copy_failed_title"
+    } else if save_failed {
+      "identity.seed.save_failed_title"
+    } else {
+      "identity.seed.meta_title"
+    };
+    let meta_desc_key = if recovery_failed {
+      "identity.seed.recovery_failed_desc"
+    } else if copy_failed {
+      "identity.seed.copy_failed_desc"
+    } else if save_failed {
+      "identity.seed.save_failed_desc"
+    } else {
+      "identity.seed.meta_desc"
+    };
     let seed_phrase = self
       .identity
       .as_ref()
@@ -152,74 +190,92 @@ impl Component for SeedPhraseDisplay {
             .background(BackgroundColor::Palette(theme::BG_TERTIARY))
             .border_inside(1.0, Color::from_hex(BORDER))
             .child(shared::dot(BackgroundColor::Palette(theme::RED)))
-            .child(
-              Text::new(&ctx.t(if save_failed {
-                "identity.seed.save_failed_title"
-              } else {
-                "identity.seed.meta_title"
-              }))
-              .variant(theme::TYP_BUTTON),
-            )
-            .child(
-              Text::new(&ctx.t(if save_failed {
-                "identity.seed.save_failed_desc"
-              } else {
-                "identity.seed.meta_desc"
-              }))
-              .variant(theme::TYP_LINK),
-            ),
+            .child(Text::new(&ctx.t(meta_title_key)).variant(theme::TYP_BUTTON))
+            .child(Text::new(&ctx.t(meta_desc_key)).variant(theme::TYP_LINK)),
         ),
-      Column::new()
-        .width(CARD_WIDTH)
-        .spacing(14.0)
-        .padding(18.0)
-        .rounded(8.0)
-        .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-        .border_inside(1.0, Color::from_hex(BORDER))
-        .child(
-          Row::new()
-            .width(Dimension::Pct(100.0))
-            .align_items(Alignment::Center)
-            .child(
-              Text::new(&ctx.t("identity.seed.heading"))
-                .variant(theme::TYP_HEADING)
-                .flex(1.0),
-            )
-            .child(copy_phrase_icon_button(seed_phrase.as_deref(), self.copied.clone())),
-        )
-        .child(
-          Column::new()
-            .width(Dimension::Pct(100.0))
-            .spacing(6.0)
-            .padding_vertical(GRID_PADDING)
-            .rounded(6.0)
-            .background(BackgroundColor::Palette(theme::BG_SECONDARY))
-            .border_inside(1.0, Color::from_hex(BORDER))
-            .child(seed_row(0, &seed_words))
-            .child(seed_row(3, &seed_words))
-            .child(seed_row(6, &seed_words))
-            .child(seed_row(9, &seed_words)),
-        )
-        .child(shared::back_button(step, &ctx.t("identity.action.back")))
-        .child({
-          let button = action_button(&ctx.t("identity.action.continue_saved"), true);
+      ctx.form_view_with(
+        FormProps::new({
           let identity = self.identity.as_ref().ok().cloned();
+          let seed_phrase = seed_phrase.clone();
+          let copied = self.copied.clone();
+          let copy_failed = self.copy_failed.clone();
+          let recovery_failed = self.recovery_failed.clone();
           let save_failed = self.save_failed.clone();
-          if let Some(next_step) = next_step {
-            button.on_click(move |_| {
+          self
+            .form
+            .clone()
+            .on_submit(move |_| {
+              recovery_failed.set(false);
+              let copied_to_clipboard = seed_phrase.as_deref().is_some_and(lurq::clipboard::copy_to_clipboard);
+              copied.set(copied_to_clipboard);
+              copy_failed.set(!copied_to_clipboard);
+              if !copied_to_clipboard {
+                save_failed.set(false);
+                return;
+              }
+
               let saved = match (&storage, &identity) {
                 (Some(storage), Some(identity)) => storage.save_identity(identity).is_ok(),
                 _ => false,
               };
               save_failed.set(!saved);
-              if saved {
-                next_step.set(STEP_CHOOSE_SERVER);
+              copy_failed.set(false);
+              if saved && let Some(navigator) = &next_navigator {
+                navigator.replace(ROUTE_CHOOSE_SERVER);
               }
             })
-          } else {
-            button
-          }
+            .on_invalid({
+              let copied = self.copied.clone();
+              let copy_failed = self.copy_failed.clone();
+              let recovery_failed = self.recovery_failed.clone();
+              let save_failed = self.save_failed.clone();
+              move |_| {
+                copied.set(false);
+                copy_failed.set(false);
+                recovery_failed.set(true);
+                save_failed.set(false);
+              }
+            })
         }),
+        |ctx| {
+          Column::new()
+            .width(CARD_WIDTH)
+            .spacing(14.0)
+            .padding(18.0)
+            .rounded(8.0)
+            .background(BackgroundColor::Palette(theme::BG_TERTIARY))
+            .border_inside(1.0, Color::from_hex(BORDER))
+            .child(
+              Row::new()
+                .width(Dimension::Pct(100.0))
+                .align_items(Alignment::Center)
+                .child(
+                  Text::new(&ctx.t("identity.seed.heading"))
+                    .variant(theme::TYP_HEADING)
+                    .flex(1.0),
+                )
+                .child(copy_phrase_icon_button(seed_phrase.as_deref(), self.copied.clone())),
+            )
+            .child(
+              Column::new()
+                .width(Dimension::Pct(100.0))
+                .spacing(6.0)
+                .padding_vertical(GRID_PADDING)
+                .rounded(6.0)
+                .background(BackgroundColor::Palette(theme::BG_SECONDARY))
+                .border_inside(1.0, Color::from_hex(BORDER))
+                .child(seed_row(0, &seed_words))
+                .child(seed_row(3, &seed_words))
+                .child(seed_row(6, &seed_words))
+                .child(seed_row(9, &seed_words)),
+            )
+            .child(shared::submit_action_button(
+              &ctx.t("identity.action.continue_saved"),
+              true,
+            ))
+            .child(shared::back_button(navigator, &ctx.t("identity.action.back")))
+        },
+      ),
     )
   }
 }

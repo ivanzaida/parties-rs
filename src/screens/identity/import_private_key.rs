@@ -1,17 +1,12 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
-  components::{Column, Row, Text, TextInput},
-  core::Signal,
-  layout::{
-    Alignment,
-    text_style::{FontWeight, TextStyle},
-  },
-  node::{BackgroundColor, Element, color::Color, dimension::Dimension},
+  components::{Column, FormHandle, FormOptions, FormProps, Text, ValidationResult},
+  node::{BackgroundColor, Element, color::Color},
 };
 
 use crate::{
   identity,
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, STEP_CHOOSE_SERVER, action_button, text_style},
+  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_CHOOSE_SERVER},
   storage::Storage,
   theme,
 };
@@ -29,62 +24,8 @@ fn meta_card(title: &str, description: &str) -> Column {
     .child(Text::new(description).variant(theme::TYP_LINK))
 }
 
-fn private_key_field(value: Signal<String>, label: &str, placeholder: &str) -> Column {
-  let value_style = text_style("JetBrains Mono", 12.0, FontWeight::Medium, "#F4F4F2", 1.2);
-  let placeholder_style = TextStyle {
-    color: Color::from_hex("#B7B2AA"),
-    ..value_style.clone()
-  };
-
-  Column::new()
-    .width(Dimension::Pct(100.0))
-    .spacing(7.0)
-    .child(shared::styled_text(
-      label,
-      "JetBrains Mono",
-      10.0,
-      FontWeight::Bold,
-      "#7D766C",
-      1.2,
-    ))
-    .child(
-      TextInput::styled(value, value_style)
-        .width(Dimension::Pct(100.0))
-        .height(40.0)
-        .padding_horizontal(10.0)
-        .rounded(5.0)
-        .background("#101215")
-        .border_inside(1.0, Color::from_hex(BORDER))
-        .caret_color(theme::ACCENT_COLOR)
-        .placeholder(placeholder)
-        .placeholder_style(placeholder_style)
-        .single_line(),
-    )
-}
-
-fn private_key_warning(message: &str, accepted: bool) -> Row {
-  let (bg, border, icon_color) = if accepted {
-    ("#111A14", "#2D4634", "#42D28B")
-  } else {
-    ("#2B1715", "#4A2A27", "#FF6B5F")
-  };
-
-  Row::new()
-    .width(Dimension::Pct(100.0))
-    .align_items(Alignment::Center)
-    .spacing(8.0)
-    .padding(10.0)
-    .rounded(5.0)
-    .background(bg)
-    .border_inside(1.0, Color::from_hex(border))
-    .child(shared::icon("alert-triangle", 14.0, icon_color))
-    .child(Text::new(message).variant(theme::TYP_LINK).flex(1.0))
-}
-
 pub struct ImportPrivateKey {
-  private_key: Signal<String>,
-  status: Signal<String>,
-  accepted: Signal<bool>,
+  form: FormHandle,
 }
 
 impl Component for ImportPrivateKey {
@@ -92,22 +33,27 @@ impl Component for ImportPrivateKey {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      private_key: ctx.signal(String::new()),
-      status: ctx.signal(String::new()),
-      accepted: ctx.signal(false),
+      form: ctx.form(
+        FormOptions::new()
+          .field("private_key", "")
+          .validate_string("private_key", |private_key, _| {
+            if identity::import_private_key_hex(private_key).is_ok() {
+              ValidationResult::valid()
+            } else {
+              ValidationResult::invalid("Invalid private key. Must be 64 hex characters.")
+            }
+          }),
+      ),
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let step = ctx.use_context::<Signal<u8>>();
+    let navigator = ctx.navigator();
     let storage = ctx.use_context::<Storage>();
-    let status_key = self.status.get();
-    let accepted = self.accepted.get();
-    let warning = if status_key.is_empty() {
-      ctx.t("identity.import.status.empty")
-    } else {
-      ctx.t(status_key.as_str())
-    };
+    let warning = ctx.t("identity.import.warning");
+    let private_key_error = self.form.error("private_key").get();
+    eprintln!("import_private_key render errors={:?}", self.form.errors());
+    eprintln!("import_private_key private_key_error={private_key_error:?}");
 
     shared::identity_screen(
       Column::new()
@@ -120,49 +66,65 @@ impl Component for ImportPrivateKey {
           &ctx.t("identity.import.meta_title"),
           &ctx.t("identity.import.meta_desc"),
         )),
-      Column::new()
-        .width(CARD_WIDTH)
-        .spacing(14.0)
-        .padding(18.0)
-        .rounded(8.0)
-        .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-        .border_inside(1.0, Color::from_hex(BORDER))
-        .child(Text::new(&ctx.t("identity.import.heading")).variant(theme::TYP_HEADING))
-        .child(private_key_field(
-          self.private_key.clone(),
-          &ctx.t("identity.import.field_label"),
-          &ctx.t("identity.import.placeholder"),
-        ))
-        .child(private_key_warning(&warning, accepted))
-        .child({
-          let private_key = self.private_key.clone();
-          let status = self.status.clone();
-          let accepted = self.accepted.clone();
-          let next_step = step.clone();
+      ctx.form_view_with(
+        FormProps::new({
+          let navigator = navigator.clone();
           let storage = storage.clone();
-          action_button(&ctx.t("identity.action.import_key"), true).on_click(move |_| {
-            match identity::import_private_key_hex(&private_key.get()) {
-              Ok(identity) => match &storage {
-                Some(storage) if storage.save_identity(&identity).is_ok() => {
-                  accepted.set(true);
-                  status.set("identity.import.status.accepted".to_owned());
-                  if let Some(next_step) = &next_step {
-                    next_step.set(STEP_CHOOSE_SERVER);
+          self
+            .form
+            .clone()
+            .on_submit(move |values| {
+              let private_key = values.get_string("private_key").unwrap_or_default();
+              eprintln!("import_private_key submit private_key_len={}", private_key.len());
+              if let Ok(identity) = identity::import_private_key_hex(private_key) {
+                match &storage {
+                  Some(storage) if storage.save_identity(&identity).is_ok() => {
+                    eprintln!("import_private_key submit saved identity");
+                    if let Some(navigator) = &navigator {
+                      navigator.replace(ROUTE_CHOOSE_SERVER);
+                    }
                   }
+                  _ => eprintln!("import_private_key submit failed to save identity"),
                 }
-                _ => {
-                  accepted.set(false);
-                  status.set("identity.import.status.save_failed".to_owned());
-                }
-              },
-              Err(_) => {
-                accepted.set(false);
-                status.set("identity.import.status.invalid".to_owned());
               }
-            }
-          })
-        })
-        .child(shared::back_button(step.clone(), &ctx.t("identity.action.back"))),
+            })
+            .on_invalid(|errors| {
+              eprintln!("import_private_key invalid errors={errors:?}");
+            })
+        }),
+        |ctx| {
+          Column::new()
+            .width(CARD_WIDTH)
+            .spacing(14.0)
+            .padding(18.0)
+            .rounded(8.0)
+            .background(BackgroundColor::Palette(theme::BG_TERTIARY))
+            .border_inside(1.0, Color::from_hex(BORDER))
+            .child(Text::new(&ctx.t("identity.import.heading")).variant(theme::TYP_HEADING))
+            .child(ctx.mount_keyed::<shared::FormTextInput>(
+              if private_key_error.is_some() {
+                "private_key-invalid"
+              } else {
+                "private_key-valid"
+              },
+              shared::FormTextInputProps::new(
+                self.form.string_control("private_key"),
+                ctx.t("identity.import.field_label"),
+                ctx.t("identity.import.placeholder"),
+                40.0,
+              ),
+            ))
+            .child(shared::notice_row(
+              &warning,
+              "alert-triangle",
+              "#FF6B5F",
+              "#2B1715",
+              "#4A2A27",
+            ))
+            .child(shared::submit_action_button(&ctx.t("identity.action.import_key"), true))
+            .child(shared::back_button(navigator.clone(), &ctx.t("identity.action.back")))
+        },
+      ),
     )
   }
 }
