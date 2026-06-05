@@ -11,9 +11,10 @@ use crate::{
     self,
     shared::{
       ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
-      ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE,
+      ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_TOFU_WARNING,
     },
   },
+  session::ServerSession,
   storage::Storage,
   theme,
 };
@@ -27,10 +28,7 @@ struct StartupData {
 fn load_startup_data_sync() -> Result<StartupData, String> {
   match Storage::open_default() {
     Ok(storage) => {
-      let has_identity = storage.has_identity().unwrap_or_else(|error| {
-        eprintln!("failed to load identity: {error}");
-        false
-      });
+      let has_identity = storage.has_identity().unwrap_or(false);
       let initial_route = if has_identity {
         ROUTE_CHOOSE_SERVER
       } else {
@@ -42,13 +40,10 @@ fn load_startup_data_sync() -> Result<StartupData, String> {
         initial_route: initial_route.to_owned(),
       })
     }
-    Err(error) => {
-      eprintln!("failed to open storage: {error}");
-      Ok(StartupData {
-        storage: None,
-        initial_route: ROUTE_IDENTITY_SETUP.to_owned(),
-      })
-    }
+    Err(_) => Ok(StartupData {
+      storage: None,
+      initial_route: ROUTE_IDENTITY_SETUP.to_owned(),
+    }),
   }
 }
 
@@ -60,6 +55,7 @@ async fn load_startup_data() -> Result<StartupData, String> {
 
 pub struct App {
   router: RouterHandle,
+  session: ServerSession,
 }
 
 impl Component for App {
@@ -84,10 +80,17 @@ impl Component for App {
         .route(ROUTE_CONNECT_SERVER, |ctx| {
           ctx.mount::<screens::server_connect::ServerConnect>(())
         })
+        .route(ROUTE_TOFU_WARNING, |ctx| {
+          ctx.mount::<screens::tofu_warning::TofuWarningScreen>(())
+        })
+        .route(ROUTE_LOBBY, |ctx| ctx.mount::<screens::lobby::Lobby>(()))
         .fallback(|ctx| ctx.mount::<screens::identity::setup::IdentitySetup>(())),
     );
     router.replace(ROUTE_LOADING);
-    Self { router }
+    Self {
+      router,
+      session: ServerSession::default(),
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -102,11 +105,12 @@ impl Component for App {
         ctx.provide(storage.clone());
       }
     }
+    ctx.provide(self.session.clone());
 
     Column::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
-      .background(BackgroundColor::Palette(theme::BG_PRIMARY))
+      .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .align_items(Alignment::Center)
       .justify(Justify::Center)
       .clip()

@@ -4,11 +4,11 @@ use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Rect, Row, Text},
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
-  node::{BackgroundColor, Element, color::Color, dimension::Dimension},
+  node::{BackgroundColor, Element, dimension::Dimension},
 };
 
 use crate::{
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, styled_text},
+  screens::shared::{self, CARD_WIDTH, INTRO_WIDTH, styled_text},
   theme,
 };
 
@@ -29,19 +29,19 @@ fn loader_dots() -> Row {
     .child(
       Rect::new(10.0, 10.0)
         .rounded(5.0)
-        .background(BackgroundColor::Palette(theme::ACCENT))
+        .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
         .opacity(pulse_opacity(0)),
     )
     .child(
       Rect::new(10.0, 10.0)
         .rounded(5.0)
-        .background(BackgroundColor::Palette(theme::ACCENT))
+        .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
         .opacity(pulse_opacity(1)),
     )
     .child(
       Rect::new(10.0, 10.0)
         .rounded(5.0)
-        .background(BackgroundColor::Palette(theme::ACCENT))
+        .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
         .opacity(pulse_opacity(2)),
     )
 }
@@ -52,28 +52,28 @@ fn meta_card(title: &str, body: &str) -> Column {
     .spacing(8.0)
     .padding(12.0)
     .rounded(6.0)
-    .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-    .border_inside(1.0, Color::from_hex(BORDER))
-    .child(shared::dot(BackgroundColor::Palette(theme::ACCENT)))
-    .child(Text::new(title).variant(theme::TYP_BUTTON))
-    .child(Text::new(body).variant(theme::TYP_LINK))
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(shared::dot(BackgroundColor::Palette(theme::PaletteColor::Accent)))
+    .child(Text::new(title).variant(theme::TypographyStyle::Button))
+    .child(Text::new(body).variant(theme::TypographyStyle::Link))
 }
 
 fn status_row(label: &str, detail: &str, active: bool) -> Row {
   let background = if active {
-    theme::GREEN_MUTED_COLOR
+    theme::palette().success_muted
   } else {
-    theme::BG_ELEVATED_COLOR
+    theme::palette().surface_raised
   };
   let border = if active {
-    theme::ACCENT_COLOR
+    theme::palette().accent
   } else {
-    theme::BORDER_COLOR
+    theme::palette().border
   };
   let dot = if active {
-    theme::ACCENT_COLOR
+    theme::palette().accent
   } else {
-    theme::TEXT_MUTED_COLOR
+    theme::palette().text_muted
   };
 
   Row::new()
@@ -94,7 +94,7 @@ fn status_row(label: &str, detail: &str, active: bool) -> Row {
           "Inter",
           12.0,
           FontWeight::Bold,
-          theme::TEXT_PRIMARY_COLOR,
+          theme::palette().text_primary,
           1.2,
         ))
         .child(styled_text(
@@ -102,7 +102,7 @@ fn status_row(label: &str, detail: &str, active: bool) -> Row {
           "Inter",
           10.0,
           FontWeight::Normal,
-          theme::TEXT_SECONDARY_COLOR,
+          theme::palette().text_secondary,
           1.2,
         )),
     )
@@ -122,18 +122,18 @@ impl Component for LoadingScreen {
       Column::new()
         .width(INTRO_WIDTH)
         .spacing(18.0)
-        .child(Text::new(&ctx.t("loading.caption")).variant(theme::TYP_CAPTION))
-        .child(Text::new(&ctx.t("loading.title")).variant(theme::TYP_TITLE))
-        .child(Text::new(&ctx.t("loading.desc")).variant(theme::TYP_DESC))
+        .child(Text::new(&ctx.t("loading.caption")).variant(theme::TypographyStyle::Caption))
+        .child(Text::new(&ctx.t("loading.title")).variant(theme::TypographyStyle::Title))
+        .child(Text::new(&ctx.t("loading.desc")).variant(theme::TypographyStyle::Description))
         .child(meta_card(&ctx.t("loading.meta_title"), &ctx.t("loading.meta_desc"))),
       Column::new()
         .width(CARD_WIDTH)
         .spacing(14.0)
         .padding(18.0)
         .rounded(8.0)
-        .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-        .border_inside(1.0, Color::from_hex(BORDER))
-        .child(Text::new(&ctx.t("loading.card_title")).variant(theme::TYP_HEADING))
+        .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+        .border_inside(1.0, theme::PaletteColor::Border)
+        .child(Text::new(&ctx.t("loading.card_title")).variant(theme::TypographyStyle::Heading))
         .child(
           Column::new()
             .width(Dimension::Pct(100.0))
@@ -151,7 +151,7 @@ impl Component for LoadingScreen {
                   "Inter",
                   14.0,
                   FontWeight::Bold,
-                  theme::TEXT_PRIMARY_COLOR,
+                  theme::palette().text_primary,
                   1.2,
                 ))
                 .child(styled_text(
@@ -159,7 +159,7 @@ impl Component for LoadingScreen {
                   "Inter",
                   11.0,
                   FontWeight::Normal,
-                  theme::TEXT_SECONDARY_COLOR,
+                  theme::palette().text_secondary,
                   1.2,
                 )),
             )

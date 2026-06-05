@@ -1,56 +1,38 @@
 use lurq::{
-  app::{component::Component, ctx::Ctx},
-  components::{Column, Row, Text},
+  app::{
+    component::Component,
+    ctx::{Ctx, FutureAction},
+  },
+  components::{Column, FormErrors, Row, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
-  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  node::{BackgroundColor, CursorIcon, Element, Style, dimension::Dimension},
   router::Navigator,
 };
 
 use crate::{
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, styled_text},
-  storage::Storage,
+  screens::{
+    server_connect::{ServerConnectMessages, connect_to_server_address},
+    shared::{
+      self, CARD_WIDTH, INTRO_WIDTH, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY, ROUTE_TOFU_WARNING,
+      styled_text,
+    },
+  },
+  session::{ConnectedServerInfo, ServerSession},
+  storage::{Storage, StoredServer},
   theme,
 };
 
-struct SavedServer {
-  name: &'static str,
-  address: &'static str,
-  fingerprint: &'static str,
-  selected: bool,
-  trusted: bool,
-}
+async fn load_saved_servers(storage: Option<Storage>) -> Result<Vec<StoredServer>, String> {
+  let Some(storage) = storage else {
+    return Ok(Vec::new());
+  };
 
-const SAVED_SERVERS: &[SavedServer] = &[
-  SavedServer {
-    name: "My Server",
-    address: "192.168.1.50:7800",
-    fingerprint: "a3:f1:7b",
-    selected: true,
-    trusted: true,
-  },
-  SavedServer {
-    name: "Dev Team",
-    address: "dev.parties.io:7800",
-    fingerprint: "7b:02:91",
-    selected: false,
-    trusted: true,
-  },
-  SavedServer {
-    name: "Gaming Night",
-    address: "10.0.0.5:7800",
-    fingerprint: "91:cc:d4",
-    selected: false,
-    trusted: true,
-  },
-  SavedServer {
-    name: "localhost",
-    address: "127.0.0.1:7800",
-    fingerprint: "untrusted",
-    selected: false,
-    trusted: false,
-  },
-];
+  tokio::task::spawn_blocking(move || storage.load_servers())
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
 
 fn add_server_button(label: &str, navigator: Option<Navigator>) -> Row {
   let row = Row::new()
@@ -59,11 +41,11 @@ fn add_server_button(label: &str, navigator: Option<Navigator>) -> Row {
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .rounded(5.0)
-    .background(BackgroundColor::Palette(theme::BG_ELEVATED))
-    .border_inside(1.0, Color::from_hex(BORDER))
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
     .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::BG_INPUT)))
-    .child(Text::new(label).variant(theme::TYP_BUTTON));
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+    .child(Text::new(label).variant(theme::TypographyStyle::Button));
 
   if let Some(navigator) = navigator {
     row.on_click(move |_| navigator.push(ROUTE_CONNECT_SERVER))
@@ -85,12 +67,19 @@ fn drop_identity_button(
     .justify(Justify::Center)
     .spacing(8.0)
     .rounded(5.0)
-    .background(BackgroundColor::Palette(theme::RED_MUTED))
-    .border_inside(1.0, Color::from_hex("#4A2A27"))
+    .background(BackgroundColor::Palette(theme::PaletteColor::DangerMuted))
+    .border_inside(1.0, theme::PaletteColor::Danger)
     .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background("#351D1F"))
-    .child(shared::icon("trash-2", 14.0, "#FF6B5F"))
-    .child(styled_text(label, "Inter", 13.0, FontWeight::Bold, "#FF6B5F", 1.2))
+    .hovered_style(Style::new().background(theme::PaletteColor::DangerMuted))
+    .child(shared::icon("trash-2", 14.0, theme::palette().danger))
+    .child(styled_text(
+      label,
+      "Inter",
+      13.0,
+      FontWeight::Bold,
+      theme::palette().danger,
+      1.2,
+    ))
     .on_click(move |_| {
       let dropped = storage
         .as_ref()
@@ -115,10 +104,10 @@ fn drop_identity_error(message: &str, visible: bool) -> Row {
     .spacing(8.0)
     .padding(10.0)
     .rounded(5.0)
-    .background(BackgroundColor::Palette(theme::RED_MUTED))
-    .border_inside(1.0, Color::from_hex("#4A2A27"))
-    .child(shared::icon("alert-triangle", 14.0, "#FF6B5F"))
-    .child(Text::new(message).variant(theme::TYP_LINK).flex(1.0))
+    .background(BackgroundColor::Palette(theme::PaletteColor::DangerMuted))
+    .border_inside(1.0, theme::PaletteColor::Danger)
+    .child(shared::icon("alert-triangle", 14.0, theme::palette().danger))
+    .child(Text::new(message).variant(theme::TypographyStyle::Link).flex(1.0))
 }
 
 fn meta_card(title: &str, body: &str) -> Column {
@@ -127,36 +116,41 @@ fn meta_card(title: &str, body: &str) -> Column {
     .spacing(8.0)
     .padding(12.0)
     .rounded(6.0)
-    .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-    .border_inside(1.0, Color::from_hex(BORDER))
-    .child(shared::dot(BackgroundColor::Palette(theme::GREEN)))
-    .child(Text::new(title).variant(theme::TYP_BUTTON))
-    .child(Text::new(body).variant(theme::TYP_LINK))
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(shared::dot(BackgroundColor::Palette(theme::PaletteColor::Success)))
+    .child(Text::new(title).variant(theme::TypographyStyle::Button))
+    .child(Text::new(body).variant(theme::TypographyStyle::Link))
 }
 
-fn server_row(server: &SavedServer) -> Row {
-  let background = if server.selected {
-    theme::GREEN_MUTED_COLOR
+fn server_row(
+  server: &StoredServer,
+  active: bool,
+  connect_action: FutureAction<String, ConnectedServerInfo, FormErrors>,
+) -> Row {
+  let background = if active {
+    theme::palette().success_muted
   } else {
-    theme::BG_ELEVATED_COLOR
+    theme::palette().surface_raised
   };
-  let border = if server.selected {
-    theme::ACCENT_COLOR
+  let border = if active {
+    theme::palette().accent
   } else {
-    theme::BORDER_COLOR
+    theme::palette().border
   };
-  let dot = if server.selected {
-    theme::ACCENT_COLOR
+  let dot = if active {
+    theme::palette().accent
   } else {
-    theme::TEXT_MUTED_COLOR
+    theme::palette().text_muted
   };
-  let fingerprint = if server.selected && server.trusted {
-    theme::ACCENT_COLOR
+  let role = if active {
+    theme::palette().accent
   } else {
-    theme::TEXT_MUTED_COLOR
+    theme::palette().text_muted
   };
+  let role_text = format!("{:?} #{}", server.role, server.user_id);
 
-  Row::new()
+  let row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
     .spacing(10.0)
@@ -166,37 +160,52 @@ fn server_row(server: &SavedServer) -> Row {
     .background(background)
     .border_inside(1.0, border)
     .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::BG_INPUT)))
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
     .child(shared::dot(dot))
     .child(
       Column::new()
         .flex(1.0)
         .spacing(2.0)
         .child(styled_text(
-          server.name,
+          &server.server_name,
           "Inter",
           12.0,
           FontWeight::Bold,
-          theme::TEXT_PRIMARY_COLOR,
+          theme::palette().text_primary,
           1.2,
         ))
         .child(styled_text(
-          server.address,
+          &server.address,
           "JetBrains Mono",
           10.0,
           FontWeight::Medium,
-          theme::TEXT_MUTED_COLOR,
+          theme::palette().text_muted,
           1.2,
         )),
     )
     .child(styled_text(
-      server.fingerprint,
+      &role_text,
       "JetBrains Mono",
       10.0,
       FontWeight::Bold,
-      fingerprint,
+      role,
       1.2,
-    ))
+    ));
+
+  let address = server.address.clone();
+  row.on_click(move |_| connect_action.run(address.clone()))
+}
+
+fn empty_servers_row(message: &str) -> Row {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(8.0)
+    .padding(10.0)
+    .rounded(5.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(Text::new(message).variant(theme::TypographyStyle::Link).flex(1.0))
 }
 
 pub struct ServerSelect {
@@ -215,48 +224,111 @@ impl Component for ServerSelect {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let navigator = ctx.navigator();
     let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>().unwrap_or_default();
+    let active_server = session.info();
+    let connect_action = ctx.future_action({
+      let storage = storage.clone();
+      let session = session.clone();
+      let messages = ServerConnectMessages::from_ctx(ctx);
+      move |address| {
+        connect_to_server_address(
+          address,
+          String::new(),
+          storage.clone(),
+          session.clone(),
+          messages.clone(),
+        )
+      }
+    });
+    let connect_state = connect_action.state().get();
+    if connect_state.data.is_some()
+      && let Some(navigator) = navigator.as_ref()
+    {
+      if session.tofu_warning().is_some() {
+        navigator.replace(ROUTE_TOFU_WARNING);
+      } else {
+        navigator.replace(ROUTE_LOBBY);
+      }
+    }
+    let servers_state = ctx.future(storage.clone(), load_saved_servers).state().get();
+    let servers = servers_state.data.as_deref().unwrap_or(&[]);
+    let server_count = servers.len();
+    let meta_title = match server_count {
+      0 => ctx.t("server_select.meta_title_empty"),
+      1 => ctx.t("server_select.meta_title_one"),
+      _ => {
+        let count = server_count.to_string();
+        ctx.t_args("server_select.meta_title_many", [("count", count)])
+      }
+    };
+    let meta_desc = if server_count == 0 {
+      ctx.t("server_select.meta_desc_empty")
+    } else {
+      ctx.t("server_select.meta_desc_saved")
+    };
+    let mut server_card = Column::new()
+      .width(CARD_WIDTH)
+      .spacing(14.0)
+      .padding(18.0)
+      .rounded(8.0)
+      .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+      .border_inside(1.0, theme::PaletteColor::Border)
+      .child(
+        Row::new()
+          .width(Dimension::Pct(100.0))
+          .align_items(Alignment::Center)
+          .spacing(12.0)
+          .child(Text::new(&ctx.t("server_select.heading")).variant(theme::TypographyStyle::Heading))
+          .child(Row::new().height(1.0).flex(1.0))
+          .child(add_server_button(&ctx.t("server_select.action.add"), navigator.clone())),
+      );
+
+    if servers_state.is_pending() {
+      server_card = server_card.child(empty_servers_row(&ctx.t("server_select.status.loading")));
+    } else if let Some(error) = servers_state.error.as_ref() {
+      server_card = server_card.child(empty_servers_row(error));
+    } else if servers.is_empty() {
+      server_card = server_card.child(empty_servers_row(&ctx.t("server_select.status.empty")));
+    } else {
+      for server in servers {
+        server_card = server_card.child(server_row(
+          server,
+          active_server
+            .as_ref()
+            .is_some_and(|active| active.address == server.address),
+          connect_action.clone(),
+        ));
+      }
+    }
+    if let Some(error) = connect_state.error.as_ref() {
+      let message = error
+        .first("server_address")
+        .map(str::to_owned)
+        .unwrap_or_else(|| ctx.t("server_select.connect_failed"));
+      server_card = server_card.child(empty_servers_row(&message));
+    }
+
+    server_card = server_card
+      .child(drop_identity_error(
+        &ctx.t("server_select.drop_identity_failed"),
+        self.drop_failed.get(),
+      ))
+      .child(drop_identity_button(
+        &ctx.t("server_select.action.drop_identity"),
+        storage,
+        navigator,
+        self.drop_failed.clone(),
+      ));
 
     shared::identity_screen(
       Column::new()
         .width(INTRO_WIDTH)
         .spacing(18.0)
-        .child(Text::new(&ctx.t("server_select.caption")).variant(theme::TYP_CAPTION))
-        .child(Text::new(&ctx.t("server_select.title")).variant(theme::TYP_TITLE))
-        .child(Text::new(&ctx.t("server_select.desc")).variant(theme::TYP_DESC))
-        .child(meta_card(
-          &ctx.t("server_select.meta_title"),
-          &ctx.t("server_select.meta_desc"),
-        )),
-      Column::new()
-        .width(CARD_WIDTH)
-        .spacing(14.0)
-        .padding(18.0)
-        .rounded(8.0)
-        .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-        .border_inside(1.0, Color::from_hex(BORDER))
-        .child(
-          Row::new()
-            .width(Dimension::Pct(100.0))
-            .align_items(Alignment::Center)
-            .spacing(12.0)
-            .child(Text::new(&ctx.t("server_select.heading")).variant(theme::TYP_HEADING))
-            .child(Row::new().height(1.0).flex(1.0))
-            .child(add_server_button(&ctx.t("server_select.action.add"), navigator.clone())),
-        )
-        .child(server_row(&SAVED_SERVERS[0]))
-        .child(server_row(&SAVED_SERVERS[1]))
-        .child(server_row(&SAVED_SERVERS[2]))
-        .child(server_row(&SAVED_SERVERS[3]))
-        .child(drop_identity_error(
-          &ctx.t("server_select.drop_identity_failed"),
-          self.drop_failed.get(),
-        ))
-        .child(drop_identity_button(
-          &ctx.t("server_select.action.drop_identity"),
-          storage,
-          navigator,
-          self.drop_failed.clone(),
-        )),
+        .child(Text::new(&ctx.t("server_select.caption")).variant(theme::TypographyStyle::Caption))
+        .child(Text::new(&ctx.t("server_select.title")).variant(theme::TypographyStyle::Title))
+        .child(Text::new(&ctx.t("server_select.desc")).variant(theme::TypographyStyle::Description))
+        .child(meta_card(&meta_title, &meta_desc)),
+      server_card,
     )
   }
 }

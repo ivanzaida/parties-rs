@@ -1,11 +1,17 @@
-use std::{env, error::Error, fmt, fs, path::PathBuf};
+use std::{
+  env,
+  error::Error,
+  fmt, fs,
+  path::PathBuf,
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 use lurq::app::component::{ComponentInfo, DevtoolsInspectable};
 use rusqlite::{Connection, params};
 
 use crate::{
   identity::LocalIdentity,
-  network::protocol::{PublicKey, SecretKey},
+  network::protocol::{PublicKey, Role, SecretKey, UserId},
 };
 
 #[derive(Debug)]
@@ -13,6 +19,8 @@ pub enum StorageError {
   Io(std::io::Error),
   Sql(rusqlite::Error),
   InvalidBlob(&'static str),
+  InvalidRole(u8),
+  Time(std::time::SystemTimeError),
 }
 
 impl fmt::Display for StorageError {
@@ -21,6 +29,8 @@ impl fmt::Display for StorageError {
       Self::Io(error) => write!(f, "io: {error}"),
       Self::Sql(error) => write!(f, "sqlite: {error}"),
       Self::InvalidBlob(column) => write!(f, "invalid identity blob: {column}"),
+      Self::InvalidRole(role) => write!(f, "invalid stored server role: {role}"),
+      Self::Time(error) => write!(f, "time: {error}"),
     }
   }
 }
@@ -36,6 +46,51 @@ impl From<std::io::Error> for StorageError {
 impl From<rusqlite::Error> for StorageError {
   fn from(value: rusqlite::Error) -> Self {
     Self::Sql(value)
+  }
+}
+
+impl From<std::time::SystemTimeError> for StorageError {
+  fn from(value: std::time::SystemTimeError) -> Self {
+    Self::Time(value)
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredServer {
+  pub address: String,
+  pub server_name: String,
+  pub user_id: UserId,
+  pub role: Role,
+  pub certificate_fingerprint: String,
+}
+
+impl DevtoolsInspectable for StoredServer {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "address",
+      std::any::type_name::<String>(),
+      self.address.clone(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "server_name",
+      std::any::type_name::<String>(),
+      self.server_name.clone(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "user_id",
+      std::any::type_name::<UserId>(),
+      self.user_id.to_string(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "role",
+      std::any::type_name::<Role>(),
+      format!("{:?}", self.role),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "certificate_fingerprint",
+      std::any::type_name::<String>(),
+      self.certificate_fingerprint.clone(),
+    ));
   }
 }
 
@@ -117,6 +172,81 @@ impl Storage {
     Ok(self.load_identity()?.is_some())
   }
 
+  pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+    conn.execute(
+      r#"
+      INSERT OR REPLACE INTO servers (address, server_name, user_id, role, updated_at, certificate_fingerprint)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      "#,
+      params![
+        &server.address,
+        &server.server_name,
+        server.user_id as i64,
+        server.role as u8,
+        updated_at,
+        &server.certificate_fingerprint
+      ],
+    )?;
+    Ok(())
+  }
+
+  pub fn load_server(&self, address: &str) -> Result<Option<StoredServer>, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare(
+      r#"
+      SELECT address, server_name, user_id, role, certificate_fingerprint
+      FROM servers
+      WHERE address = ?1
+      "#,
+    )?;
+    let mut rows = stmt.query(params![address])?;
+
+    let Some(row) = rows.next()? else {
+      return Ok(None);
+    };
+
+    let role: u8 = row.get(3)?;
+    let role = Role::from_u8(role).ok_or(StorageError::InvalidRole(role))?;
+    Ok(Some(StoredServer {
+      address: row.get(0)?,
+      server_name: row.get(1)?,
+      user_id: row.get::<_, i64>(2)? as UserId,
+      role,
+      certificate_fingerprint: row.get(4)?,
+    }))
+  }
+
+  pub fn load_servers(&self) -> Result<Vec<StoredServer>, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare(
+      r#"
+      SELECT address, server_name, user_id, role, certificate_fingerprint
+      FROM servers
+      ORDER BY updated_at DESC, server_name ASC, address ASC
+      "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+      let role: u8 = row.get(3)?;
+      Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)?, role, row.get(4)?))
+    })?;
+
+    let mut servers = Vec::new();
+    for row in rows {
+      let (address, server_name, user_id, role, certificate_fingerprint) = row?;
+      let role = Role::from_u8(role).ok_or(StorageError::InvalidRole(role))?;
+      servers.push(StoredServer {
+        address,
+        server_name,
+        user_id: user_id as UserId,
+        role,
+        certificate_fingerprint,
+      });
+    }
+    Ok(servers)
+  }
+
   fn connection(&self) -> Result<Connection, StorageError> {
     let conn = Connection::open(&self.path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -134,10 +264,38 @@ impl Storage {
         public_key  BLOB NOT NULL,
         secret_key  BLOB NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS servers (
+        address     TEXT PRIMARY KEY,
+        server_name TEXT NOT NULL,
+        user_id     INTEGER NOT NULL,
+        role        INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        certificate_fingerprint TEXT NOT NULL DEFAULT ''
+      );
       "#,
     )?;
+    if !column_exists(&conn, "servers", "certificate_fingerprint")? {
+      conn.execute(
+        "ALTER TABLE servers ADD COLUMN certificate_fingerprint TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
     Ok(())
   }
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, StorageError> {
+  let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+  let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+
+  for row in rows {
+    if row? == column {
+      return Ok(true);
+    }
+  }
+
+  Ok(false)
 }
 
 fn fixed_32<T>(bytes: &[u8], column: &'static str) -> Result<T, StorageError>
@@ -201,6 +359,29 @@ mod tests {
 
     storage.delete_identity().unwrap();
     assert!(storage.load_identity().unwrap().is_none());
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn servers_round_trip() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-servers-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+    let server = StoredServer {
+      address: "127.0.0.1:7800".to_owned(),
+      server_name: "Local".to_owned(),
+      user_id: 7,
+      role: Role::Admin,
+      certificate_fingerprint: "aa:bb".to_owned(),
+    };
+
+    storage.save_server(&server).unwrap();
+
+    let servers = storage.load_servers().unwrap();
+    assert_eq!(servers, vec![server]);
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

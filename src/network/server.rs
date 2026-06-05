@@ -6,6 +6,7 @@ use rustls::{
   client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
   pki_types::{CertificateDer, ServerName, UnixTime},
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use super::protocol::{
@@ -164,6 +165,13 @@ impl Server {
 
   pub fn connection(&self) -> &Connection {
     &self.connection
+  }
+
+  pub fn certificate_fingerprint(&self) -> Option<String> {
+    let identity = self.connection.peer_identity()?;
+    let certificates = identity.downcast::<Vec<CertificateDer<'static>>>().ok()?;
+    let certificate = certificates.first()?;
+    Some(hex_fingerprint(certificate.as_ref()))
   }
 
   async fn send_control(&self, msg: C2S) -> Result<(), ServerError> {
@@ -413,5 +421,28 @@ impl Server {
 
   pub async fn ping(&self) -> Result<(), ServerError> {
     self.send_control(C2S::KeepalivePing).await
+  }
+}
+
+fn hex_fingerprint(bytes: &[u8]) -> String {
+  let digest = Sha256::digest(bytes);
+  let mut out = String::with_capacity(95);
+
+  for (index, byte) in digest.iter().enumerate() {
+    if index > 0 {
+      out.push(':');
+    }
+    out.push(hex_char(byte >> 4));
+    out.push(hex_char(byte & 0x0f));
+  }
+
+  out
+}
+
+fn hex_char(value: u8) -> char {
+  match value {
+    0..=9 => (b'0' + value) as char,
+    10..=15 => (b'a' + value - 10) as char,
+    _ => '0',
   }
 }

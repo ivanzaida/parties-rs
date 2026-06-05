@@ -4,13 +4,13 @@ use lurq::{
   components::{Column, FormHandle, FormOptions, FormProps, Row, Text, validators},
   core::Signal,
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
-  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  node::{BackgroundColor, CursorIcon, Element, Style, dimension::Dimension},
 };
 
 use crate::{
   identity,
   identity::LocalIdentity,
-  screens::shared::{self, BORDER, CARD_WIDTH, INTRO_WIDTH, ROUTE_CHOOSE_SERVER, styled_text},
+  screens::shared::{self, CARD_WIDTH, INTRO_WIDTH, ROUTE_CHOOSE_SERVER, styled_text},
   storage::Storage,
   theme,
 };
@@ -27,7 +27,7 @@ fn word_cell(index: usize, word: &str) -> Row {
       "JetBrains Mono",
       10.0,
       FontWeight::Bold,
-      "#7D766C",
+      theme::palette().text_muted,
       1.2,
     ))
     .child(styled_text(
@@ -35,7 +35,7 @@ fn word_cell(index: usize, word: &str) -> Row {
       "JetBrains Mono",
       11.0,
       FontWeight::Medium,
-      "#F4F4F2",
+      theme::palette().text_primary,
       1.2,
     ))
 }
@@ -58,24 +58,24 @@ fn copy_phrase_icon_button(seed_phrase: Option<&str>, copied: Signal<bool>) -> R
   let copied_now = copied.get();
   let icon_name = if copied_now { "check" } else { "copy" };
   let icon_color = if copied_now {
-    theme::ACCENT_COLOR
+    theme::palette().accent
   } else {
-    theme::TEXT_SECONDARY_COLOR
+    theme::palette().text_secondary
   };
   let background = if copied_now {
-    theme::GREEN_MUTED_COLOR
+    theme::palette().success_muted
   } else {
-    theme::BG_ELEVATED_COLOR
+    theme::palette().surface_raised
   };
   let border = if copied_now {
-    theme::BORDER_LIGHT_COLOR
+    theme::palette().border_strong
   } else {
-    theme::BORDER_COLOR
+    theme::palette().border
   };
   let hover_background = if copied_now {
-    theme::ACCENT_MUTED_COLOR
+    theme::palette().accent_muted
   } else {
-    theme::BG_INPUT_COLOR
+    theme::palette().surface_input
   };
 
   let row = Row::new()
@@ -116,6 +116,7 @@ impl Component for SeedPhraseDisplay {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let recovery_unavailable = ctx.t("identity.seed.status.unavailable");
     let identity = identity::generate_identity().map_err(|error| error.to_string());
     let seed_phrase = identity
       .as_ref()
@@ -128,7 +129,7 @@ impl Component for SeedPhraseDisplay {
       form: ctx.form(
         FormOptions::new()
           .field("seed_phrase", seed_phrase)
-          .validate_string("seed_phrase", validators::required("Recovery phrase is unavailable.")),
+          .validate_string("seed_phrase", validators::required(recovery_unavailable)),
       ),
       identity,
       copied: ctx.signal(false),
@@ -178,20 +179,20 @@ impl Component for SeedPhraseDisplay {
       Column::new()
         .width(INTRO_WIDTH)
         .spacing(18.0)
-        .child(Text::new(&ctx.t("identity.seed.caption")).variant(theme::TYP_CAPTION))
-        .child(Text::new(&ctx.t("identity.seed.title")).variant(theme::TYP_TITLE))
-        .child(Text::new(&ctx.t("identity.seed.desc")).variant(theme::TYP_DESC))
+        .child(Text::new(&ctx.t("identity.seed.caption")).variant(theme::TypographyStyle::Caption))
+        .child(Text::new(&ctx.t("identity.seed.title")).variant(theme::TypographyStyle::Title))
+        .child(Text::new(&ctx.t("identity.seed.desc")).variant(theme::TypographyStyle::Description))
         .child(
           Column::new()
             .width(INTRO_WIDTH)
             .spacing(8.0)
             .padding(12.0)
             .rounded(6.0)
-            .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-            .border_inside(1.0, Color::from_hex(BORDER))
-            .child(shared::dot(BackgroundColor::Palette(theme::RED)))
-            .child(Text::new(&ctx.t(meta_title_key)).variant(theme::TYP_BUTTON))
-            .child(Text::new(&ctx.t(meta_desc_key)).variant(theme::TYP_LINK)),
+            .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+            .border_inside(1.0, theme::PaletteColor::Border)
+            .child(shared::dot(BackgroundColor::Palette(theme::PaletteColor::Danger)))
+            .child(Text::new(&ctx.t(meta_title_key)).variant(theme::TypographyStyle::Button))
+            .child(Text::new(&ctx.t(meta_desc_key)).variant(theme::TypographyStyle::Link)),
         ),
       ctx.form_view_with(
         FormProps::new({
@@ -243,15 +244,15 @@ impl Component for SeedPhraseDisplay {
             .spacing(14.0)
             .padding(18.0)
             .rounded(8.0)
-            .background(BackgroundColor::Palette(theme::BG_TERTIARY))
-            .border_inside(1.0, Color::from_hex(BORDER))
+            .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+            .border_inside(1.0, theme::PaletteColor::Border)
             .child(
               Row::new()
                 .width(Dimension::Pct(100.0))
                 .align_items(Alignment::Center)
                 .child(
                   Text::new(&ctx.t("identity.seed.heading"))
-                    .variant(theme::TYP_HEADING)
+                    .variant(theme::TypographyStyle::Heading)
                     .flex(1.0),
                 )
                 .child(copy_phrase_icon_button(seed_phrase.as_deref(), self.copied.clone())),
@@ -262,17 +263,18 @@ impl Component for SeedPhraseDisplay {
                 .spacing(6.0)
                 .padding_vertical(GRID_PADDING)
                 .rounded(6.0)
-                .background(BackgroundColor::Palette(theme::BG_SECONDARY))
-                .border_inside(1.0, Color::from_hex(BORDER))
+                .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+                .border_inside(1.0, theme::PaletteColor::Border)
                 .child(seed_row(0, &seed_words))
                 .child(seed_row(3, &seed_words))
                 .child(seed_row(6, &seed_words))
                 .child(seed_row(9, &seed_words)),
             )
-            .child(shared::submit_action_button(
-              &ctx.t("identity.action.continue_saved"),
-              true,
-            ))
+            .child(
+              ctx.mount::<shared::FormPrimaryButton>(shared::FormPrimaryButtonProps::new(
+                ctx.t("identity.action.continue_saved"),
+              )),
+            )
             .child(shared::back_button(navigator, &ctx.t("identity.action.back")))
         },
       ),

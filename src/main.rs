@@ -3,6 +3,7 @@ mod i18n;
 mod identity;
 mod network;
 mod screens;
+mod session;
 mod storage;
 mod theme;
 
