@@ -122,14 +122,20 @@ async fn connect_to_server(
     .unwrap_or_default()
     .trim()
     .to_owned();
-  let invite_seed = values.get_string("invite_seed").unwrap_or_default().trim().to_owned();
+  let server_password = values
+    .get_string("server_password")
+    .unwrap_or_default()
+    .trim()
+    .to_owned();
+  let display_name = values.get_string("display_name").unwrap_or_default().trim().to_owned();
 
-  connect_to_server_address(address, invite_seed, storage, session, messages).await
+  connect_to_server_address(address, server_password, display_name, storage, session, messages).await
 }
 
 pub(crate) async fn connect_to_server_address(
   address: String,
-  invite_seed: String,
+  server_password: String,
+  display_name: String,
   storage: Option<Storage>,
   session: ServerSession,
   messages: ServerConnectMessages,
@@ -159,7 +165,7 @@ pub(crate) async fn connect_to_server_address(
     .duration_since(UNIX_EPOCH)
     .map_err(|error| field_error("server_address", detail_message(&messages.clock_failed, error)))?
     .as_secs();
-  let auth = identity::auth_identity(&identity, "", timestamp, invite_seed)
+  let auth = identity::auth_identity(&identity, &display_name, timestamp, server_password.clone())
     .map_err(|error| field_error("server_address", detail_message(&messages.auth_payload_failed, error)))?;
   server
     .authenticate(auth)
@@ -196,7 +202,11 @@ pub(crate) async fn connect_to_server_address(
     user_id: info.user_id,
     role: info.role,
     certificate_fingerprint: info.certificate_fingerprint.clone(),
+    server_password,
+    display_name: display_name.clone(),
   };
+  let warning_server_password = stored_server.server_password.clone();
+  let warning_display_name = stored_server.display_name.clone();
   let trust_warning = tokio::task::spawn_blocking(move || {
     let existing = storage.load_server(&stored_server.address)?;
     if let Some(existing) = existing
@@ -225,6 +235,8 @@ pub(crate) async fn connect_to_server_address(
       role: info.role,
       saved_fingerprint,
       received_fingerprint: info.certificate_fingerprint.clone(),
+      server_password: warning_server_password,
+      display_name: warning_display_name,
     });
   } else {
     session.clear_tofu_warning();
@@ -269,7 +281,8 @@ impl Component for ServerConnect {
       form: ctx.form(
         FormOptions::new()
           .field("server_address", "")
-          .field("invite_seed", "")
+          .field("server_password", "")
+          .field("display_name", "")
           .validate_string("server_address", validators::required(address_required))
           .validate_string("server_address", move |address, _| {
             let address = address.trim();
@@ -312,7 +325,7 @@ impl Component for ServerConnect {
       ctx.t("server_connect.trust.pending")
     };
     let server_address_error = self.form.error("server_address").get();
-    let invite_seed_error = self.form.error("invite_seed").get();
+    let server_password_error = self.form.error("server_password").get();
     if connect_state.data.is_some()
       && let Some(navigator) = navigator.as_ref()
     {
@@ -358,14 +371,22 @@ impl Component for ServerConnect {
           )
           .child(
             ctx.mount_keyed::<shared::FormTextInput>(
-              if invite_seed_error.is_some() {
-                "invite_seed-invalid"
+              if server_password_error.is_some() {
+                "server_password-invalid"
               } else {
-                "invite_seed-valid"
+                "server_password-valid"
               },
-              shared::FormTextInputProps::new(self.form.string_control("invite_seed"))
-                .label(ctx.t("server_connect.invite_seed.label"))
-                .placeholder(ctx.t("server_connect.invite_seed.placeholder"))
+              shared::FormTextInputProps::new(self.form.string_control("server_password"))
+                .label(ctx.t("server_connect.password.label"))
+                .placeholder(ctx.t("server_connect.password.placeholder"))
+                .height(38.0),
+            ),
+          )
+          .child(
+            ctx.mount::<shared::FormTextInput>(
+              shared::FormTextInputProps::new(self.form.string_control("display_name"))
+                .label(ctx.t("server_connect.display_name.label"))
+                .placeholder(ctx.t("server_connect.display_name.placeholder"))
                 .height(38.0),
             ),
           )

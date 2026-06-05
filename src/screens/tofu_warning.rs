@@ -192,6 +192,8 @@ impl Component for TofuWarningScreen {
                   user_id: warning.user_id,
                   role: warning.role,
                   certificate_fingerprint: warning.received_fingerprint,
+                  server_password: warning.server_password,
+                  display_name: warning.display_name,
                 };
                 if storage.save_server(&stored).is_ok() {
                   failed.set(false);

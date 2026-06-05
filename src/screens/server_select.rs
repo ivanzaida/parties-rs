@@ -23,6 +23,8 @@ use crate::{
   theme,
 };
 
+type SavedServerConnectArgs = (String, String, String);
+
 async fn load_saved_servers(storage: Option<Storage>) -> Result<Vec<StoredServer>, String> {
   let Some(storage) = storage else {
     return Ok(Vec::new());
@@ -126,7 +128,7 @@ fn meta_card(title: &str, body: &str) -> Column {
 fn server_row(
   server: &StoredServer,
   active: bool,
-  connect_action: FutureAction<String, ConnectedServerInfo, FormErrors>,
+  connect_action: FutureAction<SavedServerConnectArgs, ConnectedServerInfo, FormErrors>,
 ) -> Row {
   let background = if active {
     theme::palette().success_muted
@@ -193,7 +195,9 @@ fn server_row(
     ));
 
   let address = server.address.clone();
-  row.on_click(move |_| connect_action.run(address.clone()))
+  let server_password = server.server_password.clone();
+  let display_name = server.display_name.clone();
+  row.on_click(move |_| connect_action.run((address.clone(), server_password.clone(), display_name.clone())))
 }
 
 fn empty_servers_row(message: &str) -> Row {
@@ -230,10 +234,11 @@ impl Component for ServerSelect {
       let storage = storage.clone();
       let session = session.clone();
       let messages = ServerConnectMessages::from_ctx(ctx);
-      move |address| {
+      move |(address, server_password, display_name)| {
         connect_to_server_address(
           address,
-          String::new(),
+          server_password,
+          display_name,
           storage.clone(),
           session.clone(),
           messages.clone(),

@@ -62,6 +62,8 @@ pub struct StoredServer {
   pub user_id: UserId,
   pub role: Role,
   pub certificate_fingerprint: String,
+  pub server_password: String,
+  pub display_name: String,
 }
 
 impl DevtoolsInspectable for StoredServer {
@@ -90,6 +92,20 @@ impl DevtoolsInspectable for StoredServer {
       "certificate_fingerprint",
       std::any::type_name::<String>(),
       self.certificate_fingerprint.clone(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "server_password",
+      std::any::type_name::<String>(),
+      if self.server_password.is_empty() {
+        String::new()
+      } else {
+        "<stored>".to_owned()
+      },
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "display_name",
+      std::any::type_name::<String>(),
+      self.display_name.clone(),
     ));
   }
 }
@@ -177,8 +193,8 @@ impl Storage {
     let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     conn.execute(
       r#"
-      INSERT OR REPLACE INTO servers (address, server_name, user_id, role, updated_at, certificate_fingerprint)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      INSERT OR REPLACE INTO servers (address, server_name, user_id, role, updated_at, certificate_fingerprint, server_password, display_name)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
       "#,
       params![
         &server.address,
@@ -186,7 +202,9 @@ impl Storage {
         server.user_id as i64,
         server.role as u8,
         updated_at,
-        &server.certificate_fingerprint
+        &server.certificate_fingerprint,
+        &server.server_password,
+        &server.display_name
       ],
     )?;
     Ok(())
@@ -196,7 +214,7 @@ impl Storage {
     let conn = self.connection()?;
     let mut stmt = conn.prepare(
       r#"
-      SELECT address, server_name, user_id, role, certificate_fingerprint
+      SELECT address, server_name, user_id, role, certificate_fingerprint, server_password, display_name
       FROM servers
       WHERE address = ?1
       "#,
@@ -215,6 +233,8 @@ impl Storage {
       user_id: row.get::<_, i64>(2)? as UserId,
       role,
       certificate_fingerprint: row.get(4)?,
+      server_password: row.get(5)?,
+      display_name: row.get(6)?,
     }))
   }
 
@@ -222,19 +242,27 @@ impl Storage {
     let conn = self.connection()?;
     let mut stmt = conn.prepare(
       r#"
-      SELECT address, server_name, user_id, role, certificate_fingerprint
+      SELECT address, server_name, user_id, role, certificate_fingerprint, server_password, display_name
       FROM servers
       ORDER BY updated_at DESC, server_name ASC, address ASC
       "#,
     )?;
     let rows = stmt.query_map([], |row| {
       let role: u8 = row.get(3)?;
-      Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)?, role, row.get(4)?))
+      Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get::<_, i64>(2)?,
+        role,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+      ))
     })?;
 
     let mut servers = Vec::new();
     for row in rows {
-      let (address, server_name, user_id, role, certificate_fingerprint) = row?;
+      let (address, server_name, user_id, role, certificate_fingerprint, server_password, display_name) = row?;
       let role = Role::from_u8(role).ok_or(StorageError::InvalidRole(role))?;
       servers.push(StoredServer {
         address,
@@ -242,6 +270,8 @@ impl Storage {
         user_id: user_id as UserId,
         role,
         certificate_fingerprint,
+        server_password,
+        display_name,
       });
     }
     Ok(servers)
@@ -271,13 +301,27 @@ impl Storage {
         user_id     INTEGER NOT NULL,
         role        INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL,
-        certificate_fingerprint TEXT NOT NULL DEFAULT ''
+        certificate_fingerprint TEXT NOT NULL DEFAULT '',
+        server_password TEXT NOT NULL DEFAULT '',
+        display_name TEXT NOT NULL DEFAULT ''
       );
       "#,
     )?;
     if !column_exists(&conn, "servers", "certificate_fingerprint")? {
       conn.execute(
         "ALTER TABLE servers ADD COLUMN certificate_fingerprint TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "servers", "server_password")? {
+      conn.execute(
+        "ALTER TABLE servers ADD COLUMN server_password TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "servers", "display_name")? {
+      conn.execute(
+        "ALTER TABLE servers ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
         [],
       )?;
     }
@@ -376,6 +420,8 @@ mod tests {
       user_id: 7,
       role: Role::Admin,
       certificate_fingerprint: "aa:bb".to_owned(),
+      server_password: "secret".to_owned(),
+      display_name: "alice".to_owned(),
     };
 
     storage.save_server(&server).unwrap();

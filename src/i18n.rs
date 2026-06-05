@@ -151,7 +151,7 @@ pub fn setup(i18n: &I18n) {
         "server_connect.desc",
         "Enter an endpoint and authenticate before joining.",
       ),
-      ("server_connect.display_name.label", "DISPLAY NAME"),
+      ("server_connect.display_name.label", "YOUR NAME"),
       ("server_connect.display_name.placeholder", "alice"),
       (
         "server_connect.error.address_unresolved",
@@ -197,8 +197,8 @@ pub fn setup(i18n: &I18n) {
         "Identity storage is unavailable.",
       ),
       ("server_connect.heading", "Server details"),
-      ("server_connect.invite_seed.label", "INVITE SEED"),
-      ("server_connect.invite_seed.placeholder", "optional server password"),
+      ("server_connect.password.label", "SERVER PASSWORD"),
+      ("server_connect.password.placeholder", "optional server password"),
       (
         "server_connect.meta_desc",
         "Server details are saved after successful authentication.",

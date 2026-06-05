@@ -6,6 +6,7 @@ mod screens;
 mod session;
 mod storage;
 mod theme;
+mod ui;
 
 fn main() {
   let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
