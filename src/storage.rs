@@ -3,6 +3,7 @@ use std::{
   error::Error,
   fmt, fs,
   path::PathBuf,
+  process::Command,
   time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -128,6 +129,22 @@ impl DevtoolsInspectable for Storage {
 impl Storage {
   pub fn open_default() -> Result<Self, StorageError> {
     Self::open(default_db_path())
+  }
+
+  pub fn default_data_dir() -> PathBuf {
+    default_db_path()
+      .parent()
+      .map(PathBuf::from)
+      .unwrap_or_else(|| PathBuf::from("."))
+  }
+
+  pub fn open_default_data_dir() -> bool {
+    let path = Self::default_data_dir();
+    if fs::create_dir_all(&path).is_err() {
+      return false;
+    }
+
+    open_folder(&path)
   }
 
   pub fn open(path: impl Into<PathBuf>) -> Result<Self, StorageError> {
@@ -326,6 +343,26 @@ impl Storage {
       )?;
     }
     Ok(())
+  }
+}
+
+fn open_folder(path: &std::path::Path) -> bool {
+  #[cfg(target_os = "windows")]
+  {
+    Command::new("explorer").arg(path).spawn().is_ok()
+  }
+  #[cfg(target_os = "macos")]
+  {
+    Command::new("open").arg(path).spawn().is_ok()
+  }
+  #[cfg(all(unix, not(target_os = "macos")))]
+  {
+    Command::new("xdg-open").arg(path).spawn().is_ok()
+  }
+  #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+  {
+    let _ = path;
+    false
   }
 }
 

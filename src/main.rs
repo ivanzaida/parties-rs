@@ -2,7 +2,8 @@ mod app;
 mod i18n;
 mod identity;
 mod network;
-mod screens;
+mod routes;
+mod services;
 mod session;
 mod storage;
 mod theme;
@@ -28,6 +29,7 @@ fn main() {
   i18n::setup(lurq_app.i18n());
 
   let mut tree = lurq::app::runtime::Tree::new();
+  ui::loader::register_keyframes(&mut tree);
   tree.set_render_engine_factory(|| Box::new(lurq::app::wgpu_render::WgpuRenderEngine::new()));
   tree.mount_root::<app::App>(&mut lurq_app, ());
   tree.mount_devtools(&mut lurq_app);

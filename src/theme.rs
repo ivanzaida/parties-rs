@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-pub use lurq::app::theme::{PaletteColor, RadiusSize, TypographyStyle};
+pub use lurq::app::theme::{PaletteColor, RadiusSize, SpacingSize, TypographyStyle};
 use lurq::{
   app::theme::{
     FormButtonRole, FormButtonTheme, FormFieldTheme, FormInputTheme, FormTextRole, FormTheme, Theme, ThemeFonts,
@@ -34,6 +34,7 @@ pub fn palette() -> ThemePalette {
     danger_muted: Color::from_hex("#2A1A1C"),
     info: Color::from_hex("#69A7FF"),
     info_muted: Color::from_hex("#162233"),
+    extra: HashMap::from_iter([("surface_hover".into(), Color::from_hex("#232830"))]),
   }
 }
 
@@ -95,7 +96,7 @@ pub fn setup(theme: &Theme) {
     body,
     caption: TextStyle {
       font_family: inter.clone(),
-      font_size: 10.0,
+      font_size: 12.0,
       line_height: 1.2,
       weight: FontWeight::Bold,
       color: palette.text_muted,
@@ -112,7 +113,7 @@ pub fn setup(theme: &Theme) {
     mono,
     title: TextStyle {
       font_family: inter.clone(),
-      font_size: 24.0,
+      font_size: 26.0,
       line_height: 1.2,
       weight: FontWeight::Bold,
       color: palette.text_primary,
@@ -120,8 +121,8 @@ pub fn setup(theme: &Theme) {
     },
     description: TextStyle {
       font_family: inter.clone(),
-      font_size: 13.0,
-      line_height: 1.4,
+      font_size: 14.0,
+      line_height: 1.5,
       weight: FontWeight::Normal,
       color: palette.text_secondary,
       ..TextStyle::default()
@@ -144,7 +145,7 @@ pub fn setup(theme: &Theme) {
     },
     link: TextStyle {
       font_family: inter,
-      font_size: 12.0,
+      font_size: 13.0,
       line_height: 1.2,
       weight: FontWeight::Normal,
       color: palette.text_muted,

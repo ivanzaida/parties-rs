@@ -7,7 +7,7 @@ edition = "2024"
 bip39 = "2.2.2"
 ed25519-dalek = "2.2.0"
 getrandom = "0.4.2"
-lurq = { path = "../lurq/crates/lurq", features = ["resources", "winit", "image", "wgpu", "devtools", "i18n", "clipboard", "tokio", "router", "form"] }
+lurq = { path = "../lurq/crates/lurq", features = ["resources", "winit", "image", "wgpu", "devtools", "i18n", "clipboard", "tokio", "router", "form", "svg"] }
 quinn = "0.11"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
