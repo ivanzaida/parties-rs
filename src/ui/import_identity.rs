@@ -2,8 +2,8 @@ use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text, TextInput},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify},
-  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  layout::{layout_kind::Justify, Alignment},
+  node::{color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Style},
 };
 
 use crate::{
@@ -78,7 +78,7 @@ impl ImportIdentityScreen {
     };
 
     let mut field = Column::new()
-      .width(Dimension::Pct(100.0))
+      .width(Dimension::full())
       .spacing(theme::SpacingSize::Sm)
       .child(
         Text::new(&ctx.t("identity_import.field_label"))
@@ -89,7 +89,7 @@ impl ImportIdentityScreen {
         TextInput::styled(self.private_key.clone(), ctx.theme().typography().mono.clone())
           .placeholder(&ctx.t("identity_import.placeholder"))
           .placeholder_style(placeholder_style)
-          .width(Dimension::Pct(100.0))
+          .width(Dimension::full())
           .height(96.0)
           .padding_vertical(theme::SpacingSize::Lg)
           .padding_horizontal(theme::SpacingSize::Xl)
