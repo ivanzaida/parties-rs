@@ -135,13 +135,56 @@ pub fn setup(i18n: &I18n) {
         "Twelve words, in order, separated by spaces.",
       ),
       ("identity_restore.field_label", "RECOVERY PHRASE"),
+      (
+        "identity_restore.placeholder",
+        "twelve words separated by spaces",
+      ),
       ("identity_restore.hint.valid", "12 / 12 words · all recognised"),
       (
         "identity_restore.hint.count",
         "{{count}} / 12 words · enter a standard recovery phrase",
       ),
+      (
+        "identity_restore.error.invalid_word",
+        "Word {{index}} \"{{word}}\" is not in the word list. Check for typos.",
+      ),
       ("identity_restore.action.back", "Back"),
       ("identity_restore.action.restore", "Restore identity"),
+      ("identity_import.intro.headline", "Import a raw\nprivate key."),
+      (
+        "identity_import.intro.description",
+        "Paste an existing 64-character hexadecimal private key. Use this when migrating an identity that was generated outside of Parties.",
+      ),
+      (
+        "identity_import.intro.footer",
+        "The key is stored locally and never transmitted.",
+      ),
+      ("identity_import.overline", "IDENTITY · IMPORT"),
+      ("identity_import.title", "Import private key"),
+      (
+        "identity_import.subtitle",
+        "64 hexadecimal characters (0–9, a–f).",
+      ),
+      ("identity_import.field_label", "PRIVATE KEY"),
+      (
+        "identity_import.placeholder",
+        "paste 64-character hex private key",
+      ),
+      (
+        "identity_import.hint.count",
+        "{{count}} / 64 characters · enter a 64-character hex key",
+      ),
+      ("identity_import.hint.valid", "64 / 64 characters · valid hex"),
+      (
+        "identity_import.error.length",
+        "Key must be 64 hex characters — you entered {{count}}.",
+      ),
+      (
+        "identity_import.error.hex",
+        "Key must contain only hexadecimal characters.",
+      ),
+      ("identity_import.action.back", "Back"),
+      ("identity_import.action.import", "Import identity"),
       ("identity.setup.caption", "IDENTITY"),
       ("identity.setup.title", "Create your local identity"),
       (

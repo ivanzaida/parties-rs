@@ -131,6 +131,19 @@ pub fn validate_seed_phrase(input: &str) -> Result<(), IdentityError> {
   }
 }
 
+pub fn first_invalid_seed_word(input: &str) -> Option<(usize, String)> {
+  let words = Language::English.word_list();
+
+  for (index, word) in input.split_whitespace().enumerate() {
+    let normalized = word.to_ascii_lowercase();
+    if words.binary_search(&normalized.as_str()).is_err() {
+      return Some((index + 1, word.to_owned()));
+    }
+  }
+
+  None
+}
+
 pub fn derive_keypair(seed_phrase: &str) -> Result<(SecretKey, PublicKey), IdentityError> {
   validate_seed_phrase(seed_phrase)?;
 
@@ -233,6 +246,12 @@ mod tests {
       canonical_seed_phrase("  Abandon   ABILITY\nable  "),
       "abandon ability able"
     );
+  }
+
+  #[test]
+  fn first_invalid_seed_word_reports_position_and_value() {
+    let phrase = "abandon ability able about above absent rendr abstract absurd abuse access accident";
+    assert_eq!(first_invalid_seed_word(phrase), Some((7, "rendr".to_owned())));
   }
 
   #[test]

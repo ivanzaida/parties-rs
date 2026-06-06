@@ -7,7 +7,7 @@ use lurq::{
 };
 
 use crate::{
-  identity::{first_invalid_seed_word, restore_seed_phrase, validate_seed_phrase},
+  identity::import_private_key_hex,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
   storage::Storage,
   theme,
@@ -17,16 +17,18 @@ use crate::{
   },
 };
 
-pub struct RestoreIdentityScreen {
-  phrase: Signal<String>,
+const PRIVATE_KEY_HEX_LENGTH: usize = 64;
+
+pub struct ImportIdentityScreen {
+  private_key: Signal<String>,
 }
 
-impl Component for RestoreIdentityScreen {
+impl Component for ImportIdentityScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      phrase: ctx.signal(String::new()),
+      private_key: ctx.signal(String::new()),
     }
   }
 
@@ -36,9 +38,9 @@ impl Component for RestoreIdentityScreen {
         ctx,
         OnboardingIntroCopy {
           app_name: &ctx.t("common.app_name"),
-          headline: &ctx.t("identity_restore.intro.headline"),
-          description: &ctx.t("identity_restore.intro.description"),
-          footer_note: &ctx.t("identity_restore.intro.footer"),
+          headline: &ctx.t("identity_import.intro.headline"),
+          description: &ctx.t("identity_import.intro.description"),
+          footer_note: &ctx.t("identity_import.intro.footer"),
         },
       ),
       onboarding_shell::panel(
@@ -46,9 +48,9 @@ impl Component for RestoreIdentityScreen {
           .width(Dimension::Pct(100.0))
           .spacing(theme::SpacingSize::Xl)
           .child(panel_header(
-            &ctx.t("identity_restore.overline"),
-            &ctx.t("identity_restore.title"),
-            &ctx.t("identity_restore.subtitle"),
+            &ctx.t("identity_import.overline"),
+            &ctx.t("identity_import.title"),
+            &ctx.t("identity_import.subtitle"),
           ))
           .child(self.field(ctx))
           .child(self.actions(ctx)),
@@ -57,26 +59,19 @@ impl Component for RestoreIdentityScreen {
   }
 }
 
-impl RestoreIdentityScreen {
+impl ImportIdentityScreen {
   fn field(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let phrase = self.phrase.get();
-    let word_count = phrase.split_whitespace().count();
-    let invalid_word = (word_count == 12).then(|| first_invalid_seed_word(&phrase)).flatten();
+    let private_key = self.private_key.get();
+    let state = private_key_state(&private_key);
+    let has_error = state.error_key.is_some();
     let mut placeholder_style = ctx.theme().typography().mono.clone();
     placeholder_style.color = theme::palette().text_muted.with_opacity(0.55);
-    let hint = if invalid_word.is_some() {
-      None
-    } else if validate_seed_phrase(&phrase).is_ok() {
-      Some(ctx.t("identity_restore.hint.valid"))
-    } else {
-      Some(ctx.t_args("identity_restore.hint.count", [("count", word_count.to_string())]))
-    };
-    let input_background = if invalid_word.is_some() {
+    let input_background = if has_error {
       BackgroundColor::Palette(theme::PaletteColor::DangerMuted)
     } else {
       BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)
     };
-    let input_border = if invalid_word.is_some() {
+    let input_border = if has_error {
       theme::PaletteColor::Danger
     } else {
       theme::PaletteColor::Border
@@ -86,16 +81,16 @@ impl RestoreIdentityScreen {
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Sm)
       .child(
-        Text::new(&ctx.t("identity_restore.field_label"))
+        Text::new(&ctx.t("identity_import.field_label"))
           .variant(theme::TypographyStyle::FieldLabel)
           .color(theme::PaletteColor::TextMuted),
       )
       .child(
-        TextInput::styled(self.phrase.clone(), ctx.theme().typography().mono.clone())
-          .placeholder(&ctx.t("identity_restore.placeholder"))
+        TextInput::styled(self.private_key.clone(), ctx.theme().typography().mono.clone())
+          .placeholder(&ctx.t("identity_import.placeholder"))
           .placeholder_style(placeholder_style)
           .width(Dimension::Pct(100.0))
-          .height(108.0)
+          .height(96.0)
           .padding_vertical(theme::SpacingSize::Lg)
           .padding_horizontal(theme::SpacingSize::Xl)
           .rounded(theme::RadiusSize::Lg)
@@ -106,17 +101,19 @@ impl RestoreIdentityScreen {
           .multiline(),
       );
 
-    if let Some((index, word)) = invalid_word {
+    if let Some(error_key) = state.error_key {
       field = field.child(error_row(
         ctx,
-        &ctx.t_args(
-          "identity_restore.error.invalid_word",
-          [("index", index.to_string()), ("word", word)],
-        ),
+        &ctx.t_args(error_key, [("count", state.count.to_string())]),
       ));
-    } else if let Some(hint) = hint {
+    } else {
+      let hint_key = if state.valid {
+        "identity_import.hint.valid"
+      } else {
+        "identity_import.hint.count"
+      };
       field = field.child(
-        Text::new(&hint)
+        Text::new(&ctx.t_args(hint_key, [("count", state.count.to_string())]))
           .variant(theme::TypographyStyle::Mono)
           .color(theme::PaletteColor::TextMuted),
       );
@@ -128,34 +125,34 @@ impl RestoreIdentityScreen {
   fn actions(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let navigator = ctx.navigator();
     let back_navigator = navigator.clone();
-    let restore_navigator = navigator;
+    let import_navigator = navigator;
     let storage = ctx.use_context::<Storage>();
-    let phrase = self.phrase.clone();
-    let can_restore = validate_seed_phrase(&phrase.get()).is_ok();
-    let restore_button = action_button(
+    let private_key = self.private_key.clone();
+    let can_import = private_key_state(&private_key.get()).valid;
+    let import_button = action_button(
       ctx,
       "arrow-right",
-      &ctx.t("identity_restore.action.restore"),
-      if can_restore {
+      &ctx.t("identity_import.action.import"),
+      if can_import {
         ButtonTone::Primary
       } else {
         ButtonTone::Disabled
       },
     );
-    let restore_button = if can_restore {
-      restore_button.on_click(move |_| {
-        let Ok(identity) = restore_seed_phrase(&phrase.get_untracked()) else {
+    let import_button = if can_import {
+      import_button.on_click(move |_| {
+        let Ok(identity) = import_private_key_hex(&private_key.get_untracked()) else {
           return;
         };
         if let Some(storage) = storage.as_ref() {
           let _ = storage.save_identity(&identity);
         }
-        if let Some(navigator) = restore_navigator.as_ref() {
+        if let Some(navigator) = import_navigator.as_ref() {
           navigator.replace(ROUTE_CHOOSE_SERVER);
         }
       })
     } else {
-      restore_button
+      import_button
     };
 
     Row::new()
@@ -166,7 +163,7 @@ impl RestoreIdentityScreen {
         action_button(
           ctx,
           "arrow-left",
-          &ctx.t("identity_restore.action.back"),
+          &ctx.t("identity_import.action.back"),
           ButtonTone::Ghost,
         )
         .on_click(move |_| {
@@ -175,7 +172,35 @@ impl RestoreIdentityScreen {
           }
         }),
       )
-      .child(restore_button)
+      .child(import_button)
+  }
+}
+
+struct PrivateKeyState {
+  count: usize,
+  valid: bool,
+  error_key: Option<&'static str>,
+}
+
+fn private_key_state(input: &str) -> PrivateKeyState {
+  let value = input.trim();
+  let count = value.chars().count();
+  let has_invalid_hex = value.chars().any(|ch| !ch.is_ascii_hexdigit());
+  let valid = count == PRIVATE_KEY_HEX_LENGTH && !has_invalid_hex;
+  let error_key = if value.is_empty() {
+    None
+  } else if has_invalid_hex {
+    Some("identity_import.error.hex")
+  } else if count > PRIVATE_KEY_HEX_LENGTH {
+    Some("identity_import.error.length")
+  } else {
+    None
+  };
+
+  PrivateKeyState {
+    count,
+    valid,
+    error_key,
   }
 }
 

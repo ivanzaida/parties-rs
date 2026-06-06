@@ -8,13 +8,14 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_IDENTITY_SETUP, ROUTE_LOADING, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE},
+  routes::{ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE},
   session::ServerSession,
   storage::Storage,
   theme,
   ui::{
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
+    import_identity::ImportIdentityScreen,
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
     restore_identity::RestoreIdentityScreen,
   },
@@ -41,6 +42,7 @@ impl Component for App {
         })
         .route(ROUTE_IDENTITY_SETUP, |ctx| ctx.mount::<IdentitySetupScreen>(()))
         .route(ROUTE_SEED_PHRASE, |ctx| ctx.mount::<IdentitySeedScreen>(()))
+        .route(ROUTE_IMPORT_PRIVATE_KEY, |ctx| ctx.mount::<ImportIdentityScreen>(()))
         .route(ROUTE_RESTORE_IDENTITY, |ctx| ctx.mount::<RestoreIdentityScreen>(()))
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );

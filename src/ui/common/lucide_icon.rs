@@ -1,7 +1,7 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
-  components::Text,
-  layout::text_style::TextStyle,
+  components::{Row, Text},
+  layout::{Alignment, layout_kind::Justify, text_style::TextStyle},
   node::{Element, color::Color},
 };
 
@@ -25,29 +25,35 @@ impl Component for LucideIcon {
     let props = ctx.props::<Self::Props>();
     let glyph = String::from(name_to_char(props.icon));
 
-    Text::styled(
-      &glyph,
-      TextStyle {
-        font_family: "lucide".into(),
-        font_size: props.size,
-        color: props.color,
-        ..TextStyle::default()
-      },
-    )
+    Row::new()
+      .width(props.size)
+      .height(props.size)
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .child(Text::styled(
+        &glyph,
+        TextStyle {
+          font_family: "lucide".into(),
+          font_size: props.size,
+          line_height: 1.0,
+          color: props.color,
+          ..TextStyle::default()
+        },
+      ))
   }
 }
 
 fn name_to_char(name: &str) -> char {
   match name {
     "arrow-left" => '\u{e048}',
-    "arrow-right" => '\u{e04a}',
+    "arrow-right" => '\u{e049}',
     "alert-circle" | "circle-alert" => '\u{e077}',
     "check" => '\u{e06c}',
     "chevron-down" => '\u{e06d}',
     "chevron-right" => '\u{e06f}',
     "copy" => '\u{e09e}',
     "database" => '\u{e0ad}',
-    "eye-off" => '\u{e0d0}',
+    "eye-off" => '\u{e0bb}',
     "gamepad-2" => '\u{e0df}',
     "headphones" => '\u{e0f1}',
     "info" => '\u{e0f9}',
@@ -63,7 +69,7 @@ fn name_to_char(name: &str) -> char {
     "refresh-cw" => '\u{e145}',
     "rotate-cw" => '\u{e149}',
     "settings" => '\u{e154}',
-    "shield" => '\u{e1fe}',
+    "shield" => '\u{e158}',
     "shield-check" => '\u{e1ff}',
     "sprout" => '\u{e1eb}',
     "trash-2" => '\u{e18e}',

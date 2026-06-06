@@ -8,7 +8,7 @@ use lurq::{
 };
 
 use crate::{
-  identity::restore_seed_phrase,
+  identity::{LocalIdentity, generate_identity},
   routes::ROUTE_CHOOSE_SERVER,
   storage::Storage,
   theme,
@@ -18,11 +18,10 @@ use crate::{
   },
 };
 
-const SEED_WORDS: [&str; 12] = [
-  "harbor", "velvet", "cinder", "oblige", "walnut", "tidal", "render", "summon", "pivot", "acorn", "freight", "murmur",
-];
+const COPY_ACTION_MIN_WIDTH: f32 = 148.0;
 
 pub struct IdentitySeedScreen {
+  identity: LocalIdentity,
   confirmed: Signal<bool>,
   copied: Signal<bool>,
   hidden: Signal<bool>,
@@ -33,6 +32,7 @@ impl Component for IdentitySeedScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
+      identity: generate_identity().expect("failed to generate recovery phrase"),
       confirmed: ctx.signal(false),
       copied: ctx.signal(false),
       hidden: ctx.signal(false),
@@ -43,6 +43,7 @@ impl Component for IdentitySeedScreen {
     let confirmed = self.confirmed.get();
     let copied = self.copied.get();
     let hidden = self.hidden.get();
+    let phrase = self.seed_phrase();
 
     onboarding_shell::screen(
       onboarding_shell::intro(
@@ -63,21 +64,25 @@ impl Component for IdentitySeedScreen {
             &ctx.t("identity_seed.title"),
             &ctx.t("identity_seed.subtitle"),
           ))
-          .child(seed_grid(hidden))
-          .child(self.seed_bottom(ctx, confirmed, copied, hidden)),
+          .child(seed_grid(phrase, hidden))
+          .child(self.seed_bottom(ctx, phrase, confirmed, copied, hidden)),
       ),
     )
   }
 }
 
 impl IdentitySeedScreen {
-  fn seed_bottom(&self, ctx: &mut Ctx, confirmed: bool, copied: bool, hidden: bool) -> Column {
-    let phrase = seed_phrase();
+  fn seed_phrase(&self) -> &str {
+    self.identity.seed_phrase.as_deref().unwrap_or("")
+  }
+
+  fn seed_bottom(&self, ctx: &mut Ctx, phrase: &str, confirmed: bool, copied: bool, hidden: bool) -> Column {
+    let phrase = phrase.to_owned();
+    let identity = self.identity.clone();
     let navigator = ctx.navigator();
     let storage = ctx.use_context::<Storage>();
     let copied_signal = self.copied.clone();
     let hidden_signal = self.hidden.clone();
-    let confirmed_signal = self.confirmed.clone();
 
     let (copy_icon, copy_label, copy_tone) = if copied {
       ("check", ctx.t("identity_seed.action.copied"), ButtonTone::Success)
@@ -88,6 +93,32 @@ impl IdentitySeedScreen {
       ctx.t("identity_seed.action.show")
     } else {
       ctx.t("identity_seed.action.hide")
+    };
+    let continue_phrase = phrase.clone();
+    let continue_identity = identity.clone();
+    let continue_button = action_button_with_icon_position(
+      ctx,
+      "arrow-right",
+      &ctx.t("identity_seed.action.continue"),
+      if confirmed {
+        ButtonTone::Primary
+      } else {
+        ButtonTone::Disabled
+      },
+      IconPosition::Trailing,
+    );
+    let continue_button = if confirmed {
+      continue_button.on_click(move |_| {
+        let _ = clipboard::copy_to_clipboard(&continue_phrase);
+        if let Some(storage) = storage.as_ref() {
+          let _ = storage.save_identity(&continue_identity);
+        }
+        if let Some(navigator) = navigator.as_ref() {
+          navigator.replace(ROUTE_CHOOSE_SERVER);
+        }
+      })
+    } else {
+      continue_button
     };
 
     Column::new()
@@ -102,44 +133,25 @@ impl IdentitySeedScreen {
             Row::new()
               .align_items(Alignment::Center)
               .spacing(theme::SpacingSize::Md)
-              .child(action_button(ctx, copy_icon, &copy_label, copy_tone).on_click({
-                let phrase = phrase.clone();
-                move |_| {
-                  if clipboard::copy_to_clipboard(&phrase) {
-                    copied_signal.set(true);
-                  }
-                }
-              }))
+              .child(
+                action_button(ctx, copy_icon, &copy_label, copy_tone)
+                  .min_width(COPY_ACTION_MIN_WIDTH)
+                  .on_click({
+                    let phrase = phrase.clone();
+                    move |_| {
+                      if clipboard::copy_to_clipboard(&phrase) {
+                        copied_signal.set(true);
+                      }
+                    }
+                  }),
+              )
               .child(
                 action_button(ctx, "eye-off", &hide_label, ButtonTone::Ghost).on_click(move |_| {
                   hidden_signal.set(!hidden);
                 }),
               ),
           )
-          .child(
-            action_button(
-              ctx,
-              "arrow-right",
-              &ctx.t("identity_seed.action.continue"),
-              ButtonTone::Primary,
-            )
-            .on_click(move |_| {
-              if !confirmed_signal.get_untracked() {
-                confirmed_signal.set(true);
-                return;
-              }
-
-              let _ = clipboard::copy_to_clipboard(&phrase);
-              if let Ok(identity) = restore_seed_phrase(&phrase) {
-                if let Some(storage) = storage.as_ref() {
-                  let _ = storage.save_identity(&identity);
-                }
-              }
-              if let Some(navigator) = navigator.as_ref() {
-                navigator.replace(ROUTE_CHOOSE_SERVER);
-              }
-            }),
-          ),
+          .child(continue_button),
       )
       .child(confirm_row(
         ctx,
@@ -167,7 +179,8 @@ fn panel_header(overline: &str, title: &str, subtitle: &str) -> Column {
     )
 }
 
-fn seed_grid(hidden: bool) -> Column {
+fn seed_grid(phrase: &str, hidden: bool) -> Column {
+  let words = phrase.split_whitespace().collect::<Vec<_>>();
   let mut grid = Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Md);
@@ -177,7 +190,7 @@ fn seed_grid(hidden: bool) -> Column {
 
     for col in 0..3 {
       let index = row * 3 + col;
-      word_row = word_row.child(seed_word(index + 1, SEED_WORDS[index], hidden));
+      word_row = word_row.child(seed_word(index + 1, words.get(index).copied().unwrap_or(""), hidden));
     }
 
     grid = grid.child(word_row);
@@ -201,9 +214,10 @@ fn seed_word(index: usize, word: &str, hidden: bool) -> impl Into<Element> {
     .child(
       Text::new(&index.to_string())
         .variant(theme::TypographyStyle::Mono)
-        .color(theme::PaletteColor::TextMuted),
+        .color(theme::PaletteColor::TextMuted)
+        .nowrap(),
     )
-    .child(Text::new(display_word).variant(theme::TypographyStyle::Mono))
+    .child(Text::new(display_word).variant(theme::TypographyStyle::Mono).nowrap())
 }
 
 #[derive(Clone, Copy)]
@@ -212,9 +226,26 @@ enum ButtonTone {
   Secondary,
   Ghost,
   Success,
+  Disabled,
+}
+
+#[derive(Clone, Copy)]
+enum IconPosition {
+  Leading,
+  Trailing,
 }
 
 fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTone) -> Row {
+  action_button_with_icon_position(ctx, icon, label, tone, IconPosition::Leading)
+}
+
+fn action_button_with_icon_position(
+  ctx: &mut Ctx,
+  icon_name: &'static str,
+  label: &str,
+  tone: ButtonTone,
+  icon_position: IconPosition,
+) -> Row {
   let (background, border, text_color, icon_color, hover_background) = match tone {
     ButtonTone::Primary => (
       BackgroundColor::Palette(theme::PaletteColor::Accent),
@@ -244,9 +275,17 @@ fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTon
       theme::palette().success,
       BackgroundColor::Palette(theme::PaletteColor::SuccessMuted),
     ),
+    ButtonTone::Disabled => (
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceInput),
+      BackgroundColor::Palette(theme::PaletteColor::Border),
+      theme::PaletteColor::TextMuted,
+      theme::palette().text_muted,
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceInput),
+    ),
   };
+  let enabled = !matches!(tone, ButtonTone::Disabled);
 
-  Row::new()
+  let button = Row::new()
     .height(34.0)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
@@ -255,19 +294,32 @@ fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTon
     .rounded(theme::RadiusSize::Md)
     .background(background)
     .border_inside(1.0, border)
-    .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background(hover_background.clone()))
-    .active_style(Style::new().background(hover_background))
-    .child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon,
-      size: 16.0,
-      color: icon_color,
-    }))
-    .child(
-      Text::new(label)
-        .variant(theme::TypographyStyle::Button)
-        .color(text_color),
-    )
+    .cursor(if enabled {
+      CursorIcon::Pointer
+    } else {
+      CursorIcon::NotAllowed
+    });
+  let button = if enabled {
+    button
+      .hovered_style(Style::new().background(hover_background.clone()))
+      .active_style(Style::new().background(hover_background))
+  } else {
+    button
+  };
+
+  let icon = ctx.mount::<LucideIcon>(LucideIconProps {
+    icon: icon_name,
+    size: 16.0,
+    color: icon_color,
+  });
+  let label = Text::new(label)
+    .variant(theme::TypographyStyle::Button)
+    .color(text_color);
+
+  match icon_position {
+    IconPosition::Leading => button.child(icon).child(label),
+    IconPosition::Trailing => button.child(label).child(icon),
+  }
 }
 
 fn confirm_row(ctx: &mut Ctx, label: &str, confirmed: bool, confirmed_signal: Signal<bool>) -> Row {
@@ -315,8 +367,4 @@ fn confirm_row(ctx: &mut Ctx, label: &str, confirmed: bool, confirmed_signal: Si
         .variant(theme::TypographyStyle::Description)
         .color(label_color),
     )
-}
-
-fn seed_phrase() -> String {
-  SEED_WORDS.join(" ")
 }
