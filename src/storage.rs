@@ -68,9 +68,18 @@ impl Default for AppSettings {
     Self {
       start_muted_when_joining: true,
       launch_parties_at_login: false,
-      display_name: String::new(),
+      display_name: default_display_name(),
     }
   }
+}
+
+pub fn default_display_name() -> String {
+  ["USERNAME", "USER", "LOGNAME"]
+    .iter()
+    .find_map(|key| env::var(key).ok())
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty())
+    .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

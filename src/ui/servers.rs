@@ -185,6 +185,13 @@ impl SavedServersScreen {
 
 fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
   let navigator = ctx.navigator();
+  let identity_name = ctx
+    .use_context::<Storage>()
+    .and_then(|storage| storage.load_settings().ok())
+    .map(|settings| settings.display_name.trim().to_owned())
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
+  let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));
   let mut settings_button = Row::new()
     .width(32.0)
     .height(32.0)
@@ -246,13 +253,13 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
             .rounded(theme::RadiusSize::Lg)
             .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
             .child(
-              Text::new(&ctx.t("servers.user.initials"))
+              Text::new(&identity_initials)
                 .variant(theme::TypographyStyle::Mono)
                 .color(theme::PaletteColor::TextSecondary),
             ),
         )
         .child(
-          Text::new(&ctx.t("servers.user.name"))
+          Text::new(&identity_name)
             .variant(theme::TypographyStyle::Description)
             .color(theme::PaletteColor::TextSecondary),
         )
@@ -289,6 +296,21 @@ fn add_server_button(ctx: &mut Ctx, label: &str, tone: ButtonTone) -> Row {
     button.on_click(move |_| navigator.push_with_state(ROUTE_CONNECT_SERVER, ConnectOrigin::ServerList))
   } else {
     button
+  }
+}
+
+fn initials_for(name: &str, fallback: &str) -> String {
+  let initials = name
+    .chars()
+    .filter(|ch| ch.is_alphanumeric())
+    .flat_map(|ch| ch.to_uppercase())
+    .take(2)
+    .collect::<String>();
+
+  if initials.is_empty() {
+    fallback.to_owned()
+  } else {
+    initials
   }
 }
 

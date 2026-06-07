@@ -47,15 +47,6 @@ impl Component for SettingsIdentityScreen {
       .unwrap_or_else(AppSettings::default);
     let display_name = ctx.signal(settings.display_name);
 
-    if let Some(storage) = storage {
-      let display_name_signal = display_name.clone();
-      ctx.on_effect(move || {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.display_name = display_name_signal.get();
-        let _ = storage.save_settings(&settings);
-      });
-    }
-
     Self {
       public_id_copied: ctx.signal(false),
       recovery_revealed: ctx.signal(false),
@@ -113,7 +104,8 @@ impl Component for SettingsIdentityScreen {
         }
       })
       .into();
-    let display_name_input = display_name_input(self.display_name.clone(), &display_name_placeholder).into();
+    let display_name_input =
+      display_name_input(self.display_name.clone(), &display_name_placeholder, storage.clone()).into();
     let fingerprint_verified = verified_chip(ctx);
     let recovery_revealed = self.recovery_revealed.get();
     let recovery_copied = self.recovery_copied.get();
@@ -351,9 +343,25 @@ fn copy_button(ctx: &mut Ctx, copied: bool) -> Row {
     }))
 }
 
-fn display_name_input(value: Signal<String>, placeholder: &str) -> Row {
+fn display_name_input(value: Signal<String>, placeholder: &str, storage: Option<Storage>) -> Row {
   let mut placeholder_style = row_subtitle_style();
   placeholder_style.color = theme::palette().text_muted.with_opacity(0.55);
+  let mut input = TextInput::styled(value.clone(), row_subtitle_style())
+    .placeholder(placeholder)
+    .placeholder_style(placeholder_style)
+    .single_line()
+    .flex(1.0)
+    .background(BackgroundColor::Color(Color::from_hex("#00000000")))
+    .caret_color(theme::PaletteColor::Accent);
+
+  if let Some(storage) = storage {
+    let value = value.clone();
+    input = input.on_blur(move || {
+      let mut settings = storage.load_settings().unwrap_or_default();
+      settings.display_name = value.get_untracked();
+      let _ = storage.save_settings(&settings);
+    });
+  }
 
   Row::new()
     .width(220.0)
@@ -363,15 +371,7 @@ fn display_name_input(value: Signal<String>, placeholder: &str) -> Row {
     .rounded(theme::RadiusSize::Md)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
     .border_inside(1.0, theme::PaletteColor::Border)
-    .child(
-      TextInput::styled(value, row_subtitle_style())
-        .placeholder(placeholder)
-        .placeholder_style(placeholder_style)
-        .single_line()
-        .flex(1.0)
-        .background(BackgroundColor::Color(Color::from_hex("#00000000")))
-        .caret_color(theme::PaletteColor::Accent),
-    )
+    .child(input)
 }
 
 fn verified_chip(ctx: &mut Ctx) -> Element {

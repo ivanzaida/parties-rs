@@ -54,12 +54,14 @@ impl Component for SettingsOverviewScreen {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let identity = ctx
-      .use_context::<Storage>()
+    let storage = ctx.use_context::<Storage>();
+    let identity = storage
+      .as_ref()
       .and_then(|storage| storage.load_identity().ok())
       .flatten();
-    let servers = ctx
-      .use_context::<Storage>()
+    let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
+    let servers = storage
+      .as_ref()
       .and_then(|storage| storage.load_servers().ok())
       .unwrap_or_default();
     let server_count = servers.len();
@@ -68,8 +70,11 @@ impl Component for SettingsOverviewScreen {
       .as_ref()
       .map(|identity| format_public_id(&identity.public_key))
       .unwrap_or_else(|| ctx.t("settings.identity.missing").to_string());
-    let identity_name = ctx.t("servers.user.name");
-    let identity_initials = ctx.t("servers.user.initials");
+    let identity_name = settings
+      .map(|settings| settings.display_name.trim().to_owned())
+      .filter(|name| !name.is_empty())
+      .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
+    let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));
     let identity_subtitle = ctx.t("settings.overview.identity.subtitle");
     let identity_action = ctx.t("settings.overview.identity.manage");
     let identity_field = ctx.t("settings.overview.identity.public_id");
@@ -316,6 +321,21 @@ fn format_public_id(bytes: &[u8]) -> String {
     out.push(hex_char(byte & 0x0f));
   }
   out
+}
+
+fn initials_for(name: &str, fallback: &str) -> String {
+  let initials = name
+    .chars()
+    .filter(|ch| ch.is_alphanumeric())
+    .flat_map(|ch| ch.to_uppercase())
+    .take(2)
+    .collect::<String>();
+
+  if initials.is_empty() {
+    fallback.to_owned()
+  } else {
+    initials
+  }
 }
 
 fn hex_char(value: u8) -> char {

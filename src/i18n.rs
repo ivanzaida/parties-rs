@@ -208,10 +208,10 @@ pub fn setup(i18n: &I18n) {
       ("connect_server.overline", "NEW CONNECTION"),
       ("connect_server.title", "Connect to a server"),
       ("connect_server.address.label", "SERVER ADDRESS"),
-      ("connect_server.address.placeholder", "atlas.party.example:8443"),
+      ("connect_server.address.placeholder", "atlas.party.example:7800"),
       (
         "connect_server.address.hint",
-        "Host and port, e.g. server.example:8443",
+        "Host and port, e.g. server.example:7800",
       ),
       ("connect_server.display_name.label", "DISPLAY NAME"),
       (
