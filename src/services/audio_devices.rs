@@ -75,7 +75,7 @@ fn device_names(devices: impl Iterator<Item = cpal::Device>) -> Vec<String> {
   names
 }
 
-fn input_device(selected_device: &str) -> Option<cpal::Device> {
+pub(crate) fn input_device(selected_device: &str) -> Option<cpal::Device> {
   let host = cpal::default_host();
   let selected_device = selected_device.trim();
 
@@ -89,8 +89,22 @@ fn input_device(selected_device: &str) -> Option<cpal::Device> {
   host.default_input_device()
 }
 
+pub(crate) fn output_device(selected_device: &str) -> Option<cpal::Device> {
+  let host = cpal::default_host();
+  let selected_device = selected_device.trim();
+
+  if !selected_device.is_empty()
+    && let Ok(mut devices) = host.output_devices()
+    && let Some(device) = devices.find(|device| device_name_matches(device, selected_device))
+  {
+    return Some(device);
+  }
+
+  host.default_output_device()
+}
+
 fn device_name_matches(device: &cpal::Device, selected_device: &str) -> bool {
-  device.to_string() == selected_device
+  device.to_string().trim() == selected_device
 }
 
 fn build_input_level_stream<T>(

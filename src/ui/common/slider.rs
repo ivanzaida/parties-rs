@@ -27,13 +27,6 @@ pub fn fill(width: f32) -> Element {
     .into()
 }
 
-pub fn meter_fill(width: f32, color: Color) -> Element {
-  Rect::new(width, TRACK_HEIGHT)
-    .rounded(TRACK_RADIUS)
-    .background(BackgroundColor::Color(color))
-    .into()
-}
-
 pub fn slider(value: Signal<i32>, width: f32, min: i32, max: i32) -> Slider {
   Slider::new(value)
     .range(min, max)

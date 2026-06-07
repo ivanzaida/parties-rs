@@ -1,6 +1,6 @@
 use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
-use quinn::{Connection, Endpoint};
+use quinn::{Connection, Endpoint, VarInt};
 use rustls::{
   DigitallySignedStruct, SignatureScheme,
   client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use super::protocol::{
   C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
   control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
-  data::{FileStreamRequest, VideoControl, VoicePacket},
+  data::{FileStreamRequest, ForwardedVoicePacket, VideoControl, VoicePacket},
 };
 
 #[derive(Debug)]
@@ -154,6 +154,7 @@ impl Server {
 
     let connection = endpoint.connect(addr, "parties")?.await?;
     let (control_send, control_recv) = connection.open_bi().await?;
+    let (_video_send, _video_recv) = connection.open_bi().await?;
 
     Ok(Self {
       _endpoint: endpoint,
@@ -165,6 +166,10 @@ impl Server {
 
   pub fn connection(&self) -> &Connection {
     &self.connection
+  }
+
+  pub fn disconnect(&self) {
+    self.connection.close(VarInt::from_u32(0), b"client disconnect");
   }
 
   pub fn certificate_fingerprint(&self) -> Option<String> {
@@ -218,6 +223,10 @@ impl Server {
     self.send_control(C2S::Auth(identity)).await
   }
 
+  pub async fn authenticate_legacy(&self, identity: AuthIdentity) -> Result<(), ServerError> {
+    self.send_control(C2S::AuthLegacy(identity)).await
+  }
+
   // -- channels --
 
   pub async fn join_channel(&self, channel_id: ChannelId) -> Result<(), ServerError> {
@@ -240,6 +249,11 @@ impl Server {
     let data = VoicePacket { sequence, opus }.encode();
     self.connection.send_datagram(data.into())?;
     Ok(())
+  }
+
+  pub async fn recv_voice(&self) -> Result<ForwardedVoicePacket, ServerError> {
+    let data = self.connection.read_datagram().await?;
+    Ok(ForwardedVoicePacket::decode(data.as_ref())?)
   }
 
   // -- screen share --
@@ -350,20 +364,6 @@ impl Server {
 
   pub async fn delete_message(&self, message_id: u64) -> Result<(), ServerError> {
     self.send_control(C2S::ChatDelete { message_id }).await
-  }
-
-  pub async fn request_file_upload(&self, message_id: u64, file_index: u8, file_size: u64) -> Result<(), ServerError> {
-    self
-      .send_control(C2S::ChatFileUploadReq {
-        message_id,
-        file_index,
-        file_size,
-      })
-      .await
-  }
-
-  pub async fn request_file_download(&self, file_id: u64) -> Result<(), ServerError> {
-    self.send_control(C2S::ChatFileDownloadReq { file_id }).await
   }
 
   pub async fn upload_file(&self, attachment_id: u64, data: Vec<u8>) -> Result<(), ServerError> {

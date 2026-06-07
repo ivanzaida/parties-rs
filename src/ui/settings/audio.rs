@@ -4,7 +4,10 @@ use std::{
 };
 
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::Ctx,
+  },
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
   core::Signal,
   layout::{
@@ -20,6 +23,7 @@ use lurq::{
 
 use crate::{
   services::{audio_devices, hotkeys},
+  session::ServerSession,
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -30,7 +34,7 @@ use crate::{
     settings::{
       refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
       shell::{SettingsPage, header, page_stack, screen_full},
-      toggle::{SettingsToggle, SettingsToggleProps},
+      toggle::settings_toggle,
     },
   },
 };
@@ -53,26 +57,22 @@ pub struct SettingsAudioScreen {
   input_device: Signal<String>,
   output_device: Signal<String>,
   input_level: Signal<f32>,
+  input_level_meter_active: Signal<bool>,
   input_level_meter: Arc<Mutex<Option<audio_devices::InputLevelMeter>>>,
-  notification_volume: Signal<i32>,
-  noise_cancellation: Signal<bool>,
-  voice_normalization: Signal<bool>,
-  voice_normalization_target_level: Signal<i32>,
-  echo_cancellation: Signal<bool>,
-  voice_activation: Signal<bool>,
-  voice_activation_threshold: Signal<i32>,
-  push_to_talk: Signal<bool>,
-  hotkey_push_to_talk: Signal<String>,
-  hotkey_toggle_mute: Signal<String>,
-  hotkey_toggle_deafen: Signal<String>,
-  capturing_hotkey: Signal<Option<&'static str>>,
+  notification_volume: i32,
+  noise_cancellation: bool,
+  voice_normalization: bool,
+  voice_normalization_target_level: i32,
+  echo_cancellation: bool,
+  voice_activation: bool,
+  voice_activation_threshold: i32,
+  push_to_talk: bool,
+  hotkey_push_to_talk: String,
+  hotkey_toggle_mute: String,
+  hotkey_toggle_deafen: String,
   input_devices: Signal<Vec<String>>,
   output_devices: Signal<Vec<String>>,
 }
-
-const HOTKEY_TOGGLE_MUTE: &str = "toggle_mute";
-const HOTKEY_TOGGLE_DEAFEN: &str = "toggle_deafen";
-const HOTKEY_PUSH_TO_TALK: &str = "push_to_talk";
 
 impl Component for SettingsAudioScreen {
   type Props = ();
@@ -86,28 +86,34 @@ impl Component for SettingsAudioScreen {
     let input_device = ctx.signal(settings.audio_input_device);
     let output_device = ctx.signal(settings.audio_output_device);
     let input_level = ctx.signal(0.0_f32);
-    let notification_volume = ctx.signal(settings.notification_volume.clamp(0, 100));
-    let noise_cancellation = ctx.signal(settings.noise_cancellation);
-    let voice_normalization = ctx.signal(settings.voice_normalization);
-    let voice_normalization_target_level = ctx.signal(settings.voice_normalization_target_level.clamp(0, 100));
-    let echo_cancellation = ctx.signal(settings.echo_cancellation);
-    let voice_activation = ctx.signal(settings.voice_activation);
-    let voice_activation_threshold = ctx.signal(settings.voice_activation_threshold.clamp(0, 100));
-    let push_to_talk = ctx.signal(settings.push_to_talk);
-    let hotkey_push_to_talk = ctx.signal(settings.hotkey_push_to_talk);
-    let hotkey_toggle_mute = ctx.signal(settings.hotkey_toggle_mute);
-    let hotkey_toggle_deafen = ctx.signal(settings.hotkey_toggle_deafen);
-    let capturing_hotkey = ctx.signal(None::<&'static str>);
+    let input_level_meter_active = ctx.signal(false);
+    let notification_volume = settings.notification_volume.clamp(0, 100);
+    let noise_cancellation = settings.noise_cancellation;
+    let voice_normalization = settings.voice_normalization;
+    let voice_normalization_target_level = settings.voice_normalization_target_level.clamp(0, 100);
+    let echo_cancellation = settings.echo_cancellation;
+    let voice_activation = settings.voice_activation;
+    let voice_activation_threshold = settings.voice_activation_threshold.clamp(0, 100);
+    let push_to_talk = settings.push_to_talk;
+    let hotkey_push_to_talk = settings.hotkey_push_to_talk;
+    let hotkey_toggle_mute = settings.hotkey_toggle_mute;
+    let hotkey_toggle_deafen = settings.hotkey_toggle_deafen;
     let input_devices = ctx.signal(audio_devices::input_device_names());
     let output_devices = ctx.signal(audio_devices::output_device_names());
     let input_level_meter = Arc::new(Mutex::new(None));
-    replace_input_level_meter(&input_level_meter, &input_level, &input_device.get_untracked());
+    replace_input_level_meter(
+      &input_level_meter,
+      &input_level,
+      &input_level_meter_active,
+      &input_device.get_untracked(),
+    );
 
     {
       let meter = input_level_meter.clone();
       let level = input_level.clone();
+      let active = input_level_meter_active.clone();
       ctx.watch(&input_device, move |device_name| {
-        replace_input_level_meter(&meter, &level, device_name);
+        replace_input_level_meter(&meter, &level, &active, device_name);
       });
     }
 
@@ -120,37 +126,11 @@ impl Component for SettingsAudioScreen {
       interval.start();
     }
 
-    if let Some(storage) = storage {
-      let input_signal = input_device.clone();
-      let output_signal = output_device.clone();
-      let noise_cancellation_signal = noise_cancellation.clone();
-      let voice_normalization_signal = voice_normalization.clone();
-      let echo_cancellation_signal = echo_cancellation.clone();
-      let voice_activation_signal = voice_activation.clone();
-      let push_to_talk_signal = push_to_talk.clone();
-      let hotkey_push_to_talk_signal = hotkey_push_to_talk.clone();
-      let hotkey_toggle_mute_signal = hotkey_toggle_mute.clone();
-      let hotkey_toggle_deafen_signal = hotkey_toggle_deafen.clone();
-      ctx.on_effect(move || {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.audio_input_device = input_signal.get();
-        settings.audio_output_device = output_signal.get();
-        settings.noise_cancellation = noise_cancellation_signal.get();
-        settings.voice_normalization = voice_normalization_signal.get();
-        settings.echo_cancellation = echo_cancellation_signal.get();
-        settings.voice_activation = voice_activation_signal.get();
-        settings.push_to_talk = push_to_talk_signal.get();
-        settings.hotkey_push_to_talk = hotkey_push_to_talk_signal.get();
-        settings.hotkey_toggle_mute = hotkey_toggle_mute_signal.get();
-        settings.hotkey_toggle_deafen = hotkey_toggle_deafen_signal.get();
-        let _ = storage.save_settings(&settings);
-      });
-    }
-
     Self {
       input_device,
       output_device,
       input_level,
+      input_level_meter_active,
       input_level_meter,
       notification_volume,
       noise_cancellation,
@@ -163,7 +143,6 @@ impl Component for SettingsAudioScreen {
       hotkey_push_to_talk,
       hotkey_toggle_mute,
       hotkey_toggle_deafen,
-      capturing_hotkey,
       input_devices,
       output_devices,
     }
@@ -171,162 +150,7 @@ impl Component for SettingsAudioScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
-    let system_default = ctx.t("settings.audio.device.system").to_string();
-    let input_devices = self.input_devices.get();
-    let output_devices = self.output_devices.get();
-    let input_level_active = self.input_level_meter_active();
-    let input_level_value = (self.input_level.get() * 100.0).round() as i32;
-    let input_level_label = if input_level_active {
-      ctx.t_args(
-        "settings.audio.input_level.percent",
-        [("value", input_level_value.to_string())],
-      )
-    } else {
-      ctx.t("settings.audio.input_level.unavailable")
-    };
-
-    let input_device = audio_row(
-      &ctx.t("settings.audio.microphone"),
-      &ctx.t("settings.audio.microphone.description"),
-      audio_device_control(
-        ctx,
-        self.input_device.clone(),
-        self.input_devices.clone(),
-        device_options(&system_default, &input_devices, &self.input_device.get()),
-        &system_default,
-        audio_devices::input_device_names,
-      ),
-      true,
-    );
-    let input_gain = audio_row(
-      &ctx.t("settings.audio.input_level"),
-      &ctx.t("settings.audio.input_level.description"),
-      input_level_meter(self.input_level.get(), input_level_active, &input_level_label),
-      true,
-    );
-    let output_device = audio_row(
-      &ctx.t("settings.audio.speaker"),
-      &ctx.t("settings.audio.speaker.description"),
-      audio_device_control(
-        ctx,
-        self.output_device.clone(),
-        self.output_devices.clone(),
-        device_options(&system_default, &output_devices, &self.output_device.get()),
-        &system_default,
-        audio_devices::output_device_names,
-      ),
-      true,
-    );
-    let notification_volume = audio_row(
-      &ctx.t("settings.audio.notification_volume"),
-      &ctx.t("settings.audio.notification_volume.description"),
-      percent_slider(
-        self.notification_volume.clone(),
-        storage.clone(),
-        AudioSliderSetting::NotificationVolume,
-      ),
-      true,
-    );
-    let noise_cancellation = audio_row(
-      &ctx.t("settings.audio.noise_cancellation"),
-      &ctx.t("settings.audio.noise_cancellation.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.noise_cancellation.clone(),
-      }),
-      true,
-    );
-    let voice_normalization = audio_row(
-      &ctx.t("settings.audio.voice_normalization"),
-      &ctx.t("settings.audio.voice_normalization.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.voice_normalization.clone(),
-      }),
-      true,
-    );
-    let normalization_target = audio_row(
-      &ctx.t("settings.audio.target_level"),
-      &ctx.t("settings.audio.target_level.description"),
-      percent_slider(
-        self.voice_normalization_target_level.clone(),
-        storage.clone(),
-        AudioSliderSetting::VoiceNormalizationTargetLevel,
-      ),
-      true,
-    );
-    let echo_cancellation = audio_row(
-      &ctx.t("settings.audio.echo_cancellation"),
-      &ctx.t("settings.audio.echo_cancellation.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.echo_cancellation.clone(),
-      }),
-      true,
-    );
-    let voice_activation = audio_row(
-      &ctx.t("settings.audio.voice_activation"),
-      &ctx.t("settings.audio.voice_activation.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.voice_activation.clone(),
-      }),
-      true,
-    );
-    let threshold = audio_row(
-      &ctx.t("settings.audio.threshold"),
-      &ctx.t("settings.audio.threshold.description"),
-      threshold_slider(
-        self.voice_activation_threshold.clone(),
-        self.input_level.get(),
-        input_level_active,
-        storage.clone(),
-        AudioSliderSetting::VoiceActivationThreshold,
-        &ctx.t("settings.audio.threshold.speaking"),
-        &ctx.t("settings.audio.threshold.silent"),
-      ),
-      true,
-    );
-    let push_to_talk = audio_row(
-      &ctx.t("settings.audio.push_to_talk"),
-      &ctx.t("settings.audio.push_to_talk.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.push_to_talk.clone(),
-      }),
-      true,
-    );
-    let toggle_mute = audio_row(
-      &ctx.t("settings.audio.hotkey.toggle_mute"),
-      &ctx.t("settings.audio.hotkey.toggle_mute.description"),
-      hotkey_button(
-        &ctx.t("settings.audio.hotkey.not_set"),
-        &ctx.t("settings.audio.hotkey.recording"),
-        self.hotkey_toggle_mute.clone(),
-        self.capturing_hotkey.clone(),
-        HOTKEY_TOGGLE_MUTE,
-      ),
-      true,
-    );
-    let push_to_talk_hotkey = audio_row(
-      &ctx.t("settings.audio.hotkey.push_to_talk"),
-      &ctx.t("settings.audio.hotkey.push_to_talk.description"),
-      hotkey_button(
-        &ctx.t("settings.audio.hotkey.not_set"),
-        &ctx.t("settings.audio.hotkey.recording"),
-        self.hotkey_push_to_talk.clone(),
-        self.capturing_hotkey.clone(),
-        HOTKEY_PUSH_TO_TALK,
-      ),
-      true,
-    );
-    let toggle_deafen = audio_row(
-      &ctx.t("settings.audio.hotkey.toggle_deafen"),
-      &ctx.t("settings.audio.hotkey.toggle_deafen.description"),
-      hotkey_button(
-        &ctx.t("settings.audio.hotkey.not_set"),
-        &ctx.t("settings.audio.hotkey.recording"),
-        self.hotkey_toggle_deafen.clone(),
-        self.capturing_hotkey.clone(),
-        HOTKEY_TOGGLE_DEAFEN,
-      ),
-      true,
-    );
+    let session = ctx.use_context::<ServerSession>();
     let content = ScrollVertical::new(
       page_stack()
         .padding_vertical(40.0)
@@ -344,44 +168,122 @@ impl Component for SettingsAudioScreen {
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.input")))
-                .child(input_device)
-                .child(input_gain),
+                .child(ctx.mount::<AudioDeviceSetting>(AudioDeviceSettingProps {
+                  kind: AudioDeviceKind::Input,
+                  selected: self.input_device.clone(),
+                  devices: self.input_devices.clone(),
+                }))
+                .child(ctx.mount::<AudioInputLevelSetting>(AudioInputLevelSettingProps {
+                  level: self.input_level.clone(),
+                  active: self.input_level_meter_active.clone(),
+                })),
             )
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.output")))
-                .child(output_device)
-                .child(notification_volume),
+                .child(ctx.mount::<AudioDeviceSetting>(AudioDeviceSettingProps {
+                  kind: AudioDeviceKind::Output,
+                  selected: self.output_device.clone(),
+                  devices: self.output_devices.clone(),
+                }))
+                .child(ctx.mount::<AudioPercentSliderSetting>(AudioPercentSliderSettingProps {
+                  title_key: "settings.audio.notification_volume",
+                  description_key: "settings.audio.notification_volume.description",
+                  initial_value: self.notification_volume,
+                  on_blur: audio_slider_save_action(
+                    storage.clone(),
+                    session.clone(),
+                    AudioSliderSetting::NotificationVolume,
+                  ),
+                })),
             )
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.processing")))
-                .child(noise_cancellation)
-                .child(voice_normalization)
-                .child(normalization_target)
-                .child(echo_cancellation),
+                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
+                  title_key: "settings.audio.noise_cancellation",
+                  description_key: "settings.audio.noise_cancellation.description",
+                  initial_enabled: self.noise_cancellation,
+                  setting: AudioBoolSetting::NoiseCancellation,
+                }))
+                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
+                  title_key: "settings.audio.voice_normalization",
+                  description_key: "settings.audio.voice_normalization.description",
+                  initial_enabled: self.voice_normalization,
+                  setting: AudioBoolSetting::VoiceNormalization,
+                }))
+                .child(ctx.mount::<AudioPercentSliderSetting>(AudioPercentSliderSettingProps {
+                  title_key: "settings.audio.target_level",
+                  description_key: "settings.audio.target_level.description",
+                  initial_value: self.voice_normalization_target_level,
+                  on_blur: audio_slider_save_action(
+                    storage.clone(),
+                    session.clone(),
+                    AudioSliderSetting::VoiceNormalizationTargetLevel,
+                  ),
+                }))
+                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
+                  title_key: "settings.audio.echo_cancellation",
+                  description_key: "settings.audio.echo_cancellation.description",
+                  initial_enabled: self.echo_cancellation,
+                  setting: AudioBoolSetting::EchoCancellation,
+                })),
             )
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.transmission")))
-                .child(voice_activation)
-                .child(threshold)
-                .child(push_to_talk),
+                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
+                  title_key: "settings.audio.voice_activation",
+                  description_key: "settings.audio.voice_activation.description",
+                  initial_enabled: self.voice_activation,
+                  setting: AudioBoolSetting::VoiceActivation,
+                }))
+                .child(ctx.mount::<AudioThresholdSetting>(AudioThresholdSettingProps {
+                  initial_value: self.voice_activation_threshold,
+                  input_level: self.input_level.clone(),
+                  input_level_active: self.input_level_meter_active.clone(),
+                  on_blur: audio_slider_save_action(
+                    storage.clone(),
+                    session.clone(),
+                    AudioSliderSetting::VoiceActivationThreshold,
+                  ),
+                }))
+                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
+                  title_key: "settings.audio.push_to_talk",
+                  description_key: "settings.audio.push_to_talk.description",
+                  initial_enabled: self.push_to_talk,
+                  setting: AudioBoolSetting::PushToTalk,
+                })),
             )
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.hotkeys")))
-                .child(toggle_mute)
-                .child(push_to_talk_hotkey)
-                .child(toggle_deafen),
+                .child(ctx.mount::<AudioHotkeySetting>(AudioHotkeySettingProps {
+                  title_key: "settings.audio.hotkey.toggle_mute",
+                  description_key: "settings.audio.hotkey.toggle_mute.description",
+                  initial_value: self.hotkey_toggle_mute.clone(),
+                  setting: AudioStringSetting::HotkeyToggleMute,
+                }))
+                .child(ctx.mount::<AudioHotkeySetting>(AudioHotkeySettingProps {
+                  title_key: "settings.audio.hotkey.push_to_talk",
+                  description_key: "settings.audio.hotkey.push_to_talk.description",
+                  initial_value: self.hotkey_push_to_talk.clone(),
+                  setting: AudioStringSetting::HotkeyPushToTalk,
+                }))
+                .child(ctx.mount::<AudioHotkeySetting>(AudioHotkeySettingProps {
+                  title_key: "settings.audio.hotkey.toggle_deafen",
+                  description_key: "settings.audio.hotkey.toggle_deafen.description",
+                  initial_value: self.hotkey_toggle_deafen.clone(),
+                  setting: AudioStringSetting::HotkeyToggleDeafen,
+                })),
             ),
         ),
     )
@@ -403,23 +305,22 @@ impl Component for SettingsAudioScreen {
       *meter = None;
     }
     self.input_level.set(0.0);
-  }
-}
-
-impl SettingsAudioScreen {
-  fn input_level_meter_active(&self) -> bool {
-    self.input_level_meter.lock().is_ok_and(|meter| meter.is_some())
+    self.input_level_meter_active.set(false);
   }
 }
 
 fn replace_input_level_meter(
   meter: &Arc<Mutex<Option<audio_devices::InputLevelMeter>>>,
   level: &Signal<f32>,
+  active: &Signal<bool>,
   device_name: &str,
 ) {
   level.set(0.0);
   if let Ok(mut meter) = meter.lock() {
     *meter = audio_devices::input_level_meter(device_name);
+    active.set(meter.is_some());
+  } else {
+    active.set(false);
   }
 }
 
@@ -438,6 +339,374 @@ fn poll_input_level_meter(meter: &Arc<Mutex<Option<audio_devices::InputLevelMete
 
   if (next - current).abs() >= 0.004 {
     level.set(next);
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+enum AudioDeviceKind {
+  Input,
+  Output,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct AudioDeviceSettingProps {
+  kind: AudioDeviceKind,
+  selected: Signal<String>,
+  devices: Signal<Vec<String>>,
+}
+
+impl PartialEq for AudioDeviceSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.kind == other.kind && self.selected.id() == other.selected.id() && self.devices.id() == other.devices.id()
+  }
+}
+
+struct AudioDeviceSetting {
+  value: Signal<String>,
+}
+
+impl Component for AudioDeviceSetting {
+  type Props = AudioDeviceSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let value = ctx.signal(props.selected.get_untracked());
+    let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
+    let setting = match props.kind {
+      AudioDeviceKind::Input => AudioStringSetting::AudioInputDevice,
+      AudioDeviceKind::Output => AudioStringSetting::AudioOutputDevice,
+    };
+    ctx.watch(&value, move |value| {
+      props.selected.set(value.clone());
+      if let Some(storage) = storage.as_ref() {
+        save_audio_string_setting(&storage, setting, value.clone());
+        restart_voice_for_audio_setting(&storage, session.as_ref());
+      }
+    });
+    Self { value }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let system_default = ctx.t("settings.audio.device.system").to_string();
+    let devices = props.devices.get();
+    let selected = self.value.get();
+    let (title_key, description_key, refresh_devices) = match props.kind {
+      AudioDeviceKind::Input => (
+        "settings.audio.microphone",
+        "settings.audio.microphone.description",
+        audio_devices::input_device_names as fn() -> Vec<String>,
+      ),
+      AudioDeviceKind::Output => (
+        "settings.audio.speaker",
+        "settings.audio.speaker.description",
+        audio_devices::output_device_names as fn() -> Vec<String>,
+      ),
+    };
+
+    audio_row(
+      &ctx.t(title_key),
+      &ctx.t(description_key),
+      audio_device_control(
+        ctx,
+        self.value.clone(),
+        props.devices,
+        device_options(&system_default, &devices, &selected),
+        &system_default,
+        refresh_devices,
+      ),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct AudioInputLevelSettingProps {
+  level: Signal<f32>,
+  active: Signal<bool>,
+}
+
+impl PartialEq for AudioInputLevelSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.level.id() == other.level.id() && self.active.id() == other.active.id()
+  }
+}
+
+struct AudioInputLevelSetting;
+
+impl Component for AudioInputLevelSetting {
+  type Props = AudioInputLevelSettingProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let active = props.active.get();
+    let level = props.level.get();
+    let value = (level * 100.0).round() as i32;
+    let label = if active {
+      ctx.t_args("settings.audio.input_level.percent", [("value", value.to_string())])
+    } else {
+      ctx.t("settings.audio.input_level.unavailable")
+    };
+
+    audio_row(
+      &ctx.t("settings.audio.input_level"),
+      &ctx.t("settings.audio.input_level.description"),
+      input_level_meter(level, active, &label),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+enum AudioBoolSetting {
+  NoiseCancellation,
+  VoiceNormalization,
+  EchoCancellation,
+  VoiceActivation,
+  PushToTalk,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct AudioToggleSettingProps {
+  title_key: &'static str,
+  description_key: &'static str,
+  initial_enabled: bool,
+  setting: AudioBoolSetting,
+}
+
+impl PartialEq for AudioToggleSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title_key == other.title_key
+      && self.description_key == other.description_key
+      && self.initial_enabled == other.initial_enabled
+      && self.setting == other.setting
+  }
+}
+
+struct AudioToggleSetting {
+  enabled: Signal<bool>,
+}
+
+impl Component for AudioToggleSetting {
+  type Props = AudioToggleSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let enabled = ctx.signal(props.initial_enabled);
+    if let Some(storage) = ctx.use_context::<Storage>() {
+      let session = ctx.use_context::<ServerSession>();
+      ctx.watch(&enabled, move |enabled| {
+        save_audio_bool_setting(&storage, props.setting, *enabled);
+        restart_voice_for_audio_setting(&storage, session.as_ref());
+      });
+    }
+    Self { enabled }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let enabled = self.enabled.get();
+    let enabled_signal = self.enabled.clone();
+    audio_row(
+      &ctx.t(props.title_key),
+      &ctx.t(props.description_key),
+      settings_toggle(enabled, move || {
+        enabled_signal.set(!enabled_signal.get_untracked());
+      }),
+      true,
+    )
+  }
+}
+
+type AudioSliderSaveAction = Arc<dyn Fn(i32) + Send + Sync>;
+
+#[derive(Clone)]
+struct AudioPercentSliderSettingProps {
+  title_key: &'static str,
+  description_key: &'static str,
+  initial_value: i32,
+  on_blur: AudioSliderSaveAction,
+}
+
+impl PartialEq for AudioPercentSliderSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title_key == other.title_key
+      && self.description_key == other.description_key
+      && self.initial_value == other.initial_value
+  }
+}
+
+impl DevtoolsInspectable for AudioPercentSliderSettingProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "title_key",
+      std::any::type_name::<&'static str>(),
+      self.title_key.to_owned(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "initial_value",
+      std::any::type_name::<i32>(),
+      self.initial_value.to_string(),
+    ));
+  }
+}
+
+struct AudioPercentSliderSetting {
+  value: Signal<i32>,
+}
+
+impl Component for AudioPercentSliderSetting {
+  type Props = AudioPercentSliderSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      value: ctx.signal(ctx.props::<Self::Props>().initial_value),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    audio_row(
+      &ctx.t(props.title_key),
+      &ctx.t(props.description_key),
+      percent_slider(self.value.clone(), props.on_blur),
+      true,
+    )
+  }
+}
+
+#[derive(Clone)]
+struct AudioThresholdSettingProps {
+  initial_value: i32,
+  input_level: Signal<f32>,
+  input_level_active: Signal<bool>,
+  on_blur: AudioSliderSaveAction,
+}
+
+impl PartialEq for AudioThresholdSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.initial_value == other.initial_value
+      && self.input_level.id() == other.input_level.id()
+      && self.input_level_active.id() == other.input_level_active.id()
+  }
+}
+
+impl DevtoolsInspectable for AudioThresholdSettingProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "initial_value",
+      std::any::type_name::<i32>(),
+      self.initial_value.to_string(),
+    ));
+  }
+}
+
+struct AudioThresholdSetting {
+  value: Signal<i32>,
+}
+
+impl Component for AudioThresholdSetting {
+  type Props = AudioThresholdSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let value = ctx.signal(props.initial_value);
+    let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
+    if let Some(storage) = storage {
+      ctx.watch(&value, move |value| {
+        save_slider_setting(&storage, AudioSliderSetting::VoiceActivationThreshold, *value);
+        if let Some(session) = session.as_ref() {
+          session.set_voice_activation_threshold(*value);
+        }
+      });
+    }
+
+    Self { value }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    audio_row(
+      &ctx.t("settings.audio.threshold"),
+      &ctx.t("settings.audio.threshold.description"),
+      threshold_slider(
+        self.value.clone(),
+        props.input_level.get(),
+        props.input_level_active.get(),
+        props.on_blur,
+        &ctx.t("settings.audio.threshold.speaking"),
+        &ctx.t("settings.audio.threshold.silent"),
+      ),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+enum AudioStringSetting {
+  AudioInputDevice,
+  AudioOutputDevice,
+  HotkeyPushToTalk,
+  HotkeyToggleMute,
+  HotkeyToggleDeafen,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct AudioHotkeySettingProps {
+  title_key: &'static str,
+  description_key: &'static str,
+  initial_value: String,
+  setting: AudioStringSetting,
+}
+
+impl PartialEq for AudioHotkeySettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title_key == other.title_key
+      && self.description_key == other.description_key
+      && self.initial_value == other.initial_value
+      && self.setting == other.setting
+  }
+}
+
+struct AudioHotkeySetting {
+  value: Signal<String>,
+  recording: Signal<bool>,
+}
+
+impl Component for AudioHotkeySetting {
+  type Props = AudioHotkeySettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let value = ctx.signal(props.initial_value.clone());
+    let recording = ctx.signal(false);
+    if let Some(storage) = ctx.use_context::<Storage>() {
+      ctx.watch(&value, move |value| {
+        save_audio_string_setting(&storage, props.setting, value.clone());
+      });
+    }
+    Self { value, recording }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    audio_row(
+      &ctx.t(props.title_key),
+      &ctx.t(props.description_key),
+      hotkey_button(
+        &ctx.t("settings.audio.hotkey.not_set"),
+        &ctx.t("settings.audio.hotkey.recording"),
+        self.value.clone(),
+        self.recording.clone(),
+      ),
+      true,
+    )
   }
 }
 
@@ -536,23 +805,22 @@ pub(super) fn audio_scrollbar_style() -> ScrollBarStyle {
   }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
 enum AudioSliderSetting {
   NotificationVolume,
   VoiceNormalizationTargetLevel,
   VoiceActivationThreshold,
 }
 
-fn percent_slider(value: Signal<i32>, storage: Option<Storage>, setting: AudioSliderSetting) -> Element {
-  slider_control(value, storage, setting, None)
+fn percent_slider(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
+  slider_control(value, on_blur)
 }
 
 fn threshold_slider(
   value: Signal<i32>,
   input_level: f32,
   input_level_active: bool,
-  storage: Option<Storage>,
-  setting: AudioSliderSetting,
+  on_blur: AudioSliderSaveAction,
   speaking_label: &str,
   silent_label: &str,
 ) -> Element {
@@ -573,11 +841,9 @@ fn threshold_slider(
     .thumb_style(threshold_marker_style(theme::palette().text_primary))
     .thumb_hovered_style(threshold_marker_style(theme::palette().text_primary));
 
-  if let Some(storage) = storage {
-    slider = slider.on_blur(move || {
-      save_slider_setting(&storage, setting, value.get_untracked());
-    });
-  }
+  slider = slider.on_blur(move || {
+    on_blur(value.get_untracked());
+  });
 
   Column::new()
     .width(THRESHOLD_CONTROL_WIDTH)
@@ -662,48 +928,58 @@ fn threshold_status(label: &str, active: bool) -> Element {
     .into()
 }
 
-fn slider_control(
-  value: Signal<i32>,
-  storage: Option<Storage>,
-  setting: AudioSliderSetting,
-  input_level: Option<(f32, bool)>,
-) -> Element {
+fn slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
   let current = value.get().clamp(0, 100);
   let fill_width = AUDIO_SLIDER_WIDTH * current as f32 / 100.0;
   let value_label = format!("{current}%");
 
-  let stack = Stack::new()
-    .stack_align(StackAlignment::CenterStart)
-    .width(AUDIO_SLIDER_WIDTH)
-    .height(app_slider::SLIDER_HEIGHT)
-    .child(app_slider::track(AUDIO_SLIDER_WIDTH))
-    .child(app_slider::fill(fill_width));
-  let stack = if let Some((input_level, input_level_active)) = input_level {
-    let input_level = input_level.clamp(0.0, 1.0);
-    let input_width = AUDIO_SLIDER_WIDTH * input_level;
-    stack.child(app_slider::meter_fill(
-      input_width,
-      input_level_fill_color(input_level, input_level_active),
-    ))
-  } else {
-    stack
-  };
-
   let mut slider = app_slider::slider(value.clone(), AUDIO_SLIDER_WIDTH, 0, 100);
 
-  if let Some(storage) = storage {
-    slider = slider.on_blur(move || {
-      save_slider_setting(&storage, setting, value.get_untracked());
-    });
-  }
+  slider = slider.on_blur(move || {
+    on_blur(value.get_untracked());
+  });
 
   Row::new()
     .width(AUDIO_CONTROL_WIDTH)
     .align_items(Alignment::Center)
     .spacing(AUDIO_CONTROL_VALUE_SPACING)
-    .child(stack.child(slider))
+    .child(
+      Stack::new()
+        .stack_align(StackAlignment::CenterStart)
+        .width(AUDIO_SLIDER_WIDTH)
+        .height(app_slider::SLIDER_HEIGHT)
+        .child(app_slider::track(AUDIO_SLIDER_WIDTH))
+        .child(app_slider::fill(fill_width))
+        .child(slider),
+    )
     .child(audio_value_label(&value_label))
     .into()
+}
+
+fn audio_slider_save_action(
+  storage: Option<Storage>,
+  session: Option<ServerSession>,
+  setting: AudioSliderSetting,
+) -> AudioSliderSaveAction {
+  Arc::new(move |value| {
+    if let Some(storage) = storage.as_ref() {
+      save_slider_setting(storage, setting, value);
+      if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
+        restart_voice_for_audio_setting(storage, session.as_ref());
+      }
+    }
+  })
+}
+
+fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSession>) {
+  let Some(session) = session else {
+    return;
+  };
+  if !session.voice_active() {
+    return;
+  }
+  let settings = storage.load_settings().unwrap_or_default();
+  let _ = session.start_voice(settings);
 }
 
 fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) {
@@ -719,14 +995,41 @@ fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i3
   let _ = storage.save_settings(&settings);
 }
 
+fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: bool) {
+  let mut settings = storage.load_settings().unwrap_or_default();
+
+  match setting {
+    AudioBoolSetting::NoiseCancellation => settings.noise_cancellation = value,
+    AudioBoolSetting::VoiceNormalization => settings.voice_normalization = value,
+    AudioBoolSetting::EchoCancellation => settings.echo_cancellation = value,
+    AudioBoolSetting::VoiceActivation => settings.voice_activation = value,
+    AudioBoolSetting::PushToTalk => settings.push_to_talk = value,
+  }
+
+  let _ = storage.save_settings(&settings);
+}
+
+fn save_audio_string_setting(storage: &Storage, setting: AudioStringSetting, value: String) {
+  let mut settings = storage.load_settings().unwrap_or_default();
+
+  match setting {
+    AudioStringSetting::AudioInputDevice => settings.audio_input_device = value,
+    AudioStringSetting::AudioOutputDevice => settings.audio_output_device = value,
+    AudioStringSetting::HotkeyPushToTalk => settings.hotkey_push_to_talk = value,
+    AudioStringSetting::HotkeyToggleMute => settings.hotkey_toggle_mute = value,
+    AudioStringSetting::HotkeyToggleDeafen => settings.hotkey_toggle_deafen = value,
+  }
+
+  let _ = storage.save_settings(&settings);
+}
+
 fn hotkey_button(
   not_set_label: &str,
   recording_label: &str,
   value: Signal<String>,
-  capturing: Signal<Option<&'static str>>,
-  target: &'static str,
+  recording: Signal<bool>,
 ) -> Element {
-  let is_recording = capturing.get() == Some(target);
+  let is_recording = recording.get();
   let current = value.get();
   let label = if is_recording {
     recording_label
@@ -740,8 +1043,8 @@ fn hotkey_button(
   } else {
     theme::PaletteColor::Border
   };
-  let click_capturing = capturing.clone();
-  let key_capturing = capturing.clone();
+  let click_recording = recording.clone();
+  let key_recording = recording.clone();
   let key_value = value.clone();
 
   Button::empty()
@@ -757,20 +1060,20 @@ fn hotkey_button(
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .on_click(move |_| {
-      click_capturing.set(Some(target));
+      click_recording.set(true);
     })
     .on_key_down(move |event| {
-      if key_capturing.get_untracked() != Some(target) {
+      if !key_recording.get_untracked() {
         return;
       }
       if hotkeys::is_cancel_key(event) {
-        key_capturing.set(None);
+        key_recording.set(false);
       } else if hotkeys::is_clear_key(event) {
         key_value.set(String::new());
-        key_capturing.set(None);
+        key_recording.set(false);
       } else if let Some(hotkey) = hotkeys::event_to_hotkey(event) {
         key_value.set(hotkey);
-        key_capturing.set(None);
+        key_recording.set(false);
       }
     })
     .child(

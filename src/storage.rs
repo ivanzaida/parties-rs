@@ -8,7 +8,7 @@ use std::{
 };
 
 use lurq::app::component::{ComponentInfo, DevtoolsInspectable};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
   identity::LocalIdentity,
@@ -79,6 +79,7 @@ pub struct AppSettings {
   pub video_scale_percent: i32,
   pub video_fps: i32,
   pub video_bitrate_mbps: f32,
+  pub locale: String,
 }
 
 impl Default for AppSettings {
@@ -105,6 +106,7 @@ impl Default for AppSettings {
       video_scale_percent: 100,
       video_fps: 60,
       video_bitrate_mbps: 20.0,
+      locale: "en".to_owned(),
     }
   }
 }
@@ -171,6 +173,14 @@ impl DevtoolsInspectable for StoredServer {
       self.display_name.clone(),
     ));
   }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowState {
+  pub x: i32,
+  pub y: i32,
+  pub width: u32,
+  pub height: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,9 +303,10 @@ impl Storage {
         video_codec,
         video_scale_percent,
         video_fps,
-        video_bitrate_mbps
+        video_bitrate_mbps,
+        locale
       )
-      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
@@ -318,7 +329,8 @@ impl Storage {
         &settings.video_codec,
         settings.video_scale_percent,
         settings.video_fps,
-        settings.video_bitrate_mbps
+        settings.video_bitrate_mbps,
+        &settings.locale
       ],
     )?;
     Ok(())
@@ -349,7 +361,8 @@ impl Storage {
         video_codec,
         video_scale_percent,
         video_fps,
-        video_bitrate_mbps
+        video_bitrate_mbps,
+        locale
       FROM app_settings
       WHERE id = 1
       "#,
@@ -382,7 +395,38 @@ impl Storage {
       video_scale_percent: row.get(18)?,
       video_fps: row.get(19)?,
       video_bitrate_mbps: row.get(20)?,
+      locale: row.get(21)?,
     })
+  }
+
+  pub fn save_window_state(&self, state: WindowState) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute(
+      "INSERT OR REPLACE INTO app_window_state (id, x, y, width, height) VALUES (1, ?1, ?2, ?3, ?4)",
+      params![state.x, state.y, state.width as i64, state.height as i64],
+    )?;
+    Ok(())
+  }
+
+  pub fn load_window_state(&self) -> Result<Option<WindowState>, StorageError> {
+    let conn = self.connection()?;
+    let state = conn
+      .query_row(
+        "SELECT x, y, width, height FROM app_window_state WHERE id = 1",
+        [],
+        |row| {
+          let width = row.get::<_, i64>(2)?.max(1) as u32;
+          let height = row.get::<_, i64>(3)?.max(1) as u32;
+          Ok(WindowState {
+            x: row.get(0)?,
+            y: row.get(1)?,
+            width,
+            height,
+          })
+        },
+      )
+      .optional()?;
+    Ok(state)
   }
 
   pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
@@ -531,7 +575,16 @@ impl Storage {
         video_codec TEXT NOT NULL DEFAULT 'AV1',
         video_scale_percent INTEGER NOT NULL DEFAULT 100,
         video_fps INTEGER NOT NULL DEFAULT 60,
-        video_bitrate_mbps REAL NOT NULL DEFAULT 20
+        video_bitrate_mbps REAL NOT NULL DEFAULT 20,
+        locale TEXT NOT NULL DEFAULT 'en'
+      );
+
+      CREATE TABLE IF NOT EXISTS app_window_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        width INTEGER NOT NULL DEFAULT 1280,
+        height INTEGER NOT NULL DEFAULT 900
       );
       "#,
     )?;
@@ -676,6 +729,24 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "video_bitrate_mbps")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN video_bitrate_mbps REAL NOT NULL DEFAULT 20",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "locale")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN locale TEXT NOT NULL DEFAULT 'en'",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_window_state", "width")? {
+      conn.execute(
+        "ALTER TABLE app_window_state ADD COLUMN width INTEGER NOT NULL DEFAULT 1280",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_window_state", "height")? {
+      conn.execute(
+        "ALTER TABLE app_window_state ADD COLUMN height INTEGER NOT NULL DEFAULT 900",
         [],
       )?;
     }
@@ -849,9 +920,32 @@ mod tests {
       video_scale_percent: 75,
       video_fps: 30,
       video_bitrate_mbps: 12.5,
+      locale: "uk".to_owned(),
     };
     storage.save_settings(&settings).unwrap();
     assert_eq!(storage.load_settings().unwrap(), settings);
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn window_state_round_trips() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-window-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+
+    assert_eq!(storage.load_window_state().unwrap(), None);
+
+    let state = WindowState {
+      x: 320,
+      y: 180,
+      width: 1440,
+      height: 960,
+    };
+    storage.save_window_state(state).unwrap();
+    assert_eq!(storage.load_window_state().unwrap(), Some(state));
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

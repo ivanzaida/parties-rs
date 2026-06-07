@@ -15,8 +15,9 @@ use lurq::{
 use crate::{
   identity::auth_identity,
   network::{
-    protocol::{DEFAULT_PORT, S2C},
+    protocol::{DEFAULT_PORT, PROTOCOL_VERSION, S2C},
     server::Server,
+    server_query::{ServerQueryInfo, query_server},
   },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession},
@@ -25,6 +26,7 @@ use crate::{
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
+    settings::{SettingsPage, SettingsPopupHandle},
   },
 };
 
@@ -32,6 +34,7 @@ use crate::{
 pub enum ConnectOrigin {
   ServerList,
   Settings,
+  SettingsPopup,
 }
 
 pub struct ConnectServerScreen {
@@ -62,13 +65,25 @@ impl Component for ConnectServerScreen {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
 
-    let from_settings = ctx
+    let origin = ctx
       .route_state::<ConnectOrigin>()
-      .is_some_and(|origin| *origin == ConnectOrigin::Settings);
-    let back_route = if from_settings {
-      ROUTE_SETTINGS_SERVERS
-    } else {
-      ROUTE_CHOOSE_SERVER
+      .as_deref()
+      .copied()
+      .unwrap_or(ConnectOrigin::ServerList);
+    let from_settings = matches!(origin, ConnectOrigin::Settings | ConnectOrigin::SettingsPopup);
+    let settings_popup = matches!(origin, ConnectOrigin::SettingsPopup)
+      .then(|| ctx.use_context::<SettingsPopupHandle>())
+      .flatten();
+    let back_route = match origin {
+      ConnectOrigin::Settings => ROUTE_SETTINGS_SERVERS,
+      ConnectOrigin::SettingsPopup => {
+        if session.as_ref().and_then(ServerSession::info).is_some() {
+          ROUTE_LOBBY
+        } else {
+          ROUTE_CHOOSE_SERVER
+        }
+      }
+      ConnectOrigin::ServerList => ROUTE_CHOOSE_SERVER,
     };
     let back_label = if from_settings {
       ctx.t("connect_server.back_to_settings")
@@ -115,7 +130,14 @@ impl Component for ConnectServerScreen {
       card = card.child(error_banner(ctx, error));
     }
 
-    card = card.child(self.actions(ctx, &connect, connecting, can_connect, back_route));
+    card = card.child(self.actions(
+      ctx,
+      &connect,
+      connecting,
+      can_connect,
+      back_route,
+      settings_popup.clone(),
+    ));
 
     let submit_action = connect.clone();
     let card = Form::element(
@@ -143,7 +165,7 @@ impl Component for ConnectServerScreen {
         Column::new()
           .width(600.0)
           .spacing(16.0)
-          .child(back_row(ctx, &back_label, back_route))
+          .child(back_row(ctx, &back_label, back_route, settings_popup))
           .child(card),
       )
   }
@@ -241,6 +263,7 @@ impl ConnectServerScreen {
     connecting: bool,
     can_connect: bool,
     back_route: &'static str,
+    settings_popup: Option<SettingsPopupHandle>,
   ) -> impl Into<Element> {
     let navigator = ctx.navigator();
     let cancel_action = connect.clone();
@@ -249,6 +272,9 @@ impl ConnectServerScreen {
 
     let cancel = ghost_button(&cancel_label).on_click(move |_| {
       cancel_action.cancel();
+      if let Some(settings_popup) = settings_popup.as_ref() {
+        settings_popup.open_page(SettingsPage::Servers);
+      }
       if let Some(navigator) = navigator.as_ref() {
         navigator.replace(back_route);
       }
@@ -270,6 +296,7 @@ impl ConnectServerScreen {
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SERVER_QUERY_TIMEOUT: Duration = Duration::from_millis(800);
 
 pub async fn connect_and_store(
   address: String,
@@ -290,6 +317,7 @@ pub async fn connect_and_store(
 
   let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone()).await?;
+    let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
     let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
     let fingerprint = server.certificate_fingerprint().unwrap_or_default();
 
@@ -298,13 +326,7 @@ pub async fn connect_and_store(
       .map_err(|error| error.to_string())?
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
-    server.authenticate(auth).await.map_err(|error| error.to_string())?;
-
-    let response = match server.recv().await.map_err(|error| error.to_string())? {
-      S2C::AuthResponse(response) => response,
-      S2C::ServerError { message } => return Err(message),
-      _ => return Err("Unexpected response from server.".to_owned()),
-    };
+    let response = authenticate_with_query(&server, auth, query.as_ref()).await?;
 
     Ok::<_, String>((server, fingerprint, response))
   })
@@ -314,6 +336,7 @@ pub async fn connect_and_store(
   let info = ConnectedServerInfo {
     address: address.clone(),
     server_name: response.server_name.clone(),
+    display_name: display_name.clone(),
     user_id: response.user_id,
     role: response.role,
     certificate_fingerprint: fingerprint.clone(),
@@ -343,7 +366,84 @@ pub async fn connect_and_store(
   Ok(info)
 }
 
-fn with_default_port(address: &str) -> String {
+enum AuthAttempt {
+  Authenticated(crate::network::protocol::AuthResponse),
+  RetryLegacy,
+}
+
+#[derive(Clone, Copy)]
+enum AuthMode {
+  Versioned,
+  Legacy,
+}
+
+async fn authenticate_with_query(
+  server: &Server,
+  auth: crate::network::protocol::AuthIdentity,
+  query: Option<&ServerQueryInfo>,
+) -> Result<crate::network::protocol::AuthResponse, String> {
+  match auth_mode_from_query(query) {
+    AuthMode::Versioned => authenticate_versioned_first(server, auth).await,
+    AuthMode::Legacy => authenticate_legacy_first(server, auth).await,
+  }
+}
+
+fn auth_mode_from_query(query: Option<&ServerQueryInfo>) -> AuthMode {
+  match query {
+    Some(info) if info.protocol_version < PROTOCOL_VERSION => AuthMode::Legacy,
+    _ => AuthMode::Versioned,
+  }
+}
+
+async fn authenticate_versioned_first(
+  server: &Server,
+  auth: crate::network::protocol::AuthIdentity,
+) -> Result<crate::network::protocol::AuthResponse, String> {
+  server
+    .authenticate(auth.clone())
+    .await
+    .map_err(|error| error.to_string())?;
+
+  match recv_auth_response(server).await? {
+    AuthAttempt::Authenticated(response) => Ok(response),
+    AuthAttempt::RetryLegacy => {
+      server
+        .authenticate_legacy(auth)
+        .await
+        .map_err(|error| error.to_string())?;
+      match recv_auth_response(server).await? {
+        AuthAttempt::Authenticated(response) => Ok(response),
+        AuthAttempt::RetryLegacy => Err("Malformed auth message".to_owned()),
+      }
+    }
+  }
+}
+
+async fn authenticate_legacy_first(
+  server: &Server,
+  auth: crate::network::protocol::AuthIdentity,
+) -> Result<crate::network::protocol::AuthResponse, String> {
+  server
+    .authenticate_legacy(auth)
+    .await
+    .map_err(|error| error.to_string())?;
+
+  match recv_auth_response(server).await? {
+    AuthAttempt::Authenticated(response) => Ok(response),
+    AuthAttempt::RetryLegacy => Err("Malformed auth message".to_owned()),
+  }
+}
+
+async fn recv_auth_response(server: &Server) -> Result<AuthAttempt, String> {
+  match server.recv().await.map_err(|error| error.to_string())? {
+    S2C::AuthResponse(response) => Ok(AuthAttempt::Authenticated(response)),
+    S2C::ServerError { message } if message == "Malformed auth message" => Ok(AuthAttempt::RetryLegacy),
+    S2C::ServerError { message } => Err(message),
+    _ => Err("Unexpected response from server.".to_owned()),
+  }
+}
+
+pub(crate) fn with_default_port(address: &str) -> String {
   let address = address.trim();
 
   if let Some(rest) = address.strip_prefix('[') {
@@ -360,7 +460,7 @@ fn with_default_port(address: &str) -> String {
   }
 }
 
-async fn resolve_address(address: String) -> Result<SocketAddr, String> {
+pub(crate) async fn resolve_address(address: String) -> Result<SocketAddr, String> {
   tokio::task::spawn_blocking(move || {
     use std::net::ToSocketAddrs;
     address
@@ -385,7 +485,12 @@ fn header(ctx: &mut Ctx) -> impl Into<Element> {
     .child(Text::new(&ctx.t("connect_server.title")).variant(theme::TypographyStyle::Title))
 }
 
-fn back_row(ctx: &mut Ctx, label: &str, home_route: &'static str) -> impl Into<Element> {
+fn back_row(
+  ctx: &mut Ctx,
+  label: &str,
+  home_route: &'static str,
+  settings_popup: Option<SettingsPopupHandle>,
+) -> impl Into<Element> {
   let navigator = ctx.navigator();
   let mut row = Row::new()
     .align_items(Alignment::Center)
@@ -404,6 +509,9 @@ fn back_row(ctx: &mut Ctx, label: &str, home_route: &'static str) -> impl Into<E
 
   if let Some(navigator) = navigator {
     row = row.on_click(move |_| {
+      if let Some(settings_popup) = settings_popup.as_ref() {
+        settings_popup.open_page(SettingsPage::Servers);
+      }
       navigator.replace(home_route);
     });
   }

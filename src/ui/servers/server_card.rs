@@ -23,10 +23,42 @@ pub enum ServerCardState {
   Error,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub enum ServerCardLiveState {
+  Unknown,
+  Checking,
+  Online,
+  NoResponse,
+}
+
+#[derive(Clone, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct ServerCardLiveInfo {
+  pub state: ServerCardLiveState,
+  pub server_name: Option<String>,
+  pub current_users: Option<u16>,
+  pub max_users: Option<u16>,
+  pub protocol_version: Option<u16>,
+  pub password_locked: bool,
+}
+
+impl Default for ServerCardLiveInfo {
+  fn default() -> Self {
+    Self {
+      state: ServerCardLiveState::Unknown,
+      server_name: None,
+      current_users: None,
+      max_users: None,
+      protocol_version: None,
+      password_locked: false,
+    }
+  }
+}
+
 #[derive(Clone, lurq::DevtoolsInspectable)]
 pub struct ServerCardProps {
   pub server: StoredServer,
   pub state: ServerCardState,
+  pub live: ServerCardLiveInfo,
   pub error_message: Option<String>,
   pub connecting: Signal<Option<String>>,
   pub failed: Signal<Option<String>>,
@@ -36,6 +68,7 @@ impl PartialEq for ServerCardProps {
   fn eq(&self, other: &Self) -> bool {
     self.server == other.server
       && self.state == other.state
+      && self.live == other.live
       && self.error_message == other.error_message
       && self.connecting.id() == other.connecting.id()
       && self.failed.id() == other.failed.id()
@@ -69,7 +102,7 @@ impl Component for ServerCard {
 }
 
 fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
-  let name = display_server_name(&props.server);
+  let name = display_server_name(props);
   let letter = server_letter(&name);
   let address = props.server.address.clone();
   let role = role_label(props.server.role);
@@ -124,7 +157,8 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
             .variant(theme::TypographyStyle::Mono)
             .color(theme::PaletteColor::TextMuted)
             .width(Dimension::Pct(100.0)),
-        ),
+        )
+        .child(live_meta_row(ctx, props)),
     )
     .child(card_status(ctx, props))
 }
@@ -152,7 +186,8 @@ fn card_status(ctx: &mut Ctx, props: &ServerCardProps) -> Element {
     ServerCardState::Error => retry_button(ctx, props).into(),
     ServerCardState::Idle => Row::new()
       .align_items(Alignment::Center)
-      .spacing(theme::SpacingSize::Lg)
+      .spacing(theme::SpacingSize::Md)
+      .child(live_state_chip(ctx, &props.live))
       .child(trusted_chip(ctx, !props.server.certificate_fingerprint.is_empty()))
       .child(ctx.mount::<LucideIcon>(LucideIconProps {
         icon: "chevron-right",
@@ -161,6 +196,109 @@ fn card_status(ctx: &mut Ctx, props: &ServerCardProps) -> Element {
       }))
       .into(),
   }
+}
+
+fn live_meta_row(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
+  let mut row = Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Sm);
+
+  for item in live_meta_items(&props.live) {
+    row = row.child(meta_chip(ctx, item.icon, &item.label));
+  }
+
+  row
+}
+
+struct LiveMetaItem {
+  icon: &'static str,
+  label: String,
+}
+
+fn live_meta_items(live: &ServerCardLiveInfo) -> Vec<LiveMetaItem> {
+  match live.state {
+    ServerCardLiveState::Online => {
+      let mut items = Vec::new();
+      if let (Some(current), Some(max)) = (live.current_users, live.max_users) {
+        let label = if max == 0 {
+          format!("{current} online")
+        } else {
+          format!("{current}/{max} online")
+        };
+        items.push(LiveMetaItem { icon: "users", label });
+      }
+      if let Some(protocol_version) = live.protocol_version {
+        items.push(LiveMetaItem {
+          icon: "radio",
+          label: format!("Protocol {protocol_version}"),
+        });
+      }
+      items.push(LiveMetaItem {
+        icon: if live.password_locked { "lock" } else { "unlock" },
+        label: if live.password_locked {
+          "Password required".to_owned()
+        } else {
+          "Open server".to_owned()
+        },
+      });
+      items
+    }
+    ServerCardLiveState::Checking => vec![LiveMetaItem {
+      icon: "radar",
+      label: "Checking server info".to_owned(),
+    }],
+    ServerCardLiveState::NoResponse => vec![LiveMetaItem {
+      icon: "wifi-off",
+      label: "No query response".to_owned(),
+    }],
+    ServerCardLiveState::Unknown => Vec::new(),
+  }
+}
+
+fn meta_chip(ctx: &mut Ctx, icon: &'static str, label: &str) -> impl Into<Element> {
+  Row::new()
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Xs)
+    .padding_horizontal(theme::SpacingSize::Sm)
+    .rounded(theme::RadiusSize::Sm)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 12.0,
+      color: theme::palette().text_muted,
+    }))
+    .child(
+      Text::new(label)
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextSecondary),
+    )
+}
+
+fn live_state_chip(ctx: &mut Ctx, live: &ServerCardLiveInfo) -> impl Into<Element> {
+  let (icon, label, color) = match live.state {
+    ServerCardLiveState::Online => ("activity", "ONLINE", theme::PaletteColor::Accent),
+    ServerCardLiveState::Checking => ("radar", "CHECKING", theme::PaletteColor::TextSecondary),
+    ServerCardLiveState::NoResponse => ("wifi-off", "NO QUERY", theme::PaletteColor::TextMuted),
+    ServerCardLiveState::Unknown => ("circle", "UNKNOWN", theme::PaletteColor::TextMuted),
+  };
+
+  Row::new()
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Xs)
+    .padding_horizontal(theme::SpacingSize::Sm)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 12.0,
+      color: theme::palette().text_muted,
+    }))
+    .child(Text::new(label).variant(theme::TypographyStyle::Caption).color(color))
 }
 
 fn retry_button(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
@@ -313,11 +451,19 @@ fn secondary_button(ctx: &mut Ctx, icon: &'static str, label: &str) -> Row {
     )
 }
 
-fn display_server_name(server: &StoredServer) -> String {
-  if server.server_name.trim().is_empty() {
-    server.address.clone()
+fn display_server_name(props: &ServerCardProps) -> String {
+  if let Some(name) = props
+    .live
+    .server_name
+    .as_ref()
+    .map(|name| name.trim())
+    .filter(|name| !name.is_empty())
+  {
+    name.to_owned()
+  } else if props.server.server_name.trim().is_empty() {
+    props.server.address.clone()
   } else {
-    server.server_name.clone()
+    props.server.server_name.clone()
   }
 }
 

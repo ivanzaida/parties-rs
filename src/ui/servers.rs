@@ -1,5 +1,7 @@
 mod server_card;
 
+use std::time::Duration;
+
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, ScrollVertical, Text},
@@ -14,24 +16,31 @@ use lurq::{
 use server_card::{ServerCard, ServerCardProps, ServerCardState};
 
 use crate::{
-  routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS},
+  network::server_query::{ServerQueryInfo, query_server},
+  routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY},
   session::{ConnectedServerInfo, ServerSession},
   storage::{Storage, StoredServer},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
-    connect_server::{ConnectOrigin, connect_and_store},
+    connect_server::{ConnectOrigin, connect_and_store, resolve_address, with_default_port},
+    settings::SettingsPopupHandle,
   },
 };
 
 const VISIBLE_SERVER_COUNT: usize = 5;
-const SERVER_LIST_MAX_HEIGHT: f32 = 396.0;
+const SERVER_CARD_HEIGHT: f32 = 90.0;
+const SERVER_LIST_GAP: f32 = 14.0;
+const SERVER_LIST_MAX_HEIGHT: f32 = SERVER_CARD_HEIGHT * 5.0 + SERVER_LIST_GAP * 4.0 + 2.0;
+const SERVER_LIST_QUERY_TIMEOUT: Duration = Duration::from_millis(800);
 
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
   running: Signal<Option<String>>,
   failed: Signal<Option<String>>,
   failure_message: Signal<Option<String>>,
+  query_signature: Signal<String>,
+  query_results: Signal<Vec<ServerQueryEntry>>,
 }
 
 impl Component for SavedServersScreen {
@@ -46,6 +55,8 @@ impl Component for SavedServersScreen {
       running: ctx.signal(None::<String>),
       failed,
       failure_message: ctx.signal(None::<String>),
+      query_signature: ctx.signal(String::new()),
+      query_results: ctx.signal(Vec::new()),
     }
   }
 
@@ -79,6 +90,9 @@ impl Component for SavedServersScreen {
         .await
       }
     });
+    let query_servers =
+      ctx.future_action(|servers: Vec<StoredServer>| async move { query_saved_servers(servers).await });
+    self.sync_query_state(&servers, &query_servers);
     self.sync_connection_state(ctx, &servers, &connect);
 
     Column::new()
@@ -97,10 +111,51 @@ impl Component for SavedServersScreen {
 }
 
 type ConnectAction = lurq::app::ctx::FutureAction<StoredServer, ConnectedServerInfo, String>;
+type QueryAction = lurq::app::ctx::FutureAction<Vec<StoredServer>, Vec<ServerQueryEntry>, String>;
+
+#[derive(Debug, Clone, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct ServerQueryEntry {
+  address: String,
+  state: ServerQueryState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub enum ServerQueryState {
+  Online(ServerQueryInfo),
+  NoResponse,
+}
 
 impl SavedServersScreen {
+  fn sync_query_state(&self, servers: &[StoredServer], query_servers: &QueryAction) {
+    let signature = server_query_signature(servers);
+    let state = query_servers.state().get();
+
+    if self.query_signature.get_untracked() != signature && !state.is_pending() {
+      self.query_signature.set(signature);
+      self.query_results.set(Vec::new());
+      query_servers.run(servers.to_vec());
+      return;
+    }
+
+    if let Some(data) = state.data
+      && self.query_results.get_untracked() != data
+    {
+      self.query_results.set(data);
+    }
+  }
+
   fn sync_connection_state(&self, ctx: &mut Ctx, servers: &[StoredServer], connect: &ConnectAction) {
     let state = connect.state().get();
+
+    if let Some(next_address) = self.connecting.get_untracked()
+      && let Some(running_address) = self.running.get_untracked()
+      && running_address != next_address
+    {
+      connect.cancel();
+      self.running.set(None);
+      self.failed.set(None);
+      self.failure_message.set(None);
+    }
 
     if let Some(address) = self.running.get_untracked() {
       if state.is_fulfilled() {
@@ -185,10 +240,18 @@ impl SavedServersScreen {
     let failure_message = self.failure_message.get();
     let connecting_signal = self.connecting.clone();
     let failed_signal = self.failed.clone();
+    let query_results = self.query_results.get();
+    let querying = self
+      .query_signature
+      .get()
+      .split('\n')
+      .filter(|address| !address.is_empty())
+      .count()
+      > query_results.len();
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
-      .spacing(theme::SpacingSize::Lg)
+      .spacing(SERVER_LIST_GAP)
       .padding_right(16.0);
 
     for server in servers {
@@ -205,6 +268,7 @@ impl SavedServersScreen {
         ServerCardProps {
           server,
           state,
+          live: server_live_info(query_result_for(&query_results, &address), querying),
           error_message: if failed.as_deref() == Some(address.as_str()) {
             failure_message.clone()
           } else {
@@ -246,6 +310,75 @@ impl SavedServersScreen {
   }
 }
 
+async fn query_saved_servers(servers: Vec<StoredServer>) -> Result<Vec<ServerQueryEntry>, String> {
+  let mut tasks = Vec::with_capacity(servers.len());
+  for server in servers {
+    tasks.push(tokio::spawn(query_saved_server(server)));
+  }
+
+  let mut results = Vec::new();
+  for task in tasks {
+    results.push(task.await.map_err(|error| error.to_string())?);
+  }
+  Ok(results)
+}
+
+async fn query_saved_server(server: StoredServer) -> ServerQueryEntry {
+  let address = server.address.clone();
+  let socket = match resolve_address(with_default_port(&server.address)).await {
+    Ok(socket) => socket,
+    Err(_) => {
+      return ServerQueryEntry {
+        address,
+        state: ServerQueryState::NoResponse,
+      };
+    }
+  };
+  let info = query_server(socket, SERVER_LIST_QUERY_TIMEOUT).await.ok().flatten();
+  let state = match info {
+    Some(info) => ServerQueryState::Online(info),
+    None => ServerQueryState::NoResponse,
+  };
+  ServerQueryEntry { address, state }
+}
+
+fn server_query_signature(servers: &[StoredServer]) -> String {
+  servers
+    .iter()
+    .map(|server| server.address.as_str())
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn query_result_for<'a>(results: &'a [ServerQueryEntry], address: &str) -> Option<&'a ServerQueryState> {
+  results
+    .iter()
+    .find(|entry| entry.address == address)
+    .map(|entry| &entry.state)
+}
+
+fn server_live_info(state: Option<&ServerQueryState>, querying: bool) -> server_card::ServerCardLiveInfo {
+  match state {
+    Some(ServerQueryState::Online(info)) => server_card::ServerCardLiveInfo {
+      state: server_card::ServerCardLiveState::Online,
+      server_name: Some(info.server_name.clone()),
+      current_users: Some(info.current_users),
+      max_users: Some(info.max_users),
+      protocol_version: Some(info.protocol_version),
+      password_locked: info.password_locked,
+    },
+    Some(ServerQueryState::NoResponse) => server_card::ServerCardLiveInfo {
+      state: server_card::ServerCardLiveState::NoResponse,
+      ..server_card::ServerCardLiveInfo::default()
+    },
+    None if querying => server_card::ServerCardLiveInfo {
+      state: server_card::ServerCardLiveState::Checking,
+      ..server_card::ServerCardLiveInfo::default()
+    },
+    None => server_card::ServerCardLiveInfo::default(),
+  }
+}
+
 fn server_list_view(list: Column, count: usize) -> Element {
   if count <= VISIBLE_SERVER_COUNT {
     return list.into();
@@ -280,7 +413,7 @@ fn server_list_scrollbar_style() -> ScrollBarStyle {
 }
 
 fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
-  let navigator = ctx.navigator();
+  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let identity_name = ctx
     .use_context::<Storage>()
     .and_then(|storage| storage.load_settings().ok())
@@ -304,8 +437,8 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
       color: theme::palette().text_secondary,
     }));
 
-  if let Some(navigator) = navigator {
-    settings_button = settings_button.on_click(move |_| navigator.push(ROUTE_SETTINGS));
+  if let Some(settings_popup) = settings_popup {
+    settings_button = settings_button.on_click(move |_| settings_popup.open());
   }
 
   Row::new()

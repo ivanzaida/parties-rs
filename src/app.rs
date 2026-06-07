@@ -1,6 +1,11 @@
+use std::time::Duration;
+
 use lurq::{
-  app::{component::Component, ctx::Ctx},
-  components::Column,
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::Ctx,
+  },
+  components::{Column, Stack},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, Element, dimension::Dimension},
@@ -13,11 +18,12 @@ use crate::{
     ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
     ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
-  services::hotkeys,
+  services::{global_hotkeys::GlobalVoiceHotkeys, hotkeys},
   session::ServerSession,
   storage::Storage,
   theme,
   ui::{
+    app_chrome::{AppChrome, modal_layer, window_resize_handles},
     connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
@@ -27,8 +33,8 @@ use crate::{
     restore_identity::RestoreIdentityScreen,
     servers::SavedServersScreen,
     settings::{
-      SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsSavedServersScreen,
-      SettingsStreamScreen,
+      SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsPage, SettingsPopup,
+      SettingsPopupHandle, SettingsSavedServersScreen, SettingsStreamScreen,
     },
   },
 };
@@ -37,6 +43,32 @@ pub struct App {
   router: RouterHandle,
   session: ServerSession,
   storage: Signal<Option<Storage>>,
+  settings_open: Signal<bool>,
+  settings_page: Signal<SettingsPage>,
+  active_toggle_hotkeys: Signal<Vec<String>>,
+  global_hotkeys: GlobalVoiceHotkeys,
+}
+
+#[derive(Clone)]
+pub struct AppProps {
+  pub tokio: tokio::runtime::Handle,
+  pub startup_storage: Option<Storage>,
+  pub startup_error: Option<String>,
+}
+
+impl PartialEq for AppProps {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
+}
+
+impl DevtoolsInspectable for AppProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::new(
+      "tokio",
+      std::any::type_name::<tokio::runtime::Handle>(),
+    ));
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,16 +78,25 @@ enum VoiceHotkeyAction {
 }
 
 impl Component for App {
-  type Props = ();
+  type Props = AppProps;
 
   fn create(ctx: &mut Ctx) -> Self {
-    let storage = ctx.signal(None::<Storage>);
+    let props = ctx.props::<Self::Props>().clone();
+    let tokio = props.tokio.clone();
+    let storage = ctx.signal(props.startup_storage.clone());
+    let i18n = ctx.i18n().clone();
+    apply_storage_locale(&storage.get_untracked(), &i18n);
+    ctx.watch(&storage, move |storage| {
+      apply_storage_locale(storage, &i18n);
+    });
     let loading_storage = storage.clone();
+    let startup_error = props.startup_error.clone();
     let router = ctx.router(
       Routes::new()
         .route(ROUTE_LOADING, move |ctx| {
           ctx.mount::<LoadingIdentityScreen>(LoadingIdentityScreenProps {
             storage: loading_storage.clone(),
+            startup_error: startup_error.clone(),
           })
         })
         .route(ROUTE_IDENTITY_SETUP, |ctx| ctx.mount::<IdentitySetupScreen>(()))
@@ -75,15 +116,28 @@ impl Component for App {
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );
     router.replace(ROUTE_LOADING);
+    let session = ServerSession::default();
+    let global_hotkeys = GlobalVoiceHotkeys::new(session.clone(), tokio);
+    let poll_global_hotkeys = global_hotkeys.clone();
+    let interval = ctx.create_interval(Duration::from_millis(16), move || {
+      poll_global_hotkeys.poll_events();
+    });
+    interval.start();
     Self {
       router,
-      session: ServerSession::default(),
+      session,
       storage,
+      settings_open: ctx.signal(false),
+      settings_page: ctx.signal(SettingsPage::Overview),
+      active_toggle_hotkeys: ctx.signal(Vec::new()),
+      global_hotkeys,
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     ctx.provide(self.session.clone());
+    let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
+    ctx.provide(settings_popup.clone());
     let storage = self.storage.get();
     if let Some(storage) = storage.clone() {
       ctx.provide(storage);
@@ -97,7 +151,18 @@ impl Component for App {
       .as_ref()
       .map(|settings| settings.hotkey_toggle_deafen.clone())
       .unwrap_or_default();
-    let hotkeys_enabled = !self.router.path().get().starts_with(ROUTE_SETTINGS);
+    let push_to_talk_enabled = settings.as_ref().is_some_and(|settings| settings.push_to_talk);
+    let push_to_talk_hotkey = settings
+      .as_ref()
+      .map(|settings| settings.hotkey_push_to_talk.clone())
+      .unwrap_or_default();
+    let app_focused = ctx.window().is_focused;
+    let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
+    let local_hotkeys_enabled = app_focused && !settings_active;
+    let global_hotkeys_enabled = !app_focused;
+    self
+      .global_hotkeys
+      .update_settings(settings.as_ref(), global_hotkeys_enabled);
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
       move |action: VoiceHotkeyAction| {
@@ -106,28 +171,120 @@ impl Component for App {
       }
     });
 
-    let mut root = Column::new()
+    let content = Column::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .align_items(Alignment::Stretch)
       .justify(Justify::Start)
       .clip()
-      .child(lurq::components::Router::mount(ctx, self.router.clone()));
+      .child(ctx.mount::<AppChrome>(()))
+      .child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .flex(1.0)
+          .clip()
+          .child(lurq::components::Router::mount(ctx, self.router.clone())),
+      );
+    let mut root = Stack::new()
+      .width(Dimension::Pct(100.0))
+      .height(Dimension::Pct(100.0))
+      .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
+      .clip()
+      .child(content);
+    for handle in window_resize_handles(ctx) {
+      root = root.child(handle);
+    }
 
-    if hotkeys_enabled {
-      let voice_hotkey = voice_hotkey.clone();
-      root = root.on_key_down(move |event| {
-        if hotkeys::event_matches_hotkey(&mute_hotkey, event) {
-          voice_hotkey.run(VoiceHotkeyAction::ToggleMute);
-        } else if hotkeys::event_matches_hotkey(&deafen_hotkey, event) {
-          voice_hotkey.run(VoiceHotkeyAction::ToggleDeafen);
+    let settings_open = self.settings_open.clone();
+    ctx.modal(settings_open, move |ctx| {
+      let close_settings = settings_popup.clone();
+      ctx.provide(settings_popup.clone());
+      let popup = ctx.mount::<SettingsPopup>(());
+      modal_layer(ctx, popup).on_key_down(move |event| {
+        if hotkeys::is_cancel_key(event) {
+          close_settings.close();
         }
+      })
+    });
+
+    if local_hotkeys_enabled {
+      let voice_hotkey = voice_hotkey.clone();
+      let ptt_session = self.session.clone();
+      let ptt_down_hotkey = push_to_talk_hotkey.clone();
+      let mute_down_hotkey = mute_hotkey.clone();
+      let deafen_down_hotkey = deafen_hotkey.clone();
+      let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
+      root = root.on_key_down(move |event| {
+        if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
+          ptt_session.set_push_to_talk_active(true);
+        } else if hotkeys::event_matches_hotkey(&mute_down_hotkey, event) {
+          if activate_toggle_hotkey(&active_toggle_hotkeys, &mute_down_hotkey) {
+            voice_hotkey.run(VoiceHotkeyAction::ToggleMute);
+          }
+        } else if hotkeys::event_matches_hotkey(&deafen_down_hotkey, event) {
+          if activate_toggle_hotkey(&active_toggle_hotkeys, &deafen_down_hotkey) {
+            voice_hotkey.run(VoiceHotkeyAction::ToggleDeafen);
+          }
+        }
+      });
+
+      let ptt_session = self.session.clone();
+      let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
+      root = root.on_key_up(move |event| {
+        if push_to_talk_enabled && hotkeys::event_releases_hotkey(&push_to_talk_hotkey, event) {
+          ptt_session.set_push_to_talk_active(false);
+        }
+        release_toggle_hotkey(&active_toggle_hotkeys, &mute_hotkey, event);
+        release_toggle_hotkey(&active_toggle_hotkeys, &deafen_hotkey, event);
       });
     }
 
     root
   }
+}
+
+fn apply_storage_locale(storage: &Option<Storage>, i18n: &lurq::app::i18n::I18n) {
+  if let Some(storage) = storage
+    && let Ok(settings) = storage.load_settings()
+  {
+    i18n.set_locale(settings.locale.clone());
+  }
+}
+
+fn activate_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str) -> bool {
+  let key = hotkey_key(hotkey);
+  if key.is_empty() {
+    return false;
+  }
+
+  let mut active = active_hotkeys.get_untracked();
+  if active.iter().any(|existing| existing == &key) {
+    return false;
+  }
+
+  active.push(key);
+  active_hotkeys.set(active);
+  true
+}
+
+fn release_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str, event: &lurq::app::events::KeyboardEvent) {
+  if !hotkeys::event_releases_hotkey(hotkey, event) {
+    return;
+  }
+
+  let key = hotkey_key(hotkey);
+  active_hotkeys.set(
+    active_hotkeys
+      .get_untracked()
+      .into_iter()
+      .filter(|existing| existing != &key)
+      .collect(),
+  );
+}
+
+fn hotkey_key(hotkey: &str) -> String {
+  hotkey.trim().to_ascii_lowercase()
 }
 
 async fn apply_voice_hotkey(session: ServerSession, action: VoiceHotkeyAction) -> Result<(), String> {
@@ -150,4 +307,33 @@ async fn apply_voice_hotkey(session: ServerSession, action: VoiceHotkeyAction) -
     .map_err(|error| error.to_string())?;
   session.set_local_voice_state(muted, deafened);
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use lurq::{app::events::KeyboardEvent, core::NodeId};
+
+  use super::*;
+
+  fn key_event(key: &str, code: &str, ctrl: bool) -> KeyboardEvent {
+    KeyboardEvent {
+      key: key.to_owned(),
+      code: code.to_owned(),
+      shift: false,
+      ctrl,
+      alt: false,
+      target_id: NodeId::UNASSIGNED,
+    }
+  }
+
+  #[test]
+  fn toggle_hotkey_activation_is_released_by_key_up() {
+    let active = Signal::new(Vec::new());
+
+    assert!(activate_toggle_hotkey(&active, "Ctrl+M"));
+    assert!(!activate_toggle_hotkey(&active, "Ctrl+M"));
+
+    release_toggle_hotkey(&active, "Ctrl+M", &key_event("M", "KeyM", true));
+    assert!(activate_toggle_hotkey(&active, "Ctrl+M"));
+  }
 }

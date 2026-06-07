@@ -5,6 +5,34 @@
       "cancel": "Cancel"
     }
   },
+  "date": {
+    "today": "Today",
+    "current_year": "{{weekday}}, {{month}} {{day}}",
+    "other_year": "{{weekday}}, {{month}} {{day}}, {{year}}",
+    "weekday": {
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
+    },
+    "month": {
+      "january": "January",
+      "february": "February",
+      "march": "March",
+      "april": "April",
+      "may": "May",
+      "june": "June",
+      "july": "July",
+      "august": "August",
+      "september": "September",
+      "october": "October",
+      "november": "November",
+      "december": "December"
+    }
+  },
   "loading": {
     "caption": "LOCAL IDENTITY",
     "title": "Preparing workspace",
@@ -301,6 +329,11 @@
         "none": "No recent server",
         "manage": "Manage servers",
         "action": "Manage"
+      },
+      "language": {
+        "section": "LANGUAGE",
+        "title": "Display language",
+        "description": "Choose the language used across the app."
       },
       "toggles": "QUICK TOGGLES",
       "toggle": {
@@ -637,7 +670,17 @@
       "empty": "Waiting for channels..."
     },
     "text_channels": {
-      "title": "TEXT CHANNELS"
+      "title": "TEXT CHANNELS",
+      "empty": "No text channels yet"
+    },
+    "text_channel": {
+      "topic": "Server announcements & general chatter",
+      "composer_placeholder": "Message #{{channel}}",
+      "pinned": "PINNED",
+      "empty": {
+        "title": "No messages yet",
+        "description": "Start the conversation in this channel."
+      }
     },
     "voice_channels": {
       "title": "VOICE CHANNELS",

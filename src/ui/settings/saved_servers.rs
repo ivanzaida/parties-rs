@@ -20,12 +20,13 @@ use crate::{
   storage::{Storage, StoredServer},
   theme,
   ui::{
+    app_chrome::{CHROME_HEIGHT, content_height, modal_y},
     common::{
       confirm_modal::{ConfirmAction, ConfirmModal, ConfirmModalProps},
       lucide_icon::{LucideIcon, LucideIconProps},
     },
     connect_server::ConnectOrigin,
-    settings::shell::{SettingsPage, muted_notice, page_stack, screen, value_text},
+    settings::shell::{SettingsPage, SettingsPopupHandle, muted_notice, page_stack, screen, value_text},
   },
 };
 
@@ -212,6 +213,9 @@ fn servers_header(ctx: &mut Ctx) -> impl Into<Element> {
 
 fn add_server_button(ctx: &mut Ctx) -> impl Into<Element> {
   let navigator = ctx.navigator();
+  let settings_popup = ctx
+    .use_context::<SettingsPopupHandle>()
+    .filter(SettingsPopupHandle::is_open);
   let mut button = Row::new()
     .height(34.0)
     .align_items(Alignment::Center)
@@ -236,7 +240,15 @@ fn add_server_button(ctx: &mut Ctx) -> impl Into<Element> {
     );
 
   if let Some(navigator) = navigator {
-    button = button.on_click(move |_| navigator.push_with_state(ROUTE_CONNECT_SERVER, ConnectOrigin::Settings));
+    button = button.on_click(move |_| {
+      let origin = if let Some(settings_popup) = settings_popup.as_ref() {
+        settings_popup.close();
+        ConnectOrigin::SettingsPopup
+      } else {
+        ConnectOrigin::Settings
+      };
+      navigator.push_with_state(ROUTE_CONNECT_SERVER, origin);
+    });
   }
 
   button
@@ -322,7 +334,9 @@ fn server_action_menu(
   forget_address: Signal<Option<String>>,
 ) -> Element {
   let window = ctx.window();
-  let menu_top = server_action_menu_top(anchor_y, window.logical_height());
+  let window_width = window.logical_width();
+  let modal_height = content_height(ctx);
+  let menu_top = server_action_menu_top(anchor_y.map(modal_y), modal_height);
   let address = server.address.clone();
   let copy_address = address.clone();
   let fingerprint_address_value = address.clone();
@@ -334,8 +348,9 @@ fn server_action_menu(
   let close_scrim = menu_open.clone();
 
   Column::new()
-    .width(window.logical_width())
-    .height(window.logical_height())
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
     .align_items(Alignment::End)
     .padding_top(menu_top)
     .padding_right(34.0)
@@ -403,7 +418,9 @@ fn server_action_menu_top(anchor_y: Option<f32>, window_height: f32) -> f32 {
 
 fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -> Element {
   let window = ctx.window();
-  let panel_width = (window.logical_width() - 32.0).min(480.0).max(300.0);
+  let window_width = window.logical_width();
+  let modal_height = content_height(ctx);
+  let panel_width = (window_width - 32.0).min(480.0).max(300.0);
   let fingerprint = server.certificate_fingerprint.trim().to_owned();
   let display_fingerprint = if fingerprint.is_empty() {
     ctx.t("settings.servers.fingerprint.empty").to_string()
@@ -414,8 +431,9 @@ fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -
   let close_signal = open.clone();
 
   Column::new()
-    .width(window.logical_width())
-    .height(window.logical_height())
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))

@@ -175,6 +175,16 @@ impl AuthIdentity {
     Ok(w.into_bytes())
   }
 
+  pub fn encode_legacy_payload(&self) -> DecodeResult<Vec<u8>> {
+    let mut w = BinaryWriter::new();
+    w.write_bytes(&self.public_key);
+    w.write_string(&self.display_name)?;
+    w.write_u64(self.timestamp);
+    w.write_bytes(&self.signature);
+    w.write_string(&self.password)?;
+    Ok(w.into_bytes())
+  }
+
   pub fn signed_payload(public_key: &PublicKey, display_name: &str, timestamp: u64) -> DecodeResult<Vec<u8>> {
     let mut w = BinaryWriter::new();
     w.write_bytes(public_key);
@@ -619,5 +629,26 @@ mod tests {
     assert_eq!(&payload[..32], &public_key);
     assert_eq!(&payload[32..39], &[5, 0, b'a', b'l', b'i', b'c', b'e']);
     assert_eq!(&payload[39..], &42_u64.to_le_bytes());
+  }
+
+  #[test]
+  fn auth_payload_supports_versioned_and_legacy_shapes() {
+    let auth = AuthIdentity {
+      protocol_version: 1,
+      public_key: [7; 32],
+      display_name: "alice".to_owned(),
+      timestamp: 42,
+      signature: [9; 64],
+      password: "secret".to_owned(),
+    };
+
+    let versioned = auth.encode_payload().unwrap();
+    assert_eq!(&versioned[..2], &1_u16.to_le_bytes());
+    assert_eq!(&versioned[2..34], &[7; 32]);
+
+    let legacy = auth.encode_legacy_payload().unwrap();
+    assert_eq!(&legacy[..32], &[7; 32]);
+    assert_eq!(&legacy[32..39], &[5, 0, b'a', b'l', b'i', b'c', b'e']);
+    assert_eq!(legacy.len(), versioned.len() - 2);
   }
 }

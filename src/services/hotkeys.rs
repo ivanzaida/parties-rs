@@ -26,6 +26,15 @@ pub fn event_matches_hotkey(hotkey: &str, event: &KeyboardEvent) -> bool {
   !hotkey.is_empty() && event_to_hotkey(event).is_some_and(|event_hotkey| event_hotkey.eq_ignore_ascii_case(hotkey))
 }
 
+pub fn event_releases_hotkey(hotkey: &str, event: &KeyboardEvent) -> bool {
+  let hotkey = hotkey.trim();
+  let Some(key) = key_label(event) else {
+    return false;
+  };
+
+  !hotkey.is_empty() && hotkey.split('+').any(|part| part.trim().eq_ignore_ascii_case(&key))
+}
+
 pub fn is_clear_key(event: &KeyboardEvent) -> bool {
   matches!(
     (event.key.as_str(), event.code.as_str()),
@@ -58,4 +67,38 @@ fn key_label(event: &KeyboardEvent) -> Option<String> {
 
 fn is_modifier_label(label: &str) -> bool {
   matches!(label, "Ctrl" | "Alt" | "Shift" | "Meta")
+}
+
+#[cfg(test)]
+mod tests {
+  use lurq::{app::events::KeyboardEvent, core::NodeId};
+
+  use super::*;
+
+  fn key_event(key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) -> KeyboardEvent {
+    KeyboardEvent {
+      key: key.to_owned(),
+      code: code.to_owned(),
+      ctrl,
+      alt,
+      shift,
+      target_id: NodeId::UNASSIGNED,
+    }
+  }
+
+  #[test]
+  fn release_matches_any_hotkey_part() {
+    assert!(event_releases_hotkey(
+      "Ctrl+P",
+      &key_event("P", "KeyP", true, false, false),
+    ));
+    assert!(event_releases_hotkey(
+      "Ctrl+P",
+      &key_event("Control", "ControlLeft", false, false, false),
+    ));
+    assert!(!event_releases_hotkey(
+      "Ctrl+P",
+      &key_event("M", "KeyM", true, false, false),
+    ));
+  }
 }

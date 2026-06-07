@@ -10,4 +10,18 @@ pub fn setup(i18n: &I18n) {
       std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/i18n/en.json"),
     )
     .expect("failed to load English i18n resources");
+  i18n
+    .add_resources_json(
+      "uk",
+      "translation",
+      std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/i18n/uk.json"),
+    )
+    .expect("failed to load Ukrainian i18n resources");
+  i18n
+    .add_resources_json(
+      "be",
+      "translation",
+      std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/i18n/be.json"),
+    )
+    .expect("failed to load Belarusian i18n resources");
 }

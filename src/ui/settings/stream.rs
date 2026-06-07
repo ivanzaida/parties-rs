@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::Ctx,
+  },
   components::{Column, Row, ScrollVertical, Stack, Text},
   core::Signal,
   layout::{Alignment, StackAlignment, text_style::TextStyle},
@@ -36,10 +39,10 @@ const VIDEO_SLIDER_WIDTH: f32 = AUDIO_CONTROL_WIDTH - VIDEO_VALUE_WIDTH - AUDIO_
 
 pub struct SettingsStreamScreen {
   webcam_device: Signal<String>,
-  codec: Signal<String>,
-  scale_percent: Signal<String>,
-  fps: Signal<String>,
-  bitrate_mbps: Signal<f32>,
+  codec: String,
+  scale_percent: String,
+  fps: String,
+  bitrate_mbps: f32,
   webcam_devices: Signal<Vec<WebcamDevice>>,
 }
 
@@ -54,28 +57,11 @@ impl Component for SettingsStreamScreen {
       .unwrap_or_else(AppSettings::default);
 
     let webcam_device = ctx.signal(settings.video_webcam_device);
-    let codec = ctx.signal(video_codec_value(&settings.video_codec));
-    let scale_percent = ctx.signal(settings.video_scale_percent.clamp(25, 100).to_string());
-    let fps = ctx.signal(settings.video_fps.clamp(15, 120).to_string());
-    let bitrate_mbps = ctx.signal(settings.video_bitrate_mbps.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX));
+    let codec = video_codec_value(&settings.video_codec);
+    let scale_percent = settings.video_scale_percent.clamp(25, 100).to_string();
+    let fps = settings.video_fps.clamp(15, 120).to_string();
+    let bitrate_mbps = settings.video_bitrate_mbps.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
     let webcam_devices = ctx.signal(webcam_devices::webcam_devices());
-
-    if let Some(storage) = storage {
-      let webcam_device_signal = webcam_device.clone();
-      let codec_signal = codec.clone();
-      let scale_signal = scale_percent.clone();
-      let fps_signal = fps.clone();
-      let bitrate_signal = bitrate_mbps.clone();
-      ctx.on_effect(move || {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.video_webcam_device = webcam_device_signal.get();
-        settings.video_codec = video_codec_value(&codec_signal.get());
-        settings.video_scale_percent = parse_i32(&scale_signal.get(), 100).clamp(25, 100);
-        settings.video_fps = parse_i32(&fps_signal.get(), 60).clamp(15, 120);
-        settings.video_bitrate_mbps = bitrate_signal.get().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-        let _ = storage.save_settings(&settings);
-      });
-    }
 
     Self {
       webcam_device,
@@ -89,64 +75,6 @@ impl Component for SettingsStreamScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
-    let system_default = ctx.t("settings.video.device.system").to_string();
-    let webcam_devices = self.webcam_devices.get();
-
-    let webcam = audio_row(
-      &ctx.t("settings.video.webcam"),
-      &ctx.t("settings.video.webcam.description"),
-      webcam_control(
-        ctx,
-        self.webcam_device.clone(),
-        self.webcam_devices.clone(),
-        webcam_options(&system_default, &webcam_devices, &self.webcam_device.get()),
-        &system_default,
-      ),
-      true,
-    );
-    let codec = audio_row(
-      &ctx.t("settings.video.codec"),
-      &ctx.t("settings.video.codec.description"),
-      dropdown_menu(
-        self.codec.clone(),
-        codec_options(),
-        &ctx.t("settings.video.codec.placeholder"),
-        DEVICE_DROPDOWN_WIDTH,
-      ),
-      true,
-    );
-    let scale = audio_row(
-      &ctx.t("settings.video.scale"),
-      &ctx.t("settings.video.scale.description"),
-      dropdown_menu(
-        self.scale_percent.clone(),
-        scale_options(ctx),
-        &ctx.t("settings.video.scale.source"),
-        DEVICE_DROPDOWN_WIDTH,
-      ),
-      true,
-    );
-    let fps = audio_row(
-      &ctx.t("settings.video.fps"),
-      &ctx.t("settings.video.fps.description"),
-      dropdown_menu(
-        self.fps.clone(),
-        fps_options(ctx),
-        &ctx.t("settings.video.fps.placeholder"),
-        DEVICE_DROPDOWN_WIDTH,
-      ),
-      true,
-    );
-    let bitrate = audio_row(
-      &ctx.t("settings.video.bitrate"),
-      &ctx.t("settings.video.bitrate.description"),
-      bitrate_slider(
-        self.bitrate_mbps.clone(),
-        storage,
-        &ctx.t("settings.video.bitrate.unit"),
-      ),
-      true,
-    );
     let content = ScrollVertical::new(
       page_stack()
         .padding_vertical(40.0)
@@ -164,17 +92,32 @@ impl Component for SettingsStreamScreen {
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.video.section.camera")))
-                .child(webcam),
+                .child(ctx.mount::<WebcamSetting>(WebcamSettingProps {
+                  selected: self.webcam_device.clone(),
+                  devices: self.webcam_devices.clone(),
+                })),
             )
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.video.section.screen_sharing")))
-                .child(codec)
-                .child(scale)
-                .child(fps)
-                .child(bitrate),
+                .child(ctx.mount::<VideoDropdownSetting>(VideoDropdownSettingProps {
+                  kind: VideoDropdownKind::Codec,
+                  initial_value: self.codec.clone(),
+                }))
+                .child(ctx.mount::<VideoDropdownSetting>(VideoDropdownSettingProps {
+                  kind: VideoDropdownKind::Scale,
+                  initial_value: self.scale_percent.clone(),
+                }))
+                .child(ctx.mount::<VideoDropdownSetting>(VideoDropdownSettingProps {
+                  kind: VideoDropdownKind::Fps,
+                  initial_value: self.fps.clone(),
+                }))
+                .child(ctx.mount::<VideoBitrateSetting>(VideoBitrateSettingProps {
+                  initial_value: self.bitrate_mbps,
+                  on_blur: video_bitrate_save_action(storage.clone()),
+                })),
             ),
         ),
     )
@@ -189,6 +132,180 @@ impl Component for SettingsStreamScreen {
     });
 
     screen_full(ctx, SettingsPage::Stream, content)
+  }
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct WebcamSettingProps {
+  selected: Signal<String>,
+  devices: Signal<Vec<WebcamDevice>>,
+}
+
+impl PartialEq for WebcamSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.selected.id() == other.selected.id() && self.devices.id() == other.devices.id()
+  }
+}
+
+struct WebcamSetting {
+  value: Signal<String>,
+}
+
+impl Component for WebcamSetting {
+  type Props = WebcamSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let value = ctx.signal(props.selected.get_untracked());
+    let storage = ctx.use_context::<Storage>();
+
+    ctx.watch(&value, move |value| {
+      props.selected.set(value.clone());
+      if let Some(storage) = storage.as_ref() {
+        let mut settings = storage.load_settings().unwrap_or_default();
+        settings.video_webcam_device = value.clone();
+        let _ = storage.save_settings(&settings);
+      }
+    });
+
+    Self { value }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let system_default = ctx.t("settings.video.device.system").to_string();
+    let devices = props.devices.get();
+    let selected = self.value.get();
+
+    audio_row(
+      &ctx.t("settings.video.webcam"),
+      &ctx.t("settings.video.webcam.description"),
+      webcam_control(
+        ctx,
+        self.value.clone(),
+        props.devices,
+        webcam_options(&system_default, &devices, &selected),
+        &system_default,
+      ),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+enum VideoDropdownKind {
+  Codec,
+  Scale,
+  Fps,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct VideoDropdownSettingProps {
+  kind: VideoDropdownKind,
+  initial_value: String,
+}
+
+impl PartialEq for VideoDropdownSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.kind == other.kind && self.initial_value == other.initial_value
+  }
+}
+
+struct VideoDropdownSetting {
+  value: Signal<String>,
+}
+
+impl Component for VideoDropdownSetting {
+  type Props = VideoDropdownSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let value = ctx.signal(props.initial_value.clone());
+    if let Some(storage) = ctx.use_context::<Storage>() {
+      ctx.watch(&value, move |value| {
+        save_video_dropdown_setting(&storage, props.kind, value);
+      });
+    }
+    Self { value }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let (title_key, description_key, placeholder, options) = match props.kind {
+      VideoDropdownKind::Codec => (
+        "settings.video.codec",
+        "settings.video.codec.description",
+        ctx.t("settings.video.codec.placeholder").to_string(),
+        codec_options(),
+      ),
+      VideoDropdownKind::Scale => (
+        "settings.video.scale",
+        "settings.video.scale.description",
+        ctx.t("settings.video.scale.source").to_string(),
+        scale_options(ctx),
+      ),
+      VideoDropdownKind::Fps => (
+        "settings.video.fps",
+        "settings.video.fps.description",
+        ctx.t("settings.video.fps.placeholder").to_string(),
+        fps_options(ctx),
+      ),
+    };
+
+    audio_row(
+      &ctx.t(title_key),
+      &ctx.t(description_key),
+      dropdown_menu(self.value.clone(), options, &placeholder, DEVICE_DROPDOWN_WIDTH),
+      true,
+    )
+  }
+}
+
+type VideoBitrateSaveAction = Arc<dyn Fn(f32) + Send + Sync>;
+
+#[derive(Clone)]
+struct VideoBitrateSettingProps {
+  initial_value: f32,
+  on_blur: VideoBitrateSaveAction,
+}
+
+impl PartialEq for VideoBitrateSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    (self.initial_value - other.initial_value).abs() < f32::EPSILON
+  }
+}
+
+impl DevtoolsInspectable for VideoBitrateSettingProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "initial_value",
+      std::any::type_name::<f32>(),
+      format_bitrate_value(self.initial_value),
+    ));
+  }
+}
+
+struct VideoBitrateSetting {
+  value: Signal<f32>,
+}
+
+impl Component for VideoBitrateSetting {
+  type Props = VideoBitrateSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      value: ctx.signal(ctx.props::<Self::Props>().initial_value),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    audio_row(
+      &ctx.t("settings.video.bitrate"),
+      &ctx.t("settings.video.bitrate.description"),
+      bitrate_slider(self.value.clone(), props.on_blur, &ctx.t("settings.video.bitrate.unit")),
+      true,
+    )
   }
 }
 
@@ -270,7 +387,7 @@ fn fps_options(ctx: &mut Ctx) -> Vec<DropdownOption> {
     .collect()
 }
 
-fn bitrate_slider(value: Signal<f32>, storage: Option<Storage>, unit: &str) -> Element {
+fn bitrate_slider(value: Signal<f32>, on_blur: VideoBitrateSaveAction, unit: &str) -> Element {
   let current = value.get().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
   let fill_width = VIDEO_SLIDER_WIDTH * (current - VIDEO_BITRATE_MIN) / (VIDEO_BITRATE_MAX - VIDEO_BITRATE_MIN);
   let value_label = format!("{} {unit}", format_bitrate_value(current));
@@ -283,13 +400,9 @@ fn bitrate_slider(value: Signal<f32>, storage: Option<Storage>, unit: &str) -> E
     VIDEO_BITRATE_STEP,
   );
 
-  if let Some(storage) = storage {
-    slider = slider.on_blur(move || {
-      let mut settings = storage.load_settings().unwrap_or_default();
-      settings.video_bitrate_mbps = value.get_untracked().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-      let _ = storage.save_settings(&settings);
-    });
-  }
+  slider = slider.on_blur(move || {
+    on_blur(value.get_untracked());
+  });
 
   Row::new()
     .width(AUDIO_CONTROL_WIDTH)
@@ -306,6 +419,28 @@ fn bitrate_slider(value: Signal<f32>, storage: Option<Storage>, unit: &str) -> E
     )
     .child(video_value_label(&value_label))
     .into()
+}
+
+fn video_bitrate_save_action(storage: Option<Storage>) -> VideoBitrateSaveAction {
+  Arc::new(move |value| {
+    if let Some(storage) = storage.as_ref() {
+      let mut settings = storage.load_settings().unwrap_or_default();
+      settings.video_bitrate_mbps = value.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
+      let _ = storage.save_settings(&settings);
+    }
+  })
+}
+
+fn save_video_dropdown_setting(storage: &Storage, setting: VideoDropdownKind, value: &str) {
+  let mut settings = storage.load_settings().unwrap_or_default();
+
+  match setting {
+    VideoDropdownKind::Codec => settings.video_codec = video_codec_value(value),
+    VideoDropdownKind::Scale => settings.video_scale_percent = parse_i32(value, 100).clamp(25, 100),
+    VideoDropdownKind::Fps => settings.video_fps = parse_i32(value, 60).clamp(15, 120),
+  }
+
+  let _ = storage.save_settings(&settings);
 }
 
 fn format_bitrate_value(value: f32) -> String {

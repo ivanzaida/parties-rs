@@ -6,6 +6,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum C2S {
   Auth(AuthIdentity),
+  AuthLegacy(AuthIdentity),
   ChannelJoin {
     channel_id: ChannelId,
   },
@@ -55,14 +56,6 @@ pub enum C2S {
   ChatDelete {
     message_id: u64,
   },
-  ChatFileUploadReq {
-    message_id: u64,
-    file_index: u8,
-    file_size: u64,
-  },
-  ChatFileDownloadReq {
-    file_id: u64,
-  },
   ChatSearch {
     channel_id: ChannelId,
     query: String,
@@ -86,6 +79,7 @@ impl C2S {
 
     let (ty, payload) = match self {
       Self::Auth(auth) => (M::AuthIdentity, auth.encode_payload()?),
+      Self::AuthLegacy(auth) => (M::AuthIdentity, auth.encode_legacy_payload()?),
 
       Self::ChannelJoin { channel_id } => {
         let mut w = BinaryWriter::new();
@@ -176,22 +170,6 @@ impl C2S {
         let mut w = BinaryWriter::new();
         w.write_u64(*message_id);
         (M::ChatDelete, w.into_bytes())
-      }
-      Self::ChatFileUploadReq {
-        message_id,
-        file_index,
-        file_size,
-      } => {
-        let mut w = BinaryWriter::new();
-        w.write_u64(*message_id);
-        w.write_u8(*file_index);
-        w.write_u64(*file_size);
-        (M::ChatFileUploadReq, w.into_bytes())
-      }
-      Self::ChatFileDownloadReq { file_id } => {
-        let mut w = BinaryWriter::new();
-        w.write_u64(*file_id);
-        (M::ChatFileDownloadReq, w.into_bytes())
       }
       Self::ChatSearch {
         channel_id,

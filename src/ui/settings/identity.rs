@@ -33,7 +33,7 @@ pub struct SettingsIdentityScreen {
   recovery_copied: Signal<bool>,
   private_key_copied: Signal<bool>,
   remove_open: Signal<bool>,
-  display_name: Signal<String>,
+  display_name: String,
 }
 
 impl Component for SettingsIdentityScreen {
@@ -45,7 +45,7 @@ impl Component for SettingsIdentityScreen {
       .as_ref()
       .and_then(|storage| storage.load_settings().ok())
       .unwrap_or_else(AppSettings::default);
-    let display_name = ctx.signal(settings.display_name);
+    let display_name = settings.display_name;
 
     Self {
       public_id_copied: ctx.signal(false),
@@ -77,9 +77,6 @@ impl Component for SettingsIdentityScreen {
       .as_ref()
       .map(|identity| secret_key_to_hex(&identity.secret_key));
     let public_id_label = ctx.t("settings.identity.public_id");
-    let display_name_label = ctx.t("settings.identity.display_name");
-    let display_name_description = ctx.t("settings.identity.display_name.description");
-    let display_name_placeholder = ctx.t("settings.identity.display_name.placeholder");
     let fingerprint_label = ctx.t("settings.identity.fingerprint");
     let recovery_label = ctx.t("settings.identity.recovery");
     let recovery_description = ctx.t("settings.identity.recovery.description");
@@ -104,8 +101,6 @@ impl Component for SettingsIdentityScreen {
         }
       })
       .into();
-    let display_name_input =
-      display_name_input(self.display_name.clone(), &display_name_placeholder, storage.clone()).into();
     let fingerprint_verified = verified_chip(ctx);
     let recovery_revealed = self.recovery_revealed.get();
     let recovery_copied = self.recovery_copied.get();
@@ -204,13 +199,9 @@ impl Component for SettingsIdentityScreen {
       .child(
         Column::new()
           .width(Dimension::Pct(100.0))
-          .child(identity_row(
-            &display_name_label,
-            &display_name_description,
-            false,
-            display_name_input,
-            false,
-          ))
+          .child(ctx.mount::<DisplayNameSetting>(DisplayNameSettingProps {
+            initial_value: self.display_name.clone(),
+          }))
           .child(identity_row(&public_id_label, &public_id, true, public_copy, false))
           .child(identity_row(
             &fingerprint_label,
@@ -252,6 +243,46 @@ impl Component for SettingsIdentityScreen {
       )));
 
     screen(ctx, SettingsPage::Identity, content)
+  }
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct DisplayNameSettingProps {
+  initial_value: String,
+}
+
+impl PartialEq for DisplayNameSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.initial_value == other.initial_value
+  }
+}
+
+struct DisplayNameSetting {
+  value: Signal<String>,
+}
+
+impl Component for DisplayNameSetting {
+  type Props = DisplayNameSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      value: ctx.signal(ctx.props::<Self::Props>().initial_value.clone()),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    identity_row(
+      &ctx.t("settings.identity.display_name"),
+      &ctx.t("settings.identity.display_name.description"),
+      false,
+      display_name_input(
+        self.value.clone(),
+        &ctx.t("settings.identity.display_name.placeholder"),
+        ctx.use_context::<Storage>(),
+      )
+      .into(),
+      false,
+    )
   }
 }
 

@@ -1,6 +1,7 @@
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Row, Text},
+  core::Signal,
   layout::Alignment,
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, dimension::Dimension},
 };
@@ -12,16 +13,54 @@ use crate::{
   },
   session::ServerSession,
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    app_chrome::content_height,
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SettingsPage {
+const NAV_LABEL_Y_OFFSET: f32 = -1.0;
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub enum SettingsPage {
   Overview,
   Identity,
   Servers,
   Audio,
   Stream,
+}
+
+#[derive(Clone)]
+pub struct SettingsPopupHandle {
+  open: Signal<bool>,
+  page: Signal<SettingsPage>,
+}
+
+impl SettingsPopupHandle {
+  pub fn new(open: Signal<bool>, page: Signal<SettingsPage>) -> Self {
+    Self { open, page }
+  }
+
+  pub fn open(&self) {
+    self.open_page(SettingsPage::Overview);
+  }
+
+  pub fn open_page(&self, page: SettingsPage) {
+    self.page.set(page);
+    self.open.set(true);
+  }
+
+  pub fn close(&self) {
+    self.open.set(false);
+  }
+
+  pub fn is_open(&self) -> bool {
+    self.open.get()
+  }
+
+  pub fn page(&self) -> SettingsPage {
+    self.page.get()
+  }
 }
 
 pub(super) fn screen(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
@@ -42,7 +81,7 @@ pub(super) fn screen_full(ctx: &mut Ctx, page: SettingsPage, content: impl Into<
 }
 
 fn screen_base(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
-  let window_height = ctx.window().logical_height();
+  let window_height = content_height(ctx);
 
   Row::new()
     .width(Dimension::Pct(100.0))
@@ -86,40 +125,6 @@ pub(super) fn card() -> Column {
     .rounded(theme::RadiusSize::Lg)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
     .border_inside(1.0, theme::PaletteColor::Border)
-}
-
-pub(super) fn setting_row(label: &str, description: &str, trailing: Element, danger: bool) -> Element {
-  Row::new()
-    .width(Dimension::Pct(100.0))
-    .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Lg)
-    .padding_vertical(theme::SpacingSize::Lg)
-    .padding_horizontal(theme::SpacingSize::Xl)
-    .border_bottom(Border::inside(
-      1.0,
-      if danger {
-        theme::PaletteColor::Danger
-      } else {
-        theme::PaletteColor::Border
-      },
-    ))
-    .child(
-      Column::new()
-        .flex(1.0)
-        .spacing(theme::SpacingSize::Xs)
-        .child(
-          Text::new(label)
-            .variant(theme::TypographyStyle::Heading)
-            .color(if danger {
-              theme::PaletteColor::Danger
-            } else {
-              theme::PaletteColor::TextPrimary
-            }),
-        )
-        .child(Text::new(description).variant(theme::TypographyStyle::Link)),
-    )
-    .child(trailing)
-    .into()
 }
 
 pub(super) fn muted_notice(ctx: &mut Ctx, title: &str, description: &str) -> Element {
@@ -213,6 +218,9 @@ fn nav(ctx: &mut Ctx, page: SettingsPage) -> Element {
 }
 
 fn back_row(ctx: &mut Ctx) -> Element {
+  let settings_popup = ctx
+    .use_context::<SettingsPopupHandle>()
+    .filter(SettingsPopupHandle::is_open);
   let navigator = ctx.navigator();
   let current_server = ctx.use_context::<ServerSession>().and_then(|session| session.info());
   let back_label = current_server
@@ -237,8 +245,10 @@ fn back_row(ctx: &mut Ctx) -> Element {
     .spacing(theme::SpacingSize::Md)
     .padding_vertical(theme::SpacingSize::Sm)
     .padding_horizontal(theme::SpacingSize::Sm)
+    .rounded(theme::RadiusSize::Lg)
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+    .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "arrow-left",
       size: 16.0,
@@ -247,10 +257,15 @@ fn back_row(ctx: &mut Ctx) -> Element {
     .child(
       Text::new(&back_label)
         .variant(theme::TypographyStyle::Description)
+        .offset(0.0, NAV_LABEL_Y_OFFSET)
         .color(theme::PaletteColor::TextSecondary),
     );
 
-  if let Some(navigator) = navigator {
+  if let Some(settings_popup) = settings_popup {
+    row = row.on_click(move |_| {
+      settings_popup.close();
+    });
+  } else if let Some(navigator) = navigator {
     row = row.on_click(move |_| {
       navigator.replace(back_route);
     });
@@ -281,10 +296,17 @@ fn nav_item(
   route: &'static str,
 ) -> Element {
   let active = item_page == current_page;
+  let settings_popup = ctx
+    .use_context::<SettingsPopupHandle>()
+    .filter(SettingsPopupHandle::is_open);
   let navigator = ctx.navigator();
   let mut row = nav_item_base(ctx, icon, label, active).cursor(CursorIcon::Pointer);
 
-  if let Some(navigator) = navigator {
+  if let Some(settings_popup) = settings_popup {
+    row = row.on_click(move |_| {
+      settings_popup.open_page(item_page);
+    });
+  } else if let Some(navigator) = navigator {
     row = row.on_click(move |_| navigator.push(route));
   }
 
@@ -317,6 +339,7 @@ fn nav_item_base(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool) -
     .child(
       Text::new(label)
         .variant(theme::TypographyStyle::Description)
+        .offset(0.0, NAV_LABEL_Y_OFFSET)
         .color(if active {
           theme::PaletteColor::TextPrimary
         } else {

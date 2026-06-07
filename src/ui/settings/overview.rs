@@ -11,17 +11,24 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
-    common::lucide_icon::{LucideIcon, LucideIconProps},
+    common::{
+      dropdown_menu::{DropdownOption, dropdown_menu},
+      lucide_icon::{LucideIcon, LucideIconProps},
+    },
     settings::{
-      shell::{SettingsPage, card, header, page_stack, screen, setting_row},
-      toggle::{SettingsToggle, SettingsToggleProps},
+      audio::{audio_row, audio_section_label},
+      shell::{SettingsPage, SettingsPopupHandle, card, header, page_stack, screen},
+      toggle::settings_toggle,
     },
   },
 };
 
+const LANGUAGE_DROPDOWN_WIDTH: f32 = 220.0;
+
 pub struct SettingsOverviewScreen {
-  start_muted_when_joining: Signal<bool>,
-  launch_parties_at_login: Signal<bool>,
+  start_muted_when_joining: bool,
+  launch_parties_at_login: bool,
+  locale: String,
 }
 
 impl Component for SettingsOverviewScreen {
@@ -33,23 +40,14 @@ impl Component for SettingsOverviewScreen {
       .as_ref()
       .and_then(|storage| storage.load_settings().ok())
       .unwrap_or_default();
-    let start_muted_when_joining = ctx.signal(settings.start_muted_when_joining);
-    let launch_parties_at_login = ctx.signal(settings.launch_parties_at_login);
-
-    if let Some(storage) = storage {
-      let start_muted_signal = start_muted_when_joining.clone();
-      let launch_login_signal = launch_parties_at_login.clone();
-      ctx.on_effect(move || {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.start_muted_when_joining = start_muted_signal.get();
-        settings.launch_parties_at_login = launch_login_signal.get();
-        let _ = storage.save_settings(&settings);
-      });
-    }
+    let start_muted_when_joining = settings.start_muted_when_joining;
+    let launch_parties_at_login = settings.launch_parties_at_login;
+    let locale = settings.locale;
 
     Self {
       start_muted_when_joining,
       launch_parties_at_login,
+      locale,
     }
   }
 
@@ -124,22 +122,6 @@ impl Component for SettingsOverviewScreen {
       &last_server,
       &servers_action,
     );
-    let muted_row = setting_row(
-      &ctx.t("settings.overview.toggle.muted.title"),
-      &ctx.t("settings.overview.toggle.muted.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.start_muted_when_joining.clone(),
-      }),
-      false,
-    );
-    let login_row = setting_row(
-      &ctx.t("settings.overview.toggle.login.title"),
-      &ctx.t("settings.overview.toggle.login.description"),
-      ctx.mount::<SettingsToggle>(SettingsToggleProps {
-        enabled: self.launch_parties_at_login.clone(),
-      }),
-      false,
-    );
     let content = page_stack()
       .child(header(
         &ctx.t("settings.overview.title"),
@@ -155,22 +137,165 @@ impl Component for SettingsOverviewScreen {
       .child(
         Column::new()
           .width(Dimension::Pct(100.0))
-          .spacing(theme::SpacingSize::Sm)
-          .child(
-            Text::new(&ctx.t("settings.overview.toggles"))
-              .variant(theme::TypographyStyle::Caption)
-              .color(theme::PaletteColor::TextMuted),
-          )
+          .spacing(12.0)
+          .child(audio_section_label(&ctx.t("settings.overview.language.section")))
           .child(
             Column::new()
               .width(Dimension::Pct(100.0))
-              .child(muted_row)
-              .child(login_row),
+              .child(ctx.mount::<OverviewLanguageSetting>(OverviewLanguageSettingProps {
+                initial_locale: self.locale.clone(),
+              })),
+          ),
+      )
+      .child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .spacing(12.0)
+          .child(audio_section_label(&ctx.t("settings.overview.toggles")))
+          .child(
+            Column::new()
+              .width(Dimension::Pct(100.0))
+              .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
+                title_key: "settings.overview.toggle.muted.title",
+                description_key: "settings.overview.toggle.muted.description",
+                initial_enabled: self.start_muted_when_joining,
+                setting: OverviewBoolSetting::StartMutedWhenJoining,
+              }))
+              .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
+                title_key: "settings.overview.toggle.login.title",
+                description_key: "settings.overview.toggle.login.description",
+                initial_enabled: self.launch_parties_at_login,
+                setting: OverviewBoolSetting::LaunchPartiesAtLogin,
+              })),
           ),
       );
 
     screen(ctx, SettingsPage::Overview, content)
   }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+enum OverviewBoolSetting {
+  StartMutedWhenJoining,
+  LaunchPartiesAtLogin,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct OverviewToggleSettingProps {
+  title_key: &'static str,
+  description_key: &'static str,
+  initial_enabled: bool,
+  setting: OverviewBoolSetting,
+}
+
+impl PartialEq for OverviewToggleSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title_key == other.title_key
+      && self.description_key == other.description_key
+      && self.initial_enabled == other.initial_enabled
+      && self.setting == other.setting
+  }
+}
+
+struct OverviewToggleSetting {
+  enabled: Signal<bool>,
+}
+
+impl Component for OverviewToggleSetting {
+  type Props = OverviewToggleSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let enabled = ctx.signal(props.initial_enabled);
+    if let Some(storage) = ctx.use_context::<Storage>() {
+      ctx.watch(&enabled, move |enabled| {
+        let mut settings = storage.load_settings().unwrap_or_default();
+        match props.setting {
+          OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
+          OverviewBoolSetting::LaunchPartiesAtLogin => settings.launch_parties_at_login = *enabled,
+        }
+        let _ = storage.save_settings(&settings);
+      });
+    }
+    Self { enabled }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let enabled = self.enabled.get();
+    let enabled_signal = self.enabled.clone();
+
+    audio_row(
+      &ctx.t(props.title_key),
+      &ctx.t(props.description_key),
+      settings_toggle(enabled, move || {
+        let current = enabled_signal.get_untracked();
+        enabled_signal.set(!current);
+      }),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct OverviewLanguageSettingProps {
+  initial_locale: String,
+}
+
+impl PartialEq for OverviewLanguageSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.initial_locale == other.initial_locale
+  }
+}
+
+struct OverviewLanguageSetting {
+  locale: Signal<String>,
+}
+
+impl Component for OverviewLanguageSetting {
+  type Props = OverviewLanguageSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let locale = ctx.signal(props.initial_locale);
+    let storage = ctx.use_context::<Storage>();
+    let i18n = ctx.i18n().clone();
+    ctx.watch(&locale, move |locale| {
+      i18n.set_locale(locale.clone());
+      if let Some(storage) = storage.as_ref() {
+        let mut settings = storage.load_settings().unwrap_or_default();
+        settings.locale = locale.clone();
+        let _ = storage.save_settings(&settings);
+      }
+    });
+    Self { locale }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    audio_row(
+      &ctx.t("settings.overview.language.title"),
+      &ctx.t("settings.overview.language.description"),
+      dropdown_menu(self.locale.clone(), language_options(), "", LANGUAGE_DROPDOWN_WIDTH),
+      true,
+    )
+  }
+}
+
+fn language_options() -> Vec<DropdownOption> {
+  vec![
+    DropdownOption {
+      value: "en".to_owned(),
+      label: "English".to_owned(),
+    },
+    DropdownOption {
+      value: "uk".to_owned(),
+      label: "Українська".to_owned(),
+    },
+    DropdownOption {
+      value: "be".to_owned(),
+      label: "Беларуская".to_owned(),
+    },
+  ]
 }
 
 fn identity_card(
@@ -197,6 +322,7 @@ fn identity_card(
     field_label,
     field_value,
     action,
+    SettingsPage::Identity,
     ROUTE_SETTINGS_IDENTITY,
   )
 }
@@ -230,6 +356,7 @@ fn servers_card(
     field_label,
     field_value,
     action,
+    SettingsPage::Servers,
     ROUTE_SETTINGS_SERVERS,
   )
 }
@@ -242,6 +369,7 @@ fn overview_card(
   field_label: &str,
   field_value: &str,
   action: &str,
+  page: SettingsPage,
   route: &'static str,
 ) -> Column {
   card()
@@ -277,10 +405,13 @@ fn overview_card(
             .color(theme::PaletteColor::TextSecondary),
         ),
     )
-    .child(manage_button(ctx, action, route))
+    .child(manage_button(ctx, action, page, route))
 }
 
-fn manage_button(ctx: &mut Ctx, label: &str, route: &'static str) -> Row {
+fn manage_button(ctx: &mut Ctx, label: &str, page: SettingsPage, route: &'static str) -> Row {
+  let settings_popup = ctx
+    .use_context::<SettingsPopupHandle>()
+    .filter(SettingsPopupHandle::is_open);
   let navigator = ctx.navigator();
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
@@ -302,7 +433,9 @@ fn manage_button(ctx: &mut Ctx, label: &str, route: &'static str) -> Row {
     }))
     .child(Text::new(label).variant(theme::TypographyStyle::Button));
 
-  if let Some(navigator) = navigator {
+  if let Some(settings_popup) = settings_popup {
+    row = row.on_click(move |_| settings_popup.open_page(page));
+  } else if let Some(navigator) = navigator {
     row = row.on_click(move |_| navigator.push(route));
   }
 

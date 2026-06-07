@@ -17,7 +17,10 @@ use lurq::{
 
 use crate::{
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    app_chrome::{CHROME_HEIGHT, content_height},
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
 pub type ConfirmAction = Arc<dyn Fn() + Send + Sync>;
@@ -69,7 +72,9 @@ impl Component for ConfirmModal {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let window = ctx.window();
-    let dialog_width = (window.logical_width() - 32.0).min(420.0).max(280.0);
+    let window_width = window.logical_width();
+    let modal_height = content_height(ctx);
+    let dialog_width = (window_width - 32.0).min(420.0).max(280.0);
     let close_signal = props.open.clone();
     let confirm_open = props.open.clone();
     let on_confirm = props.on_confirm.clone();
@@ -107,8 +112,9 @@ impl Component for ConfirmModal {
     );
 
     Column::new()
-      .width(window.logical_width())
-      .height(window.logical_height())
+      .width(window_width)
+      .height(modal_height)
+      .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
       .align_items(Alignment::Center)
       .justify(Justify::Center)
       .background(BackgroundColor::Color(Color::from_hex("#00000099")))

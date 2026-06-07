@@ -33,11 +33,12 @@ const PREVIEW_LOADING_ERROR: bool = false;
 #[derive(Clone, lurq::DevtoolsInspectable)]
 pub struct LoadingIdentityScreenProps {
   pub storage: Signal<Option<Storage>>,
+  pub startup_error: Option<String>,
 }
 
 impl PartialEq for LoadingIdentityScreenProps {
   fn eq(&self, other: &Self) -> bool {
-    self.storage.id() == other.storage.id()
+    self.storage.id() == other.storage.id() && self.startup_error == other.startup_error
   }
 }
 
@@ -117,15 +118,25 @@ impl Component for LoadingIdentityScreen {
     let props = ctx.props::<Self::Props>().clone();
     let copy = LoadingIdentityCopy::from_ctx(ctx);
     let retry_nonce = self.retry_nonce.get();
-    let startup = ctx
-      .future(retry_nonce, {
-        let progress = self.progress.clone();
-        let startup_copy = copy.startup.clone();
-        move |_| load_startup_data(progress.clone(), startup_copy.clone())
-      })
-      .state()
-      .get();
-    let progress = if let Some(error) = startup.error.as_ref() {
+    let startup = if retry_nonce == 0 && props.startup_error.is_some() {
+      None
+    } else {
+      Some(
+        ctx
+          .future(retry_nonce, {
+            let progress = self.progress.clone();
+            let startup_copy = copy.startup.clone();
+            let initial_storage = props.storage.get_untracked();
+            move |_| load_startup_data(progress.clone(), startup_copy.clone(), initial_storage.clone())
+          })
+          .state()
+          .get(),
+      )
+    };
+    let startup_error = startup.as_ref().and_then(|startup| startup.error.clone());
+    let initial_error = (retry_nonce == 0).then(|| props.startup_error.clone()).flatten();
+    let progress_error = startup_error.as_ref().or(initial_error.as_ref());
+    let progress = if let Some(error) = progress_error {
       StartupProgress::new(
         1.0,
         ctx.t_args("loading_identity.progress.storage_failed", [("error", error.clone())]),
@@ -137,11 +148,11 @@ impl Component for LoadingIdentityScreen {
     let error = if PREVIEW_LOADING_ERROR {
       self.preview_error_visible.get().then(|| preview_error.to_string())
     } else {
-      startup.error
+      initial_error.or(startup_error)
     };
 
     if !PREVIEW_LOADING_ERROR
-      && let Some(data) = startup.data.as_ref()
+      && let Some(data) = startup.as_ref().and_then(|startup| startup.data.as_ref())
       && self.minimum_visible.get()
       && !self.navigated.get_untracked()
     {

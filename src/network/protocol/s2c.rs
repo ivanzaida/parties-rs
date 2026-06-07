@@ -38,8 +38,7 @@ pub enum S2C {
   ChatFileUploadResp(ChatFileUploadResponse),
   ChatFileReady {
     message_id: u64,
-    file_index: u8,
-    file_id: u64,
+    attachment_id: u64,
   },
   ChatSearchResp {
     channel_id: ChannelId,
@@ -107,13 +106,11 @@ impl S2C {
       M::ChatFileReady => {
         let mut r = BinaryReader::new(bytes);
         let message_id = r.read_u64()?;
-        let file_index = r.read_u8()?;
-        let file_id = r.read_u64()?;
+        let attachment_id = r.read_u64()?;
         r.finish()?;
         Ok(Self::ChatFileReady {
           message_id,
-          file_index,
-          file_id,
+          attachment_id,
         })
       }
       M::ChatSearchResp => {
@@ -207,6 +204,24 @@ mod tests {
       S2C::ServerError { message } => assert_eq!(message, "bad request"),
       other => panic!("expected ServerError, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn chat_file_ready_decodes_attachment_id() {
+    let mut w = super::super::BinaryWriter::new();
+    w.write_u64(42);
+    w.write_u64(7);
+    let frame = ControlFrame {
+      ty: ControlMessageType::ChatFileReady,
+      payload: w.into_bytes(),
+    };
+    assert_eq!(
+      S2C::decode(&frame).unwrap(),
+      S2C::ChatFileReady {
+        message_id: 42,
+        attachment_id: 7,
+      }
+    );
   }
 
   #[test]

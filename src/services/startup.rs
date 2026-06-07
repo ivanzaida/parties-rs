@@ -50,10 +50,11 @@ fn update_progress(progress: &lurq::core::Signal<StartupProgress>, ratio: f32, l
 fn load_startup_data_sync(
   progress: lurq::core::Signal<StartupProgress>,
   labels: StartupProgressLabels,
+  initial_storage: Option<Storage>,
 ) -> Result<StartupData, String> {
   update_progress(&progress, 0.24, labels.opening_storage);
 
-  match Storage::open_default() {
+  match initial_storage.map_or_else(Storage::open_default, Ok) {
     Ok(storage) => {
       update_progress(&progress, 0.52, labels.checking_identity);
       let has_identity = storage.has_identity().map_err(|error| error.to_string())?;
@@ -80,9 +81,10 @@ fn load_startup_data_sync(
 pub async fn load_startup_data(
   progress: lurq::core::Signal<StartupProgress>,
   labels: StartupProgressLabels,
+  initial_storage: Option<Storage>,
 ) -> Result<StartupData, String> {
   progress.set(StartupProgress::new(0.08, labels.starting.clone()));
-  tokio::task::spawn_blocking(move || load_startup_data_sync(progress, labels))
+  tokio::task::spawn_blocking(move || load_startup_data_sync(progress, labels, initial_storage))
     .await
     .map_err(|error| error.to_string())?
 }
