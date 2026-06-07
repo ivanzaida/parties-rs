@@ -1,12 +1,7 @@
-use std::time::Duration;
-
 mod server_card;
 
 use lurq::{
-  app::{
-    component::Component,
-    ctx::{Ctx, Timeout},
-  },
+  app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
@@ -16,20 +11,19 @@ use server_card::{ServerCard, ServerCardProps, ServerCardState};
 
 use crate::{
   routes::{ROUTE_CONNECT_SERVER, ROUTE_SETTINGS},
+  session::{ConnectedServerInfo, ServerSession},
   storage::{Storage, StoredServer},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
-    connect_server::ConnectOrigin,
+    connect_server::{ConnectOrigin, connect_and_store},
   },
 };
 
-const CONNECT_PREVIEW_DELAY: Duration = Duration::from_millis(1300);
-
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
+  running: Signal<Option<String>>,
   failed: Signal<Option<String>>,
-  connect_timeout: Timeout,
 }
 
 impl Component for SavedServersScreen {
@@ -38,27 +32,45 @@ impl Component for SavedServersScreen {
   fn create(ctx: &mut Ctx) -> Self {
     let connecting = ctx.signal(None::<String>);
     let failed = ctx.signal(None::<String>);
-    let timeout_connecting = connecting.clone();
-    let timeout_failed = failed.clone();
-    let connect_timeout = ctx.create_timeout(CONNECT_PREVIEW_DELAY, move || {
-      if let Some(address) = timeout_connecting.get_untracked() {
-        timeout_connecting.set(None);
-        timeout_failed.set(Some(address));
-      }
-    });
 
     Self {
       connecting,
+      running: ctx.signal(None::<String>),
       failed,
-      connect_timeout,
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
     let servers = ctx
       .use_context::<Storage>()
       .and_then(|storage| storage.load_servers().ok())
       .unwrap_or_default();
+    let connect = ctx.future_action(move |server: StoredServer| {
+      let storage = storage.clone();
+      let session = session.clone();
+      async move {
+        let display_name = if server.display_name.trim().is_empty() {
+          storage
+            .as_ref()
+            .and_then(|storage| storage.load_settings().ok())
+            .map(|settings| settings.display_name)
+            .unwrap_or_default()
+        } else {
+          server.display_name.clone()
+        };
+        connect_and_store(
+          server.address.clone(),
+          server.server_password.clone(),
+          display_name,
+          storage,
+          session,
+        )
+        .await
+      }
+    });
+    self.sync_connection_state(&servers, &connect);
 
     Column::new()
       .width(Dimension::Pct(100.0))
@@ -75,7 +87,40 @@ impl Component for SavedServersScreen {
   }
 }
 
+type ConnectAction = lurq::app::ctx::FutureAction<StoredServer, ConnectedServerInfo, String>;
+
 impl SavedServersScreen {
+  fn sync_connection_state(&self, servers: &[StoredServer], connect: &ConnectAction) {
+    let state = connect.state().get();
+
+    if let Some(address) = self.running.get_untracked() {
+      if state.is_fulfilled() {
+        self.running.set(None);
+        self.connecting.set(None);
+        self.failed.set(None);
+      } else if state.is_rejected() {
+        self.running.set(None);
+        self.connecting.set(None);
+        self.failed.set(Some(address));
+      }
+    }
+
+    let Some(address) = self.connecting.get() else {
+      return;
+    };
+    if self.running.get_untracked().is_some() {
+      return;
+    }
+    let Some(server) = servers.iter().find(|server| server.address == address).cloned() else {
+      self.connecting.set(None);
+      return;
+    };
+
+    self.failed.set(None);
+    self.running.set(Some(address));
+    connect.run(server);
+  }
+
   fn empty_state(&self, ctx: &mut Ctx) -> impl Into<Element> {
     Column::new()
       .width(Dimension::Pct(100.0))
@@ -124,10 +169,6 @@ impl SavedServersScreen {
     let failed = self.failed.get();
     let connecting_signal = self.connecting.clone();
     let failed_signal = self.failed.clone();
-
-    if connecting.is_some() && !self.connect_timeout.is_active() {
-      self.connect_timeout.start();
-    }
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
@@ -331,10 +372,10 @@ fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTon
     ),
     ButtonTone::Secondary => (
       BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised),
-      BackgroundColor::Palette(theme::PaletteColor::BorderStrong),
+      BackgroundColor::Palette(theme::PaletteColor::Accent),
       theme::PaletteColor::TextPrimary,
-      theme::palette().text_secondary,
-      BackgroundColor::Palette(theme::PaletteColor::SurfaceInput),
+      theme::palette().accent,
+      BackgroundColor::Palette(theme::PaletteColor::AccentMuted),
     ),
   };
 

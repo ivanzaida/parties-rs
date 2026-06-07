@@ -96,7 +96,6 @@ impl ImportIdentityScreen {
           .rounded(theme::RadiusSize::Lg)
           .background(input_background)
           .border_inside(1.0, input_border.clone())
-          .focused_style(Style::new().border_inside(1.0, input_border))
           .caret_color(theme::PaletteColor::Accent)
           .multiline(),
       );

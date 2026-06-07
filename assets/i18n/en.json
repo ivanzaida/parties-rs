@@ -1,0 +1,630 @@
+{
+  "common": {
+    "app_name": "Parties",
+    "action": {
+      "cancel": "Cancel"
+    }
+  },
+  "loading": {
+    "caption": "LOCAL IDENTITY",
+    "title": "Preparing workspace",
+    "desc": "Opening your local identity store and saved server list.",
+    "meta_title": "Encrypted local-first setup",
+    "meta_desc": "Your identity is stored on this device and used to authenticate to servers.",
+    "card_title": "Startup checks",
+    "status": {
+      "title": "Checking storage",
+      "desc": "This usually takes a moment."
+    },
+    "identity": {
+      "title": "Identity store",
+      "desc": "Opening local credentials"
+    },
+    "servers": {
+      "title": "Saved servers",
+      "desc": "Loading connection targets"
+    }
+  },
+  "loading_identity": {
+    "subtitle": "Voice workspace",
+    "progress": {
+      "starting": "Starting workspace...",
+      "opening_storage": "Checking local storage...",
+      "checking_identity": "Checking saved identity...",
+      "loading_servers": "Loading saved servers...",
+      "preparing_workspace": "Preparing workspace...",
+      "opening_workspace": "Opening workspace...",
+      "storage_failed": "Storage check failed: {{error}}"
+    },
+    "preview": {
+      "storage_error": "sqlite: unable to open local database"
+    },
+    "failure": {
+      "title": "Local storage unavailable",
+      "description": "Parties could not open its identity store. Your keys can't be read or saved until this is resolved."
+    },
+    "action": {
+      "retry": "Retry",
+      "open_data_folder": "Open data folder"
+    }
+  },
+  "identity": {
+    "action": {
+      "back": "Back",
+      "continue_saved": "Copy and continue",
+      "import_key": "Import key",
+      "restore": "Restore identity"
+    },
+    "setup": {
+      "caption": "IDENTITY",
+      "title": "Create your local identity",
+      "desc": "Choose how Parties should identify you when joining voice workspaces.",
+      "meta_title": "Keep this device trusted",
+      "meta_desc": "Identity material stays local. Back it up before using it on another device.",
+      "heading": "Identity setup",
+      "option": {
+        "generate_title": "Generate a new seed phrase",
+        "generate_desc": "Create a fresh identity and recovery phrase.",
+        "restore_title": "Restore from seed phrase",
+        "restore_desc": "Recover an identity you already saved.",
+        "import_title": "Import private key",
+        "import_desc": "Use a raw private key from another client."
+      },
+      "storage_note": "Local storage is ready.",
+      "storage_unavailable": "Local storage is unavailable. Fix storage before creating an identity."
+    },
+    "seed": {
+      "caption": "RECOVERY",
+      "title": "Save this seed phrase",
+      "desc": "This phrase is the only recovery path for the identity you are about to use.",
+      "meta_title": "Copy it before continuing",
+      "meta_desc": "Store it somewhere private. Anyone with this phrase can act as you.",
+      "copy_failed_title": "Clipboard unavailable",
+      "copy_failed_desc": "Copy the phrase manually before continuing.",
+      "recovery_failed_title": "Seed phrase missing",
+      "recovery_failed_desc": "The generated recovery phrase could not be validated.",
+      "save_failed_title": "Save failed",
+      "save_failed_desc": "The identity could not be written to local storage.",
+      "heading": "Recovery phrase",
+      "status": {
+        "unavailable": "Recovery phrase unavailable"
+      }
+    },
+    "restore": {
+      "caption": "RESTORE",
+      "title": "Restore an identity",
+      "desc": "Paste your recovery phrase to rebuild your local credentials.",
+      "meta_title": "Use the exact phrase",
+      "meta_desc": "Word order matters. Extra words or missing words will fail validation.",
+      "heading": "Seed phrase",
+      "field_label": "SEED PHRASE",
+      "placeholder": "twelve words separated by spaces",
+      "help": "Paste the full phrase exactly as saved.",
+      "status": {
+        "invalid": "Enter a valid seed phrase."
+      }
+    },
+    "import": {
+      "caption": "IMPORT",
+      "title": "Import a private key",
+      "desc": "Use an existing raw key when you already manage recovery elsewhere.",
+      "meta_title": "Advanced identity import",
+      "meta_desc": "Only import keys from sources you control and trust.",
+      "heading": "Private key",
+      "field_label": "PRIVATE KEY",
+      "placeholder": "hex encoded private key",
+      "warning": "Private keys are sensitive. Never paste keys from an untrusted source.",
+      "status": {
+        "invalid": "Enter a valid private key."
+      }
+    }
+  },
+  "identity_setup": {
+    "intro": {
+      "headline": "A local identity,\nheld only by you.",
+      "description": "Parties identifies you with a cryptographic key generated and stored on this device. There is no account, no email, and no server-side recovery. Whoever holds the key is the identity.",
+      "footer": "Keys never leave this machine unless you export them."
+    },
+    "overline": "IDENTITY",
+    "title": "Set up your identity",
+    "subtitle": "Choose how to create the key this client will use to authenticate with servers.",
+    "option": {
+      "generate": {
+        "title": "Generate new identity",
+        "description": "Create a fresh key and a 12-word recovery phrase"
+      },
+      "restore": {
+        "title": "Restore recovery phrase",
+        "description": "Enter an existing 12-word seed phrase"
+      },
+      "import": {
+        "title": "Import private key",
+        "description": "Paste a raw 64-character hex key"
+      }
+    },
+    "notice": {
+      "no_identity": "No identity was found on this device. Pick an option to continue."
+    }
+  },
+  "identity_seed": {
+    "intro": {
+      "headline": "This phrase is\nyour only backup.",
+      "description": "These twelve words regenerate your private key. Anyone with them controls your identity, and no one — including this client — can recover them for you. Write them down and store them offline.",
+      "footer": "Never paste your phrase into a website or chat."
+    },
+    "overline": "IDENTITY · BACKUP",
+    "title": "Back up your recovery phrase",
+    "subtitle": "Record these words in order before continuing.",
+    "action": {
+      "copy": "Copy phrase",
+      "copied": "Copied",
+      "hide": "Hide",
+      "show": "Show",
+      "continue": "Continue"
+    },
+    "confirm": "I have written down my recovery phrase"
+  },
+  "identity_restore": {
+    "intro": {
+      "headline": "Restore an\nexisting identity.",
+      "description": "Enter the twelve-word recovery phrase you saved when the identity was first generated. The same key will be reconstructed locally.",
+      "footer": "Words are validated against the standard word list."
+    },
+    "overline": "IDENTITY · RESTORE",
+    "title": "Enter your recovery phrase",
+    "subtitle": "Twelve words, in order, separated by spaces.",
+    "field_label": "RECOVERY PHRASE",
+    "placeholder": "twelve words separated by spaces",
+    "hint": {
+      "valid": "12 / 12 words · all recognised",
+      "count": "{{count}} / 12 words · enter a standard recovery phrase"
+    },
+    "error": {
+      "invalid_word": "Word {{index}} \"{{word}}\" is not in the word list. Check for typos."
+    },
+    "action": {
+      "back": "Back",
+      "restore": "Restore identity"
+    }
+  },
+  "identity_import": {
+    "intro": {
+      "headline": "Import a raw\nprivate key.",
+      "description": "Paste an existing 64-character hexadecimal private key. Use this when migrating an identity that was generated outside of Parties.",
+      "footer": "The key is stored locally and never transmitted."
+    },
+    "overline": "IDENTITY · IMPORT",
+    "title": "Import private key",
+    "subtitle": "64 hexadecimal characters (0–9, a–f).",
+    "field_label": "PRIVATE KEY",
+    "placeholder": "paste 64-character hex private key",
+    "hint": {
+      "count": "{{count}} / 64 characters · enter a 64-character hex key",
+      "valid": "64 / 64 characters · valid hex"
+    },
+    "error": {
+      "length": "Key must be 64 hex characters — you entered {{count}}.",
+      "hex": "Key must contain only hexadecimal characters."
+    },
+    "action": {
+      "back": "Back",
+      "import": "Import identity"
+    }
+  },
+  "servers": {
+    "user": {
+      "initials": "ID",
+      "name": "Local identity"
+    },
+    "overline": "CONNECT",
+    "title": "Saved servers",
+    "action": {
+      "add": "Add server",
+      "add_one": "Add a server",
+      "retry": "Retry"
+    },
+    "empty": {
+      "title": "No servers yet",
+      "description": "Connect to an endpoint to get started. Once authentication succeeds, the server is saved here for one-click access."
+    },
+    "footer": {
+      "saved_count": "Saved locally · {{count}} servers"
+    },
+    "row": {
+      "connecting": "Connecting...",
+      "error": "Connection refused — host unreachable on {{port}}"
+    }
+  },
+  "connect_server": {
+    "back_to_list": "Back to server list",
+    "back_to_settings": "Back to saved servers",
+    "overline": "NEW CONNECTION",
+    "title": "Connect to a server",
+    "address": {
+      "label": "SERVER ADDRESS",
+      "placeholder": "atlas.party.example:7800",
+      "hint": "Host and port, e.g. server.example:7800"
+    },
+    "display_name": {
+      "label": "DISPLAY NAME",
+      "placeholder": "shown to other users",
+      "hint": "Defaults from identity settings, but can be changed for this server."
+    },
+    "seed": {
+      "label": "Server password",
+      "optional": "(optional)",
+      "placeholder": "optional password",
+      "hint": "Use this only if the server requires a password."
+    },
+    "authenticating": "Authenticating with {{host}} — verifying certificate...",
+    "action": {
+      "cancel": "Cancel",
+      "connect": "Connect",
+      "connecting": "Connecting..."
+    }
+  },
+  "settings": {
+    "nav": {
+      "back_to_server": "Back to {{server}}",
+      "back_to_server_selection": "Back to server selection",
+      "section": {
+        "account": "ACCOUNT",
+        "device": "DEVICE"
+      },
+      "overview": "Overview",
+      "identity": "Identity",
+      "servers": "Saved servers",
+      "audio": "Audio",
+      "video": "Video"
+    },
+    "overview": {
+      "title": "Settings",
+      "description": "Manage your local identity, trusted servers, and app preferences.",
+      "identity": {
+        "title": "Identity",
+        "subtitle": "Local identity",
+        "public_id": "Public ID",
+        "manage": "Manage identity",
+        "ready": "Local identity is ready",
+        "missing": "No local identity found",
+        "action": "Open"
+      },
+      "servers": {
+        "title": "Saved servers",
+        "count_one": "1 saved server",
+        "count_many": "{{count}} saved servers",
+        "trusted": "All fingerprints trusted",
+        "untrusted": "Some fingerprints are new",
+        "empty_subtitle": "No trusted fingerprints",
+        "last_connected": "Last connected",
+        "none": "No recent server",
+        "manage": "Manage servers",
+        "action": "Manage"
+      },
+      "toggles": "QUICK TOGGLES",
+      "toggle": {
+        "muted": {
+          "title": "Start muted when joining",
+          "description": "Join voice channels with microphone muted by default."
+        },
+        "login": {
+          "title": "Launch Parties at login",
+          "description": "Start the client automatically when this device signs in."
+        }
+      }
+    },
+    "identity": {
+      "title": "Identity",
+      "description": "This key authenticates you with every server. It lives only on this device.",
+      "missing": "Not available",
+      "section": {
+        "public": "PUBLIC IDENTITY",
+        "backup": "BACKUP & EXPORT",
+        "danger": "DANGER ZONE"
+      },
+      "display_name": {
+        "$value": "Display name",
+        "description": "Default name shown to other users when connecting to servers.",
+        "placeholder": "shown to other users"
+      },
+      "public_id": {
+        "$value": "Public ID",
+        "description": "Short public key identifier used by servers."
+      },
+      "fingerprint": {
+        "$value": "Key fingerprint",
+        "description": "Full fingerprint for verifying this local identity."
+      },
+      "recovery": {
+        "$value": "Recovery phrase",
+        "description": "Reveal the 12 words that back up this identity.",
+        "unavailable": "No recovery phrase is stored for imported identities."
+      },
+      "export": {
+        "$value": "Export private key",
+        "description": "Copy the raw 64-character key for migration."
+      },
+      "status": {
+        "verified": "VERIFIED"
+      },
+      "action": {
+        "reveal": "Reveal",
+        "copy": "Copy",
+        "copied": "Copied",
+        "export": "Export",
+        "unavailable": "Unavailable",
+        "remove": "Remove"
+      },
+      "remove": {
+        "$value": "Remove local identity",
+        "description": "Deletes the local key. Without your recovery phrase this is permanent and irreversible."
+      },
+      "confirm_remove": {
+        "title": "Remove identity from this device?",
+        "body": "This deletes the local key from this device. Without your recovery phrase, this identity is permanently lost and cannot be recovered.",
+        "warning": "Make sure your 12-word recovery phrase is backed up first.",
+        "confirm": "Remove identity"
+      }
+    },
+    "servers": {
+      "title": "Saved servers",
+      "description": "Servers are saved after a successful connection. Forgetting one also clears its trusted fingerprint.",
+      "empty": "No saved servers",
+      "action": {
+        "add": "Add server",
+        "forget": "Forget"
+      },
+      "menu": {
+        "connect": "Connect",
+        "copy_address": "Copy address",
+        "view_fingerprint": "View fingerprint",
+        "forget": "Forget server"
+      },
+      "confirm_forget": {
+        "title": "Forget {{server}}?",
+        "body": "This removes the saved server and its trusted fingerprint. The next connection will be treated as a first connection and re-pinned.",
+        "confirm": "Forget server"
+      },
+      "fingerprint": {
+        "title": "Server fingerprint",
+        "description": "Certificate fingerprint saved for {{server}}.",
+        "empty": "No certificate fingerprint is stored for this server.",
+        "copy": "Copy fingerprint",
+        "close": "Close"
+      },
+      "notice": {
+        "title": "Saved locally",
+        "description": "{{count}} servers are stored on this device."
+      }
+    },
+    "not_wired": {
+      "title": "Not yet wired"
+    },
+    "audio": {
+      "title": "Audio",
+      "description": "Choose which local devices Parties should use for voice input and playback.",
+      "not_wired": "Audio device APIs are not connected yet, so these controls are disabled.",
+      "input": {
+        "$value": "INPUT",
+        "device": {
+          "$value": "Input device",
+          "description": "Choose the microphone used for voice."
+        },
+        "gain": {
+          "$value": "Input gain",
+          "description": "Adjust microphone level before sending audio."
+        }
+      },
+      "output": {
+        "$value": "OUTPUT",
+        "device": {
+          "$value": "Output device",
+          "description": "Choose where voice playback is routed."
+        },
+        "volume": {
+          "$value": "Output volume",
+          "description": "Set the default playback level."
+        }
+      },
+      "device": {
+        "system": "System default"
+      },
+      "pending": "PENDING DEVICE API",
+      "microphone": {
+        "$value": "Microphone",
+        "description": "Choose the capture device"
+      },
+      "input_level": {
+        "$value": "Input level",
+        "description": "Live microphone signal",
+        "percent": "{{value}}%",
+        "unavailable": "--%"
+      },
+      "speaker": {
+        "$value": "Speaker",
+        "description": "Choose the playback device"
+      },
+      "notification_volume": {
+        "$value": "Notification volume",
+        "description": "Set the volume for app notification sounds."
+      },
+      "processing": "PROCESSING",
+      "noise_cancellation": {
+        "$value": "Noise cancellation",
+        "description": "Reduce steady background noise before sending audio."
+      },
+      "voice_normalization": {
+        "$value": "Voice normalization",
+        "description": "Keep microphone volume consistent while speaking."
+      },
+      "target_level": {
+        "$value": "Target level",
+        "description": "Preferred normalized voice volume."
+      },
+      "echo_cancellation": {
+        "$value": "Echo cancellation",
+        "description": "Reduce speaker audio picked up by the microphone."
+      },
+      "transmission": "TRANSMISSION",
+      "voice_activation": {
+        "$value": "Voice activation",
+        "description": "Send audio automatically when your voice is detected."
+      },
+      "threshold": {
+        "$value": "Activation threshold",
+        "description": "Minimum input level required to transmit.",
+        "speaking": "Speaking",
+        "silent": "Silent"
+      },
+      "push_to_talk": {
+        "$value": "Push to talk",
+        "description": "Transmit only while the push-to-talk key is held."
+      },
+      "hotkeys": "HOTKEYS",
+      "hotkey": {
+        "toggle_mute": {
+          "$value": "Toggle mute",
+          "description": "Keyboard shortcut for muting and unmuting."
+        },
+        "push_to_talk": {
+          "$value": "Push to talk",
+          "description": "Keyboard shortcut used while push-to-talk is enabled."
+        },
+        "toggle_deafen": {
+          "$value": "Toggle deafen",
+          "description": "Keyboard shortcut for deafening and undeafening."
+        },
+        "not_set": "Not set",
+        "recording": "Press keys"
+      }
+    },
+    "video": {
+      "title": "Video",
+      "description": "Choose capture, camera, and stream quality preferences.",
+      "section": {
+        "camera": "WEBCAM",
+        "screen_sharing": "SCREEN SHARING"
+      },
+      "device": {
+        "system": "System default"
+      },
+      "webcam": {
+        "$value": "Webcam",
+        "description": "Choose the camera used for video."
+      },
+      "codec": {
+        "$value": "Codec",
+        "description": "Choose the preferred video encoder.",
+        "placeholder": "AV1"
+      },
+      "scale": {
+        "$value": "Scale",
+        "description": "Set the preferred screen capture scale.",
+        "source": "Source"
+      },
+      "fps": {
+        "$value": "FPS",
+        "description": "Set the preferred capture frame rate.",
+        "placeholder": "60 fps",
+        "value": "{{value}} fps"
+      },
+      "bitrate": {
+        "$value": "Bitrate",
+        "description": "Set the target stream bitrate.",
+        "unit": "Mbps"
+      }
+    }
+  },
+  "server_select": {
+    "caption": "SERVERS",
+    "title": "Choose a workspace",
+    "desc": "Connect to a saved server or add a new one.",
+    "heading": "Saved servers",
+    "action": {
+      "add": "Add",
+      "drop_identity": "Delete local identity"
+    },
+    "drop_identity_failed": "Could not delete the local identity.",
+    "connect_failed": "Connection failed.",
+    "status": {
+      "loading": "Loading saved servers...",
+      "empty": "No saved servers yet."
+    },
+    "meta_title_empty": "No saved servers",
+    "meta_title_one": "1 saved server",
+    "meta_title_many": "{{count}} saved servers",
+    "meta_desc_empty": "Add a server to start using voice.",
+    "meta_desc_saved": "Saved servers can reconnect with one click."
+  },
+  "server_connect": {
+    "caption": "CONNECT",
+    "title": "Add a server",
+    "desc": "Enter a server address and optional password.",
+    "meta_title": "Trust on first use",
+    "meta_desc": "Parties saves server certificates and warns you if they change.",
+    "heading": "Server details",
+    "address": {
+      "label": "SERVER ADDRESS",
+      "placeholder": "example.com:4433",
+      "error_required": "Server address is required.",
+      "error_format": "Enter a valid host or socket address."
+    },
+    "password": {
+      "label": "SERVER PASSWORD",
+      "placeholder": "optional"
+    },
+    "display_name": {
+      "label": "DISPLAY NAME",
+      "placeholder": "shown to other users"
+    },
+    "trust": {
+      "label": "TRUST STATUS",
+      "empty": "Enter a server address to preview trust status.",
+      "pending": "Ready to connect.",
+      "connecting": "Connecting...",
+      "connected": "Connected to {{server}} as user #{{user_id}}."
+    },
+    "action": {
+      "connect": "Connect"
+    },
+    "error": {
+      "storage_unavailable": "Local storage is unavailable.",
+      "load_identity_failed": "Could not load identity: {{detail}}",
+      "no_identity": "Create or restore an identity before connecting.",
+      "connect_failed": "Could not connect: {{detail}}",
+      "clock_failed": "System clock error: {{detail}}",
+      "auth_payload_failed": "Could not create auth payload: {{detail}}",
+      "auth_failed": "Authentication failed: {{detail}}",
+      "auth_unexpected_response": "Unexpected auth response: {{detail}}",
+      "auth_read_failed": "Could not read auth response: {{detail}}",
+      "certificate_missing": "Server certificate fingerprint is missing.",
+      "save_server_failed": "Could not save server: {{detail}}",
+      "invalid_address": "Invalid address: {{detail}}",
+      "address_unresolved": "Address did not resolve."
+    }
+  },
+  "tofu_warning": {
+    "caption": "SERVER TRUST",
+    "title": "Certificate changed",
+    "desc": "The server is presenting a different certificate than the one saved locally.",
+    "meta_title": "Verify before trusting",
+    "meta_desc": "Only trust the new certificate if you expect this server to have changed keys.",
+    "save_failed_title": "Trust update failed",
+    "save_failed_desc": "The new certificate could not be written to local storage.",
+    "heading": "Trust warning",
+    "saved_label": "SAVED FINGERPRINT",
+    "received_label": "RECEIVED FINGERPRINT",
+    "action": {
+      "disconnect": "Disconnect",
+      "trust": "Trust certificate"
+    }
+  },
+  "lobby": {
+    "server": {
+      "unknown": "Unknown server"
+    },
+    "user": {
+      "disconnected": "Disconnected"
+    }
+  }
+}

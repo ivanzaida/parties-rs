@@ -1,7 +1,7 @@
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Row, Text},
-  layout::{Alignment, layout_kind::Justify},
+  layout::Alignment,
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, dimension::Dimension},
 };
 
@@ -25,6 +25,23 @@ pub(super) enum SettingsPage {
 }
 
 pub(super) fn screen(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
+  screen_base(
+    ctx,
+    page,
+    Column::new()
+      .width(Dimension::Pct(100.0))
+      .height(Dimension::Pct(100.0))
+      .padding_vertical(40.0)
+      .padding_horizontal(40.0)
+      .child(content),
+  )
+}
+
+pub(super) fn screen_full(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
+  screen_base(ctx, page, content)
+}
+
+fn screen_base(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
   let window_height = ctx.window().logical_height();
 
   Row::new()
@@ -37,8 +54,6 @@ pub(super) fn screen(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Eleme
       Column::new()
         .flex(1.0)
         .height(Dimension::Pct(100.0))
-        .padding_vertical(40.0)
-        .padding_horizontal(40.0)
         .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
         .child(content),
     )
@@ -71,22 +86,6 @@ pub(super) fn card() -> Column {
     .rounded(theme::RadiusSize::Lg)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
     .border_inside(1.0, theme::PaletteColor::Border)
-}
-
-pub(super) fn section_label(label: &str, danger: bool) -> Element {
-  Row::new()
-    .width(Dimension::Pct(100.0))
-    .padding_vertical(theme::SpacingSize::Xs)
-    .child(
-      Text::new(label)
-        .variant(theme::TypographyStyle::Caption)
-        .color(if danger {
-          theme::PaletteColor::Danger
-        } else {
-          theme::PaletteColor::TextMuted
-        }),
-    )
-    .into()
 }
 
 pub(super) fn setting_row(label: &str, description: &str, trailing: Element, danger: bool) -> Element {
@@ -158,52 +157,6 @@ pub(super) fn value_text(value: &str) -> Element {
     .into()
 }
 
-pub(super) fn pill(label: &str, warning: bool) -> Element {
-  Row::new()
-    .height(22.0)
-    .align_items(Alignment::Center)
-    .justify(Justify::Center)
-    .padding_horizontal(theme::SpacingSize::Sm)
-    .rounded(theme::RadiusSize::Md)
-    .background(BackgroundColor::Palette(if warning {
-      theme::PaletteColor::WarningMuted
-    } else {
-      theme::PaletteColor::SurfaceRaised
-    }))
-    .border_inside(
-      1.0,
-      if warning {
-        BackgroundColor::Color(theme::palette().warning.with_opacity(0.4))
-      } else {
-        BackgroundColor::Palette(theme::PaletteColor::Border)
-      },
-    )
-    .child(
-      Text::new(label)
-        .variant(theme::TypographyStyle::Caption)
-        .color(if warning {
-          theme::PaletteColor::Warning
-        } else {
-          theme::PaletteColor::TextSecondary
-        }),
-    )
-    .into()
-}
-
-pub(super) fn disabled_select(label: &str) -> Element {
-  Row::new()
-    .height(34.0)
-    .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Sm)
-    .padding_horizontal(theme::SpacingSize::Lg)
-    .rounded(theme::RadiusSize::Md)
-    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .border_inside(1.0, theme::PaletteColor::Border)
-    .child(Text::new(label).variant(theme::TypographyStyle::Link))
-    .child(ctxless_chevron())
-    .into()
-}
-
 fn nav(ctx: &mut Ctx, page: SettingsPage) -> Element {
   Column::new()
     .width(320.0)
@@ -214,55 +167,48 @@ fn nav(ctx: &mut Ctx, page: SettingsPage) -> Element {
     .background(BackgroundColor::Color(theme::palette().surface_base.with_opacity(0.55)))
     .border_right(Border::inside(1.0, theme::PaletteColor::Border))
     .child(back_row(ctx))
-    .child(nav_section("ACCOUNT"))
+    .child(nav_section(&ctx.t("settings.nav.section.account")))
     .child(nav_item(
       ctx,
       SettingsPage::Overview,
       page,
       "user",
-      "Overview",
+      &ctx.t("settings.nav.overview"),
       ROUTE_SETTINGS,
-      false,
     ))
     .child(nav_item(
       ctx,
       SettingsPage::Identity,
       page,
       "key-round",
-      "Identity",
+      &ctx.t("settings.nav.identity"),
       ROUTE_SETTINGS_IDENTITY,
-      false,
     ))
     .child(nav_item(
       ctx,
       SettingsPage::Servers,
       page,
       "server",
-      "Saved servers",
+      &ctx.t("settings.nav.servers"),
       ROUTE_SETTINGS_SERVERS,
-      false,
     ))
-    .child(nav_section("DEVICE"))
+    .child(nav_section(&ctx.t("settings.nav.section.device")))
     .child(nav_item(
       ctx,
       SettingsPage::Audio,
       page,
       "sliders-horizontal",
-      "Audio",
+      &ctx.t("settings.nav.audio"),
       ROUTE_SETTINGS_AUDIO,
-      true,
     ))
     .child(nav_item(
       ctx,
       SettingsPage::Stream,
       page,
-      "monitor",
-      "Stream",
+      "video",
+      &ctx.t("settings.nav.video"),
       ROUTE_SETTINGS_STREAM,
-      true,
     ))
-    .child(nav_section("APP"))
-    .child(static_nav_item(ctx, "palette", "Appearance"))
     .into()
 }
 
@@ -331,11 +277,10 @@ fn nav_item(
   icon: &'static str,
   label: &str,
   route: &'static str,
-  soon: bool,
 ) -> Element {
   let active = item_page == current_page;
   let navigator = ctx.navigator();
-  let mut row = nav_item_base(ctx, icon, label, active, soon).cursor(CursorIcon::Pointer);
+  let mut row = nav_item_base(ctx, icon, label, active).cursor(CursorIcon::Pointer);
 
   if let Some(navigator) = navigator {
     row = row.on_click(move |_| navigator.push(route));
@@ -344,11 +289,7 @@ fn nav_item(
   row.into()
 }
 
-fn static_nav_item(ctx: &mut Ctx, icon: &'static str, label: &str) -> Element {
-  nav_item_base(ctx, icon, label, false, false).into()
-}
-
-fn nav_item_base(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool, soon: bool) -> Row {
+fn nav_item_base(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool) -> Row {
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -367,8 +308,6 @@ fn nav_item_base(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool, s
       size: 16.0,
       color: if active {
         theme::palette().text_primary
-      } else if soon {
-        theme::palette().text_muted
       } else {
         theme::palette().text_secondary
       },
@@ -378,19 +317,9 @@ fn nav_item_base(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool, s
         .variant(theme::TypographyStyle::Description)
         .color(if active {
           theme::PaletteColor::TextPrimary
-        } else if soon {
-          theme::PaletteColor::TextMuted
         } else {
           theme::PaletteColor::TextSecondary
         })
         .width(Dimension::Pct(100.0)),
     )
-    .child(if soon { pill("SOON", true) } else { Row::new().into() })
-}
-
-fn ctxless_chevron() -> Element {
-  Text::new("v")
-    .variant(theme::TypographyStyle::Mono)
-    .color(theme::PaletteColor::TextMuted)
-    .into()
 }

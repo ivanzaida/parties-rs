@@ -243,6 +243,45 @@ impl ServerSession {
       .map(|connected| connected.server.clone())
   }
 
+  pub fn local_voice_state(&self) -> Option<(bool, bool)> {
+    let user_id = self.info()?.user_id;
+    let lobby = self.lobby.lock().expect("server session lock poisoned");
+
+    lobby
+      .users
+      .iter()
+      .chain(lobby.users_by_channel.values().flatten())
+      .find(|user| user.user_id == user_id)
+      .map(|user| (user.muted, user.deafened))
+      .or(Some((false, false)))
+  }
+
+  pub fn set_local_voice_state(&self, muted: bool, deafened: bool) {
+    let Some(user_id) = self.info().map(|info| info.user_id) else {
+      return;
+    };
+
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      for user in &mut lobby.users {
+        if user.user_id == user_id {
+          user.muted = muted;
+          user.deafened = deafened;
+        }
+      }
+      for users in lobby.users_by_channel.values_mut() {
+        for user in users {
+          if user.user_id == user_id {
+            user.muted = muted;
+            user.deafened = deafened;
+          }
+        }
+      }
+    }
+
+    self.bump_revision();
+  }
+
   pub fn set_tofu_warning(&self, warning: TofuWarning) {
     *self.tofu_warning.lock().expect("server session lock poisoned") = Some(warning);
   }

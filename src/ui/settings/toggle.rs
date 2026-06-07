@@ -61,6 +61,8 @@ impl Component for SettingsToggle {
 
     if !enabled {
       track = track.border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")));
+    } else {
+      track = track.border_inside(1.0, palette.surface_raised);
     }
 
     track

@@ -1,6 +1,7 @@
 mod audio;
 mod identity;
 mod overview;
+mod refresh_button;
 mod saved_servers;
 mod shell;
 mod stream;

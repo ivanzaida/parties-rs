@@ -1,7 +1,7 @@
 use std::{
   net::SocketAddr,
   sync::Arc,
-  time::{SystemTime, UNIX_EPOCH},
+  time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use lurq::{
@@ -14,7 +14,10 @@ use lurq::{
 
 use crate::{
   identity::auth_identity,
-  network::{protocol::S2C, server::Server},
+  network::{
+    protocol::{DEFAULT_PORT, S2C},
+    server::Server,
+  },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SETTINGS_SERVERS},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession},
   storage::{AppSettings, Storage, StoredServer},
@@ -268,9 +271,9 @@ impl ConnectServerScreen {
   }
 }
 
-const DEFAULT_SERVER_PORT: u16 = 7800;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-async fn connect_and_store(
+pub async fn connect_and_store(
   address: String,
   seed: String,
   display_name: String,
@@ -287,22 +290,28 @@ async fn connect_and_store(
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "No local identity found.".to_owned())?;
 
-  let socket = resolve_address(address.clone()).await?;
-  let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
-  let fingerprint = server.certificate_fingerprint().unwrap_or_default();
+  let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let socket = resolve_address(address.clone()).await?;
+    let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
+    let fingerprint = server.certificate_fingerprint().unwrap_or_default();
 
-  let timestamp = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map_err(|error| error.to_string())?
-    .as_secs();
-  let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
-  server.authenticate(auth).await.map_err(|error| error.to_string())?;
+    let timestamp = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map_err(|error| error.to_string())?
+      .as_secs();
+    let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
+    server.authenticate(auth).await.map_err(|error| error.to_string())?;
 
-  let response = match server.recv().await.map_err(|error| error.to_string())? {
-    S2C::AuthResponse(response) => response,
-    S2C::ServerError { message } => return Err(message),
-    _ => return Err("Unexpected response from server.".to_owned()),
-  };
+    let response = match server.recv().await.map_err(|error| error.to_string())? {
+      S2C::AuthResponse(response) => response,
+      S2C::ServerError { message } => return Err(message),
+      _ => return Err("Unexpected response from server.".to_owned()),
+    };
+
+    Ok::<_, String>((server, fingerprint, response))
+  })
+  .await
+  .map_err(|_| format!("Connection timed out after {} seconds.", CONNECT_TIMEOUT.as_secs()))??;
 
   let info = ConnectedServerInfo {
     address: address.clone(),
@@ -342,14 +351,14 @@ fn with_default_port(address: &str) -> String {
   if let Some(rest) = address.strip_prefix('[') {
     return match rest.find(']') {
       Some(end) if rest[end + 1..].starts_with(':') => address.to_owned(),
-      _ => format!("{address}:{DEFAULT_SERVER_PORT}"),
+      _ => format!("{address}:{DEFAULT_PORT}"),
     };
   }
 
   if address.contains(':') {
     address.to_owned()
   } else {
-    format!("{address}:{DEFAULT_SERVER_PORT}")
+    format!("{address}:{DEFAULT_PORT}")
   }
 }
 
@@ -515,11 +524,6 @@ fn ghost_button(label: &str) -> Button {
     .tab_index(4)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .focused_style(
-      Style::new()
-        .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-        .border_inside(1.0, theme::PaletteColor::BorderFocus),
-    )
     .child(
       Text::new(label)
         .variant(theme::TypographyStyle::Button)
@@ -559,12 +563,7 @@ fn connect_button(label: &str, enabled: bool) -> Button {
       .submit()
       .cursor(CursorIcon::Pointer)
       .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentHover)))
-      .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentHover)))
-      .focused_style(
-        Style::new()
-          .background(BackgroundColor::Palette(theme::PaletteColor::AccentHover))
-          .border_inside(1.0, theme::PaletteColor::BorderFocus),
-      );
+      .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentHover)));
   } else {
     button = button.button();
   }

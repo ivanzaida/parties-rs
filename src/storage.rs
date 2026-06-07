@@ -56,11 +56,29 @@ impl From<std::time::SystemTimeError> for StorageError {
   }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppSettings {
   pub start_muted_when_joining: bool,
   pub launch_parties_at_login: bool,
   pub display_name: String,
+  pub audio_input_device: String,
+  pub audio_output_device: String,
+  pub notification_volume: i32,
+  pub noise_cancellation: bool,
+  pub voice_normalization: bool,
+  pub voice_normalization_target_level: i32,
+  pub echo_cancellation: bool,
+  pub voice_activation: bool,
+  pub voice_activation_threshold: i32,
+  pub push_to_talk: bool,
+  pub hotkey_push_to_talk: String,
+  pub hotkey_toggle_mute: String,
+  pub hotkey_toggle_deafen: String,
+  pub video_webcam_device: String,
+  pub video_codec: String,
+  pub video_scale_percent: i32,
+  pub video_fps: i32,
+  pub video_bitrate_mbps: f32,
 }
 
 impl Default for AppSettings {
@@ -69,6 +87,24 @@ impl Default for AppSettings {
       start_muted_when_joining: true,
       launch_parties_at_login: false,
       display_name: default_display_name(),
+      audio_input_device: String::new(),
+      audio_output_device: String::new(),
+      notification_volume: 100,
+      noise_cancellation: true,
+      voice_normalization: true,
+      voice_normalization_target_level: 100,
+      echo_cancellation: false,
+      voice_activation: true,
+      voice_activation_threshold: 27,
+      push_to_talk: false,
+      hotkey_push_to_talk: String::new(),
+      hotkey_toggle_mute: String::new(),
+      hotkey_toggle_deafen: String::new(),
+      video_webcam_device: String::new(),
+      video_codec: "AV1".to_owned(),
+      video_scale_percent: 100,
+      video_fps: 60,
+      video_bitrate_mbps: 20.0,
     }
   }
 }
@@ -235,13 +271,54 @@ impl Storage {
     let conn = self.connection()?;
     conn.execute(
       r#"
-      INSERT OR REPLACE INTO app_settings (id, start_muted_when_joining, launch_parties_at_login, display_name)
-      VALUES (1, ?1, ?2, ?3)
+      INSERT OR REPLACE INTO app_settings (
+        id,
+        start_muted_when_joining,
+        launch_parties_at_login,
+        display_name,
+        audio_input_device,
+        audio_output_device,
+        notification_volume,
+        noise_cancellation,
+        voice_normalization,
+        voice_normalization_target_level,
+        echo_cancellation,
+        voice_activation,
+        voice_activation_threshold,
+        push_to_talk,
+        hotkey_push_to_talk,
+        hotkey_toggle_mute,
+        hotkey_toggle_deafen,
+        video_webcam_device,
+        video_codec,
+        video_scale_percent,
+        video_fps,
+        video_bitrate_mbps
+      )
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
         bool_to_int(settings.launch_parties_at_login),
-        &settings.display_name
+        &settings.display_name,
+        &settings.audio_input_device,
+        &settings.audio_output_device,
+        settings.notification_volume,
+        bool_to_int(settings.noise_cancellation),
+        bool_to_int(settings.voice_normalization),
+        settings.voice_normalization_target_level,
+        bool_to_int(settings.echo_cancellation),
+        bool_to_int(settings.voice_activation),
+        settings.voice_activation_threshold,
+        bool_to_int(settings.push_to_talk),
+        &settings.hotkey_push_to_talk,
+        &settings.hotkey_toggle_mute,
+        &settings.hotkey_toggle_deafen,
+        &settings.video_webcam_device,
+        &settings.video_codec,
+        settings.video_scale_percent,
+        settings.video_fps,
+        settings.video_bitrate_mbps
       ],
     )?;
     Ok(())
@@ -251,7 +328,28 @@ impl Storage {
     let conn = self.connection()?;
     let mut stmt = conn.prepare(
       r#"
-      SELECT start_muted_when_joining, launch_parties_at_login, display_name
+      SELECT
+        start_muted_when_joining,
+        launch_parties_at_login,
+        display_name,
+        audio_input_device,
+        audio_output_device,
+        notification_volume,
+        noise_cancellation,
+        voice_normalization,
+        voice_normalization_target_level,
+        echo_cancellation,
+        voice_activation,
+        voice_activation_threshold,
+        push_to_talk,
+        hotkey_push_to_talk,
+        hotkey_toggle_mute,
+        hotkey_toggle_deafen,
+        video_webcam_device,
+        video_codec,
+        video_scale_percent,
+        video_fps,
+        video_bitrate_mbps
       FROM app_settings
       WHERE id = 1
       "#,
@@ -266,6 +364,24 @@ impl Storage {
       start_muted_when_joining: int_to_bool(row.get(0)?),
       launch_parties_at_login: int_to_bool(row.get(1)?),
       display_name: row.get(2)?,
+      audio_input_device: row.get(3)?,
+      audio_output_device: row.get(4)?,
+      notification_volume: row.get(5)?,
+      noise_cancellation: int_to_bool(row.get(6)?),
+      voice_normalization: int_to_bool(row.get(7)?),
+      voice_normalization_target_level: row.get(8)?,
+      echo_cancellation: int_to_bool(row.get(9)?),
+      voice_activation: int_to_bool(row.get(10)?),
+      voice_activation_threshold: row.get(11)?,
+      push_to_talk: int_to_bool(row.get(12)?),
+      hotkey_push_to_talk: row.get(13)?,
+      hotkey_toggle_mute: row.get(14)?,
+      hotkey_toggle_deafen: row.get(15)?,
+      video_webcam_device: row.get(16)?,
+      video_codec: row.get(17)?,
+      video_scale_percent: row.get(18)?,
+      video_fps: row.get(19)?,
+      video_bitrate_mbps: row.get(20)?,
     })
   }
 
@@ -397,7 +513,25 @@ impl Storage {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
         launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
-        display_name TEXT NOT NULL DEFAULT ''
+        display_name TEXT NOT NULL DEFAULT '',
+        audio_input_device TEXT NOT NULL DEFAULT '',
+        audio_output_device TEXT NOT NULL DEFAULT '',
+        notification_volume INTEGER NOT NULL DEFAULT 100,
+        noise_cancellation INTEGER NOT NULL DEFAULT 1,
+        voice_normalization INTEGER NOT NULL DEFAULT 1,
+        voice_normalization_target_level INTEGER NOT NULL DEFAULT 100,
+        echo_cancellation INTEGER NOT NULL DEFAULT 0,
+        voice_activation INTEGER NOT NULL DEFAULT 1,
+        voice_activation_threshold INTEGER NOT NULL DEFAULT 27,
+        push_to_talk INTEGER NOT NULL DEFAULT 0,
+        hotkey_push_to_talk TEXT NOT NULL DEFAULT '',
+        hotkey_toggle_mute TEXT NOT NULL DEFAULT '',
+        hotkey_toggle_deafen TEXT NOT NULL DEFAULT '',
+        video_webcam_device TEXT NOT NULL DEFAULT '',
+        video_codec TEXT NOT NULL DEFAULT 'AV1',
+        video_scale_percent INTEGER NOT NULL DEFAULT 100,
+        video_fps INTEGER NOT NULL DEFAULT 60,
+        video_bitrate_mbps REAL NOT NULL DEFAULT 20
       );
       "#,
     )?;
@@ -434,6 +568,114 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "display_name")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "audio_input_device")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN audio_input_device TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "audio_output_device")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN audio_output_device TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "notification_volume")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN notification_volume INTEGER NOT NULL DEFAULT 100",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "noise_cancellation")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN noise_cancellation INTEGER NOT NULL DEFAULT 1",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "voice_normalization")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN voice_normalization INTEGER NOT NULL DEFAULT 1",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "voice_normalization_target_level")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN voice_normalization_target_level INTEGER NOT NULL DEFAULT 100",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "echo_cancellation")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN echo_cancellation INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "voice_activation")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN voice_activation INTEGER NOT NULL DEFAULT 1",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "voice_activation_threshold")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN voice_activation_threshold INTEGER NOT NULL DEFAULT 27",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "push_to_talk")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN push_to_talk INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "hotkey_push_to_talk")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN hotkey_push_to_talk TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "hotkey_toggle_mute")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN hotkey_toggle_mute TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "hotkey_toggle_deafen")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN hotkey_toggle_deafen TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_webcam_device")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_webcam_device TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_codec")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_codec TEXT NOT NULL DEFAULT 'AV1'",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_scale_percent")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_scale_percent INTEGER NOT NULL DEFAULT 100",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_fps")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_fps INTEGER NOT NULL DEFAULT 60",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_bitrate_mbps")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_bitrate_mbps REAL NOT NULL DEFAULT 20",
         [],
       )?;
     }
@@ -589,6 +831,24 @@ mod tests {
       start_muted_when_joining: false,
       launch_parties_at_login: true,
       display_name: "alice".to_owned(),
+      audio_input_device: "Microphone".to_owned(),
+      audio_output_device: "Speakers".to_owned(),
+      notification_volume: 72,
+      noise_cancellation: false,
+      voice_normalization: true,
+      voice_normalization_target_level: 84,
+      echo_cancellation: true,
+      voice_activation: false,
+      voice_activation_threshold: 31,
+      push_to_talk: true,
+      hotkey_push_to_talk: "Ctrl+P".to_owned(),
+      hotkey_toggle_mute: "Ctrl+M".to_owned(),
+      hotkey_toggle_deafen: "Ctrl+D".to_owned(),
+      video_webcam_device: "Webcam".to_owned(),
+      video_codec: "H.264".to_owned(),
+      video_scale_percent: 75,
+      video_fps: 30,
+      video_bitrate_mbps: 12.5,
     };
     storage.save_settings(&settings).unwrap();
     assert_eq!(storage.load_settings().unwrap(), settings);

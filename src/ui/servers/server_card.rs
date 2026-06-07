@@ -120,7 +120,8 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
         .child(
           Text::new(&address)
             .variant(theme::TypographyStyle::Mono)
-            .color(theme::PaletteColor::TextMuted),
+            .color(theme::PaletteColor::TextMuted)
+            .width(Dimension::Pct(100.0)),
         ),
     )
     .child(card_status(ctx, props))

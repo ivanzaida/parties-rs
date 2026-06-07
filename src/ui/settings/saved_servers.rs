@@ -33,6 +33,8 @@ pub struct SettingsSavedServersScreen {
   menu_address: Signal<Option<String>>,
   forget_open: Signal<bool>,
   forget_address: Signal<Option<String>>,
+  fingerprint_open: Signal<bool>,
+  fingerprint_address: Signal<Option<String>>,
 }
 
 impl Component for SettingsSavedServersScreen {
@@ -44,6 +46,8 @@ impl Component for SettingsSavedServersScreen {
       menu_address: ctx.signal(None::<String>),
       forget_open: ctx.signal(false),
       forget_address: ctx.signal(None::<String>),
+      fingerprint_open: ctx.signal(false),
+      fingerprint_address: ctx.signal(None::<String>),
     }
   }
 
@@ -56,6 +60,7 @@ impl Component for SettingsSavedServersScreen {
     let count = servers.len();
     let menu_address = self.menu_address.get();
     let pending_address = self.forget_address.get();
+    let fingerprint_address = self.fingerprint_address.get();
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
@@ -84,6 +89,8 @@ impl Component for SettingsSavedServersScreen {
         ctx,
         &server,
         self.menu_open.clone(),
+        self.fingerprint_open.clone(),
+        self.fingerprint_address.clone(),
         self.forget_open.clone(),
         self.forget_address.clone(),
       );
@@ -115,6 +122,18 @@ impl Component for SettingsSavedServersScreen {
         on_confirm,
       };
       ctx.modal(self.forget_open.clone(), move |ctx| ctx.mount::<ConfirmModal>(props));
+    }
+
+    if let Some(address) = fingerprint_address
+      && let Some(server) = storage
+        .as_ref()
+        .and_then(|storage| storage.load_server(&address).ok())
+        .flatten()
+    {
+      let open = self.fingerprint_open.clone();
+      ctx.modal(self.fingerprint_open.clone(), move |ctx| {
+        fingerprint_modal(ctx, &server, open.clone())
+      });
     }
 
     let notice_title = ctx.t("settings.servers.notice.title");
@@ -156,14 +175,14 @@ fn add_server_button(ctx: &mut Ctx) -> impl Into<Element> {
     .padding_horizontal(theme::SpacingSize::Lg)
     .rounded(theme::RadiusSize::Md)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .border_inside(1.0, theme::PaletteColor::BorderStrong)
+    .border_inside(1.0, theme::PaletteColor::Accent)
     .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
-    .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentMuted)))
+    .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentMuted)))
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "plus",
       size: 16.0,
-      color: theme::palette().text_secondary,
+      color: theme::palette().accent,
     }))
     .child(
       Text::new(&ctx.t("settings.servers.action.add"))
@@ -248,12 +267,15 @@ fn server_action_menu(
   ctx: &mut Ctx,
   server: &StoredServer,
   menu_open: Signal<bool>,
+  fingerprint_open: Signal<bool>,
+  fingerprint_address: Signal<Option<String>>,
   forget_open: Signal<bool>,
   forget_address: Signal<Option<String>>,
 ) -> Element {
   let window = ctx.window();
   let address = server.address.clone();
   let copy_address = address.clone();
+  let fingerprint_address_value = address.clone();
   let forget_address_value = address.clone();
   let close_connect = menu_open.clone();
   let close_copy = menu_open.clone();
@@ -296,7 +318,11 @@ fn server_action_menu(
             false,
             false,
           )
-          .on_click(move |_| close_fingerprint.set(false)),
+          .on_click(move |_| {
+            close_fingerprint.set(false);
+            fingerprint_address.set(Some(fingerprint_address_value.clone()));
+            fingerprint_open.set(true);
+          }),
         )
         .child(
           Rect::new(1.0, 1.0)
@@ -312,6 +338,139 @@ fn server_action_menu(
         ),
     )
     .into()
+}
+
+fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -> Element {
+  let window = ctx.window();
+  let panel_width = (window.logical_width() - 32.0).min(480.0).max(300.0);
+  let fingerprint = server.certificate_fingerprint.trim().to_owned();
+  let display_fingerprint = if fingerprint.is_empty() {
+    ctx.t("settings.servers.fingerprint.empty").to_string()
+  } else {
+    fingerprint.clone()
+  };
+  let copy_fingerprint = fingerprint.clone();
+  let close_signal = open.clone();
+
+  Column::new()
+    .width(window.logical_width())
+    .height(window.logical_height())
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .background(BackgroundColor::Color(Color::from_hex("#00000099")))
+    .child(
+      Column::new()
+        .width(panel_width)
+        .spacing(16.0)
+        .padding(24.0)
+        .rounded(12.0)
+        .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+        .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")))
+        .child(
+          Row::new()
+            .width(44.0)
+            .height(44.0)
+            .align_items(Alignment::Center)
+            .justify(Justify::Center)
+            .rounded(10.0)
+            .background(BackgroundColor::Palette(theme::PaletteColor::AccentMuted))
+            .child(ctx.mount::<LucideIcon>(LucideIconProps {
+              icon: "shield-check",
+              size: 20.0,
+              color: theme::palette().accent,
+            })),
+        )
+        .child(
+          Column::new()
+            .width(Dimension::Pct(100.0))
+            .spacing(8.0)
+            .child(Text::styled(
+              &ctx.t("settings.servers.fingerprint.title"),
+              fingerprint_title_style(),
+            ))
+            .child(Text::styled(
+              &ctx.t_args(
+                "settings.servers.fingerprint.description",
+                [("server", display_name(server).to_owned())],
+              ),
+              fingerprint_body_style(),
+            )),
+        )
+        .child(
+          Column::new()
+            .width(Dimension::Pct(100.0))
+            .spacing(8.0)
+            .padding(14.0)
+            .rounded(8.0)
+            .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+            .border_inside(1.0, theme::PaletteColor::Border)
+            .child(Text::styled(&display_fingerprint, fingerprint_value_style()).width(Dimension::Pct(100.0))),
+        )
+        .child(
+          Row::new()
+            .width(Dimension::Pct(100.0))
+            .align_items(Alignment::Center)
+            .justify(Justify::End)
+            .spacing(10.0)
+            .child(
+              fingerprint_modal_button(ctx, None, &ctx.t("settings.servers.fingerprint.close"), false)
+                .on_click(move |_| close_signal.set(false)),
+            )
+            .child(
+              fingerprint_modal_button(ctx, Some("copy"), &ctx.t("settings.servers.fingerprint.copy"), true).on_click(
+                move |_| {
+                  if !copy_fingerprint.is_empty() {
+                    let _ = clipboard::copy_to_clipboard(&copy_fingerprint);
+                  }
+                },
+              ),
+            ),
+        ),
+    )
+    .into()
+}
+
+fn fingerprint_modal_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, primary: bool) -> Row {
+  let (background, border, text_color, icon_color, hover) = if primary {
+    (
+      BackgroundColor::Palette(theme::PaletteColor::Accent),
+      BackgroundColor::Palette(theme::PaletteColor::Accent),
+      theme::palette().text_inverse,
+      theme::palette().text_inverse,
+      BackgroundColor::Palette(theme::PaletteColor::AccentHover),
+    )
+  } else {
+    (
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised),
+      BackgroundColor::Palette(theme::PaletteColor::Border),
+      theme::palette().text_primary,
+      theme::palette().text_secondary,
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceInput),
+    )
+  };
+
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(7.0)
+    .padding_horizontal(14.0)
+    .rounded(theme::RadiusSize::Md)
+    .background(background)
+    .border_inside(1.0, border)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(hover.clone()))
+    .active_style(Style::new().background(hover));
+
+  if let Some(icon) = icon {
+    button = button.child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 16.0,
+      color: icon_color,
+    }));
+  }
+
+  button.child(Text::styled(label, fingerprint_button_style(text_color)))
 }
 
 fn menu_trigger(ctx: &mut Ctx) -> Row {
@@ -376,6 +535,48 @@ fn menu_item(ctx: &mut Ctx, icon: &'static str, label: &str, danger: bool, activ
         ..TextStyle::default()
       },
     ))
+}
+
+fn fingerprint_title_style() -> TextStyle {
+  TextStyle {
+    font_family: Arc::from("Inter"),
+    font_size: 18.0,
+    line_height: 1.2,
+    weight: FontWeight::Bold,
+    color: theme::palette().text_primary,
+    ..TextStyle::default()
+  }
+}
+
+fn fingerprint_body_style() -> TextStyle {
+  TextStyle {
+    font_family: Arc::from("Inter"),
+    font_size: 14.0,
+    line_height: 1.45,
+    color: theme::palette().text_secondary,
+    ..TextStyle::default()
+  }
+}
+
+fn fingerprint_value_style() -> TextStyle {
+  TextStyle {
+    font_family: Arc::from("JetBrains Mono"),
+    font_size: 12.0,
+    line_height: 1.45,
+    color: theme::palette().text_primary,
+    ..TextStyle::default()
+  }
+}
+
+fn fingerprint_button_style(color: Color) -> TextStyle {
+  TextStyle {
+    font_family: Arc::from("Inter"),
+    font_size: 13.0,
+    line_height: 1.2,
+    weight: FontWeight::Bold,
+    color,
+    ..TextStyle::default()
+  }
 }
 
 fn display_name(server: &StoredServer) -> &str {
