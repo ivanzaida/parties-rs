@@ -27,6 +27,7 @@ pub enum ServerCardState {
 pub struct ServerCardProps {
   pub server: StoredServer,
   pub state: ServerCardState,
+  pub error_message: Option<String>,
   pub connecting: Signal<Option<String>>,
   pub failed: Signal<Option<String>>,
 }
@@ -35,6 +36,7 @@ impl PartialEq for ServerCardProps {
   fn eq(&self, other: &Self) -> bool {
     self.server == other.server
       && self.state == other.state
+      && self.error_message == other.error_message
       && self.connecting.id() == other.connecting.id()
       && self.failed.id() == other.failed.id()
   }
@@ -59,7 +61,7 @@ impl Component for ServerCard {
       .child(card_body(ctx, &props));
 
     if props.state == ServerCardState::Error {
-      card = card.child(error_bar(ctx, &props.server.address));
+      card = card.child(error_bar(ctx, props.error_message.as_deref()));
     }
 
     card
@@ -172,7 +174,14 @@ fn retry_button(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
   })
 }
 
-fn error_bar(ctx: &mut Ctx, address: &str) -> impl Into<Element> {
+fn error_bar(ctx: &mut Ctx, message: Option<&str>) -> impl Into<Element> {
+  let fallback = ctx.t("servers.row.error_fallback").to_string();
+  let message = message
+    .map(str::trim)
+    .filter(|message| !message.is_empty())
+    .unwrap_or(&fallback)
+    .to_owned();
+
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -192,7 +201,7 @@ fn error_bar(ctx: &mut Ctx, address: &str) -> impl Into<Element> {
       color: theme::palette().danger,
     }))
     .child(
-      Text::new(&ctx.t_args("servers.row.error", [("port", server_port(address))]))
+      Text::new(&ctx.t_args("servers.row.error", [("error", message)]))
         .variant(theme::TypographyStyle::Description)
         .color(theme::PaletteColor::Danger),
     )
@@ -326,11 +335,4 @@ fn role_label(role: Role) -> &'static str {
     Role::Moderator => "MOD",
     Role::User => "MEMBER",
   }
-}
-
-fn server_port(address: &str) -> String {
-  address
-    .rsplit_once(':')
-    .map(|(_, port)| format!(":{port}"))
-    .unwrap_or_default()
 }

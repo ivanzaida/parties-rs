@@ -10,8 +10,8 @@ use lurq::{
 use crate::{
   routes::{
     ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
-    ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
-    ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
+    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   services::hotkeys,
   session::ServerSession,
@@ -23,6 +23,7 @@ use crate::{
     identity_setup::IdentitySetupScreen,
     import_identity::ImportIdentityScreen,
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
+    lobby::LobbyScreen,
     restore_identity::RestoreIdentityScreen,
     servers::SavedServersScreen,
     settings::{
@@ -63,6 +64,7 @@ impl Component for App {
         .route(ROUTE_RESTORE_IDENTITY, |ctx| ctx.mount::<RestoreIdentityScreen>(()))
         .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
         .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
+        .route(ROUTE_LOBBY, |ctx| ctx.mount::<LobbyScreen>(()))
         .route(ROUTE_SETTINGS, |ctx| ctx.mount::<SettingsOverviewScreen>(()))
         .route(ROUTE_SETTINGS_IDENTITY, |ctx| ctx.mount::<SettingsIdentityScreen>(()))
         .route(ROUTE_SETTINGS_SERVERS, |ctx| {

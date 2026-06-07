@@ -7,8 +7,8 @@ use lurq::{
 
 use crate::{
   routes::{
-    ROUTE_CHOOSE_SERVER, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS,
-    ROUTE_SETTINGS_STREAM,
+    ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
+    ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   session::ServerSession,
   theme,
@@ -226,7 +226,11 @@ fn back_row(ctx: &mut Ctx) -> Element {
       ctx.t_args("settings.nav.back_to_server", [("server", name.to_owned())])
     })
     .unwrap_or_else(|| ctx.t("settings.nav.back_to_server_selection"));
-  let back_to_history = current_server.is_some();
+  let back_route = if current_server.is_some() {
+    ROUTE_LOBBY
+  } else {
+    ROUTE_CHOOSE_SERVER
+  };
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -248,9 +252,7 @@ fn back_row(ctx: &mut Ctx) -> Element {
 
   if let Some(navigator) = navigator {
     row = row.on_click(move |_| {
-      if !back_to_history || !navigator.back() {
-        navigator.push(ROUTE_CHOOSE_SERVER);
-      }
+      navigator.replace(back_route);
     });
   }
 

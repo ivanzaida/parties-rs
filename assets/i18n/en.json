@@ -232,7 +232,8 @@
     },
     "row": {
       "connecting": "Connecting...",
-      "error": "Connection refused — host unreachable on {{port}}"
+      "error": "Connection failed: {{error}}",
+      "error_fallback": "The server did not accept the connection."
     }
   },
   "connect_server": {
@@ -620,10 +621,63 @@
     }
   },
   "lobby": {
+    "title": "Lobby",
     "server": {
       "unknown": "Unknown server"
     },
     "user": {
+      "disconnected": "Disconnected"
+    },
+    "action": {
+      "settings": "Settings",
+      "disconnect": "Disconnect"
+    },
+    "channels": {
+      "title": "Voice channels",
+      "empty": "Waiting for channels..."
+    },
+    "text_channels": {
+      "title": "TEXT CHANNELS"
+    },
+    "voice_channels": {
+      "title": "VOICE CHANNELS",
+      "empty": "No voice channels yet"
+    },
+    "connection": {
+      "not_in_channel": "Not in a channel",
+      "voice_connected": "Voice connected",
+      "connected": "Connected to server"
+    },
+    "empty": {
+      "title": "No voice channels yet",
+      "description": "This server has no voice channels. As an admin you can create the first one — members will see it appear in the rail.",
+      "create": "Create voice channel"
+    },
+    "select": {
+      "title": "Select a voice channel",
+      "description": "Choose a channel from the rail to join voice."
+    },
+    "channel": {
+      "description": "Voice channel members"
+    },
+    "users": {
+      "title": "No channel selected",
+      "empty": "Join a channel to see users.",
+      "you": "(you)"
+    },
+    "voice": {
+      "live": "Live",
+      "muted": "Muted",
+      "deafened": "Deafened"
+    },
+    "status": {
+      "title": "Server status",
+      "server": "Server",
+      "channels": "Channels",
+      "users": "Users",
+      "state": "State",
+      "connected": "Connected",
+      "syncing": "Syncing",
       "disconnected": "Disconnected"
     }
   }

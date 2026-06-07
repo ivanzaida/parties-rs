@@ -2,15 +2,19 @@ mod server_card;
 
 use lurq::{
   app::{component::Component, ctx::Ctx},
-  components::{Column, Row, Text},
+  components::{Column, Row, ScrollVertical, Text},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify},
+  layout::{
+    Alignment,
+    layout_kind::Justify,
+    scrollbar::{ScrollBarPlacement, ScrollBarStyle},
+  },
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 use server_card::{ServerCard, ServerCardProps, ServerCardState};
 
 use crate::{
-  routes::{ROUTE_CONNECT_SERVER, ROUTE_SETTINGS},
+  routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS},
   session::{ConnectedServerInfo, ServerSession},
   storage::{Storage, StoredServer},
   theme,
@@ -20,10 +24,14 @@ use crate::{
   },
 };
 
+const VISIBLE_SERVER_COUNT: usize = 5;
+const SERVER_LIST_MAX_HEIGHT: f32 = 396.0;
+
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
   running: Signal<Option<String>>,
   failed: Signal<Option<String>>,
+  failure_message: Signal<Option<String>>,
 }
 
 impl Component for SavedServersScreen {
@@ -37,6 +45,7 @@ impl Component for SavedServersScreen {
       connecting,
       running: ctx.signal(None::<String>),
       failed,
+      failure_message: ctx.signal(None::<String>),
     }
   }
 
@@ -70,7 +79,7 @@ impl Component for SavedServersScreen {
         .await
       }
     });
-    self.sync_connection_state(&servers, &connect);
+    self.sync_connection_state(ctx, &servers, &connect);
 
     Column::new()
       .width(Dimension::Pct(100.0))
@@ -90,7 +99,7 @@ impl Component for SavedServersScreen {
 type ConnectAction = lurq::app::ctx::FutureAction<StoredServer, ConnectedServerInfo, String>;
 
 impl SavedServersScreen {
-  fn sync_connection_state(&self, servers: &[StoredServer], connect: &ConnectAction) {
+  fn sync_connection_state(&self, ctx: &mut Ctx, servers: &[StoredServer], connect: &ConnectAction) {
     let state = connect.state().get();
 
     if let Some(address) = self.running.get_untracked() {
@@ -98,10 +107,15 @@ impl SavedServersScreen {
         self.running.set(None);
         self.connecting.set(None);
         self.failed.set(None);
+        self.failure_message.set(None);
+        if let Some(navigator) = ctx.navigator() {
+          navigator.replace(ROUTE_LOBBY);
+        }
       } else if state.is_rejected() {
         self.running.set(None);
         self.connecting.set(None);
         self.failed.set(Some(address));
+        self.failure_message.set(state.error.clone());
       }
     }
 
@@ -117,6 +131,7 @@ impl SavedServersScreen {
     };
 
     self.failed.set(None);
+    self.failure_message.set(None);
     self.running.set(Some(address));
     connect.run(server);
   }
@@ -167,12 +182,14 @@ impl SavedServersScreen {
     let count = servers.len();
     let connecting = self.connecting.get();
     let failed = self.failed.get();
+    let failure_message = self.failure_message.get();
     let connecting_signal = self.connecting.clone();
     let failed_signal = self.failed.clone();
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
-      .spacing(theme::SpacingSize::Lg);
+      .spacing(theme::SpacingSize::Lg)
+      .padding_right(16.0);
 
     for server in servers {
       let address = server.address.clone();
@@ -188,6 +205,11 @@ impl SavedServersScreen {
         ServerCardProps {
           server,
           state,
+          error_message: if failed.as_deref() == Some(address.as_str()) {
+            failure_message.clone()
+          } else {
+            None
+          },
           connecting: connecting_signal.clone(),
           failed: failed_signal.clone(),
         },
@@ -204,7 +226,7 @@ impl SavedServersScreen {
           .width(860.0)
           .spacing(theme::SpacingSize::Xl)
           .child(header(ctx))
-          .child(list)
+          .child(server_list_view(list, count))
           .child(
             Row::new()
               .align_items(Alignment::Center)
@@ -221,6 +243,39 @@ impl SavedServersScreen {
               ),
           ),
       )
+  }
+}
+
+fn server_list_view(list: Column, count: usize) -> Element {
+  if count <= VISIBLE_SERVER_COUNT {
+    return list.into();
+  }
+
+  ScrollVertical::new(list)
+    .width(Dimension::Pct(100.0))
+    .height(SERVER_LIST_MAX_HEIGHT)
+    .scrollbar(server_list_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.75);
+      style
+    })
+    .into()
+}
+
+fn server_list_scrollbar_style() -> ScrollBarStyle {
+  let palette = theme::palette();
+  ScrollBarStyle {
+    width: 8.0,
+    min_thumb_length: 32.0,
+    track_color: palette.surface_input.with_opacity(0.55),
+    thumb_color: palette.accent,
+    thumb_radius: 4.0,
+    track_radius: 4.0,
+    padding: 0.0,
+    placement: ScrollBarPlacement::Reserved,
+    ..ScrollBarStyle::default()
   }
 }
 

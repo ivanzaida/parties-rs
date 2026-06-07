@@ -5,6 +5,7 @@ pub mod identity_setup;
 pub mod import_identity;
 pub(crate) mod loader;
 pub mod loading_identity;
+pub mod lobby;
 pub mod onboarding_shell;
 pub mod restore_identity;
 pub mod servers;

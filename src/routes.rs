@@ -5,6 +5,7 @@ pub const ROUTE_IMPORT_PRIVATE_KEY: &str = "/identity/import";
 pub const ROUTE_RESTORE_IDENTITY: &str = "/identity/restore";
 pub const ROUTE_CHOOSE_SERVER: &str = "/servers";
 pub const ROUTE_CONNECT_SERVER: &str = "/servers/connect";
+pub const ROUTE_LOBBY: &str = "/lobby";
 pub const ROUTE_SETTINGS: &str = "/settings";
 pub const ROUTE_SETTINGS_IDENTITY: &str = "/settings/identity";
 pub const ROUTE_SETTINGS_SERVERS: &str = "/settings/servers";

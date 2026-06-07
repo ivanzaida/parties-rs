@@ -18,7 +18,7 @@ use crate::{
     protocol::{DEFAULT_PORT, S2C},
     server::Server,
   },
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_SETTINGS_SERVERS},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession},
   storage::{AppSettings, Storage, StoredServer},
   theme,
@@ -65,7 +65,7 @@ impl Component for ConnectServerScreen {
     let from_settings = ctx
       .route_state::<ConnectOrigin>()
       .is_some_and(|origin| *origin == ConnectOrigin::Settings);
-    let home_route = if from_settings {
+    let back_route = if from_settings {
       ROUTE_SETTINGS_SERVERS
     } else {
       ROUTE_CHOOSE_SERVER
@@ -89,7 +89,7 @@ impl Component for ConnectServerScreen {
     if state.data.is_some() && !self.navigated.get_untracked() {
       self.navigated.set(true);
       if let Some(navigator) = ctx.navigator() {
-        navigator.replace(home_route);
+        navigator.replace(ROUTE_LOBBY);
       }
     }
 
@@ -115,7 +115,7 @@ impl Component for ConnectServerScreen {
       card = card.child(error_banner(ctx, error));
     }
 
-    card = card.child(self.actions(ctx, &connect, connecting, can_connect, home_route));
+    card = card.child(self.actions(ctx, &connect, connecting, can_connect, back_route));
 
     let submit_action = connect.clone();
     let card = Form::element(
@@ -143,7 +143,7 @@ impl Component for ConnectServerScreen {
         Column::new()
           .width(600.0)
           .spacing(16.0)
-          .child(back_row(ctx, &back_label, home_route))
+          .child(back_row(ctx, &back_label, back_route))
           .child(card),
       )
   }
@@ -240,7 +240,7 @@ impl ConnectServerScreen {
     connect: &ConnectAction,
     connecting: bool,
     can_connect: bool,
-    home_route: &'static str,
+    back_route: &'static str,
   ) -> impl Into<Element> {
     let navigator = ctx.navigator();
     let cancel_action = connect.clone();
@@ -250,9 +250,7 @@ impl ConnectServerScreen {
     let cancel = ghost_button(&cancel_label).on_click(move |_| {
       cancel_action.cancel();
       if let Some(navigator) = navigator.as_ref() {
-        if !navigator.back() {
-          navigator.push(home_route);
-        }
+        navigator.replace(back_route);
       }
     });
 
@@ -406,9 +404,7 @@ fn back_row(ctx: &mut Ctx, label: &str, home_route: &'static str) -> impl Into<E
 
   if let Some(navigator) = navigator {
     row = row.on_click(move |_| {
-      if !navigator.back() {
-        navigator.push(home_route);
-      }
+      navigator.replace(home_route);
     });
   }
 

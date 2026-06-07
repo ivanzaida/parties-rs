@@ -3,11 +3,12 @@ use std::sync::Arc;
 use lurq::{
   app::{component::Component, ctx::Ctx},
   clipboard,
-  components::{Column, Rect, Row, Text},
+  components::{Column, Rect, Row, ScrollVertical, Text},
   core::Signal,
   layout::{
     Alignment,
     layout_kind::Justify,
+    scrollbar::{ScrollBarPlacement, ScrollBarStyle},
     text_style::{FontWeight, TextStyle},
   },
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
@@ -28,9 +29,13 @@ use crate::{
   },
 };
 
+const VISIBLE_SERVER_COUNT: usize = 5;
+const SERVER_LIST_MAX_HEIGHT: f32 = 440.0;
+
 pub struct SettingsSavedServersScreen {
   menu_open: Signal<bool>,
   menu_address: Signal<Option<String>>,
+  menu_anchor_y: Signal<Option<f32>>,
   forget_open: Signal<bool>,
   forget_address: Signal<Option<String>>,
   fingerprint_open: Signal<bool>,
@@ -44,6 +49,7 @@ impl Component for SettingsSavedServersScreen {
     Self {
       menu_open: ctx.signal(false),
       menu_address: ctx.signal(None::<String>),
+      menu_anchor_y: ctx.signal(None::<f32>),
       forget_open: ctx.signal(false),
       forget_address: ctx.signal(None::<String>),
       fingerprint_open: ctx.signal(false),
@@ -64,7 +70,8 @@ impl Component for SettingsSavedServersScreen {
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
-      .spacing(theme::SpacingSize::Lg);
+      .spacing(theme::SpacingSize::Lg)
+      .padding_right(16.0);
 
     if servers.is_empty() {
       list = list.child(empty_state(ctx).into());
@@ -75,6 +82,7 @@ impl Component for SettingsSavedServersScreen {
           &server,
           self.menu_open.clone(),
           self.menu_address.clone(),
+          self.menu_anchor_y.clone(),
         ));
       }
     }
@@ -88,6 +96,7 @@ impl Component for SettingsSavedServersScreen {
       let menu = server_action_menu(
         ctx,
         &server,
+        self.menu_anchor_y.get(),
         self.menu_open.clone(),
         self.fingerprint_open.clone(),
         self.fingerprint_address.clone(),
@@ -139,9 +148,45 @@ impl Component for SettingsSavedServersScreen {
     let notice_title = ctx.t("settings.servers.notice.title");
     let notice_description = ctx.t_args("settings.servers.notice.description", [("count", count.to_string())]);
     let notice = muted_notice(ctx, &notice_title, &notice_description);
-    let content = page_stack().child(servers_header(ctx)).child(list).child(notice);
+    let content = page_stack()
+      .child(servers_header(ctx))
+      .child(server_list_view(list, count))
+      .child(notice);
 
     screen(ctx, SettingsPage::Servers, content)
+  }
+}
+
+fn server_list_view(list: Column, count: usize) -> Element {
+  if count <= VISIBLE_SERVER_COUNT {
+    return list.into();
+  }
+
+  ScrollVertical::new(list)
+    .width(Dimension::Pct(100.0))
+    .height(SERVER_LIST_MAX_HEIGHT)
+    .scrollbar(server_list_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.75);
+      style
+    })
+    .into()
+}
+
+fn server_list_scrollbar_style() -> ScrollBarStyle {
+  let palette = theme::palette();
+  ScrollBarStyle {
+    width: 8.0,
+    min_thumb_length: 32.0,
+    track_color: palette.surface_input.with_opacity(0.55),
+    thumb_color: palette.accent,
+    thumb_radius: 4.0,
+    track_radius: 4.0,
+    padding: 0.0,
+    placement: ScrollBarPlacement::Reserved,
+    ..ScrollBarStyle::default()
   }
 }
 
@@ -228,6 +273,7 @@ fn server_row(
   server: &StoredServer,
   menu_open: Signal<bool>,
   menu_address: Signal<Option<String>>,
+  menu_anchor_y: Signal<Option<f32>>,
 ) -> impl Into<Element> {
   let name = display_name(server);
   let address = server.address.clone();
@@ -256,8 +302,10 @@ fn server_row(
         .child(value_text(&server.address)),
     )
     .child({
-      menu_trigger(ctx).on_click(move |_| {
+      let scale = ctx.window().scale_factor.max(f32::EPSILON);
+      menu_trigger(ctx).on_click(move |event| {
         menu_address.set(Some(address.clone()));
+        menu_anchor_y.set(Some(event.y / scale));
         menu_open.set(true);
       })
     })
@@ -266,6 +314,7 @@ fn server_row(
 fn server_action_menu(
   ctx: &mut Ctx,
   server: &StoredServer,
+  anchor_y: Option<f32>,
   menu_open: Signal<bool>,
   fingerprint_open: Signal<bool>,
   fingerprint_address: Signal<Option<String>>,
@@ -273,6 +322,7 @@ fn server_action_menu(
   forget_address: Signal<Option<String>>,
 ) -> Element {
   let window = ctx.window();
+  let menu_top = server_action_menu_top(anchor_y, window.logical_height());
   let address = server.address.clone();
   let copy_address = address.clone();
   let fingerprint_address_value = address.clone();
@@ -287,7 +337,7 @@ fn server_action_menu(
     .width(window.logical_width())
     .height(window.logical_height())
     .align_items(Alignment::End)
-    .padding_top(196.0)
+    .padding_top(menu_top)
     .padding_right(34.0)
     .background(BackgroundColor::Color(Color::from_hex("#00000059")))
     .cursor(CursorIcon::Pointer)
@@ -338,6 +388,17 @@ fn server_action_menu(
         ),
     )
     .into()
+}
+
+fn server_action_menu_top(anchor_y: Option<f32>, window_height: f32) -> f32 {
+  const FALLBACK_TOP: f32 = 196.0;
+  const MENU_HEIGHT: f32 = 174.0;
+  const EDGE_PADDING: f32 = 16.0;
+  const TRIGGER_OFFSET: f32 = 10.0;
+
+  let top = anchor_y.map(|y| y - TRIGGER_OFFSET).unwrap_or(FALLBACK_TOP);
+  let max_top = (window_height - MENU_HEIGHT - EDGE_PADDING).max(EDGE_PADDING);
+  top.clamp(EDGE_PADDING, max_top)
 }
 
 fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -> Element {
