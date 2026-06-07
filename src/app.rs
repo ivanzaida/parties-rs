@@ -8,16 +8,26 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE},
+  routes::{
+    ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
+    ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
+    ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+  },
   session::ServerSession,
   storage::Storage,
   theme,
   ui::{
+    connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
     import_identity::ImportIdentityScreen,
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
     restore_identity::RestoreIdentityScreen,
+    servers::SavedServersScreen,
+    settings::{
+      SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsSavedServersScreen,
+      SettingsStreamScreen,
+    },
   },
 };
 
@@ -44,6 +54,15 @@ impl Component for App {
         .route(ROUTE_SEED_PHRASE, |ctx| ctx.mount::<IdentitySeedScreen>(()))
         .route(ROUTE_IMPORT_PRIVATE_KEY, |ctx| ctx.mount::<ImportIdentityScreen>(()))
         .route(ROUTE_RESTORE_IDENTITY, |ctx| ctx.mount::<RestoreIdentityScreen>(()))
+        .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
+        .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
+        .route(ROUTE_SETTINGS, |ctx| ctx.mount::<SettingsOverviewScreen>(()))
+        .route(ROUTE_SETTINGS_IDENTITY, |ctx| ctx.mount::<SettingsIdentityScreen>(()))
+        .route(ROUTE_SETTINGS_SERVERS, |ctx| {
+          ctx.mount::<SettingsSavedServersScreen>(())
+        })
+        .route(ROUTE_SETTINGS_AUDIO, |ctx| ctx.mount::<SettingsAudioScreen>(()))
+        .route(ROUTE_SETTINGS_STREAM, |ctx| ctx.mount::<SettingsStreamScreen>(()))
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );
     router.replace(ROUTE_LOADING);

@@ -57,6 +57,23 @@ impl From<std::time::SystemTimeError> for StorageError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppSettings {
+  pub start_muted_when_joining: bool,
+  pub launch_parties_at_login: bool,
+  pub display_name: String,
+}
+
+impl Default for AppSettings {
+  fn default() -> Self {
+    Self {
+      start_muted_when_joining: true,
+      launch_parties_at_login: false,
+      display_name: String::new(),
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredServer {
   pub address: String,
   pub server_name: String,
@@ -205,6 +222,44 @@ impl Storage {
     Ok(self.load_identity()?.is_some())
   }
 
+  pub fn save_settings(&self, settings: &AppSettings) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute(
+      r#"
+      INSERT OR REPLACE INTO app_settings (id, start_muted_when_joining, launch_parties_at_login, display_name)
+      VALUES (1, ?1, ?2, ?3)
+      "#,
+      params![
+        bool_to_int(settings.start_muted_when_joining),
+        bool_to_int(settings.launch_parties_at_login),
+        &settings.display_name
+      ],
+    )?;
+    Ok(())
+  }
+
+  pub fn load_settings(&self) -> Result<AppSettings, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare(
+      r#"
+      SELECT start_muted_when_joining, launch_parties_at_login, display_name
+      FROM app_settings
+      WHERE id = 1
+      "#,
+    )?;
+    let mut rows = stmt.query([])?;
+
+    let Some(row) = rows.next()? else {
+      return Ok(AppSettings::default());
+    };
+
+    Ok(AppSettings {
+      start_muted_when_joining: int_to_bool(row.get(0)?),
+      launch_parties_at_login: int_to_bool(row.get(1)?),
+      display_name: row.get(2)?,
+    })
+  }
+
   pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
     let conn = self.connection()?;
     let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -294,6 +349,12 @@ impl Storage {
     Ok(servers)
   }
 
+  pub fn delete_server(&self, address: &str) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute("DELETE FROM servers WHERE address = ?1", params![address])?;
+    Ok(())
+  }
+
   fn connection(&self) -> Result<Connection, StorageError> {
     let conn = Connection::open(&self.path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -322,6 +383,13 @@ impl Storage {
         server_password TEXT NOT NULL DEFAULT '',
         display_name TEXT NOT NULL DEFAULT ''
       );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
+        launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
+        display_name TEXT NOT NULL DEFAULT ''
+      );
       "#,
     )?;
     if !column_exists(&conn, "servers", "certificate_fingerprint")? {
@@ -339,6 +407,24 @@ impl Storage {
     if !column_exists(&conn, "servers", "display_name")? {
       conn.execute(
         "ALTER TABLE servers ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "start_muted_when_joining")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN start_muted_when_joining INTEGER NOT NULL DEFAULT 1",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "launch_parties_at_login")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN launch_parties_at_login INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "display_name")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN display_name TEXT NOT NULL DEFAULT ''",
         [],
       )?;
     }
@@ -385,6 +471,14 @@ where
 {
   let array: [u8; 32] = bytes.try_into().map_err(|_| StorageError::InvalidBlob(column))?;
   Ok(T::from(array))
+}
+
+fn bool_to_int(value: bool) -> i64 {
+  if value { 1 } else { 0 }
+}
+
+fn int_to_bool(value: i64) -> bool {
+  value != 0
 }
 
 fn default_db_path() -> PathBuf {
@@ -465,6 +559,30 @@ mod tests {
 
     let servers = storage.load_servers().unwrap();
     assert_eq!(servers, vec![server]);
+
+    storage.delete_server("127.0.0.1:7800").unwrap();
+    assert!(storage.load_servers().unwrap().is_empty());
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn settings_round_trip() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-settings-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+
+    assert_eq!(storage.load_settings().unwrap(), AppSettings::default());
+
+    let settings = AppSettings {
+      start_muted_when_joining: false,
+      launch_parties_at_login: true,
+      display_name: "alice".to_owned(),
+    };
+    storage.save_settings(&settings).unwrap();
+    assert_eq!(storage.load_settings().unwrap(), settings);
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

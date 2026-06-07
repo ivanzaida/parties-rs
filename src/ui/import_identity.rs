@@ -2,8 +2,8 @@ use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text, TextInput},
   core::Signal,
-  layout::{layout_kind::Justify, Alignment},
-  node::{color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Style},
+  layout::{Alignment, layout_kind::Justify},
+  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
 use crate::{
