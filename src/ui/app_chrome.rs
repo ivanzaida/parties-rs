@@ -11,8 +11,17 @@ use crate::{
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
 
-pub(crate) const CHROME_HEIGHT: f32 = 36.0;
-pub(crate) const RESIZE_HANDLE_SIZE: f32 = 6.0;
+pub(crate) const CUSTOM_WINDOWS_CHROME: bool = cfg!(target_os = "windows");
+pub(crate) const CUSTOM_MACOS_CHROME: bool = cfg!(target_os = "macos");
+pub(crate) const CUSTOM_WINDOW_CHROME: bool = CUSTOM_WINDOWS_CHROME || CUSTOM_MACOS_CHROME;
+pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
+  28.0
+} else if CUSTOM_WINDOWS_CHROME {
+  36.0
+} else {
+  0.0
+};
+pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 6.0 } else { 0.0 };
 
 pub struct AppChrome;
 
@@ -24,6 +33,17 @@ impl Component for AppChrome {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    if CUSTOM_MACOS_CHROME {
+      return Row::new()
+        .width(Dimension::Pct(100.0))
+        .height(CHROME_HEIGHT)
+        .align_items(Alignment::Center)
+        .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+        .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+        .child(window_controls(ctx))
+        .child(macos_window_drag_region(ctx));
+    }
+
     Row::new()
       .width(Dimension::Pct(100.0))
       .height(CHROME_HEIGHT)
@@ -57,12 +77,20 @@ pub(crate) fn modal_layer(ctx: &mut Ctx, content: impl Into<Element>) -> Row {
 }
 
 pub(crate) fn window_affordance_layers(ctx: &mut Ctx) -> Vec<Element> {
+  if !CUSTOM_WINDOW_CHROME {
+    return Vec::new();
+  }
+
   let mut layers = window_border_strips(ctx);
   layers.extend(window_resize_handles(ctx));
   layers
 }
 
 fn window_border_strips(ctx: &Ctx) -> Vec<Element> {
+  if CUSTOM_MACOS_CHROME {
+    return Vec::new();
+  }
+
   let window = ctx.window();
   let width = window.logical_width();
   let height = window.logical_height();
@@ -238,7 +266,35 @@ fn window_drag_region(ctx: &mut Ctx) -> Element {
     .into()
 }
 
+fn macos_window_drag_region(ctx: &mut Ctx) -> Element {
+  let window = ctx.window();
+  let drag_window = window.clone();
+  let stop_drag_window = window.clone();
+  let maximize_window = window.clone();
+  let maximized = window.is_maximized;
+
+  Row::new()
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .on_drag_start(move |event| {
+      if event.button == MouseButton::Left && !maximized {
+        drag_window.start_drag();
+      }
+    })
+    .on_drag_end(move |_| stop_drag_window.stop_drag())
+    .on_dblclick(move |_| maximize_window.set_maximized(!maximized))
+    .into()
+}
+
 fn window_controls(ctx: &mut Ctx) -> Element {
+  if CUSTOM_MACOS_CHROME {
+    return macos_window_controls(ctx);
+  }
+
+  windows_window_controls(ctx)
+}
+
+fn windows_window_controls(ctx: &mut Ctx) -> Element {
   let window = ctx.window();
   let minimize_window = window.clone();
   let maximize_window = window.clone();
@@ -269,6 +325,34 @@ fn window_controls(ctx: &mut Ctx) -> Element {
         session.disconnect_for_shutdown();
       }
       close_window.close();
+    }))
+    .into()
+}
+
+fn macos_window_controls(ctx: &mut Ctx) -> Element {
+  let window = ctx.window();
+  let close_window = window.clone();
+  let minimize_window = window.clone();
+  let maximize_window = window.clone();
+  let session = ctx.use_context::<ServerSession>();
+  let maximized = window.is_maximized;
+
+  Row::new()
+    .height(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(0.0)
+    .padding_left(8.0)
+    .child(macos_window_control_button("#FF5F57", "#E2463F").on_click(move |_| {
+      if let Some(session) = session.as_ref() {
+        session.disconnect_for_shutdown();
+      }
+      close_window.close();
+    }))
+    .child(macos_window_control_button("#FFBD2E", "#E0A11B").on_click(move |_| {
+      minimize_window.set_minimized(true);
+    }))
+    .child(macos_window_control_button("#28C840", "#1EAD34").on_click(move |_| {
+      maximize_window.set_maximized(!maximized);
     }))
     .into()
 }
@@ -307,4 +391,22 @@ fn window_control_button(ctx: &mut Ctx, icon: &'static str, tone: ControlTone) -
       size: 13.0,
       color: icon_color,
     }))
+}
+
+fn macos_window_control_button(color: &'static str, active_color: &'static str) -> Row {
+  Row::new()
+    .width(20.0)
+    .height(CHROME_HEIGHT)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .cursor(CursorIcon::Pointer)
+    .child(
+      Row::new()
+        .width(12.0)
+        .height(12.0)
+        .rounded(6.0)
+        .background(BackgroundColor::Color(Color::from_hex(color)))
+        .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex(color))))
+        .active_style(Style::new().background(BackgroundColor::Color(Color::from_hex(active_color)))),
+    )
 }
