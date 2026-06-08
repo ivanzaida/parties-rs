@@ -66,7 +66,7 @@ impl Component for SettingsIdentityScreen {
     let navigator = ctx.navigator();
     let public_id = identity
       .as_ref()
-      .map(|identity| short_hex(&identity.public_key))
+      .map(|identity| public_key_hex(&identity.public_key))
       .unwrap_or_else(|| ctx.t("settings.identity.missing").to_string());
     let fingerprint = identity
       .as_ref()
@@ -547,13 +547,12 @@ fn row_mono_subtitle_style() -> TextStyle {
   }
 }
 
-fn short_hex(bytes: &[u8]) -> String {
-  let mut out = String::from("pk_");
-  for byte in bytes.iter().take(8) {
+fn public_key_hex(bytes: &[u8]) -> String {
+  let mut out = String::with_capacity(bytes.len() * 2);
+  for byte in bytes {
     out.push(hex_char(byte >> 4));
     out.push(hex_char(byte & 0x0f));
   }
-  out.push_str("...");
   out
 }
 
