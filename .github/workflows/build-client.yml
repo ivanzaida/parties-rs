@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package-metadata:
@@ -134,3 +134,50 @@ jobs:
           name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}
           path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs:
+      - package-metadata
+      - build
+    if: needs.package-metadata.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
+      PACKAGE_VERSION: ${{ needs.package-metadata.outputs.version }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - name: Create or update release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+
+          tag="v$PACKAGE_VERSION"
+          title="$PACKAGE_NAME $PACKAGE_VERSION"
+          notes="Automated client build for $PACKAGE_NAME $PACKAGE_VERSION."
+          files=()
+          for asset in dist-artifacts/**/*; do
+            if [[ -f "$asset" ]]; then
+              files+=("$asset")
+            fi
+          done
+
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No release assets found." >&2
+            exit 1
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes"
+          fi
