@@ -568,6 +568,7 @@ impl NvdecVideoDecoder {
     Ok(Some(NativeDecodedVideoFrame {
       format: DecodedVideoPixelFormat::Nv12,
       pixels: nv12,
+      native_image: None,
     }))
   }
 
@@ -679,6 +680,7 @@ impl MediaFoundationVideoDecoder {
         decoded = Some(NativeDecodedVideoFrame {
           format: DecodedVideoPixelFormat::Rgba8,
           pixels: nv12_to_rgba(&nv12, self.width, self.height)?,
+          native_image: None,
         });
       }
     }
