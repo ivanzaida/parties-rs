@@ -218,6 +218,10 @@ fn should_log_video_count(count: u64) -> bool {
   count == 1 || count % 120 == 0
 }
 
+fn should_log_audio_count(count: u64) -> bool {
+  count == 1 || count % 100 == 0
+}
+
 struct VideoPacketQueue {
   packets: Mutex<VecDeque<ForwardedVideoFrame>>,
   notify: Condvar,
@@ -491,6 +495,7 @@ pub struct ServerSession {
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
+  stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   revision: Signal<u64>,
 }
@@ -514,6 +519,7 @@ impl Default for ServerSession {
       #[cfg(target_os = "windows")]
       dx12_video_surfaces: None,
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
+      stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
       revision: Signal::new(0),
     }
@@ -561,6 +567,11 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .clear();
+    self
+      .stream_audio_counts
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
     self.user_volumes.lock().expect("server session lock poisoned").clear();
     self.bump_revision();
   }
@@ -582,6 +593,11 @@ impl ServerSession {
     self.video_frames.lock().expect("server session lock poisoned").clear();
     self
       .video_revision_marks
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self
+      .stream_audio_counts
       .lock()
       .expect("server session lock poisoned")
       .clear();
@@ -1417,17 +1433,34 @@ impl ServerSession {
     if self.info().is_some_and(|info| info.user_id == packet.sender_id) {
       return;
     }
-    if self.watching_user_id() != Some(packet.sender_id) {
+    let watched_user_id = self.watching_user_id();
+    let received_count = {
+      let mut counts = self.stream_audio_counts.lock().expect("server session lock poisoned");
+      increment_counter(&mut counts, packet.sender_id)
+    };
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[audio] received stream audio #{received_count} from user {}: watched={watched_user_id:?} bytes={}",
+        packet.sender_id,
+        packet.opus.len()
+      ));
+    }
+    if watched_user_id != Some(packet.sender_id) {
       return;
     }
 
-    if let Some(engine) = self
+    let queued = self
       .voice_engine
       .lock()
       .expect("server session lock poisoned")
       .as_mut()
-    {
-      engine.push_stream_audio_packet(packet);
+      .is_some_and(|engine| engine.push_stream_audio_packet(packet));
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[audio] stream audio {} for watched user {}",
+        if queued { "queued" } else { "dropped" },
+        watched_user_id.unwrap_or_default()
+      ));
     }
   }
 
