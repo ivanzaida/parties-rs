@@ -161,19 +161,32 @@ pub(super) fn watch_stream_action(ctx: &mut Ctx, session: ServerSession) -> Watc
   ctx.future_action(move |user_id| {
     let session = session.clone();
     async move {
-      if session.info().is_some_and(|info| info.user_id == user_id) {
-        session.set_watching_user(Some(user_id));
-        return Ok(());
-      }
-
       let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      logger::log(&format!("[video] requesting stream view for user {user_id}"));
       server
         .view_screen_share(user_id)
         .await
         .map_err(|error| error.to_string())?;
-      if let Err(error) = server.request_keyframe(user_id) {
-        return Err(error.to_string());
+      match server.request_keyframe_stream(user_id).await {
+        Ok(()) => {
+          logger::log(&format!(
+            "[video] keyframe requested on video stream for user {user_id}"
+          ));
+        }
+        Err(stream_error) => {
+          logger::log(&format!(
+            "[video] stream keyframe request failed for user {user_id}: {stream_error}; trying datagram"
+          ));
+          if let Err(datagram_error) = server.request_keyframe(user_id) {
+            logger::log(&format!(
+              "[video] datagram keyframe request failed for user {user_id}: {datagram_error}"
+            ));
+            return Err(datagram_error.to_string());
+          }
+          logger::log(&format!("[video] keyframe requested by datagram for user {user_id}"));
+        }
       }
+      logger::log(&format!("[video] stream view active for user {user_id}"));
       session.set_watching_user(Some(user_id));
       Ok(())
     }
@@ -184,17 +197,8 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
   ctx.future_action(move |()| {
     let session = session.clone();
     async move {
-      let watching_local_stream = session
-        .lobby()
-        .watching_user_id
-        .is_some_and(|user_id| session.info().is_some_and(|info| info.user_id == user_id));
-
-      if watching_local_stream {
-        session.set_watching_user(None);
-        return Ok(());
-      }
-
       let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      logger::log("[video] unsubscribing from watched stream");
       server
         .unsubscribe_screen_share()
         .await

@@ -1,6 +1,6 @@
 use lurq::{
   app::ctx::Ctx,
-  components::{Column, Row, Stack, Text, TextOverflow},
+  components::{Column, Image, Row, Stack, Text, TextOverflow},
   core::Signal,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, UserId, VideoCodecId},
-  session::{LobbyScreenShare, LobbyState},
+  session::{LobbyScreenShare, LobbyState, ServerSession},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -61,6 +61,7 @@ pub(super) fn stream_watching(
   stream: ChannelScreenShare<'_>,
   streams: Vec<ChannelScreenShare<'_>>,
   error: Option<&str>,
+  session: ServerSession,
   watch_stream: &WatchStreamAction,
 ) -> Element {
   let watched_user_id = stream.share.sharer_user_id;
@@ -70,7 +71,7 @@ pub(super) fn stream_watching(
     .flex(1.0)
     .spacing(16.0)
     .padding(20.0)
-    .child(stage(ctx, &stream))
+    .child(stage(ctx, &stream, &session))
     .child(stream_switcher(ctx, watched_user_id, streams, watch_stream));
 
   if let Some(error) = error {
@@ -80,25 +81,37 @@ pub(super) fn stream_watching(
   body.into()
 }
 
-fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>) -> Element {
+fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, session: &ServerSession) -> Element {
   let name = stream_name(ctx, stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let meta = stream_footer_meta(&name, stream.share);
   let speaking = stream_speaking(stream);
+  let image = session.video_frame(stream.share.sharer_user_id);
 
-  Stack::new()
+  let mut stage = Stack::new()
     .stack_align(StackAlignment::Center)
     .width(Dimension::Pct(100.0))
     .flex(1.0)
     .rounded(10.0)
     .clip()
     .background(BackgroundColor::Color(Color::from_hex("#0F1013")))
-    .border_inside(1.0, theme::PaletteColor::Border)
-    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+    .border_inside(1.0, theme::PaletteColor::Border);
+
+  if let Some(image) = image {
+    stage = stage.child(
+      Image::new(image)
+        .width(Dimension::Pct(100.0))
+        .height(Dimension::Pct(100.0)),
+    );
+  } else {
+    stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "monitor",
       size: 72.0,
       color: Color::from_hex("#2E333B"),
-    }))
+    }));
+  }
+
+  stage
     .child(
       Column::new()
         .width(Dimension::Pct(100.0))
@@ -359,6 +372,7 @@ fn live_badge(ctx: &mut Ctx) -> Element {
 
 fn resolution_badge(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
   Row::new()
+    .width(96.0)
     .height(20.0)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
@@ -369,7 +383,9 @@ fn resolution_badge(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
     .child(
       Text::new(&stream_resolution_label(ctx, stream))
         .variant(theme::TypographyStyle::Mono)
-        .color(theme::PaletteColor::TextSecondary),
+        .color(theme::PaletteColor::TextSecondary)
+        .nowrap()
+        .text_overflow(TextOverflow::Elipsis),
     )
     .into()
 }
@@ -413,7 +429,7 @@ fn stream_speaking(stream: &ChannelScreenShare<'_>) -> bool {
 
 fn stream_resolution_label(ctx: &mut Ctx, stream: &LobbyScreenShare) -> String {
   if stream.metadata.width == 0 || stream.metadata.height == 0 {
-    return ctx.t("lobby.stream_browser.list.pending_resolution").to_string();
+    return ctx.t("lobby.stream_browser.watching.live").to_string();
   }
 
   format!("{}x{}", stream.metadata.width, stream.metadata.height)
@@ -425,7 +441,7 @@ fn stream_footer_meta(name: &str, stream: &LobbyScreenShare) -> String {
 
 fn stream_codec_label(stream: &LobbyScreenShare) -> String {
   match stream.metadata.codec {
-    VideoCodecId::Unknown => "Unsupported".to_owned(),
+    VideoCodecId::Unknown => "Live".to_owned(),
     VideoCodecId::Av1 => "AV1".to_owned(),
     VideoCodecId::H265 => "H.265".to_owned(),
     VideoCodecId::H264 => "H.264".to_owned(),

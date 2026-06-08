@@ -280,6 +280,7 @@ fn main_body(
         stream,
         super::stream_browser::screen_shares_for_channel(lobby, channel.id),
         lobby.last_error.as_deref(),
+        session,
         watch_stream,
       );
     }

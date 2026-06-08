@@ -1,7 +1,7 @@
 use std::{
   ffi::c_void,
   mem::ManuallyDrop,
-  ptr,
+  ptr::{self, NonNull},
   sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -17,11 +17,11 @@ use ::windows::{
       IMFActivate, IMFMediaBuffer, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
       MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
       MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-      MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG,
-      MFT_ENUM_FLAG_ALL, MFT_ENUM_FLAG_SORTANDFILTER, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-      MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-      MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
-      MFVideoInterlace_Progressive,
+      MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_DECODER,
+      MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ALL, MFT_ENUM_FLAG_SORTANDFILTER,
+      MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
+      MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_AV1, MFVideoFormat_H264,
+      MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
     },
     System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
   },
@@ -29,7 +29,10 @@ use ::windows::{
 };
 use xcap::{Monitor, Window};
 
-use super::{NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig, VideoDecodeConfig, VideoDecoder, VideoError};
+use super::{
+  DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
+  VideoDecodeConfig, VideoDecoder, VideoError,
+};
 use crate::{
   network::{
     protocol::{VideoCodecId, VideoFrame},
@@ -38,12 +41,43 @@ use crate::{
   services::{logger, screen_share_sources::ScreenShareSourceKind},
 };
 
+#[allow(dead_code)]
 const BACKEND_ORDER: [NativeVideoBackend; 4] = [
   NativeVideoBackend::NvidiaNvenc,
   NativeVideoBackend::AmdAmf,
   NativeVideoBackend::WindowsMediaFoundation,
   NativeVideoBackend::OpenH264,
 ];
+
+#[repr(C)]
+struct NvdecBridge {
+  _private: [u8; 0],
+}
+
+unsafe extern "C" {
+  fn parties_nvdec_create(codec: u8, width: u16, height: u16) -> *mut NvdecBridge;
+  fn parties_nvdec_destroy(bridge: *mut NvdecBridge);
+  fn parties_nvdec_decode(
+    bridge: *mut NvdecBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    rgba: *mut u8,
+    rgba_len: usize,
+  ) -> i32;
+  fn parties_nvdec_decode_to_d3d12(
+    bridge: *mut NvdecBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    y_handle: usize,
+    y_size: u64,
+    uv_handle: usize,
+    uv_size: u64,
+    width: u16,
+    height: u16,
+  ) -> i32;
+}
 
 pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
   if config.source_width != config.output_width || config.source_height != config.output_height {
@@ -79,20 +113,56 @@ pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Resul
   ))
 }
 
-#[allow(dead_code)]
-pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
-  let _ = config;
-  Err(VideoError::new(format!(
-    "Windows native video decoder is not wired yet. Backend order is: {}.",
-    backend_order_label()
-  )))
+pub(super) enum NativeVideoDecoder {
+  Nvdec(NvdecVideoDecoder),
+  MediaFoundation(MediaFoundationVideoDecoder),
 }
 
+pub(super) struct NvdecVideoDecoder {
+  handle: NonNull<NvdecBridge>,
+}
+
+pub(super) struct MediaFoundationVideoDecoder {
+  _mf: MediaFoundationSession,
+  transform: IMFTransform,
+  output_provides_samples: bool,
+  output_buffer_size: u32,
+  width: u16,
+  height: u16,
+}
+
+pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
+  match NvdecVideoDecoder::new(&config) {
+    Ok(decoder) => {
+      logger::log(&format!(
+        "[video/windows] decoder ready through NVDEC: codec={:?} size={}x{}",
+        config.codec, config.width, config.height
+      ));
+      Ok(VideoDecoder::from_windows(
+        NativeVideoDecoder::Nvdec(decoder),
+        config,
+        NativeVideoBackend::NvidiaNvdec,
+      ))
+    }
+    Err(nvdec_error) => {
+      logger::log(&format!("[video/windows] NVDEC decoder unavailable: {nvdec_error}"));
+      let decoder = MediaFoundationVideoDecoder::new(&config)?;
+      Ok(VideoDecoder::from_windows(
+        NativeVideoDecoder::MediaFoundation(decoder),
+        config,
+        NativeVideoBackend::WindowsMediaFoundation,
+      ))
+    }
+  }
+}
+
+#[allow(dead_code)]
 fn backend_order_label() -> String {
   BACKEND_ORDER
     .iter()
     .map(|backend| match backend {
       NativeVideoBackend::NvidiaNvenc => "NVENC",
+      NativeVideoBackend::NvidiaNvdec => "NVDEC",
       NativeVideoBackend::AmdAmf => "AMF",
       NativeVideoBackend::WindowsMediaFoundation => "Media Foundation",
       NativeVideoBackend::OpenH264 => "OpenH264",
@@ -411,6 +481,252 @@ impl MftEncoder {
   }
 }
 
+impl NativeVideoDecoder {
+  pub(super) fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    match self {
+      Self::Nvdec(decoder) => decoder.decode_frame(frame, output, output_buffer),
+      Self::MediaFoundation(decoder) => decoder.decode_frame(frame, output, output_buffer),
+    }
+  }
+
+  pub(super) fn decode_frame_to_dx12(
+    &mut self,
+    frame: &VideoFrame,
+    surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+  ) -> Result<bool, VideoError> {
+    match self {
+      Self::Nvdec(decoder) => decoder.decode_frame_to_dx12(frame, surface),
+      Self::MediaFoundation(_) => Ok(false),
+    }
+  }
+}
+
+impl NvdecVideoDecoder {
+  fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
+    let handle = unsafe { parties_nvdec_create(config.codec as u8, config.width, config.height) };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "No NVIDIA NVDEC decoder is available for {}.",
+        codec_label(config.codec)
+      ))
+    })?;
+    Ok(Self { handle })
+  }
+
+  fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    let nv12_len = nv12_len(frame.width, frame.height)?;
+    let mut nv12 = if output {
+      let mut buffer = output_buffer.unwrap_or_default();
+      if buffer.capacity() < nv12_len {
+        buffer = Vec::with_capacity(nv12_len);
+      }
+      buffer
+    } else {
+      Vec::new()
+    };
+    let (nv12_ptr, nv12_len) = if output {
+      (nv12.as_mut_ptr().cast::<u8>(), nv12_len)
+    } else {
+      (ptr::null_mut(), 0)
+    };
+    let status = unsafe {
+      parties_nvdec_decode(
+        self.handle.as_ptr(),
+        frame.encoded.as_ptr(),
+        frame.encoded.len(),
+        i64::from(frame.frame_number),
+        nv12_ptr,
+        nv12_len,
+      )
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "NVIDIA NVDEC failed to decode {} frame {}.",
+        codec_label(frame.codec),
+        frame.frame_number
+      )));
+    }
+
+    if status == 0 || !output {
+      return Ok(None);
+    }
+
+    unsafe {
+      nv12.set_len(nv12_len);
+    }
+    Ok(Some(NativeDecodedVideoFrame {
+      format: DecodedVideoPixelFormat::Nv12,
+      pixels: nv12,
+    }))
+  }
+
+  fn decode_frame_to_dx12(
+    &mut self,
+    frame: &VideoFrame,
+    surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+  ) -> Result<bool, VideoError> {
+    let status = unsafe {
+      parties_nvdec_decode_to_d3d12(
+        self.handle.as_ptr(),
+        frame.encoded.as_ptr(),
+        frame.encoded.len(),
+        i64::from(frame.frame_number),
+        surface.y_shared_handle_raw() as usize,
+        surface.y_allocation_size(),
+        surface.uv_shared_handle_raw() as usize,
+        surface.uv_allocation_size(),
+        frame.width,
+        frame.height,
+      )
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "NVIDIA NVDEC failed to decode {} frame {} into DX12 surface.",
+        codec_label(frame.codec),
+        frame.frame_number
+      )));
+    }
+
+    Ok(status > 0)
+  }
+}
+
+impl Drop for NvdecVideoDecoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_nvdec_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
+impl MediaFoundationVideoDecoder {
+  fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
+    let mf = MediaFoundationSession::start()?;
+    let transform = activate_decoder_transform(config.codec)?;
+    let input_type = create_video_type(codec_subtype(config.codec)?, config.width, config.height, 30, None)?;
+    let output_type = create_video_type(MFVideoFormat_NV12, config.width, config.height, 30, None)?;
+
+    unsafe {
+      transform
+        .SetInputType(0, &input_type, 0)
+        .map_err(|error| VideoError::new(format!("Failed to set decoder input type: {error}")))?;
+      transform
+        .SetOutputType(0, &output_type, 0)
+        .map_err(|error| VideoError::new(format!("Failed to set decoder output type: {error}")))?;
+      transform
+        .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
+        .map_err(|error| VideoError::new(format!("Failed to begin decoder streaming: {error}")))?;
+      transform
+        .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+        .map_err(|error| VideoError::new(format!("Failed to start decoder stream: {error}")))?;
+    }
+
+    let output_info = unsafe {
+      transform
+        .GetOutputStreamInfo(0)
+        .map_err(|error| VideoError::new(format!("Failed to query decoder output stream: {error}")))?
+    };
+    let nv12_size = nv12_len(config.width, config.height)? as u32;
+
+    Ok(Self {
+      _mf: mf,
+      transform,
+      output_provides_samples: output_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
+      output_buffer_size: output_info.cbSize.max(nv12_size),
+      width: config.width,
+      height: config.height,
+    })
+  }
+
+  pub(super) fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    let _ = output_buffer;
+    let timestamp_100ns = i64::from(frame.timestamp) * 10_000;
+    let input = sample_from_bytes(&frame.encoded, timestamp_100ns, 333_333)?;
+    unsafe {
+      self
+        .transform
+        .ProcessInput(0, &input, 0)
+        .map_err(|error| VideoError::new(format!("Failed to submit decoder input frame: {error}")))?;
+    }
+
+    let mut decoded = None;
+    loop {
+      let Some(sample) = self.process_output()? else {
+        break;
+      };
+      let nv12 = bytes_from_sample(&sample)?;
+      if nv12.is_empty() {
+        continue;
+      }
+      if output {
+        decoded = Some(NativeDecodedVideoFrame {
+          format: DecodedVideoPixelFormat::Rgba8,
+          pixels: nv12_to_rgba(&nv12, self.width, self.height)?,
+        });
+      }
+    }
+
+    Ok(decoded)
+  }
+
+  fn process_output(&mut self) -> Result<Option<IMFSample>, VideoError> {
+    let mut output = MFT_OUTPUT_DATA_BUFFER::default();
+    if !self.output_provides_samples {
+      output.pSample = ManuallyDrop::new(Some(create_empty_output_sample(self.output_buffer_size)?));
+    }
+
+    let mut status = 0u32;
+    let result = unsafe {
+      self
+        .transform
+        .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
+    };
+
+    match result {
+      Ok(()) => {
+        let sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
+        let events = unsafe { ManuallyDrop::take(&mut output.pEvents) };
+        drop(events);
+        Ok(sample)
+      }
+      Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
+        unsafe {
+          drop(ManuallyDrop::take(&mut output.pSample));
+          drop(ManuallyDrop::take(&mut output.pEvents));
+        }
+        Ok(None)
+      }
+      Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => Err(VideoError::new(
+        "Decoder output stream changed; dynamic video format changes are not wired yet.",
+      )),
+      Err(error) => {
+        unsafe {
+          drop(ManuallyDrop::take(&mut output.pSample));
+          drop(ManuallyDrop::take(&mut output.pEvents));
+        }
+        Err(VideoError::new(format!("Failed to read decoder output: {error}")))
+      }
+    }
+  }
+}
+
 fn activate_encoder_transform(codec: VideoCodecId) -> Result<IMFTransform, VideoError> {
   let subtype = codec_subtype(codec)?;
   let output_type = MFT_REGISTER_TYPE_INFO {
@@ -458,6 +774,57 @@ fn activate_encoder_transform(codec: VideoCodecId) -> Result<IMFTransform, Video
   transform.ok_or_else(|| {
     VideoError::new(format!(
       "Windows Media Foundation encoder activation failed for {}.",
+      codec_label(codec)
+    ))
+  })
+}
+
+fn activate_decoder_transform(codec: VideoCodecId) -> Result<IMFTransform, VideoError> {
+  let subtype = codec_subtype(codec)?;
+  let input_type = MFT_REGISTER_TYPE_INFO {
+    guidMajorType: MFMediaType_Video,
+    guidSubtype: subtype,
+  };
+  let mut activates: *mut Option<IMFActivate> = ptr::null_mut();
+  let mut count = 0u32;
+  let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_ALL.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
+
+  unsafe {
+    MFTEnumEx(
+      MFT_CATEGORY_VIDEO_DECODER,
+      flags,
+      Some(&input_type),
+      None,
+      &mut activates,
+      &mut count,
+    )
+    .map_err(|error| VideoError::new(format!("Failed to enumerate decoder transforms: {error}")))?;
+  }
+
+  if activates.is_null() || count == 0 {
+    return Err(VideoError::new(format!(
+      "No Windows Media Foundation decoder is available for {}.",
+      codec_label(codec)
+    )));
+  }
+
+  let mut transform = None;
+  unsafe {
+    for index in 0..count as usize {
+      let activate = ptr::read(activates.add(index));
+      if transform.is_none() {
+        if let Some(activate) = &activate {
+          transform = activate.ActivateObject::<IMFTransform>().ok();
+        }
+      }
+      drop(activate);
+    }
+    CoTaskMemFree(Some(activates.cast::<c_void>()));
+  }
+
+  transform.ok_or_else(|| {
+    VideoError::new(format!(
+      "Windows Media Foundation decoder activation failed for {}.",
       codec_label(codec)
     ))
   })
@@ -646,6 +1013,48 @@ fn rgba_to_nv12(rgba: &[u8], width: u16, height: u16) -> Result<Vec<u8>, VideoEr
   Ok(out)
 }
 
+fn nv12_len(width: u16, height: u16) -> Result<usize, VideoError> {
+  let width = usize::from(width);
+  let height = usize::from(height);
+  if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+    return Err(VideoError::new("NV12 conversion requires non-zero even dimensions."));
+  }
+  Ok(width * height + width * height / 2)
+}
+
+fn nv12_to_rgba(nv12: &[u8], width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
+  let width = usize::from(width);
+  let height = usize::from(height);
+  let expected_len = nv12_len(width as u16, height as u16)?;
+  if nv12.len() < expected_len {
+    return Err(VideoError::new(format!(
+      "NV12 buffer is too short: {} bytes, expected at least {expected_len}.",
+      nv12.len()
+    )));
+  }
+
+  let (y_plane, uv_plane) = nv12.split_at(width * height);
+  let mut rgba = vec![0u8; width * height * 4];
+  for y in 0..height {
+    for x in 0..width {
+      let y_value = y_plane[y * width + x] as i32;
+      let uv_offset = (y / 2) * width + (x & !1);
+      let u = uv_plane[uv_offset] as i32;
+      let v = uv_plane[uv_offset + 1] as i32;
+      let c = (y_value - 16).max(0);
+      let d = u - 128;
+      let e = v - 128;
+      let offset = (y * width + x) * 4;
+      rgba[offset] = clamp_video_byte((298 * c + 409 * e + 128) >> 8);
+      rgba[offset + 1] = clamp_video_byte((298 * c - 100 * d - 208 * e + 128) >> 8);
+      rgba[offset + 2] = clamp_video_byte((298 * c + 516 * d + 128) >> 8);
+      rgba[offset + 3] = 255;
+    }
+  }
+
+  Ok(rgba)
+}
+
 #[allow(dead_code)]
 fn clamp_video_byte(value: i32) -> u8 {
   value.clamp(0, 255) as u8
@@ -749,5 +1158,21 @@ mod tests {
     let error = rgba_to_nv12(&rgba, 3, 2).unwrap_err();
 
     assert_eq!(error.to_string(), "NV12 conversion requires non-zero even dimensions.");
+  }
+
+  #[test]
+  fn nv12_to_rgba_converts_black_frame() {
+    let nv12 = [16, 16, 16, 16, 128, 128].to_vec();
+    let rgba = nv12_to_rgba(&nv12, 2, 2).unwrap();
+
+    assert_eq!(rgba, [0, 0, 0, 255].repeat(4));
+  }
+
+  #[test]
+  fn nv12_to_rgba_converts_white_frame() {
+    let nv12 = [235, 235, 235, 235, 128, 128].to_vec();
+    let rgba = nv12_to_rgba(&nv12, 2, 2).unwrap();
+
+    assert_eq!(rgba, [255, 255, 255, 255].repeat(4));
   }
 }

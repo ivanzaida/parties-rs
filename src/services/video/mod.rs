@@ -8,7 +8,10 @@ use std::{
 };
 
 use crate::{
-  network::{protocol::VideoCodecId, server::Server},
+  network::{
+    protocol::{VideoCodecId, data::ForwardedVideoFrame},
+    server::Server,
+  },
   services::screen_share_sources::ScreenShareSourceKind,
 };
 
@@ -31,17 +34,38 @@ pub struct VideoBroadcastConfig {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct VideoDecodeConfig {
   pub codec: VideoCodecId,
   pub width: u16,
   pub height: u16,
 }
 
+pub struct DecodedVideoFrame {
+  pub sender_id: u32,
+  pub codec: VideoCodecId,
+  pub width: u16,
+  pub height: u16,
+  pub format: DecodedVideoPixelFormat,
+  pub pixels: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodedVideoPixelFormat {
+  Rgba8,
+  Nv12,
+}
+
+pub(super) struct NativeDecodedVideoFrame {
+  pub format: DecodedVideoPixelFormat,
+  pub pixels: Vec<u8>,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeVideoBackend {
   NvidiaNvenc,
+  NvidiaNvdec,
   AmdAmf,
   WindowsMediaFoundation,
   OpenH264,
@@ -78,6 +102,9 @@ pub struct VideoBroadcast {
 
 #[allow(dead_code)]
 pub struct VideoDecoder {
+  #[cfg(target_os = "windows")]
+  inner: windows::NativeVideoDecoder,
+  config: VideoDecodeConfig,
   backend: NativeVideoBackend,
 }
 
@@ -118,8 +145,78 @@ impl VideoDecoder {
     self.backend
   }
 
-  pub(super) fn from_backend(backend: NativeVideoBackend) -> Self {
-    Self { backend }
+  pub fn config(&self) -> &VideoDecodeConfig {
+    &self.config
+  }
+
+  pub fn decode(&mut self, frame: &ForwardedVideoFrame) -> Result<Option<DecodedVideoFrame>, VideoError> {
+    self.decode_for_output(frame, true)
+  }
+
+  pub fn decode_for_output(
+    &mut self,
+    frame: &ForwardedVideoFrame,
+    output: bool,
+  ) -> Result<Option<DecodedVideoFrame>, VideoError> {
+    self.decode_with_output_buffer(frame, output, None)
+  }
+
+  pub fn decode_with_output_buffer(
+    &mut self,
+    frame: &ForwardedVideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<DecodedVideoFrame>, VideoError> {
+    let frame_config = VideoDecodeConfig {
+      codec: frame.frame.codec,
+      width: frame.frame.width,
+      height: frame.frame.height,
+    };
+    if frame_config != self.config {
+      return Err(VideoError::new(
+        "Video frame format changed; decoder restart is required.",
+      ));
+    }
+
+    let decoded = decode_native_frame(self, frame, output, output_buffer)?;
+    Ok(decoded.map(|decoded| DecodedVideoFrame {
+      sender_id: frame.sender_id,
+      codec: frame.frame.codec,
+      width: frame.frame.width,
+      height: frame.frame.height,
+      format: decoded.format,
+      pixels: decoded.pixels,
+    }))
+  }
+
+  #[cfg(target_os = "windows")]
+  pub fn decode_to_dx12_surface(
+    &mut self,
+    frame: &ForwardedVideoFrame,
+    surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+  ) -> Result<bool, VideoError> {
+    let frame_config = VideoDecodeConfig {
+      codec: frame.frame.codec,
+      width: frame.frame.width,
+      height: frame.frame.height,
+    };
+    if frame_config != self.config {
+      return Err(VideoError::new(
+        "Video frame format changed; decoder restart is required.",
+      ));
+    }
+
+    self.inner.decode_frame_to_dx12(&frame.frame, surface)
+  }
+
+  #[cfg(target_os = "windows")]
+  fn from_windows(inner: windows::NativeVideoDecoder, config: VideoDecodeConfig, backend: NativeVideoBackend) -> Self {
+    Self { inner, config, backend }
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  fn from_backend(backend: NativeVideoBackend, config: VideoDecodeConfig) -> Self {
+    Self { config, backend }
   }
 }
 
@@ -198,6 +295,28 @@ fn start_native_decoder(config: VideoDecodeConfig) -> Result<VideoDecoder, Video
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[allow(dead_code)]
 fn start_native_decoder(_config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
+  Err(VideoError::new(
+    "Native video decoder is not implemented for this platform yet.",
+  ))
+}
+
+#[cfg(target_os = "windows")]
+fn decode_native_frame(
+  decoder: &mut VideoDecoder,
+  frame: &ForwardedVideoFrame,
+  output: bool,
+  output_buffer: Option<Vec<u8>>,
+) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+  decoder.inner.decode_frame(&frame.frame, output, output_buffer)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn decode_native_frame(
+  _decoder: &mut VideoDecoder,
+  _frame: &ForwardedVideoFrame,
+  _output: bool,
+  _output_buffer: Option<Vec<u8>>,
+) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
   Err(VideoError::new(
     "Native video decoder is not implemented for this platform yet.",
   ))

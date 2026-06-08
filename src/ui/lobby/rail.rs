@@ -187,7 +187,7 @@ fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState) ->
     [("user", user_label.clone()), ("role", role.to_string())],
   );
 
-  Row::new()
+  let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Md)
@@ -206,10 +206,13 @@ fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState) ->
             .variant(theme::TypographyStyle::Caption)
             .color(theme::PaletteColor::TextMuted),
         ),
-    )
-    .child(server_settings_button(ctx))
-    .child(leave_button(ctx))
-    .into()
+    );
+
+  if info.role.can_edit_server_settings() {
+    row = row.child(server_settings_button(ctx));
+  }
+
+  row.child(leave_button(ctx)).into()
 }
 
 fn server_settings_button(ctx: &mut Ctx) -> Element {

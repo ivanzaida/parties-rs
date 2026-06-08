@@ -48,6 +48,20 @@ pub fn can_moderate(actor: Role, target: Role) -> bool {
   (actor as u8) < target as u8
 }
 
+pub fn can_edit_server_settings(role: Role) -> bool {
+  role.has_permission(Permission::ManageServer)
+    || role.has_permission(Permission::ManagePermissions)
+    || role.has_permission(Permission::ManageRoles)
+    || role.has_permission(Permission::CreateChannel)
+    || role.has_permission(Permission::DeleteChannel)
+}
+
+pub fn can_manage_channels(role: Role) -> bool {
+  role.has_permission(Permission::ManageServer)
+    || role.has_permission(Permission::CreateChannel)
+    || role.has_permission(Permission::DeleteChannel)
+}
+
 impl Role {
   pub fn default_permissions(self) -> u32 {
     default_permissions(self)
@@ -63,6 +77,14 @@ impl Role {
 
   pub fn can_moderate(self, target: Role) -> bool {
     can_moderate(self, target)
+  }
+
+  pub fn can_edit_server_settings(self) -> bool {
+    can_edit_server_settings(self)
+  }
+
+  pub fn can_manage_channels(self) -> bool {
+    can_manage_channels(self)
   }
 }
 
@@ -115,5 +137,21 @@ mod tests {
     assert!(!Role::User.can_moderate(Role::Moderator));
     assert!(!Role::Admin.can_moderate(Role::Admin));
     assert!(!Role::Moderator.can_moderate(Role::Owner));
+  }
+
+  #[test]
+  fn server_settings_are_only_visible_to_roles_with_edit_permissions() {
+    assert!(Role::Owner.can_edit_server_settings());
+    assert!(Role::Admin.can_edit_server_settings());
+    assert!(!Role::Moderator.can_edit_server_settings());
+    assert!(!Role::User.can_edit_server_settings());
+  }
+
+  #[test]
+  fn channel_settings_require_channel_management_permissions() {
+    assert!(Role::Owner.can_manage_channels());
+    assert!(Role::Admin.can_manage_channels());
+    assert!(!Role::Moderator.can_manage_channels());
+    assert!(!Role::User.can_manage_channels());
   }
 }

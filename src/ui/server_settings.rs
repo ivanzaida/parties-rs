@@ -102,6 +102,18 @@ impl Component for ServerSettingsScreen {
       }
       return unavailable_screen(ctx);
     };
+    if !info.role.can_edit_server_settings() {
+      if let Some(navigator) = ctx.navigator() {
+        navigator.replace(ROUTE_LOBBY);
+      }
+      return redirecting_screen();
+    }
+    if page == ServerSettingsPage::Channels && !info.role.can_manage_channels() {
+      if let Some(navigator) = ctx.navigator() {
+        navigator.replace(ROUTE_SERVER_SETTINGS);
+      }
+      return redirecting_screen();
+    }
     let server_query = server_info_query_action(ctx);
     let query_state = server_query.state().get();
     let query_pending = query_state.is_pending();
@@ -141,6 +153,14 @@ fn unavailable_screen(ctx: &mut Ctx) -> Element {
     .into()
 }
 
+fn redirecting_screen() -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
+    .into()
+}
+
 fn server_settings_screen(
   ctx: &mut Ctx,
   page: ServerSettingsPage,
@@ -175,7 +195,7 @@ fn server_settings_nav(ctx: &mut Ctx, page: ServerSettingsPage, info: &Connected
   let members_label = ctx.t("server_settings.nav.members").to_string();
   let roles_label = ctx.t("server_settings.nav.roles").to_string();
 
-  Column::new()
+  let mut nav = Column::new()
     .width(metrics.nav_width)
     .height(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Sm)
@@ -191,14 +211,19 @@ fn server_settings_nav(ctx: &mut Ctx, page: ServerSettingsPage, info: &Connected
       &server_label,
       page == ServerSettingsPage::Server,
       ROUTE_SERVER_SETTINGS,
-    ))
-    .child(nav_item(
+    ));
+
+  if info.role.can_manage_channels() {
+    nav = nav.child(nav_item(
       ctx,
       "hash",
       &channels_label,
       page == ServerSettingsPage::Channels,
       ROUTE_SERVER_SETTINGS_CHANNELS,
-    ))
+    ));
+  }
+
+  nav
     .child(nav_item(
       ctx,
       "users",

@@ -1,6 +1,9 @@
 use std::{
-  collections::{HashMap, HashSet},
-  sync::{Arc, Mutex},
+  collections::{HashMap, HashSet, VecDeque},
+  sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+  },
   thread,
   time::{Duration, Instant},
 };
@@ -8,6 +11,7 @@ use std::{
 use lurq::{
   app::component::{ComponentInfo, DevtoolsInspectable},
   core::Signal,
+  images::{ImageData, StreamingImage},
 };
 
 use crate::{
@@ -18,12 +22,16 @@ use crate::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
       },
+      data::ForwardedVideoFrame,
     },
     server::{Server, ServerError},
   },
   services::{
     logger,
-    video::{VideoBroadcast, VideoBroadcastConfig},
+    video::{
+      DecodedVideoFrame, DecodedVideoPixelFormat, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
+      VideoDecodeConfig, VideoDecoder,
+    },
     voice::{LocalVoiceCallback, VoiceEngine},
   },
   storage::AppSettings,
@@ -31,6 +39,9 @@ use crate::{
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_USER_VOLUME: i32 = 100;
+const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
+const MAX_DECODE_VIDEO_BATCH: usize = 10;
+const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedServerInfo {
@@ -74,6 +85,191 @@ impl DevtoolsInspectable for ConnectedServerInfo {
       std::any::type_name::<String>(),
       self.certificate_fingerprint.clone(),
     ));
+  }
+}
+
+fn decode_video_packet(
+  decoders: &mut HashMap<UserId, VideoDecoder>,
+  decoder_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
+  packet: ForwardedVideoFrame,
+  output: bool,
+  output_buffer: Option<Vec<u8>>,
+) -> Option<DecodedVideoFrame> {
+  let config = VideoDecodeConfig {
+    codec: packet.frame.codec,
+    width: packet.frame.width,
+    height: packet.frame.height,
+  };
+  let failure_key = (packet.sender_id, config.clone());
+
+  if decoder_failures.contains(&failure_key) {
+    return None;
+  }
+
+  if decoders
+    .get(&packet.sender_id)
+    .is_none_or(|decoder| decoder.config() != &config)
+  {
+    match VideoDecoder::start(config.clone()) {
+      Ok(decoder) => {
+        logger::log(&format!(
+          "[video] decoder ready for user {}: codec={:?} size={}x{}",
+          packet.sender_id, config.codec, config.width, config.height
+        ));
+        decoders.insert(packet.sender_id, decoder);
+      }
+      Err(error) => {
+        logger::log(&format!(
+          "[video] failed to start decoder for user {}: {error}",
+          packet.sender_id
+        ));
+        decoder_failures.insert(failure_key);
+        return None;
+      }
+    }
+  }
+
+  let decoder = decoders.get_mut(&packet.sender_id)?;
+  match decoder.decode_with_output_buffer(&packet, output, output_buffer) {
+    Ok(frame) => frame,
+    Err(error) => {
+      logger::log(&format!(
+        "[video] failed to decode frame from user {}: {error}",
+        packet.sender_id
+      ));
+      decoders.remove(&packet.sender_id);
+      decoder_failures.insert(failure_key);
+      None
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn decode_video_packet_to_dx12(
+  decoders: &mut HashMap<UserId, VideoDecoder>,
+  decoder_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
+  dx12_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
+  packet: &ForwardedVideoFrame,
+  surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+) -> Option<bool> {
+  let config = VideoDecodeConfig {
+    codec: packet.frame.codec,
+    width: packet.frame.width,
+    height: packet.frame.height,
+  };
+  let failure_key = (packet.sender_id, config.clone());
+
+  if dx12_failures.contains(&failure_key) {
+    return None;
+  }
+  if decoder_failures.contains(&failure_key) {
+    return Some(false);
+  }
+
+  if decoders
+    .get(&packet.sender_id)
+    .is_none_or(|decoder| decoder.config() != &config)
+  {
+    match VideoDecoder::start(config.clone()) {
+      Ok(decoder) => {
+        logger::log(&format!(
+          "[video] decoder ready for user {}: codec={:?} size={}x{}",
+          packet.sender_id, config.codec, config.width, config.height
+        ));
+        decoders.insert(packet.sender_id, decoder);
+      }
+      Err(error) => {
+        logger::log(&format!(
+          "[video] failed to start decoder for user {}: {error}",
+          packet.sender_id
+        ));
+        decoder_failures.insert(failure_key);
+        return Some(false);
+      }
+    }
+  }
+
+  let decoder = decoders.get_mut(&packet.sender_id)?;
+  if decoder.backend() != NativeVideoBackend::NvidiaNvdec {
+    return None;
+  }
+
+  match decoder.decode_to_dx12_surface(packet, surface) {
+    Ok(decoded) => Some(decoded),
+    Err(error) => {
+      logger::log(&format!(
+        "[video] failed to decode frame from user {} into DX12 surface: {error}",
+        packet.sender_id
+      ));
+      decoders.remove(&packet.sender_id);
+      dx12_failures.insert(failure_key);
+      None
+    }
+  }
+}
+
+fn increment_counter(counters: &mut HashMap<UserId, u64>, user_id: UserId) -> u64 {
+  let counter = counters.entry(user_id).or_insert(0);
+  *counter += 1;
+  *counter
+}
+
+fn should_log_video_count(count: u64) -> bool {
+  count == 1 || count % 120 == 0
+}
+
+struct VideoPacketQueue {
+  packets: Mutex<VecDeque<ForwardedVideoFrame>>,
+  notify: Condvar,
+  dropped: AtomicU64,
+  closed: AtomicBool,
+}
+
+impl VideoPacketQueue {
+  fn new() -> Self {
+    Self {
+      packets: Mutex::new(VecDeque::new()),
+      notify: Condvar::new(),
+      dropped: AtomicU64::new(0),
+      closed: AtomicBool::new(false),
+    }
+  }
+
+  fn push(&self, packet: ForwardedVideoFrame) {
+    {
+      let mut packets = self.packets.lock().expect("video packet queue lock poisoned");
+      if packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
+        packets.pop_front();
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+      }
+      packets.push_back(packet);
+    }
+    self.notify.notify_one();
+  }
+
+  fn pop_batch_into(&self, stop: &AtomicBool, batch: &mut Vec<ForwardedVideoFrame>) -> Option<u64> {
+    let mut packets = self.packets.lock().expect("video packet queue lock poisoned");
+    while packets.is_empty() && !stop.load(Ordering::Relaxed) && !self.closed.load(Ordering::Relaxed) {
+      let (guard, _) = self
+        .notify
+        .wait_timeout(packets, Duration::from_millis(100))
+        .expect("video packet queue lock poisoned");
+      packets = guard;
+    }
+
+    if packets.is_empty() {
+      return None;
+    }
+
+    batch.clear();
+    batch.extend(packets.drain(..));
+    let dropped = self.dropped.swap(0, Ordering::Relaxed);
+    Some(dropped)
+  }
+
+  fn close(&self) {
+    self.closed.store(true, Ordering::Relaxed);
+    self.notify.notify_all();
   }
 }
 
@@ -235,6 +431,48 @@ pub struct LobbyState {
   pub last_error: Option<String>,
 }
 
+#[allow(dead_code)]
+enum VideoFrameImage {
+  Cpu(StreamingImage),
+  #[cfg(target_os = "windows")]
+  Dx12Surface(Arc<lurq::app::dx12_render::Dx12Nv12Surface>),
+}
+
+impl VideoFrameImage {
+  fn is_cpu_image(&self) -> bool {
+    matches!(self, Self::Cpu(_))
+  }
+
+  fn image_data(&self) -> ImageData {
+    match self {
+      Self::Cpu(image) => image.image_data(),
+      #[cfg(target_os = "windows")]
+      Self::Dx12Surface(surface) => surface.image_data(),
+    }
+  }
+
+  fn set_cpu_pixels(&self, format: DecodedVideoPixelFormat, pixels: Vec<u8>) -> bool {
+    let Self::Cpu(image) = self else {
+      return false;
+    };
+    match format {
+      DecodedVideoPixelFormat::Rgba8 => image.set_rgba(pixels),
+      DecodedVideoPixelFormat::Nv12 => image.set_nv12(pixels),
+    }
+    true
+  }
+
+  fn take_cpu_buffer(&self) -> Option<Vec<u8>> {
+    let Self::Cpu(image) = self else {
+      return None;
+    };
+    match image.image_data().format() {
+      lurq::images::ImagePixelFormat::Rgba8 => image.take_rgba_buffer(),
+      lurq::images::ImagePixelFormat::Nv12 => image.take_nv12_buffer(),
+    }
+  }
+}
+
 #[derive(Clone)]
 pub struct ServerSession {
   current: Arc<Mutex<Option<ConnectedServer>>>,
@@ -249,6 +487,10 @@ pub struct ServerSession {
   pending_keepalive_ping: Arc<Mutex<Option<Instant>>>,
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
   video_broadcast: Arc<Mutex<Option<VideoBroadcast>>>,
+  video_frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
+  #[cfg(target_os = "windows")]
+  dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
+  video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   revision: Signal<u64>,
 }
@@ -268,6 +510,10 @@ impl Default for ServerSession {
       pending_keepalive_ping: Arc::new(Mutex::new(None)),
       voice_engine: Arc::new(Mutex::new(None)),
       video_broadcast: Arc::new(Mutex::new(None)),
+      video_frames: Arc::new(Mutex::new(HashMap::new())),
+      #[cfg(target_os = "windows")]
+      dx12_video_surfaces: None,
+      video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
       revision: Signal::new(0),
     }
@@ -276,6 +522,26 @@ impl Default for ServerSession {
 
 #[allow(dead_code)]
 impl ServerSession {
+  #[cfg(target_os = "windows")]
+  pub fn with_dx12_video_surface_allocator(
+    dx12_video_surfaces: lurq::app::dx12_render::Dx12VideoSurfaceAllocator,
+  ) -> Self {
+    Self {
+      dx12_video_surfaces: Some(dx12_video_surfaces),
+      ..Self::default()
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn dx12_video_surface_allocator(&self) -> Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator> {
+    self.dx12_video_surfaces.clone()
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  fn dx12_video_surface_allocator(&self) -> Option<()> {
+    None
+  }
+
   pub fn set_connected(&self, connected: ConnectedServer) {
     self.stop_voice();
     self.stop_video_broadcast();
@@ -286,6 +552,12 @@ impl ServerSession {
     *self.muted_before_deafen.lock().expect("server session lock poisoned") = None;
     self
       .speaking_marks
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self.video_frames.lock().expect("server session lock poisoned").clear();
+    self
+      .video_revision_marks
       .lock()
       .expect("server session lock poisoned")
       .clear();
@@ -304,6 +576,12 @@ impl ServerSession {
     *self.muted_before_deafen.lock().expect("server session lock poisoned") = None;
     self
       .speaking_marks
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self.video_frames.lock().expect("server session lock poisoned").clear();
+    self
+      .video_revision_marks
       .lock()
       .expect("server session lock poisoned")
       .clear();
@@ -344,6 +622,15 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .as_ref()
       .map(|connected| connected.server.clone())
+  }
+
+  pub fn video_frame(&self, user_id: UserId) -> Option<ImageData> {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .map(VideoFrameImage::image_data)
   }
 
   pub fn local_voice_state(&self) -> Option<(bool, bool)> {
@@ -676,7 +963,44 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .watching_user_id = user_id;
+    self.retain_video_cache(user_id);
     self.bump_revision();
+  }
+
+  fn watching_user_id(&self) -> Option<UserId> {
+    self
+      .lobby
+      .lock()
+      .expect("server session lock poisoned")
+      .watching_user_id
+  }
+
+  fn retain_video_cache(&self, watched_user_id: Option<UserId>) {
+    let mut frames = self.video_frames.lock().expect("server session lock poisoned");
+    let mut marks = self.video_revision_marks.lock().expect("server session lock poisoned");
+    match watched_user_id {
+      Some(user_id) => {
+        frames.retain(|cached_user_id, _| *cached_user_id == user_id);
+        marks.retain(|cached_user_id, _| *cached_user_id == user_id);
+      }
+      None => {
+        frames.clear();
+        marks.clear();
+      }
+    }
+  }
+
+  fn clear_video_cache_for_user(&self, user_id: UserId) {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .remove(&user_id);
+    self
+      .video_revision_marks
+      .lock()
+      .expect("server session lock poisoned")
+      .remove(&user_id);
   }
 
   pub fn start_voice(&self, settings: AppSettings) -> Result<(), String> {
@@ -782,6 +1106,19 @@ impl ServerSession {
     let voice_task = tokio::spawn(async move {
       voice_session.run_voice_activity_receiver(voice_server).await;
     });
+    let video_stop = Arc::new(AtomicBool::new(false));
+    let video_thread = {
+      let video_session = self.clone();
+      let video_server = server.clone();
+      let video_runtime = tokio::runtime::Handle::current();
+      let video_stop = video_stop.clone();
+      thread::Builder::new()
+        .name("parties-video-receiver".to_owned())
+        .spawn(move || {
+          video_session.run_video_receiver(video_server, video_runtime, video_stop);
+        })
+        .ok()
+    };
 
     loop {
       match server.recv().await {
@@ -798,7 +1135,9 @@ impl ServerSession {
     }
 
     voice_task.abort();
+    video_stop.store(true, Ordering::Relaxed);
     ping_task.abort();
+    drop(video_thread);
     *session.receiver_started.lock().expect("server session lock poisoned") = false;
     session
       .lobby
@@ -840,6 +1179,191 @@ impl ServerSession {
     }
   }
 
+  fn run_video_receiver(&self, server: Arc<Server>, runtime: tokio::runtime::Handle, stop: Arc<AtomicBool>) {
+    logger::log("[video] receiver thread started");
+    let _dx12_video_surfaces = self.dx12_video_surface_allocator();
+    let queue = Arc::new(VideoPacketQueue::new());
+    let reader_thread = {
+      let server = server.clone();
+      let runtime = runtime.clone();
+      let stop = stop.clone();
+      let queue = queue.clone();
+      thread::Builder::new()
+        .name("parties-video-reader".to_owned())
+        .spawn(move || {
+          while !stop.load(Ordering::Relaxed) {
+            match runtime.block_on(server.recv_video_frame()) {
+              Ok(packet) => queue.push(packet),
+              Err(ServerError::Protocol(error)) => {
+                logger::log(&format!("[video] ignored malformed video packet: {error}"));
+                continue;
+              }
+              Err(error) => {
+                logger::log(&format!("[video] video reader stopped: {error}"));
+                break;
+              }
+            }
+          }
+          queue.close();
+        })
+        .ok()
+    };
+    let mut decoders = HashMap::<UserId, VideoDecoder>::new();
+    let mut decoder_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
+    #[cfg(target_os = "windows")]
+    let mut dx12_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
+    let mut awaiting_keyframes = HashSet::<UserId>::new();
+    let mut received_counts = HashMap::<UserId, u64>::new();
+    let mut decoded_counts = HashMap::<UserId, u64>::new();
+    let mut last_watched_user = self.watching_user_id();
+    let mut batch = Vec::<ForwardedVideoFrame>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
+
+    while !stop.load(Ordering::Relaxed) {
+      let Some(dropped_count) = queue.pop_batch_into(&stop, &mut batch) else {
+        break;
+      };
+
+      let watched_user = self.watching_user_id();
+      if watched_user != last_watched_user {
+        decoders.retain(|user_id, _| Some(*user_id) == watched_user);
+        decoder_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
+        #[cfg(target_os = "windows")]
+        dx12_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
+        awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
+        last_watched_user = watched_user;
+        logger::log(&format!("[video] watch target changed: {watched_user:?}"));
+      }
+
+      if dropped_count > 0 || batch.len() > MAX_DECODE_VIDEO_BATCH {
+        let affected_users = batch
+          .iter()
+          .filter(|packet| Some(packet.sender_id) == watched_user)
+          .map(|packet| packet.sender_id)
+          .collect::<HashSet<_>>();
+        for user_id in &affected_users {
+          decoders.remove(user_id);
+          awaiting_keyframes.insert(*user_id);
+          if let Err(error) = runtime.block_on(server.request_keyframe_stream(*user_id)) {
+            logger::log(&format!(
+              "[video] failed to request catch-up keyframe for user {user_id}: {error}"
+            ));
+          }
+        }
+        logger::log(&format!(
+          "[video] dropping stale video backlog: queued={} dropped={} users={}",
+          batch.len(),
+          dropped_count,
+          affected_users.len()
+        ));
+      }
+
+      let latest_watched_packet_index = batch
+        .iter()
+        .enumerate()
+        .filter(|(_, packet)| Some(packet.sender_id) == watched_user)
+        .map(|(index, _)| index)
+        .last();
+
+      for (packet_index, packet) in batch.drain(..).enumerate() {
+        if Some(packet.sender_id) != self.watching_user_id() {
+          decoders.remove(&packet.sender_id);
+          awaiting_keyframes.remove(&packet.sender_id);
+          continue;
+        }
+
+        if awaiting_keyframes.contains(&packet.sender_id) {
+          if !packet.frame.keyframe {
+            continue;
+          }
+          awaiting_keyframes.remove(&packet.sender_id);
+          logger::log(&format!(
+            "[video] catch-up keyframe received for user {}: frame={}",
+            packet.sender_id, packet.frame.frame_number
+          ));
+        }
+
+        {
+          let received_count = increment_counter(&mut received_counts, packet.sender_id);
+          let output = Some(packet_index) == latest_watched_packet_index;
+          if should_log_video_count(received_count) {
+            logger::log(&format!(
+              "[video] received frame #{received_count} from user {}: frame={} codec={:?} size={}x{} keyframe={} output={} bytes={}",
+              packet.sender_id,
+              packet.frame.frame_number,
+              packet.frame.codec,
+              packet.frame.width,
+              packet.frame.height,
+              packet.frame.keyframe,
+              output,
+              packet.frame.encoded.len()
+            ));
+          }
+
+          #[cfg(target_os = "windows")]
+          if output
+            && let Some(surface) =
+              self.dx12_video_surface_for_decode(packet.sender_id, packet.frame.width, packet.frame.height)
+            && let Some(decoded) = decode_video_packet_to_dx12(
+              &mut decoders,
+              &mut decoder_failures,
+              &mut dx12_decode_failures,
+              &packet,
+              &surface,
+            )
+          {
+            if decoded {
+              let decoded_count = increment_counter(&mut decoded_counts, packet.sender_id);
+              if should_log_video_count(decoded_count) {
+                logger::log(&format!(
+                  "[video] decoded DX12 frame #{decoded_count} from user {}: codec={:?} size={}x{} format=Nv12",
+                  packet.sender_id, packet.frame.codec, packet.frame.width, packet.frame.height
+                ));
+              }
+              self.handle_dx12_video_frame(
+                packet.sender_id,
+                packet.frame.codec,
+                packet.frame.width,
+                packet.frame.height,
+                surface,
+              );
+            } else if should_log_video_count(received_count) {
+              logger::log("[video] received frame produced no DX12 decoded output yet");
+            }
+            continue;
+          }
+
+          let output_buffer = if output {
+            self.take_video_pixel_buffer(packet.sender_id, packet.frame.width, packet.frame.height)
+          } else {
+            None
+          };
+          if let Some(frame) = decode_video_packet(&mut decoders, &mut decoder_failures, packet, output, output_buffer)
+          {
+            let decoded_count = increment_counter(&mut decoded_counts, frame.sender_id);
+            if should_log_video_count(decoded_count) {
+              logger::log(&format!(
+                "[video] decoded frame #{decoded_count} from user {}: codec={:?} size={}x{} format={:?} bytes={}",
+                frame.sender_id,
+                frame.codec,
+                frame.width,
+                frame.height,
+                frame.format,
+                frame.pixels.len()
+              ));
+            }
+            self.handle_video_frame(frame);
+          } else if should_log_video_count(received_count) {
+            logger::log("[video] received frame produced no decoded output yet");
+          }
+        }
+      }
+    }
+
+    queue.close();
+    drop(reader_thread);
+    logger::log("[video] receiver thread stopping");
+  }
+
   fn handle_voice_packet(&self, packet: crate::network::protocol::data::ForwardedVoicePacket) -> bool {
     if self.info().is_some_and(|info| info.user_id == packet.sender_id) {
       return false;
@@ -852,6 +1376,169 @@ impl ServerSession {
       .as_mut()
       .map(|engine| engine.push_packet(packet))
       .unwrap_or(true)
+  }
+
+  fn handle_video_frame(&self, frame: DecodedVideoFrame) {
+    let mut force_revision = false;
+    {
+      let mut frames = self.video_frames.lock().expect("server session lock poisoned");
+      match frames.get(&frame.sender_id) {
+        Some(image)
+          if image.is_cpu_image()
+            && image.image_data().width() == u32::from(frame.width)
+            && image.image_data().height() == u32::from(frame.height)
+            && image.image_data().format() == decoded_pixel_format_to_lurq(frame.format) =>
+        {
+          image.set_cpu_pixels(frame.format, frame.pixels);
+        }
+        _ => {
+          logger::log(&format!(
+            "[video] creating streamed image for user {}: {}x{} format={:?}",
+            frame.sender_id, frame.width, frame.height, frame.format
+          ));
+          force_revision = true;
+          let image = match frame.format {
+            DecodedVideoPixelFormat::Rgba8 => {
+              StreamingImage::new_rgba_manual_redraw(frame.pixels, u32::from(frame.width), u32::from(frame.height))
+            }
+            DecodedVideoPixelFormat::Nv12 => {
+              StreamingImage::new_nv12_manual_redraw(frame.pixels, u32::from(frame.width), u32::from(frame.height))
+            }
+          };
+          frames.insert(frame.sender_id, VideoFrameImage::Cpu(image));
+        }
+      }
+    }
+
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if let Some(share) = lobby
+        .screen_shares
+        .iter_mut()
+        .find(|share| share.sharer_user_id == frame.sender_id)
+      {
+        let metadata = ScreenShareMetadata {
+          codec: frame.codec,
+          width: frame.width,
+          height: frame.height,
+        };
+        if share.metadata != metadata {
+          force_revision = true;
+          share.metadata = metadata;
+        }
+      }
+    }
+
+    if force_revision || self.should_bump_video_revision(frame.sender_id) {
+      self.bump_revision();
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn dx12_video_surface_for_decode(
+    &self,
+    user_id: UserId,
+    width: u16,
+    height: u16,
+  ) -> Option<Arc<lurq::app::dx12_render::Dx12Nv12Surface>> {
+    {
+      let frames = self.video_frames.lock().expect("server session lock poisoned");
+      if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
+        let image = surface.image_data();
+        if image.width() == u32::from(width)
+          && image.height() == u32::from(height)
+          && image.format() == lurq::images::ImagePixelFormat::Nv12
+        {
+          return Some(surface.clone());
+        }
+      }
+    }
+
+    let allocator = self.dx12_video_surface_allocator()?;
+    match allocator.create_nv12_surface(u32::from(width), u32::from(height)) {
+      Ok(Some(surface)) => Some(Arc::new(surface)),
+      Ok(None) => None,
+      Err(error) => {
+        logger::log(&format!("[video] failed to allocate DX12 video surface: {error}"));
+        None
+      }
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn handle_dx12_video_frame(
+    &self,
+    sender_id: UserId,
+    codec: crate::network::protocol::VideoCodecId,
+    width: u16,
+    height: u16,
+    surface: Arc<lurq::app::dx12_render::Dx12Nv12Surface>,
+  ) {
+    let mut force_revision = false;
+    {
+      let mut frames = self.video_frames.lock().expect("server session lock poisoned");
+      let replace = !matches!(
+        frames.get(&sender_id),
+        Some(VideoFrameImage::Dx12Surface(existing))
+          if Arc::ptr_eq(existing, &surface)
+            && existing.image_data().width() == u32::from(width)
+            && existing.image_data().height() == u32::from(height)
+      );
+      if replace {
+        logger::log(&format!(
+          "[video] creating DX12 streamed image for user {sender_id}: {width}x{height} format=Nv12"
+        ));
+        frames.insert(sender_id, VideoFrameImage::Dx12Surface(surface));
+        force_revision = true;
+      }
+    }
+
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if let Some(share) = lobby
+        .screen_shares
+        .iter_mut()
+        .find(|share| share.sharer_user_id == sender_id)
+      {
+        let metadata = ScreenShareMetadata { codec, width, height };
+        if share.metadata != metadata {
+          force_revision = true;
+          share.metadata = metadata;
+        }
+      }
+    }
+
+    if force_revision || self.should_bump_video_revision(sender_id) {
+      self.bump_revision();
+    }
+  }
+
+  fn take_video_pixel_buffer(&self, user_id: UserId, width: u16, height: u16) -> Option<Vec<u8>> {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .filter(|image| {
+        image.image_data().width() == u32::from(width) && image.image_data().height() == u32::from(height)
+      })
+      .and_then(VideoFrameImage::take_cpu_buffer)
+  }
+
+  fn should_bump_video_revision(&self, user_id: UserId) -> bool {
+    let now = Instant::now();
+    let mut marks = self.video_revision_marks.lock().expect("server session lock poisoned");
+    match marks.get_mut(&user_id) {
+      Some(last) if now.duration_since(*last) < VIDEO_REVISION_INTERVAL => false,
+      Some(last) => {
+        *last = now;
+        true
+      }
+      None => {
+        marks.insert(user_id, now);
+        true
+      }
+    }
   }
 
   pub fn mark_lobby_error(&self, message: String) {
@@ -987,6 +1674,7 @@ impl ServerSession {
         }
         clear_speaking_user = Some(left.user_id);
         lobby.screen_shares.retain(|share| share.sharer_user_id != left.user_id);
+        self.clear_video_cache_for_user(left.user_id);
         if lobby.watching_user_id == Some(left.user_id) {
           lobby.watching_user_id = None;
         }
@@ -1058,6 +1746,7 @@ impl ServerSession {
         lobby
           .screen_shares
           .retain(|share| share.sharer_user_id != sharer_user_id);
+        self.clear_video_cache_for_user(sharer_user_id);
         if lobby.watching_user_id == Some(sharer_user_id) {
           lobby.watching_user_id = None;
         }
@@ -1140,5 +1829,12 @@ impl ServerSession {
       let trim = messages.len() - MAX_CACHED_MESSAGES_PER_CHANNEL;
       messages.drain(..trim);
     }
+  }
+}
+
+fn decoded_pixel_format_to_lurq(format: DecodedVideoPixelFormat) -> lurq::images::ImagePixelFormat {
+  match format {
+    DecodedVideoPixelFormat::Rgba8 => lurq::images::ImagePixelFormat::Rgba8,
+    DecodedVideoPixelFormat::Nv12 => lurq::images::ImagePixelFormat::Nv12,
   }
 }

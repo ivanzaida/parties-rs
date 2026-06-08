@@ -53,7 +53,7 @@ impl Role {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u8)]
 pub enum VideoCodecId {
   Unknown = 0x00,

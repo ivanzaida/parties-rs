@@ -29,6 +29,11 @@ fn main() {
     .expect("failed to create tokio runtime");
   let (startup_storage, window_state, startup_error) = load_startup_storage();
   let window_state = window_state.map(clamp_window_state_size);
+  #[cfg(target_os = "windows")]
+  let dx12_video_surfaces = lurq::app::dx12_render::Dx12VideoSurfaceAllocator::new();
+  #[cfg(target_os = "windows")]
+  let session = ServerSession::with_dx12_video_surface_allocator(dx12_video_surfaces.clone());
+  #[cfg(not(target_os = "windows"))]
   let session = ServerSession::default();
   install_shutdown_handlers(&tokio_runtime, session.clone());
 
@@ -47,6 +52,13 @@ fn main() {
 
   let mut tree = lurq::app::runtime::Tree::new();
   ui::loader::register_keyframes(&mut tree);
+  #[cfg(target_os = "windows")]
+  tree.set_render_engine_factory(move || {
+    Box::new(lurq::app::dx12_render::Dx12RenderEngine::with_video_surface_allocator(
+      dx12_video_surfaces.clone(),
+    ))
+  });
+  #[cfg(not(target_os = "windows"))]
   tree.set_render_engine_factory(|| Box::new(lurq::app::wgpu_render::WgpuRenderEngine::new()));
   tree.mount_root::<app::App>(
     &mut lurq_app,

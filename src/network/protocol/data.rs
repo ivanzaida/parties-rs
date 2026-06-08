@@ -138,6 +138,52 @@ impl ForwardedVideoFrame {
     let frame = VideoFrame::decode_payload(r.read_remaining())?;
     Ok(Self { sender_id, frame })
   }
+
+  pub fn decode_owned(mut bytes: Vec<u8>) -> DecodeResult<Self> {
+    const HEADER_LEN: usize = 1 + 4 + 4 + 4 + 1 + 2 + 2 + 1;
+    if bytes.len() < HEADER_LEN {
+      return Err(DecodeError::UnexpectedEof {
+        needed: HEADER_LEN,
+        remaining: bytes.len(),
+      });
+    }
+    if bytes[0] != PacketType::VideoFrame as u8 {
+      return Err(DecodeError::InvalidPacketType(bytes[0]));
+    }
+
+    let sender_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+    let frame_number = u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
+    let timestamp = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
+    let flags = bytes[13];
+    let width = u16::from_le_bytes([bytes[14], bytes[15]]);
+    let height = u16::from_le_bytes([bytes[16], bytes[17]]);
+    let raw_codec = bytes[18];
+    let codec = VideoCodecId::from_u8(raw_codec).ok_or(DecodeError::InvalidEnumValue {
+      field: "video codec",
+      value: raw_codec,
+    })?;
+    if !codec.is_supported_stream_codec() {
+      return Err(DecodeError::InvalidEnumValue {
+        field: "video codec",
+        value: raw_codec,
+      });
+    }
+
+    bytes.drain(..HEADER_LEN);
+    let encoded = bytes;
+    Ok(Self {
+      sender_id,
+      frame: VideoFrame {
+        frame_number,
+        timestamp,
+        keyframe: flags & VIDEO_FLAG_KEYFRAME != 0,
+        width,
+        height,
+        codec,
+        encoded,
+      },
+    })
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,5 +305,30 @@ mod tests {
       vec![PacketType::VideoControl as u8, VIDEO_CTL_PLI, 42, 0, 0, 0]
     );
     assert_eq!(VideoControl::decode_datagram(&encoded).unwrap(), pkt);
+  }
+
+  #[test]
+  fn forwarded_video_frame_decode_owned_reuses_payload_buffer() {
+    let mut encoded = Vec::new();
+    encoded.push(PacketType::VideoFrame as u8);
+    encoded.extend_from_slice(&7u32.to_le_bytes());
+    encoded.extend_from_slice(&11u32.to_le_bytes());
+    encoded.extend_from_slice(&12u32.to_le_bytes());
+    encoded.push(VIDEO_FLAG_KEYFRAME);
+    encoded.extend_from_slice(&1920u16.to_le_bytes());
+    encoded.extend_from_slice(&1080u16.to_le_bytes());
+    encoded.push(VideoCodecId::Av1 as u8);
+    encoded.extend_from_slice(&[1, 2, 3, 4]);
+
+    let decoded = ForwardedVideoFrame::decode_owned(encoded).unwrap();
+
+    assert_eq!(decoded.sender_id, 7);
+    assert_eq!(decoded.frame.frame_number, 11);
+    assert_eq!(decoded.frame.timestamp, 12);
+    assert!(decoded.frame.keyframe);
+    assert_eq!(decoded.frame.width, 1920);
+    assert_eq!(decoded.frame.height, 1080);
+    assert_eq!(decoded.frame.codec, VideoCodecId::Av1);
+    assert_eq!(decoded.frame.encoded, vec![1, 2, 3, 4]);
   }
 }

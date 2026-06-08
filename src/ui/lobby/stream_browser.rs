@@ -342,6 +342,7 @@ fn stream_footer_avatar(name: &str, active: bool) -> Element {
 
 fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, card_width: f32) -> Element {
   let active = user.speaking && !user.muted && !user.deafened;
+  let name_max_width = (card_width - 74.0).max(60.0);
 
   Column::new()
     .width(card_width)
@@ -372,17 +373,23 @@ fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, card_width: f
         .height(42.0)
         .align_items(Alignment::Center)
         .justify(Justify::Center)
-        .spacing(5.0)
         .child(
-          Text::new(&user.username)
+          Row::new()
             .width(Dimension::Pct(100.0))
-            .variant(theme::TypographyStyle::Button)
-            .color(theme::PaletteColor::TextPrimary)
-            .text_align(Alignment::Center)
-            .nowrap()
-            .text_overflow(TextOverflow::Elipsis),
-        )
-        .child(merged_voice_icons(ctx, user)),
+            .height(22.0)
+            .align_items(Alignment::Center)
+            .justify(Justify::Center)
+            .spacing(6.0)
+            .child(
+              Text::new(&user.username)
+                .max_width(name_max_width)
+                .variant(theme::TypographyStyle::Button)
+                .color(theme::PaletteColor::TextPrimary)
+                .nowrap()
+                .text_overflow(TextOverflow::Elipsis),
+            )
+            .child(merged_voice_icons(ctx, user)),
+        ),
     )
     .into()
 }
@@ -436,6 +443,7 @@ fn live_badge(ctx: &mut Ctx) -> Element {
 
 fn resolution_badge(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
   Row::new()
+    .width(96.0)
     .height(20.0)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
@@ -446,7 +454,9 @@ fn resolution_badge(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
     .child(
       Text::new(&stream_resolution_label(ctx, stream))
         .variant(theme::TypographyStyle::Mono)
-        .color(theme::PaletteColor::TextSecondary),
+        .color(theme::PaletteColor::TextSecondary)
+        .nowrap()
+        .text_overflow(TextOverflow::Elipsis),
     )
     .into()
 }
@@ -528,7 +538,7 @@ fn initials_for_user(name: &str) -> String {
 
 fn stream_resolution_label(ctx: &mut Ctx, stream: &LobbyScreenShare) -> String {
   if stream.metadata.width == 0 || stream.metadata.height == 0 {
-    return ctx.t("lobby.stream_browser.list.pending_resolution").to_string();
+    return ctx.t("lobby.stream_browser.watching.live").to_string();
   }
 
   format!("{}x{}", stream.metadata.width, stream.metadata.height)
@@ -540,7 +550,7 @@ fn stream_footer_meta(name: &str, stream: &LobbyScreenShare) -> String {
 
 fn stream_codec_label(stream: &LobbyScreenShare) -> String {
   match stream.metadata.codec {
-    VideoCodecId::Unknown => "Unsupported".to_owned(),
+    VideoCodecId::Unknown => "Live".to_owned(),
     VideoCodecId::Av1 => "AV1".to_owned(),
     VideoCodecId::H265 => "H.265".to_owned(),
     VideoCodecId::H264 => "H.264".to_owned(),
