@@ -99,6 +99,7 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
   let meta = stream_footer_meta(&name, stream.share);
   let speaking = stream_speaking(stream);
   let image = session.video_frame(stream.share.sharer_user_id);
+  let video_error = session.video_error(stream.share.sharer_user_id);
 
   let mut stage = Stack::new()
     .stack_align(StackAlignment::Center)
@@ -111,6 +112,8 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
 
   if let Some(image) = image {
     stage = stage.background_image(image).background_contain();
+  } else if let Some(error) = video_error {
+    stage = stage.child(stream_error_panel(ctx, &error.title, &error.message));
   } else {
     stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "monitor",
@@ -142,6 +145,34 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
             .child(streamer_label(&name, &title, &meta, speaking))
             .child(stage_controls(ctx, session, storage, stream.share.sharer_user_id)),
         ),
+    )
+    .into()
+}
+
+fn stream_error_panel(ctx: &mut Ctx, title: &str, message: &str) -> Element {
+  Column::new()
+    .width(420.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(14.0)
+    .padding(24.0)
+    .rounded(14.0)
+    .background(BackgroundColor::Color(Color::from_hex("#15171AE6")))
+    .border_inside(1.0, theme::PaletteColor::BorderStrong)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "triangle-alert",
+      size: 42.0,
+      color: theme::palette().danger,
+    }))
+    .child(
+      Text::new(title)
+        .variant(theme::TypographyStyle::Title)
+        .color(theme::PaletteColor::TextPrimary),
+    )
+    .child(
+      Text::new(message)
+        .variant(theme::TypographyStyle::Body)
+        .color(theme::PaletteColor::TextSecondary),
     )
     .into()
 }

@@ -57,6 +57,7 @@ const DAV1D_EAGAIN: i32 = -35;
 const MAX_SOFTWARE_AV1_PIXELS: u32 = 1920 * 1080;
 const SOFTWARE_AV1_THREADS: i32 = 2;
 const SOFTWARE_AV1_ENV: &str = "PARTIES_MACOS_SOFTWARE_AV1";
+const SIMULATE_UNSUPPORTED_AV1_ENV: &str = "PARTIES_SIMULATE_UNSUPPORTED_AV1";
 
 #[repr(C)]
 struct VTDecompressionSession(c_void);
@@ -201,6 +202,10 @@ impl NativeVideoDecoder {
     output: bool,
     output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    if frame.codec == VideoCodecId::Av1 && simulate_unsupported_av1() {
+      return Err(unsupported_av1_error());
+    }
+
     if frame.codec == VideoCodecId::Av1 && self.av1_videotoolbox_unavailable {
       return self.decode_av1_software(frame, output, output_buffer);
     }
@@ -297,9 +302,7 @@ impl NativeVideoDecoder {
     output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
     if !software_av1_enabled() {
-      return Err(VideoError::new(format!(
-        "macOS VideoToolbox AV1 is unavailable and software AV1 is disabled because it is too CPU-heavy for realtime playback. Use H.265/H.264, or set {SOFTWARE_AV1_ENV}=1 to force software AV1."
-      )));
+      return Err(unsupported_av1_error());
     }
 
     let pixels = u32::from(frame.width) * u32::from(frame.height);
@@ -323,6 +326,16 @@ impl NativeVideoDecoder {
 
 fn software_av1_enabled() -> bool {
   std::env::var_os(SOFTWARE_AV1_ENV).is_some_and(|value| value == "1" || value == "true")
+}
+
+fn simulate_unsupported_av1() -> bool {
+  std::env::var_os(SIMULATE_UNSUPPORTED_AV1_ENV).is_some_and(|value| value == "1" || value == "true")
+}
+
+fn unsupported_av1_error() -> VideoError {
+  VideoError::new(format!(
+    "macOS VideoToolbox AV1 is unavailable and software AV1 is disabled because it is too CPU-heavy for realtime playback. Use H.265/H.264, or set {SOFTWARE_AV1_ENV}=1 to force software AV1."
+  ))
 }
 
 struct SoftwareAv1Decoder {
