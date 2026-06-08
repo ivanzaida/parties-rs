@@ -29,8 +29,7 @@ use crate::{
   services::{
     logger,
     video::{
-      DecodedVideoFrame, DecodedVideoPixelFormat, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-      VideoDecodeConfig, VideoDecoder,
+      DecodedVideoFrame, DecodedVideoPixelFormat, VideoBroadcast, VideoBroadcastConfig, VideoDecodeConfig, VideoDecoder,
     },
     voice::{LocalVoiceCallback, VoiceEngine},
   },
@@ -190,7 +189,7 @@ fn decode_video_packet_to_dx12(
   }
 
   let decoder = decoders.get_mut(&packet.sender_id)?;
-  if decoder.backend() != NativeVideoBackend::NvidiaNvdec {
+  if decoder.backend() != crate::services::video::NativeVideoBackend::NvidiaNvdec {
     return None;
   }
 
@@ -434,6 +433,8 @@ pub struct LobbyState {
 #[allow(dead_code)]
 enum VideoFrameImage {
   Cpu(StreamingImage),
+  #[cfg(target_os = "macos")]
+  MacosNative(ImageData),
   #[cfg(target_os = "windows")]
   Dx12Surface(Arc<lurq::app::dx12_render::Dx12Nv12Surface>),
 }
@@ -446,29 +447,39 @@ impl VideoFrameImage {
   fn image_data(&self) -> ImageData {
     match self {
       Self::Cpu(image) => image.image_data(),
+      #[cfg(target_os = "macos")]
+      Self::MacosNative(image) => image.clone(),
       #[cfg(target_os = "windows")]
       Self::Dx12Surface(surface) => surface.image_data(),
     }
   }
 
   fn set_cpu_pixels(&self, format: DecodedVideoPixelFormat, pixels: Vec<u8>) -> bool {
-    let Self::Cpu(image) = self else {
-      return false;
-    };
-    match format {
-      DecodedVideoPixelFormat::Rgba8 => image.set_rgba(pixels),
-      DecodedVideoPixelFormat::Nv12 => image.set_nv12(pixels),
+    match self {
+      Self::Cpu(image) => {
+        match format {
+          DecodedVideoPixelFormat::Rgba8 => image.set_rgba(pixels),
+          DecodedVideoPixelFormat::Nv12 => image.set_nv12(pixels),
+        }
+        true
+      }
+      #[cfg(target_os = "macos")]
+      Self::MacosNative(_) => false,
+      #[cfg(target_os = "windows")]
+      Self::Dx12Surface(_) => false,
     }
-    true
   }
 
   fn take_cpu_buffer(&self) -> Option<Vec<u8>> {
-    let Self::Cpu(image) = self else {
-      return None;
-    };
-    match image.image_data().format() {
-      lurq::images::ImagePixelFormat::Rgba8 => image.take_rgba_buffer(),
-      lurq::images::ImagePixelFormat::Nv12 => image.take_nv12_buffer(),
+    match self {
+      Self::Cpu(image) => match image.image_data().format() {
+        lurq::images::ImagePixelFormat::Rgba8 => image.take_rgba_buffer(),
+        lurq::images::ImagePixelFormat::Nv12 => image.take_nv12_buffer(),
+      },
+      #[cfg(target_os = "macos")]
+      Self::MacosNative(_) => None,
+      #[cfg(target_os = "windows")]
+      Self::Dx12Surface(_) => None,
     }
   }
 }
@@ -1380,6 +1391,35 @@ impl ServerSession {
 
   fn handle_video_frame(&self, frame: DecodedVideoFrame) {
     let mut force_revision = false;
+    #[cfg(target_os = "macos")]
+    if let Some(native_image) = frame.native_image.clone() {
+      {
+        let mut frames = self.video_frames.lock().expect("server session lock poisoned");
+        frames.insert(frame.sender_id, VideoFrameImage::MacosNative(native_image));
+      }
+
+      {
+        let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+        if let Some(share) = lobby
+          .screen_shares
+          .iter_mut()
+          .find(|share| share.sharer_user_id == frame.sender_id)
+        {
+          let metadata = ScreenShareMetadata {
+            codec: frame.codec,
+            width: frame.width,
+            height: frame.height,
+          };
+          if share.metadata != metadata {
+            share.metadata = metadata;
+          }
+        }
+      }
+
+      self.bump_revision();
+      return;
+    }
+
     {
       let mut frames = self.video_frames.lock().expect("server session lock poisoned");
       match frames.get(&frame.sender_id) {

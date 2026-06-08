@@ -48,9 +48,11 @@ pub struct DecodedVideoFrame {
   pub height: u16,
   pub format: DecodedVideoPixelFormat,
   pub pixels: Vec<u8>,
+  pub native_image: Option<lurq::images::ImageData>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub enum DecodedVideoPixelFormat {
   Rgba8,
   Nv12,
@@ -59,6 +61,7 @@ pub enum DecodedVideoPixelFormat {
 pub(super) struct NativeDecodedVideoFrame {
   pub format: DecodedVideoPixelFormat,
   pub pixels: Vec<u8>,
+  pub native_image: Option<lurq::images::ImageData>,
 }
 
 #[allow(dead_code)]
@@ -104,6 +107,8 @@ pub struct VideoBroadcast {
 pub struct VideoDecoder {
   #[cfg(target_os = "windows")]
   inner: windows::NativeVideoDecoder,
+  #[cfg(target_os = "macos")]
+  inner: macos::NativeVideoDecoder,
   config: VideoDecodeConfig,
   backend: NativeVideoBackend,
 }
@@ -186,6 +191,7 @@ impl VideoDecoder {
       height: frame.frame.height,
       format: decoded.format,
       pixels: decoded.pixels,
+      native_image: decoded.native_image,
     }))
   }
 
@@ -214,7 +220,12 @@ impl VideoDecoder {
     Self { inner, config, backend }
   }
 
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "macos")]
+  fn from_macos(inner: macos::NativeVideoDecoder, config: VideoDecodeConfig, backend: NativeVideoBackend) -> Self {
+    Self { inner, config, backend }
+  }
+
+  #[cfg(not(any(target_os = "windows", target_os = "macos")))]
   fn from_backend(backend: NativeVideoBackend, config: VideoDecodeConfig) -> Self {
     Self { config, backend }
   }
@@ -311,6 +322,17 @@ fn decode_native_frame(
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn decode_native_frame(
+  decoder: &mut VideoDecoder,
+  frame: &ForwardedVideoFrame,
+  output: bool,
+  output_buffer: Option<Vec<u8>>,
+) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+  decoder.inner.decode_frame(&frame.frame, output, output_buffer)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn decode_native_frame(
   _decoder: &mut VideoDecoder,
   _frame: &ForwardedVideoFrame,
