@@ -122,6 +122,11 @@ pub(super) fn start_stream_action(
 }
 
 fn stream_codec_id(codec: &str) -> Result<VideoCodecId, String> {
+  #[cfg(target_os = "macos")]
+  if codec.trim().eq_ignore_ascii_case("av1") {
+    return Ok(VideoCodecId::H265);
+  }
+
   match codec.trim().to_ascii_lowercase().replace([' ', '.', '-'], "").as_str() {
     "av1" => Ok(VideoCodecId::Av1),
     "h265" | "hevc" => Ok(VideoCodecId::H265),

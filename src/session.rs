@@ -55,6 +55,12 @@ pub struct ConnectedServerInfo {
   pub certificate_fingerprint: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VideoStreamError {
+  pub title: String,
+  pub message: String,
+}
+
 impl DevtoolsInspectable for ConnectedServerInfo {
   fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
     buffer.push(ComponentInfo::with_value(
@@ -96,7 +102,7 @@ fn decode_video_packet(
   packet: ForwardedVideoFrame,
   output: bool,
   output_buffer: Option<Vec<u8>>,
-) -> Option<DecodedVideoFrame> {
+) -> Result<Option<DecodedVideoFrame>, String> {
   let config = VideoDecodeConfig {
     codec: packet.frame.codec,
     width: packet.frame.width,
@@ -105,7 +111,7 @@ fn decode_video_packet(
   let failure_key = (packet.sender_id, config.clone());
 
   if decoder_failures.contains(&failure_key) {
-    return None;
+    return Ok(None);
   }
 
   if decoders
@@ -126,14 +132,16 @@ fn decode_video_packet(
           packet.sender_id
         ));
         decoder_failures.insert(failure_key);
-        return None;
+        return Err(error.to_string());
       }
     }
   }
 
-  let decoder = decoders.get_mut(&packet.sender_id)?;
+  let Some(decoder) = decoders.get_mut(&packet.sender_id) else {
+    return Ok(None);
+  };
   match decoder.decode_with_output_buffer(&packet, output, output_buffer) {
-    Ok(frame) => frame,
+    Ok(frame) => Ok(frame),
     Err(error) => {
       logger::log(&format!(
         "[video] failed to decode frame from user {}: {error}",
@@ -141,8 +149,21 @@ fn decode_video_packet(
       ));
       decoders.remove(&packet.sender_id);
       decoder_failures.insert(failure_key);
-      None
+      Err(error.to_string())
     }
+  }
+}
+
+fn unsupported_av1_decode_error(codec: crate::network::protocol::VideoCodecId, error: &str) -> bool {
+  codec == crate::network::protocol::VideoCodecId::Av1
+    && error.contains("macOS VideoToolbox AV1 is unavailable")
+    && error.contains("software AV1 is disabled")
+}
+
+fn unsupported_av1_stream_error() -> VideoStreamError {
+  VideoStreamError {
+    title: "AV1 is not supported on this device".to_owned(),
+    message: "This stream uses AV1, but hardware AV1 decoding is unavailable here. Ask the streamer to switch to H.265 or H.264.".to_owned(),
   }
 }
 
@@ -508,6 +529,7 @@ pub struct ServerSession {
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
   video_broadcast: Arc<Mutex<Option<VideoBroadcast>>>,
   video_frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
+  video_errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
@@ -535,6 +557,7 @@ impl Default for ServerSession {
       voice_engine: Arc::new(Mutex::new(None)),
       video_broadcast: Arc::new(Mutex::new(None)),
       video_frames: Arc::new(Mutex::new(HashMap::new())),
+      video_errors: Arc::new(Mutex::new(HashMap::new())),
       #[cfg(target_os = "windows")]
       dx12_video_surfaces: None,
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
@@ -585,6 +608,7 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self.video_frames.lock().expect("server session lock poisoned").clear();
+    self.video_errors.lock().expect("server session lock poisoned").clear();
     self
       .video_revision_marks
       .lock()
@@ -616,6 +640,7 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self.video_frames.lock().expect("server session lock poisoned").clear();
+    self.video_errors.lock().expect("server session lock poisoned").clear();
     self
       .video_revision_marks
       .lock()
@@ -694,6 +719,15 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .get(&user_id)
       .map(VideoFrameImage::image_data)
+  }
+
+  pub fn video_error(&self, user_id: UserId) -> Option<VideoStreamError> {
+    self
+      .video_errors
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .cloned()
   }
 
   pub fn local_voice_state(&self) -> Option<(bool, bool)> {
@@ -1100,14 +1134,17 @@ impl ServerSession {
   fn retain_video_cache(&self, watched_user_id: Option<UserId>) {
     let mut frames = self.video_frames.lock().expect("server session lock poisoned");
     let mut marks = self.video_revision_marks.lock().expect("server session lock poisoned");
+    let mut errors = self.video_errors.lock().expect("server session lock poisoned");
     match watched_user_id {
       Some(user_id) => {
         frames.retain(|cached_user_id, _| *cached_user_id == user_id);
         marks.retain(|cached_user_id, _| *cached_user_id == user_id);
+        errors.retain(|cached_user_id, _| *cached_user_id == user_id);
       }
       None => {
         frames.clear();
         marks.clear();
+        errors.clear();
       }
     }
   }
@@ -1123,6 +1160,40 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .remove(&user_id);
+    self
+      .video_errors
+      .lock()
+      .expect("server session lock poisoned")
+      .remove(&user_id);
+  }
+
+  fn set_video_error(&self, user_id: UserId, error: VideoStreamError) {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .remove(&user_id);
+    let changed = {
+      let mut errors = self.video_errors.lock().expect("server session lock poisoned");
+      let changed = errors.get(&user_id) != Some(&error);
+      errors.insert(user_id, error);
+      changed
+    };
+    if changed {
+      self.bump_revision();
+    }
+  }
+
+  fn clear_video_error(&self, user_id: UserId) {
+    let cleared = self
+      .video_errors
+      .lock()
+      .expect("server session lock poisoned")
+      .remove(&user_id)
+      .is_some();
+    if cleared {
+      self.bump_revision();
+    }
   }
 
   pub fn start_voice(&self, settings: AppSettings) -> Result<(), String> {
@@ -1396,7 +1467,7 @@ impl ServerSession {
     let mut decoder_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
     #[cfg(target_os = "windows")]
     let mut dx12_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
-    let mut awaiting_keyframes = HashSet::<UserId>::new();
+    let mut awaiting_keyframes = self.watching_user_id().into_iter().collect::<HashSet<_>>();
     let mut received_counts = HashMap::<UserId, u64>::new();
     let mut decoded_counts = HashMap::<UserId, u64>::new();
     let mut last_watched_user = self.watching_user_id();
@@ -1414,6 +1485,9 @@ impl ServerSession {
         #[cfg(target_os = "windows")]
         dx12_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
+        if let Some(user_id) = watched_user {
+          awaiting_keyframes.insert(user_id);
+        }
         last_watched_user = watched_user;
         logger::log(&format!("[video] watch target changed: {watched_user:?}"));
       }
@@ -1425,6 +1499,13 @@ impl ServerSession {
           .map(|packet| packet.sender_id)
           .collect::<HashSet<_>>();
         for user_id in &affected_users {
+          let failed_decode_config = decoders
+            .get(user_id)
+            .map(|decoder| ((*user_id), decoder.config().clone()))
+            .is_some_and(|failure_key| decoder_failures.contains(&failure_key));
+          if failed_decode_config {
+            continue;
+          }
           decoders.remove(user_id);
           awaiting_keyframes.insert(*user_id);
           if let Err(error) = runtime.block_on(server.request_keyframe_stream(*user_id)) {
@@ -1460,6 +1541,9 @@ impl ServerSession {
             continue;
           }
           awaiting_keyframes.remove(&packet.sender_id);
+          decoder_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          dx12_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           logger::log(&format!(
             "[video] catch-up keyframe received for user {}: frame={}",
             packet.sender_id, packet.frame.frame_number
@@ -1516,28 +1600,43 @@ impl ServerSession {
             continue;
           }
 
+          let missing_initial_image =
+            packet.frame.keyframe && !self.has_video_frame(packet.sender_id, packet.frame.width, packet.frame.height);
+          let output = output || missing_initial_image;
           let output_buffer = if output {
             self.take_video_pixel_buffer(packet.sender_id, packet.frame.width, packet.frame.height)
           } else {
             None
           };
-          if let Some(frame) = decode_video_packet(&mut decoders, &mut decoder_failures, packet, output, output_buffer)
-          {
-            let decoded_count = increment_counter(&mut decoded_counts, frame.sender_id);
-            if should_log_video_count(decoded_count) {
-              logger::log(&format!(
-                "[video] decoded frame #{decoded_count} from user {}: codec={:?} size={}x{} format={:?} bytes={}",
-                frame.sender_id,
-                frame.codec,
-                frame.width,
-                frame.height,
-                frame.format,
-                frame.pixels.len()
-              ));
+          let sender_id = packet.sender_id;
+          let codec = packet.frame.codec;
+          match decode_video_packet(&mut decoders, &mut decoder_failures, packet, output, output_buffer) {
+            Ok(Some(frame)) => {
+              self.clear_video_error(frame.sender_id);
+              let decoded_count = increment_counter(&mut decoded_counts, frame.sender_id);
+              if should_log_video_count(decoded_count) {
+                logger::log(&format!(
+                  "[video] decoded frame #{decoded_count} from user {}: codec={:?} size={}x{} format={:?} bytes={}",
+                  frame.sender_id,
+                  frame.codec,
+                  frame.width,
+                  frame.height,
+                  frame.format,
+                  frame.pixels.len()
+                ));
+              }
+              self.handle_video_frame(frame);
             }
-            self.handle_video_frame(frame);
-          } else if should_log_video_count(received_count) {
-            logger::log("[video] received frame produced no decoded output yet");
+            Ok(None) => {
+              if should_log_video_count(received_count) {
+                logger::log("[video] received frame produced no decoded output yet");
+              }
+            }
+            Err(error) => {
+              if unsupported_av1_decode_error(codec, &error) {
+                self.set_video_error(sender_id, unsupported_av1_stream_error());
+              }
+            }
           }
         }
       }
@@ -1625,6 +1724,11 @@ impl ServerSession {
   }
 
   fn handle_video_frame(&self, frame: DecodedVideoFrame) {
+    if self.watching_user_id() != Some(frame.sender_id) {
+      return;
+    }
+    self.clear_video_error(frame.sender_id);
+
     let mut force_revision = false;
     #[cfg(target_os = "macos")]
     if let Some(native_image) = frame.native_image.clone() {
@@ -1802,6 +1906,17 @@ impl ServerSession {
         image.image_data().width() == u32::from(width) && image.image_data().height() == u32::from(height)
       })
       .and_then(VideoFrameImage::take_cpu_buffer)
+  }
+
+  fn has_video_frame(&self, user_id: UserId, width: u16, height: u16) -> bool {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .is_some_and(|image| {
+        image.image_data().width() == u32::from(width) && image.image_data().height() == u32::from(height)
+      })
   }
 
   fn should_bump_video_revision(&self, user_id: UserId) -> bool {

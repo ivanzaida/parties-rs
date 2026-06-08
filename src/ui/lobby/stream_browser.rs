@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use lurq::{
-  app::{ctx::Ctx, theme::Breakpoint},
+  app::ctx::Ctx,
   components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
   core::Signal,
   layout::{
@@ -21,6 +21,10 @@ use crate::{
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
+
+const LOBBY_GRID_PADDING: f32 = 20.0;
+const LOBBY_GRID_GAP: f32 = 16.0;
+const LOBBY_GRID_MIN_CARD_WIDTH: f32 = 360.0;
 
 pub(super) struct ChannelScreenShare<'a> {
   pub(super) share: &'a LobbyScreenShare,
@@ -63,7 +67,7 @@ pub(super) fn stream_browser(
   let mut content = Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(12.0)
-    .padding(20.0)
+    .padding(LOBBY_GRID_PADDING)
     .child(merged_lobby_grid(
       ctx,
       channel,
@@ -118,10 +122,14 @@ fn merged_lobby_grid(
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
 ) -> Element {
-  let columns = match ctx.breakpoint() {
-    Some(Breakpoint::Md) => 2,
-    Some(Breakpoint::Lg | Breakpoint::Xl | Breakpoint::Sm) | None => 3,
-  };
+  let user_ids = users.iter().map(|user| user.user_id).collect::<HashSet<_>>();
+  let card_count = (users.len()
+    + streams
+      .iter()
+      .filter(|stream| !user_ids.contains(&stream.share.sharer_user_id))
+      .count())
+  .max(1);
+  let columns = lobby_grid_columns(ctx, card_count);
   let card_width = lobby_card_width(ctx, columns);
   let mut stream_by_user = streams
     .into_iter()
@@ -161,11 +169,11 @@ fn merged_lobby_grid(
     cards.push(merged_empty_card(ctx, card_width));
   }
 
-  let mut grid = Column::new().width(Dimension::Pct(100.0)).spacing(16.0);
+  let mut grid = Column::new().width(Dimension::Pct(100.0)).spacing(LOBBY_GRID_GAP);
   let mut cards = cards.into_iter();
 
   loop {
-    let mut row = Row::new().width(Dimension::Pct(100.0)).spacing(16.0);
+    let mut row = Row::new().width(Dimension::Pct(100.0)).spacing(LOBBY_GRID_GAP);
     let mut has_card = false;
 
     for _ in 0..columns {
@@ -187,18 +195,23 @@ fn merged_lobby_grid(
   grid.into()
 }
 
-fn lobby_card_width(ctx: &Ctx, columns: usize) -> f32 {
-  let metrics = lobby_layout_metrics(ctx);
-  let content_width = (ctx.window().logical_width() - metrics.rail_width - 40.0).max(0.0);
-  let gaps = (columns.saturating_sub(1) as f32) * 16.0;
-  let column_width = ((content_width - gaps) / columns.max(1) as f32).max(0.0);
-  let breakpoint_max = match ctx.breakpoint() {
-    Some(Breakpoint::Md) => 420.0,
-    Some(Breakpoint::Lg) => 320.0,
-    Some(Breakpoint::Xl | Breakpoint::Sm) | None => 420.0,
-  };
+fn lobby_grid_columns(ctx: &Ctx, card_count: usize) -> usize {
+  let content_width = lobby_grid_content_width(ctx);
+  let columns = ((content_width + LOBBY_GRID_GAP) / (LOBBY_GRID_MIN_CARD_WIDTH + LOBBY_GRID_GAP)).floor() as usize;
 
-  column_width.min(breakpoint_max)
+  columns.max(1).min(card_count.max(1))
+}
+
+fn lobby_card_width(ctx: &Ctx, columns: usize) -> f32 {
+  let gaps = (columns.saturating_sub(1) as f32) * LOBBY_GRID_GAP;
+
+  ((lobby_grid_content_width(ctx) - gaps) / columns.max(1) as f32).max(0.0)
+}
+
+fn lobby_grid_content_width(ctx: &Ctx) -> f32 {
+  let metrics = lobby_layout_metrics(ctx);
+
+  (ctx.window().logical_width() - metrics.rail_width - LOBBY_GRID_PADDING * 2.0).max(0.0)
 }
 
 fn merged_stream_card(

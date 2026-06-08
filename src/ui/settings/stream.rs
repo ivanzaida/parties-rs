@@ -353,7 +353,7 @@ fn webcam_options(system_default: &str, devices: &[WebcamDevice], selected: &str
 }
 
 fn codec_options() -> Vec<DropdownOption> {
-  ["AV1", "H.265", "H.264"]
+  outgoing_codec_options()
     .into_iter()
     .map(|codec| DropdownOption {
       value: codec.to_owned(),
@@ -473,9 +473,38 @@ fn video_value_label_style() -> TextStyle {
 }
 
 fn video_codec_value(value: &str) -> String {
-  match value.trim() {
+  let value = match value.trim() {
     "H.265" | "H.264" => value.trim().to_owned(),
-    _ => "AV1".to_owned(),
+    #[cfg(not(target_os = "macos"))]
+    "AV1" => "AV1".to_owned(),
+    _ => default_outgoing_codec().to_owned(),
+  };
+  if outgoing_codec_options().contains(&value.as_str()) {
+    value
+  } else {
+    default_outgoing_codec().to_owned()
+  }
+}
+
+fn outgoing_codec_options() -> Vec<&'static str> {
+  #[cfg(target_os = "macos")]
+  {
+    vec!["H.265", "H.264"]
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    vec!["AV1", "H.265", "H.264"]
+  }
+}
+
+fn default_outgoing_codec() -> &'static str {
+  #[cfg(target_os = "macos")]
+  {
+    "H.265"
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    "AV1"
   }
 }
 
