@@ -653,17 +653,85 @@
       "trust": "Trust certificate"
     }
   },
+  "server_settings": {
+    "title": "Server",
+    "subtitle": "Everything the server exposes today. These values are read-only here.",
+    "protocol_supported": "Protocol v1 · supported",
+    "read_only": "READ ONLY",
+    "nav": {
+      "back": "Back to {{server}}",
+      "section": "SERVER",
+      "server": "Server",
+      "channels": "Channels",
+      "members": "Members",
+      "roles": "Roles & Permissions"
+    },
+    "info": {
+      "title": "Server info",
+      "server_name": "Server name",
+      "role": "Your role",
+      "protocol": "Protocol version"
+    },
+    "glance": {
+      "title": "At a glance",
+      "voice_channels": "Voice channels",
+      "text_channels": "Text channels",
+      "users": "Known users"
+    },
+    "sections": {
+      "channels": "Channels",
+      "members": "Members",
+      "roles": "Roles & Permissions"
+    },
+    "channels": {
+      "voice_title": "Voice channels",
+      "text_title": "Text channels",
+      "empty_voice": "No voice channels",
+      "empty_text": "No text channels",
+      "unlimited": "Unlimited users",
+      "max_users": "{{count}} max users",
+      "connected": "{{count}} connected"
+    },
+    "members": {
+      "online_title": "Online members",
+      "empty": "No online members",
+      "no_voice": "Not in voice",
+      "user_meta": "{{role}} · {{channels}}",
+      "user_id": "id {{id}}"
+    },
+    "roles": {
+      "all_permissions": "All permissions",
+      "default_permissions": "{{count}} default permissions"
+    }
+  },
   "lobby": {
     "title": "Lobby",
     "server": {
       "unknown": "Unknown server"
     },
     "user": {
-      "disconnected": "Disconnected"
+      "disconnected": "Disconnected",
+      "fallback": "User #{{id}}"
     },
     "action": {
       "settings": "Settings",
       "disconnect": "Disconnect"
+    },
+    "disconnected": {
+      "title": "Disconnected from server",
+      "description": "We lost the connection to {{server}}. Reconnect to restore the lobby and voice state, or leave this server.",
+      "status": {
+        "ready": "Connection unavailable",
+        "reconnecting": "Reconnecting... attempt {{attempt}}",
+        "failed": "Reconnect failed"
+      },
+      "action": {
+        "reconnect": "Reconnect now",
+        "reconnecting": "Reconnecting...",
+        "leave": "Leave server"
+      },
+      "footer": "Last connected to {{server}}",
+      "footer_error": "Last error: {{error}}"
     },
     "channels": {
       "title": "Voice channels",
@@ -689,7 +757,12 @@
     "connection": {
       "not_in_channel": "Not in a channel",
       "voice_connected": "Voice connected",
-      "connected": "Connected to server"
+      "connected": "Connected to server",
+      "channel_connected": "{{channel}} · {{status}}"
+    },
+    "rail": {
+      "user_meta": "{{user}} · {{role}}",
+      "ping_ms": "{{value}} ms"
     },
     "empty": {
       "title": "No voice channels yet",
@@ -702,6 +775,38 @@
     },
     "channel": {
       "description": "Voice channel members"
+    },
+    "channel_management": {
+      "top": {
+        "text_title": "Manage text channels",
+        "voice_title": "Manage voice channels",
+        "close": "Close"
+      },
+      "text": {
+        "panel_title": "Text channels",
+        "create_title": "Create Text Channel",
+        "existing_title": "Existing Text Channels",
+        "empty": "No text channels",
+        "create_action": "Create text channel",
+        "name_label": "Channel name",
+        "name_placeholder": "new-channel"
+      },
+      "voice": {
+        "panel_title": "Voice channels",
+        "create_title": "Create Voice Channel",
+        "existing_title": "Existing Voice Channels",
+        "empty": "No voice channels",
+        "create_action": "Create voice channel",
+        "name_label": "Channel name",
+        "name_placeholder": "New voice",
+        "max_users_label": "Max users",
+        "max_users_placeholder": "8"
+      },
+      "row": {
+        "id": "id {{id}}"
+      },
+      "error": "Request failed: {{message}}",
+      "delete": "Delete"
     },
     "stream_modal": {
       "title": "Start stream",
@@ -749,7 +854,10 @@
       "list": {
         "title": "Live streams",
         "channel": "Live in {{channel}}",
+        "channel_metadata": "{{channel}} · {{metadata}}",
+        "source_metadata": "{{width}} x {{height}} · {{codec}}",
         "pending": "Pending video",
+        "pending_resolution": "Pending",
         "watch": "Watch",
         "watching": "Watching",
         "stop": "Stop stream"
@@ -777,6 +885,30 @@
       "live": "Live",
       "muted": "Muted",
       "deafened": "Deafened"
+    },
+    "role": {
+      "owner": "Owner",
+      "admin": "Admin",
+      "moderator": "Moderator",
+      "member": "Member"
+    },
+    "role_meta": {
+      "owner": "owner",
+      "admin": "admin",
+      "moderator": "moderator",
+      "member": "member"
+    },
+    "voice_menu": {
+      "user_volume": "User volume",
+      "admin_actions": "Admin actions",
+      "set_role": "Set role...",
+      "mute": "Mute user",
+      "unmute": "Unmute user",
+      "deafen": "Deafen user",
+      "undeafen": "Undeafen user",
+      "disconnect": "Disconnect from voice",
+      "kick": "Kick from server",
+      "user_meta": "{{role}} · live in {{channel}}"
     },
     "status": {
       "title": "Server status",

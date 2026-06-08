@@ -9,9 +9,10 @@ use lurq::{
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
+use super::StopStreamAction;
 use crate::{
-  network::protocol::{ChannelId, Role},
-  routes::ROUTE_CHOOSE_SERVER,
+  network::protocol::{ChannelId, Role, UserId},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::{ConnectedServerInfo, LobbyState, ServerSession},
   storage::{AppSettings, Storage},
@@ -19,16 +20,13 @@ use crate::{
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     lobby::{
-      ChannelManagerKind,
+      layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, VoiceChannels, VoiceChannelsProps},
     },
     settings::SettingsPopupHandle,
   },
 };
-
-const RAIL_WIDTH: f32 = 280.0;
-const RAIL_DIVIDER_WIDTH: f32 = 1.0;
 
 type VoiceControlFuture = lurq::app::ctx::FutureAction<VoiceControlAction, (), String>;
 
@@ -37,7 +35,7 @@ pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub lobby: LobbyState,
   pub start_stream_modal_open: Signal<bool>,
-  pub channel_manager: Signal<Option<ChannelManagerKind>>,
+  pub stop_stream: StopStreamAction,
 }
 
 impl PartialEq for LobbyRailProps {
@@ -99,7 +97,7 @@ impl Component for LobbyRail {
       &props.info,
       &props.lobby,
       props.start_stream_modal_open.clone(),
-      props.channel_manager.clone(),
+      &props.stop_stream,
       join_channel.as_ref(),
       voice_control.as_ref(),
     )
@@ -145,23 +143,31 @@ fn rail(
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   start_stream_modal_open: Signal<bool>,
-  channel_manager: Signal<Option<ChannelManagerKind>>,
+  stop_stream: &StopStreamAction,
   join_channel: Option<&JoinChannelAction>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
+  let metrics = lobby_layout_metrics(ctx);
   Row::new()
     .border_right(Border::inside(1.0, theme::PaletteColor::Border))
-    .width(RAIL_WIDTH)
+    .width(metrics.rail_width)
     .height(Dimension::Pct(100.0))
     .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
     .child(
       Column::new()
-        .width(RAIL_WIDTH - RAIL_DIVIDER_WIDTH)
+        .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
         .child(rail_header(ctx, info, lobby))
-        .child(rail_channels(ctx, info, lobby, channel_manager, join_channel))
-        .child(rail_bottom(ctx, info, lobby, start_stream_modal_open, voice_control)),
+        .child(rail_channels(ctx, info, lobby, join_channel))
+        .child(rail_bottom(
+          ctx,
+          info,
+          lobby,
+          start_stream_modal_open,
+          stop_stream,
+          voice_control,
+        )),
     )
     .child(
       Rect::new(RAIL_DIVIDER_WIDTH, 1.0)
@@ -174,8 +180,12 @@ fn rail(
 fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
   let unknown_server = ctx.t("lobby.server.unknown");
   let server_name = server_name(info, unknown_server.as_ref());
-  let user_label = local_user_label(lobby, info);
-  let sub = format!("{} · {}", user_label, role_label_lower(info.role));
+  let user_label = local_user_label(ctx, lobby, info);
+  let role = ctx.t(role_label_lower_key(info.role));
+  let sub = ctx.t_args(
+    "lobby.rail.user_meta",
+    [("user", user_label.clone()), ("role", role.to_string())],
+  );
 
   Row::new()
     .width(Dimension::Pct(100.0))
@@ -197,7 +207,31 @@ fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState) ->
             .color(theme::PaletteColor::TextMuted),
         ),
     )
+    .child(server_settings_button(ctx))
     .child(leave_button(ctx))
+    .into()
+}
+
+fn server_settings_button(ctx: &mut Ctx) -> Element {
+  let navigator = ctx.navigator();
+  Row::new()
+    .width(30.0)
+    .height(30.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(theme::RadiusSize::Lg)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "settings",
+      size: 17.0,
+      color: theme::palette().text_muted,
+    }))
+    .on_click(move |_| {
+      if let Some(navigator) = navigator.as_ref() {
+        navigator.push(ROUTE_SERVER_SETTINGS);
+      }
+    })
     .into()
 }
 
@@ -234,19 +268,18 @@ fn rail_channels(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
-  channel_manager: Signal<Option<ChannelManagerKind>>,
   join_channel: Option<&JoinChannelAction>,
 ) -> Element {
+  let metrics = lobby_layout_metrics(ctx);
   Column::new()
     .width(Dimension::Pct(100.0))
     .flex(1.0)
     .spacing(18.0)
-    .padding_vertical(14.0)
-    .padding_horizontal(12.0)
+    .padding_vertical(metrics.rail_padding_y)
+    .padding_horizontal(metrics.rail_padding_x)
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
       channels: lobby.text_channels.clone(),
       selected_channel_id: lobby.selected_text_channel_id,
-      channel_manager: channel_manager.clone(),
     }))
     .child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
       channels: lobby.channels.clone(),
@@ -257,7 +290,6 @@ fn rail_channels(
       local_user_id: info.user_id,
       local_role: info.role,
       join_channel: join_channel.cloned(),
-      channel_manager,
     }))
     .into()
 }
@@ -267,15 +299,25 @@ fn rail_bottom(
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
+  let metrics = lobby_layout_metrics(ctx);
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Md)
-    .padding(12.0)
+    .padding_vertical(metrics.rail_padding_y)
+    .padding_horizontal(metrics.rail_padding_x)
     .child(connection_status(ctx, lobby))
-    .child(local_user_row(info, lobby))
-    .child(control_row(ctx, info, lobby, start_stream_modal_open, voice_control))
+    .child(local_user_row(ctx, info, lobby))
+    .child(control_row(
+      ctx,
+      info,
+      lobby,
+      start_stream_modal_open,
+      stop_stream,
+      voice_control,
+    ))
     .into()
 }
 
@@ -293,7 +335,13 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
     fallback_title
   };
   let sub = if let Some(channel) = selected {
-    format!("{} · {}", channel.name, ctx.t("lobby.connection.connected"))
+    let status = ctx.t("lobby.connection.connected");
+    ctx
+      .t_args(
+        "lobby.connection.channel_connected",
+        [("channel", channel.name.clone()), ("status", status.to_string())],
+      )
+      .to_string()
   } else if lobby.disconnected {
     ctx.t("lobby.connection.not_in_channel").to_string()
   } else {
@@ -356,9 +404,12 @@ fn status_sub(connected_to_voice: bool, label: &str) -> Element {
     .into()
 }
 
-fn local_user_row(info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
-  let username = local_user_label(lobby, info);
-  let ping_label = lobby.ping_ms.map(|ping_ms| format!("{ping_ms} ms"));
+fn local_user_row(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
+  let username = local_user_label(ctx, lobby, info);
+  let role = ctx.t(role_label_lower_key(info.role));
+  let ping_label = lobby
+    .ping_ms
+    .map(|ping_ms| ctx.t_args("lobby.rail.ping_ms", [("value", ping_ms.to_string())]));
 
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
@@ -377,7 +428,7 @@ fn local_user_row(info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
             .color(theme::PaletteColor::TextPrimary),
         )
         .child(
-          Text::new(role_label_lower(info.role))
+          Text::new(&role)
             .variant(theme::TypographyStyle::Caption)
             .color(theme::PaletteColor::TextMuted),
         ),
@@ -399,6 +450,7 @@ fn control_row(
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
   let (muted, deafened) = ctx
@@ -408,7 +460,11 @@ fn control_row(
   let mic_icon = if muted { "mic-off" } else { "mic" };
   let headphones_icon = if deafened { "headphone-off" } else { "headphones" };
   let mute_locked = muted && deafened;
-  let connected_to_voice = lobby.selected_channel_id.is_some() && !lobby.disconnected;
+  let connected_to_voice = local_user_in_voice(lobby, info.user_id) && !lobby.disconnected;
+  let local_streaming = lobby
+    .screen_shares
+    .iter()
+    .any(|share| share.sharer_user_id == info.user_id);
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -430,7 +486,13 @@ fn control_row(
     Some(VoiceControlAction::ToggleDeafen),
     false,
   ));
-  row = row.child(stream_control_button(ctx, start_stream_modal_open, !connected_to_voice));
+  row = row.child(stream_control_button(
+    ctx,
+    start_stream_modal_open,
+    stop_stream,
+    local_streaming,
+    !connected_to_voice && !local_streaming,
+  ));
   row = row.child(control_button(
     ctx,
     "phone-off",
@@ -450,12 +512,29 @@ fn control_row(
   row.into()
 }
 
-fn stream_control_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>, disabled: bool) -> Element {
+fn stream_control_button(
+  ctx: &mut Ctx,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+  streaming: bool,
+  disabled: bool,
+) -> Element {
   let open = start_stream_modal_open.clone();
-  let mut button = icon_button(ctx, "monitor-up", false, disabled);
+  let pending = stop_stream.state().get().is_pending();
+  let mut button = icon_button(
+    ctx,
+    if streaming { "screen-share-off" } else { "monitor-up" },
+    streaming,
+    disabled,
+  );
 
-  if !disabled {
-    button = button.on_click(move |_| open.set(true));
+  if !disabled && !pending {
+    if streaming {
+      let stop_stream = stop_stream.clone();
+      button = button.on_click(move |_| stop_stream.run(()));
+    } else {
+      button = button.on_click(move |_| open.set(true));
+    }
   }
 
   button.into()
@@ -482,6 +561,15 @@ fn control_button(
 }
 
 fn icon_button(ctx: &mut Ctx, icon: &'static str, active: bool, disabled: bool) -> Row {
+  let palette = theme::palette();
+  let icon_color = if disabled {
+    palette.text_muted.with_opacity(0.45)
+  } else if active {
+    palette.danger
+  } else {
+    palette.text_secondary
+  };
+
   let mut button = Row::new()
     .width(Dimension::Pct(100.0))
     .height(38.0)
@@ -492,7 +580,9 @@ fn icon_button(ctx: &mut Ctx, icon: &'static str, active: bool, disabled: bool) 
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
     .border_inside(
       1.0,
-      if active {
+      if disabled {
+        theme::PaletteColor::Border
+      } else if active {
         theme::PaletteColor::Danger
       } else {
         theme::PaletteColor::Border
@@ -501,11 +591,7 @@ fn icon_button(ctx: &mut Ctx, icon: &'static str, active: bool, disabled: bool) 
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon,
       size: 16.0,
-      color: if active {
-        theme::palette().danger
-      } else {
-        theme::palette().text_secondary
-      },
+      color: icon_color,
     }));
 
   if !disabled {
@@ -515,6 +601,13 @@ fn icon_button(ctx: &mut Ctx, icon: &'static str, active: bool, disabled: bool) 
   }
 
   button
+}
+
+fn local_user_in_voice(lobby: &LobbyState, local_user_id: UserId) -> bool {
+  lobby
+    .users_by_channel
+    .values()
+    .any(|users| users.iter().any(|user| user.user_id == local_user_id))
 }
 
 fn local_avatar(name: &str) -> Element {
@@ -575,11 +668,13 @@ fn local_user_name(lobby: &LobbyState, info: &ConnectedServerInfo) -> Option<Str
     .map(|user| user.username.clone())
 }
 
-fn local_user_label(lobby: &LobbyState, info: &ConnectedServerInfo) -> String {
+fn local_user_label(ctx: &mut Ctx, lobby: &LobbyState, info: &ConnectedServerInfo) -> String {
   local_user_name(lobby, info).unwrap_or_else(|| {
     let display_name = info.display_name.trim();
     if display_name.is_empty() {
-      format!("user #{}", info.user_id)
+      ctx
+        .t_args("lobby.user.fallback", [("id", info.user_id.to_string())])
+        .to_string()
     } else {
       display_name.to_owned()
     }
@@ -607,11 +702,11 @@ fn initials_for(name: &str) -> String {
   if initials.is_empty() { "?".to_owned() } else { initials }
 }
 
-pub(super) fn role_label_lower(role: Role) -> &'static str {
+fn role_label_lower_key(role: Role) -> &'static str {
   match role {
-    Role::Owner => "owner",
-    Role::Admin => "admin",
-    Role::Moderator => "moderator",
-    Role::User => "member",
+    Role::Owner => "lobby.role_meta.owner",
+    Role::Admin => "lobby.role_meta.admin",
+    Role::Moderator => "lobby.role_meta.moderator",
+    Role::User => "lobby.role_meta.member",
   }
 }

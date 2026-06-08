@@ -72,6 +72,10 @@ impl VideoCodecId {
       _ => None,
     }
   }
+
+  pub fn is_supported_stream_codec(self) -> bool {
+    matches!(self, Self::Av1 | Self::H265 | Self::H264)
+  }
 }
 
 pub const VIDEO_FLAG_KEYFRAME: u8 = 0x01;

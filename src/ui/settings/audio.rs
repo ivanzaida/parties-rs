@@ -11,13 +11,13 @@ use lurq::{
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
   core::Signal,
   layout::{
+    Alignment, StackAlignment,
     scrollbar::ScrollBarStyle,
     text_style::{FontWeight, TextStyle},
-    Alignment, StackAlignment,
   },
   node::{
-    border::Border, color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Gradient, GradientStop,
-    SliderPartStyle, Style,
+    BackgroundColor, CursorIcon, Element, Gradient, GradientStop, SliderPartStyle, Style, border::Border, color::Color,
+    dimension::Dimension,
   },
 };
 
@@ -28,12 +28,12 @@ use crate::{
   theme,
   ui::{
     common::{
-      dropdown_menu::{dropdown_menu, DropdownOption},
+      dropdown_menu::{DropdownOption, dropdown_menu},
       percent_slider::{PercentSlider, PercentSliderProps, PercentSliderSaveAction},
     },
     settings::{
-      refresh_button::{refresh_button, REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING},
-      shell::{header, page_stack, screen_full, SettingsPage},
+      refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
+      shell::{SettingsPage, header, page_stack, screen_full, settings_content_padding, settings_section_spacing},
       toggle::settings_toggle,
     },
   },
@@ -151,10 +151,12 @@ impl Component for SettingsAudioScreen {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
+    let (padding_x, padding_y) = settings_content_padding(ctx);
+    let section_spacing = settings_section_spacing(ctx);
     let content = ScrollVertical::new(
-      page_stack()
-        .padding_vertical(40.0)
-        .padding_horizontal(40.0)
+      page_stack(ctx)
+        .padding_vertical(padding_y)
+        .padding_horizontal(padding_x)
         .child(header(
           &ctx.t("settings.audio.title"),
           &ctx.t("settings.audio.description"),
@@ -162,7 +164,7 @@ impl Component for SettingsAudioScreen {
         .child(
           Column::new()
             .width(Dimension::Pct(100.0))
-            .spacing(24.0)
+            .spacing(section_spacing)
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))

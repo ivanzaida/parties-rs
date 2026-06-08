@@ -20,7 +20,7 @@ pub fn palette() -> ThemePalette {
     surface_raised: Color::from_hex("#1B1E23"),
     surface_input: Color::from_hex("#171A1E"),
     border: Color::from_hex("#30343A"),
-    border_strong: Color::from_hex("#3E4A40"),
+    border_strong: Color::from_hex("#3A4047"),
     border_focus: Color::from_hex("#6EA8D8"),
     text_primary: Color::from_hex("#F4F4F2"),
     text_secondary: Color::from_hex("#B7B2AA"),

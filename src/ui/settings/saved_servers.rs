@@ -149,7 +149,7 @@ impl Component for SettingsSavedServersScreen {
     let notice_title = ctx.t("settings.servers.notice.title");
     let notice_description = ctx.t_args("settings.servers.notice.description", [("count", count.to_string())]);
     let notice = muted_notice(ctx, &notice_title, &notice_description);
-    let content = page_stack()
+    let content = page_stack(ctx)
       .child(servers_header(ctx))
       .child(server_list_view(list, count))
       .child(notice);

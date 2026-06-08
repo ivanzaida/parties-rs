@@ -653,17 +653,85 @@
       "trust": "Довіряти сертифікату"
     }
   },
+  "server_settings": {
+    "title": "Server",
+    "subtitle": "Everything the server exposes today. These values are read-only here.",
+    "protocol_supported": "Protocol v1 · supported",
+    "read_only": "READ ONLY",
+    "nav": {
+      "back": "Back to {{server}}",
+      "section": "SERVER",
+      "server": "Server",
+      "channels": "Channels",
+      "members": "Members",
+      "roles": "Roles & Permissions"
+    },
+    "info": {
+      "title": "Server info",
+      "server_name": "Server name",
+      "role": "Your role",
+      "protocol": "Protocol version"
+    },
+    "glance": {
+      "title": "At a glance",
+      "voice_channels": "Voice channels",
+      "text_channels": "Text channels",
+      "users": "Known users"
+    },
+    "sections": {
+      "channels": "Channels",
+      "members": "Members",
+      "roles": "Roles & Permissions"
+    },
+    "channels": {
+      "voice_title": "Voice channels",
+      "text_title": "Text channels",
+      "empty_voice": "No voice channels",
+      "empty_text": "No text channels",
+      "unlimited": "Unlimited users",
+      "max_users": "{{count}} max users",
+      "connected": "{{count}} connected"
+    },
+    "members": {
+      "online_title": "Online members",
+      "empty": "No online members",
+      "no_voice": "Not in voice",
+      "user_meta": "{{role}} · {{channels}}",
+      "user_id": "id {{id}}"
+    },
+    "roles": {
+      "all_permissions": "All permissions",
+      "default_permissions": "{{count}} default permissions"
+    }
+  },
   "lobby": {
     "title": "Лобі",
     "server": {
       "unknown": "Невідомий сервер"
     },
     "user": {
-      "disconnected": "Відключено"
+      "disconnected": "Відключено",
+      "fallback": "Користувач #{{id}}"
     },
     "action": {
       "settings": "Налаштування",
       "disconnect": "Відключитися"
+    },
+    "disconnected": {
+      "title": "Відключено від сервера",
+      "description": "З’єднання з {{server}} втрачено. Перепідключіться, щоб відновити лобі й голосовий стан, або залиште цей сервер.",
+      "status": {
+        "ready": "З’єднання недоступне",
+        "reconnecting": "Перепідключення... спроба {{attempt}}",
+        "failed": "Перепідключення не вдалося"
+      },
+      "action": {
+        "reconnect": "Перепідключитися",
+        "reconnecting": "Перепідключення...",
+        "leave": "Залишити сервер"
+      },
+      "footer": "Останнє підключення до {{server}}",
+      "footer_error": "Остання помилка: {{error}}"
     },
     "channels": {
       "title": "Голосові канали",
@@ -689,7 +757,12 @@
     "connection": {
       "not_in_channel": "Не в каналі",
       "voice_connected": "Голос підключено",
-      "connected": "Підключено до сервера"
+      "connected": "Підключено до сервера",
+      "channel_connected": "{{channel}} · {{status}}"
+    },
+    "rail": {
+      "user_meta": "{{user}} · {{role}}",
+      "ping_ms": "{{value}} мс"
     },
     "empty": {
       "title": "Поки що немає голосових каналів",
@@ -702,6 +775,38 @@
     },
     "channel": {
       "description": "Учасники голосового каналу"
+    },
+    "channel_management": {
+      "top": {
+        "text_title": "Керування текстовими каналами",
+        "voice_title": "Керування голосовими каналами",
+        "close": "Закрити"
+      },
+      "text": {
+        "panel_title": "Текстові канали",
+        "create_title": "Створити текстовий канал",
+        "existing_title": "Наявні текстові канали",
+        "empty": "Немає текстових каналів",
+        "create_action": "Створити текстовий канал",
+        "name_label": "Назва каналу",
+        "name_placeholder": "new-channel"
+      },
+      "voice": {
+        "panel_title": "Голосові канали",
+        "create_title": "Створити голосовий канал",
+        "existing_title": "Наявні голосові канали",
+        "empty": "Немає голосових каналів",
+        "create_action": "Створити голосовий канал",
+        "name_label": "Назва каналу",
+        "name_placeholder": "Новий голосовий",
+        "max_users_label": "Максимум користувачів",
+        "max_users_placeholder": "8"
+      },
+      "row": {
+        "id": "id {{id}}"
+      },
+      "error": "Запит не виконано: {{message}}",
+      "delete": "Видалити"
     },
     "stream_modal": {
       "title": "Почати стрим",
@@ -749,7 +854,10 @@
       "list": {
         "title": "Стрими наживо",
         "channel": "Наживо в {{channel}}",
+        "channel_metadata": "{{channel}} · {{metadata}}",
+        "source_metadata": "{{width}} x {{height}} · {{codec}}",
         "pending": "Очікування відео",
+        "pending_resolution": "Очікування",
         "watch": "Дивитися",
         "watching": "Дивитеся",
         "stop": "Зупинити стрим"
@@ -777,6 +885,30 @@
       "live": "У ефірі",
       "muted": "Без звуку",
       "deafened": "Заглушено"
+    },
+    "role": {
+      "owner": "Власник",
+      "admin": "Адмін",
+      "moderator": "Модератор",
+      "member": "Учасник"
+    },
+    "role_meta": {
+      "owner": "власник",
+      "admin": "адмін",
+      "moderator": "модератор",
+      "member": "учасник"
+    },
+    "voice_menu": {
+      "user_volume": "Гучність користувача",
+      "admin_actions": "Адмінські дії",
+      "set_role": "Змінити роль...",
+      "mute": "Вимкнути мікрофон",
+      "unmute": "Увімкнути мікрофон",
+      "deafen": "Заглушити користувача",
+      "undeafen": "Зняти заглушення",
+      "disconnect": "Відключити від голосу",
+      "kick": "Вигнати із сервера",
+      "user_meta": "{{role}} · наживо в {{channel}}"
     },
     "status": {
       "title": "Статус сервера",

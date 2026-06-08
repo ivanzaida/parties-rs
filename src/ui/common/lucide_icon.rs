@@ -1,8 +1,8 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Row, Text},
-  layout::{layout_kind::Justify, text_style::TextStyle, Alignment},
-  node::{color::Color, Element},
+  layout::{Alignment, layout_kind::Justify, text_style::TextStyle},
+  node::{Element, color::Color},
 };
 
 #[derive(Clone, PartialEq, lurq::DevtoolsInspectable)]
@@ -49,6 +49,7 @@ fn name_to_char(name: &str) -> char {
     "arrow-right" => '\u{e049}',
     "alert-circle" | "circle-alert" => '\u{e077}',
     "activity" => '\u{e038}',
+    "app-window" => '\u{e426}',
     "check" => '\u{e06c}',
     "check-circle" => '\u{e07c}',
     "chevron-down" => '\u{e06d}',

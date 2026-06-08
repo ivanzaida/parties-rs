@@ -26,7 +26,7 @@ use crate::{
         audio_section_label,
       },
       refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
-      shell::{SettingsPage, header, page_stack, screen_full},
+      shell::{SettingsPage, header, page_stack, screen_full, settings_content_padding, settings_section_spacing},
     },
   },
 };
@@ -75,10 +75,12 @@ impl Component for SettingsStreamScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let (padding_x, padding_y) = settings_content_padding(ctx);
+    let section_spacing = settings_section_spacing(ctx);
     let content = ScrollVertical::new(
-      page_stack()
-        .padding_vertical(40.0)
-        .padding_horizontal(40.0)
+      page_stack(ctx)
+        .padding_vertical(padding_y)
+        .padding_horizontal(padding_x)
         .child(header(
           &ctx.t("settings.video.title"),
           &ctx.t("settings.video.description"),
@@ -86,7 +88,7 @@ impl Component for SettingsStreamScreen {
         .child(
           Column::new()
             .width(Dimension::Pct(100.0))
-            .spacing(24.0)
+            .spacing(section_spacing)
             .child(
               Column::new()
                 .width(Dimension::Pct(100.0))

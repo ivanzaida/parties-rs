@@ -8,8 +8,8 @@ use lurq::{
   },
   components::{Column, Row, Stack, Text},
   core::Signal,
-  layout::{layout_kind::Justify, Alignment},
-  node::{color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Style},
+  layout::{Alignment, layout_kind::Justify},
+  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
 use crate::{
@@ -18,12 +18,9 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
-    app_chrome::{content_height, modal_y, CHROME_HEIGHT},
-    common::percent_slider::{PercentSlider, PercentSliderProps},
-    lobby::{
-      ChannelManagerKind,
-      channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
-    },
+    app_chrome::{CHROME_HEIGHT, content_height, modal_y},
+    common::percent_slider::{PercentSliderSaveAction, percent_slider_control},
+    lobby::channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
   },
 };
 
@@ -39,7 +36,6 @@ const USER_VOLUME_VALUE_SPACING: f32 = 10.0;
 const USER_VOLUME_TRACK_WIDTH: f32 = USER_VOLUME_SLIDER_WIDTH - USER_VOLUME_VALUE_WIDTH - USER_VOLUME_VALUE_SPACING;
 const DEFAULT_USER_VOLUME: i32 = 100;
 const USER_CONTEXT_MENU_WIDTH: f32 = 286.0;
-const USER_CONTEXT_MENU_HEIGHT: f32 = 390.0;
 const ASSIGNABLE_ROLES: [Role; 3] = [Role::Admin, Role::Moderator, Role::User];
 
 #[derive(Clone)]
@@ -52,7 +48,6 @@ pub(super) struct VoiceChannelsProps {
   pub local_user_id: UserId,
   pub local_role: Role,
   pub join_channel: Option<JoinChannelAction>,
-  pub channel_manager: Signal<Option<ChannelManagerKind>>,
 }
 
 impl PartialEq for VoiceChannelsProps {
@@ -140,10 +135,6 @@ impl Component for VoiceChannels {
     let kick_user = session.clone().map(|session| kick_user_action(ctx, session));
     let channels_for_menu = props.channels.clone();
     let users_by_channel_for_menu = props.users_by_channel.clone();
-    let manager = props.channel_manager.clone();
-    let open_manager: Arc<dyn Fn() + Send + Sync + 'static> = Arc::new(move || {
-      manager.set(Some(ChannelManagerKind::Voice));
-    });
     let mut body = Column::new()
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Xs)
@@ -151,8 +142,9 @@ impl Component for VoiceChannels {
         ctx,
         self.expanded.clone(),
         &ctx.t("lobby.voice_channels.title"),
-        Some("settings"),
-        Some(open_manager),
+        None,
+        None,
+        false,
       ));
 
     if !is_expanded {
@@ -531,7 +523,7 @@ fn user_context_overlay(
     .get_untracked()
     .unwrap_or((250.0, CHROME_HEIGHT + 96.0));
   let menu_left = (anchor_x + 8.0).clamp(8.0, (window_width - USER_CONTEXT_MENU_WIDTH - 8.0).max(8.0));
-  let menu_top = modal_y(anchor_y).clamp(8.0, (modal_height - USER_CONTEXT_MENU_HEIGHT).max(8.0));
+  let menu_top = modal_y(anchor_y).clamp(8.0, (modal_height - 8.0).max(8.0));
   let close_left_user_id = context_user_id.clone();
   let close_left_menu = context_menu_open.clone();
   let close_left_anchor = context_menu_anchor.clone();
@@ -579,26 +571,23 @@ fn user_context_overlay(
         }),
     )
     .child(
-      Row::new()
-        .width(USER_CONTEXT_MENU_WIDTH)
-        .height(USER_CONTEXT_MENU_HEIGHT)
-        .absolute(menu_left, menu_top, USER_CONTEXT_MENU_WIDTH, USER_CONTEXT_MENU_HEIGHT)
-        .child(user_context_menu(
-          ctx,
-          user,
-          channel_name,
-          local_user_id,
-          local_role,
-          context_user_id,
-          context_menu_open,
-          context_menu_anchor,
-          role_menu_user_id,
-          session,
-          set_role,
-          set_user_voice_state,
-          disconnect_user,
-          kick_user,
-        )),
+      user_context_menu(
+        ctx,
+        user,
+        channel_name,
+        local_user_id,
+        local_role,
+        context_user_id,
+        context_menu_open,
+        context_menu_anchor,
+        role_menu_user_id,
+        session,
+        set_role,
+        set_user_voice_state,
+        disconnect_user,
+        kick_user,
+      )
+      .absolute_position(menu_left, menu_top),
     )
     .into()
 }
@@ -618,7 +607,7 @@ fn user_context_menu(
   set_user_voice_state: Option<SetUserVoiceStateAction>,
   disconnect_user: Option<DisconnectUserAction>,
   kick_user: Option<KickUserAction>,
-) -> Element {
+) -> Column {
   let target_user_id = user.user_id;
   let can_moderate = target_user_id != local_user_id && local_role.can_moderate(user.role);
   let can_set_role = can_moderate && local_role.has_permission(Permission::ManageRoles) && set_role.is_some();
@@ -629,6 +618,7 @@ fn user_context_menu(
     can_moderate && local_role.has_permission(Permission::KickFromChannel) && disconnect_user.is_some();
   let can_kick = can_moderate && local_role.has_permission(Permission::KickFromServer) && kick_user.is_some();
   let role_menu_open = role_menu_user_id.get() == Some(target_user_id);
+  let volume_control_key = format!("user-volume-{target_user_id}");
   let mut menu = Column::new()
     .width(USER_CONTEXT_MENU_WIDTH)
     .spacing(0.0)
@@ -638,18 +628,22 @@ fn user_context_menu(
     .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")))
     .child(user_context_header(ctx, user, channel_name))
     .child(menu_separator())
-    .child(ctx.mount::<UserVolumeControl>(UserVolumeControlProps {
-      user_id: target_user_id,
-      session,
-    }));
+    .child(ctx.mount_keyed::<UserVolumeControl>(
+      &volume_control_key,
+      UserVolumeControlProps {
+        user_id: target_user_id,
+        session,
+      },
+    ));
 
   if can_set_role || can_mute || can_deafen || can_disconnect || can_kick {
-    menu = menu.child(menu_separator()).child(admin_section_label());
+    menu = menu.child(menu_separator()).child(admin_section_label(ctx));
   }
 
   if let Some(set_role) = set_role.filter(|_| can_set_role) {
     let open_role_menu = role_menu_user_id.clone();
-    menu = menu.child(menu_item(ctx, "shield", "Set role...", false).on_click(move |_| {
+    let label = ctx.t("lobby.voice_menu.set_role");
+    menu = menu.child(menu_item(ctx, "shield", &label, false).on_click(move |_| {
       if open_role_menu.get_untracked() == Some(target_user_id) {
         open_role_menu.set(None);
       } else {
@@ -679,9 +673,13 @@ fn user_context_menu(
     let close_role_menu = role_menu_user_id.clone();
     let muted = !user.muted;
     let deafened = user.deafened;
-    let label = if user.muted { "Unmute user" } else { "Mute user" };
+    let label = if user.muted {
+      ctx.t("lobby.voice_menu.unmute")
+    } else {
+      ctx.t("lobby.voice_menu.mute")
+    };
     let icon = if user.muted { "mic" } else { "mic-off" };
-    menu = menu.child(menu_item(ctx, icon, label, false).on_click(move |_| {
+    menu = menu.child(menu_item(ctx, icon, &label, false).on_click(move |_| {
       set_user_voice_state.run((target_user_id, muted, deafened));
       close_user_context_menu(
         close_context.clone(),
@@ -699,9 +697,13 @@ fn user_context_menu(
     let close_role_menu = role_menu_user_id.clone();
     let muted = user.muted;
     let deafened = !user.deafened;
-    let label = if user.deafened { "Undeafen user" } else { "Deafen user" };
+    let label = if user.deafened {
+      ctx.t("lobby.voice_menu.undeafen")
+    } else {
+      ctx.t("lobby.voice_menu.deafen")
+    };
     let icon = if user.deafened { "headphones" } else { "headphone-off" };
-    menu = menu.child(menu_item(ctx, icon, label, false).on_click(move |_| {
+    menu = menu.child(menu_item(ctx, icon, &label, false).on_click(move |_| {
       set_user_voice_state.run((target_user_id, muted, deafened));
       close_user_context_menu(
         close_context.clone(),
@@ -717,17 +719,16 @@ fn user_context_menu(
     let close_menu = context_menu_open.clone();
     let close_anchor = context_menu_anchor.clone();
     let close_role_menu = role_menu_user_id.clone();
-    menu = menu.child(
-      menu_item(ctx, "phone-off", "Disconnect from voice", false).on_click(move |_| {
-        disconnect_user.run(target_user_id);
-        close_user_context_menu(
-          close_context.clone(),
-          close_menu.clone(),
-          close_anchor.clone(),
-          close_role_menu.clone(),
-        );
-      }),
-    );
+    let label = ctx.t("lobby.voice_menu.disconnect");
+    menu = menu.child(menu_item(ctx, "phone-off", &label, false).on_click(move |_| {
+      disconnect_user.run(target_user_id);
+      close_user_context_menu(
+        close_context.clone(),
+        close_menu.clone(),
+        close_anchor.clone(),
+        close_role_menu.clone(),
+      );
+    }));
   }
 
   if let Some(kick_user) = kick_user.filter(|_| can_kick) {
@@ -735,7 +736,8 @@ fn user_context_menu(
     let close_menu = context_menu_open.clone();
     let close_anchor = context_menu_anchor.clone();
     let close_role_menu = role_menu_user_id.clone();
-    menu = menu.child(menu_item(ctx, "user-x", "Kick from server", true).on_click(move |_| {
+    let label = ctx.t("lobby.voice_menu.kick");
+    menu = menu.child(menu_item(ctx, "user-x", &label, true).on_click(move |_| {
       kick_user.run(target_user_id);
       close_user_context_menu(
         close_context.clone(),
@@ -746,7 +748,7 @@ fn user_context_menu(
     }));
   }
 
-  menu.into()
+  menu
 }
 
 fn role_submenu(
@@ -776,17 +778,16 @@ fn role_submenu(
     let close_anchor = context_menu_anchor.clone();
     let close_role_menu = role_menu_user_id.clone();
     let action = set_role.clone();
-    submenu = submenu.child(
-      menu_item(ctx, "corner-down-right", role_label(role), false).on_click(move |_| {
-        action.run((target_user_id, role));
-        close_user_context_menu(
-          close_context.clone(),
-          close_menu.clone(),
-          close_anchor.clone(),
-          close_role_menu.clone(),
-        );
-      }),
-    );
+    let label = ctx.t(role_label_key(role));
+    submenu = submenu.child(menu_item(ctx, "corner-down-right", &label, false).on_click(move |_| {
+      action.run((target_user_id, role));
+      close_user_context_menu(
+        close_context.clone(),
+        close_menu.clone(),
+        close_anchor.clone(),
+        close_role_menu.clone(),
+      );
+    }));
   }
 
   submenu.into()
@@ -797,7 +798,11 @@ fn can_assign_role(actor_role: Role, target_role: Role) -> bool {
 }
 
 fn user_context_header(ctx: &mut Ctx, user: &LobbyUser, channel_name: &str) -> Element {
-  let meta = format!("{} · live in {channel_name}", role_label(user.role).to_lowercase());
+  let role = ctx.t(role_meta_label_key(user.role));
+  let meta = ctx.t_args(
+    "lobby.voice_menu.user_meta",
+    [("role", role.to_string()), ("channel", channel_name.to_owned())],
+  );
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -869,6 +874,7 @@ impl DevtoolsInspectable for UserVolumeControlProps {
 struct UserVolumeControl {
   user_id: Signal<UserId>,
   server_id: Signal<Option<String>>,
+  value: Signal<i32>,
 }
 
 impl Component for UserVolumeControl {
@@ -892,8 +898,13 @@ impl Component for UserVolumeControl {
     }
     let user_id = ctx.signal(props.user_id);
     let server_id = ctx.signal(initial_server_id);
+    let value = ctx.signal(initial);
 
-    Self { user_id, server_id }
+    Self {
+      user_id,
+      server_id,
+      value,
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -913,6 +924,7 @@ impl Component for UserVolumeControl {
       );
       self.user_id.set(props.user_id);
       self.server_id.set(server_id.clone());
+      self.value.set(value);
       if let Some(session) = props.session.as_ref() {
         session.set_user_volume(props.user_id, value);
       }
@@ -922,22 +934,19 @@ impl Component for UserVolumeControl {
     let save_session = props.session.clone();
     let save_server_id = server_id.clone();
     let save_user_id = props.user_id;
-    let initial_value = load_user_volume(
-      storage.as_ref(),
-      props.session.as_ref(),
-      server_id.as_deref(),
-      props.user_id,
-    );
-
-    user_volume_control(ctx, initial_value, move |volume| {
-      let volume = volume.clamp(0, 100);
-      if let Some(session) = save_session.as_ref() {
-        session.set_user_volume(save_user_id, volume);
-      }
-      if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
-        let _ = storage.save_volume_override(server_id, save_user_id, volume);
-      }
-    })
+    user_volume_control(
+      ctx,
+      self.value.clone(),
+      Arc::new(move |volume| {
+        let volume = volume.clamp(0, 100);
+        if let Some(session) = save_session.as_ref() {
+          session.set_user_volume(save_user_id, volume);
+        }
+        if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
+          let _ = storage.save_volume_override(server_id, save_user_id, volume);
+        }
+      }),
+    )
   }
 }
 
@@ -954,7 +963,9 @@ fn load_user_volume(
     .unwrap_or(DEFAULT_USER_VOLUME)
 }
 
-fn user_volume_control(ctx: &mut Ctx, initial_value: i32, on_blur: impl Fn(i32) + Send + Sync + 'static) -> Element {
+fn user_volume_control(ctx: &mut Ctx, value: Signal<i32>, on_blur: PercentSliderSaveAction) -> Element {
+  let label = ctx.t("lobby.voice_menu.user_volume");
+
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(8.0)
@@ -972,21 +983,21 @@ fn user_volume_control(ctx: &mut Ctx, initial_value: i32, on_blur: impl Fn(i32) 
           theme::palette().text_secondary,
         ))
         .child(
-          Text::new("User volume")
+          Text::new(&label)
             .variant(theme::TypographyStyle::Caption)
             .color(theme::PaletteColor::TextSecondary)
             .width(Dimension::Pct(100.0))
             .flex(1.0),
         ),
     )
-    .child(ctx.mount::<PercentSlider>(PercentSliderProps {
-      initial_value,
-      control_width: USER_VOLUME_SLIDER_WIDTH,
-      track_width: USER_VOLUME_TRACK_WIDTH,
-      value_width: USER_VOLUME_VALUE_WIDTH,
-      value_spacing: USER_VOLUME_VALUE_SPACING,
-      on_blur: std::sync::Arc::new(on_blur),
-    }))
+    .child(percent_slider_control(
+      value,
+      USER_VOLUME_SLIDER_WIDTH,
+      USER_VOLUME_TRACK_WIDTH,
+      USER_VOLUME_VALUE_WIDTH,
+      USER_VOLUME_VALUE_SPACING,
+      on_blur,
+    ))
     .into()
 }
 
@@ -1028,26 +1039,37 @@ fn menu_separator() -> Element {
     .into()
 }
 
-fn admin_section_label() -> Element {
+fn admin_section_label(ctx: &mut Ctx) -> Element {
+  let label = ctx.t("lobby.voice_menu.admin_actions");
+
   Row::new()
     .width(Dimension::Pct(100.0))
     .padding_top(9.0)
     .padding_bottom(4.0)
     .padding_horizontal(10.0)
     .child(
-      Text::new("Admin actions")
+      Text::new(&label)
         .variant(theme::TypographyStyle::FieldLabel)
         .color(theme::PaletteColor::TextMuted),
     )
     .into()
 }
 
-fn role_label(role: Role) -> &'static str {
+fn role_label_key(role: Role) -> &'static str {
   match role {
-    Role::Owner => "Owner",
-    Role::Admin => "Admin",
-    Role::Moderator => "Moderator",
-    Role::User => "Member",
+    Role::Owner => "lobby.role.owner",
+    Role::Admin => "lobby.role.admin",
+    Role::Moderator => "lobby.role.moderator",
+    Role::User => "lobby.role.member",
+  }
+}
+
+fn role_meta_label_key(role: Role) -> &'static str {
+  match role {
+    Role::Owner => "lobby.role_meta.owner",
+    Role::Admin => "lobby.role_meta.admin",
+    Role::Moderator => "lobby.role_meta.moderator",
+    Role::User => "lobby.role_meta.member",
   }
 }
 
@@ -1133,9 +1155,5 @@ fn initials_for(name: &str) -> String {
     .take(1)
     .collect::<String>();
 
-  if initials.is_empty() {
-    "?".to_owned()
-  } else {
-    initials
-  }
+  if initials.is_empty() { "?".to_owned() } else { initials }
 }

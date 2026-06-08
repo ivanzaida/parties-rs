@@ -1,5 +1,5 @@
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{component::Component, ctx::Ctx, theme::Breakpoint},
   clipboard,
   components::{Column, Row, Text},
   core::Signal,
@@ -56,6 +56,7 @@ impl Component for IdentitySeedScreen {
         },
       ),
       onboarding_shell::panel(
+        ctx.breakpoint(),
         Column::new()
           .width(Dimension::Pct(100.0))
           .spacing(theme::SpacingSize::Section)
@@ -64,7 +65,7 @@ impl Component for IdentitySeedScreen {
             &ctx.t("identity_seed.title"),
             &ctx.t("identity_seed.subtitle"),
           ))
-          .child(seed_grid(phrase, hidden))
+          .child(seed_grid(ctx, phrase, hidden))
           .child(self.seed_bottom(ctx, phrase, confirmed, copied, hidden)),
       ),
     )
@@ -120,45 +121,46 @@ impl IdentitySeedScreen {
     } else {
       continue_button
     };
-
-    Column::new()
+    let copy_button = action_button(ctx, copy_icon, &copy_label, copy_tone)
+      .min_width(COPY_ACTION_MIN_WIDTH)
+      .on_click({
+        let phrase = phrase.clone();
+        move |_| {
+          if clipboard::copy_to_clipboard(&phrase) {
+            copied_signal.set(true);
+          }
+        }
+      });
+    let hide_button = action_button(ctx, "eye-off", &hide_label, ButtonTone::Ghost).on_click(move |_| {
+      hidden_signal.set(!hidden);
+    });
+    let confirm_control =
+      confirm_row(ctx, &ctx.t("identity_seed.confirm"), confirmed, self.confirmed.clone()).flex(1.0);
+    let actions = Column::new()
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Xl)
       .child(
         Row::new()
           .width(Dimension::Pct(100.0))
           .align_items(Alignment::Center)
-          .justify(Justify::SpaceBetween)
-          .child(
-            Row::new()
-              .align_items(Alignment::Center)
-              .spacing(theme::SpacingSize::Md)
-              .child(
-                action_button(ctx, copy_icon, &copy_label, copy_tone)
-                  .min_width(COPY_ACTION_MIN_WIDTH)
-                  .on_click({
-                    let phrase = phrase.clone();
-                    move |_| {
-                      if clipboard::copy_to_clipboard(&phrase) {
-                        copied_signal.set(true);
-                      }
-                    }
-                  }),
-              )
-              .child(
-                action_button(ctx, "eye-off", &hide_label, ButtonTone::Ghost).on_click(move |_| {
-                  hidden_signal.set(!hidden);
-                }),
-              ),
-          )
-          .child(continue_button),
+          .spacing(theme::SpacingSize::Md)
+          .child(copy_button)
+          .child(hide_button),
       )
-      .child(confirm_row(
-        ctx,
-        &ctx.t("identity_seed.confirm"),
-        confirmed,
-        self.confirmed.clone(),
-      ))
+      .child(
+        Row::new()
+          .width(Dimension::Pct(100.0))
+          .align_items(Alignment::Center)
+          .justify(Justify::SpaceBetween)
+          .spacing(theme::SpacingSize::Lg)
+          .child(confirm_control)
+          .child(continue_button),
+      );
+
+    Column::new()
+      .width(Dimension::Pct(100.0))
+      .spacing(theme::SpacingSize::Xl)
+      .child(actions)
   }
 }
 
@@ -175,21 +177,27 @@ fn panel_header(overline: &str, title: &str, subtitle: &str) -> Column {
     .child(
       Text::new(subtitle)
         .variant(theme::TypographyStyle::Description)
-        .width(430.0),
+        .width(Dimension::Pct(100.0))
+        .max_width(430.0),
     )
 }
 
-fn seed_grid(phrase: &str, hidden: bool) -> Column {
+fn seed_grid(ctx: &Ctx, phrase: &str, hidden: bool) -> Column {
   let words = phrase.split_whitespace().collect::<Vec<_>>();
+  let columns = match ctx.breakpoint() {
+    Some(Breakpoint::Md) => 2,
+    Some(Breakpoint::Lg | Breakpoint::Xl | Breakpoint::Sm) | None => 3,
+  };
+  let rows = words.len().div_ceil(columns);
   let mut grid = Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Md);
 
-  for row in 0..4 {
+  for row in 0..rows {
     let mut word_row = Row::new().width(Dimension::Pct(100.0)).spacing(theme::SpacingSize::Md);
 
-    for col in 0..3 {
-      let index = row * 3 + col;
+    for col in 0..columns {
+      let index = row * columns + col;
       word_row = word_row.child(seed_word(index + 1, words.get(index).copied().unwrap_or(""), hidden));
     }
 
@@ -357,14 +365,16 @@ fn confirm_row(ctx: &mut Ctx, label: &str, confirmed: bool, confirmed_signal: Si
   }
 
   Row::new()
-    .align_items(Alignment::Center)
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Start)
     .spacing(theme::SpacingSize::Md)
     .cursor(CursorIcon::Pointer)
     .on_click(move |_| confirmed_signal.set(!confirmed))
-    .child(checkbox)
+    .child(Column::new().padding_top(3.0).child(checkbox))
     .child(
       Text::new(label)
         .variant(theme::TypographyStyle::Description)
-        .color(label_color),
+        .color(label_color)
+        .flex(1.0),
     )
 }

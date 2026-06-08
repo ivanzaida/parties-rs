@@ -18,6 +18,7 @@ pub struct ServerQueryInfo {
   pub server_name: String,
   pub current_users: u16,
   pub max_users: u16,
+  pub total_users: Option<u16>,
   pub password_locked: bool,
 }
 
@@ -90,6 +91,11 @@ fn parse_server_query_reply(bytes: &[u8], expected_token: u32) -> Option<ServerQ
   let max_users = r.read_u16().ok()?;
   let flags = r.read_u8().ok()?;
   let server_name = r.read_string().ok()?;
+  let total_users = if r.remaining() >= 2 {
+    Some(r.read_u16().ok()?)
+  } else {
+    None
+  };
   r.finish().ok()?;
 
   Some(ServerQueryInfo {
@@ -97,6 +103,7 @@ fn parse_server_query_reply(bytes: &[u8], expected_token: u32) -> Option<ServerQ
     server_name,
     current_users,
     max_users,
+    total_users,
     password_locked: flags & SERVER_QUERY_FLAG_PASSWORD_LOCKED != 0,
   })
 }
@@ -126,6 +133,7 @@ mod tests {
     w.write_u16(16);
     w.write_u8(SERVER_QUERY_FLAG_PASSWORD_LOCKED);
     w.write_string("My Server").unwrap();
+    w.write_u16(42);
 
     assert_eq!(
       parse_server_query_reply(&w.into_bytes(), token),
@@ -134,6 +142,32 @@ mod tests {
         server_name: "My Server".to_owned(),
         current_users: 2,
         max_users: 16,
+        total_users: Some(42),
+        password_locked: true,
+      })
+    );
+  }
+
+  #[test]
+  fn query_reply_parses_legacy_shape_without_total_users() {
+    let token = 0x01020304;
+    let mut w = BinaryWriter::new();
+    w.write_bytes(&SERVER_QUERY_REPLY_MARKER);
+    w.write_u32(token);
+    w.write_u16(1);
+    w.write_u16(2);
+    w.write_u16(16);
+    w.write_u8(SERVER_QUERY_FLAG_PASSWORD_LOCKED);
+    w.write_string("My Server").unwrap();
+
+    assert_eq!(
+      parse_server_query_reply(&w.into_bytes(), token),
+      Some(ServerQueryInfo {
+        protocol_version: 1,
+        server_name: "My Server".to_owned(),
+        current_users: 2,
+        max_users: 16,
+        total_users: None,
         password_locked: true,
       })
     );

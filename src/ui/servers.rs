@@ -3,7 +3,7 @@ mod server_card;
 use std::time::Duration;
 
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{component::Component, ctx::Ctx, theme::Breakpoint},
   components::{Column, Row, ScrollVertical, Text},
   core::Signal,
   layout::{
@@ -28,11 +28,39 @@ use crate::{
   },
 };
 
-const VISIBLE_SERVER_COUNT: usize = 5;
-const SERVER_CARD_HEIGHT: f32 = 90.0;
 const SERVER_LIST_GAP: f32 = 14.0;
-const SERVER_LIST_MAX_HEIGHT: f32 = SERVER_CARD_HEIGHT * 5.0 + SERVER_LIST_GAP * 4.0 + 2.0;
 const SERVER_LIST_QUERY_TIMEOUT: Duration = Duration::from_millis(800);
+
+#[derive(Clone, Copy)]
+struct ServersLayoutMetrics {
+  content_max_width: f32,
+  page_padding_y: f32,
+  top_bar_padding_x: f32,
+  empty_copy_width: f32,
+}
+
+fn servers_layout_metrics(ctx: &Ctx) -> ServersLayoutMetrics {
+  match ctx.breakpoint() {
+    Some(Breakpoint::Md) => ServersLayoutMetrics {
+      content_max_width: 704.0,
+      page_padding_y: 22.0,
+      top_bar_padding_x: 20.0,
+      empty_copy_width: 440.0,
+    },
+    Some(Breakpoint::Lg) => ServersLayoutMetrics {
+      content_max_width: 820.0,
+      page_padding_y: 26.0,
+      top_bar_padding_x: 20.0,
+      empty_copy_width: 480.0,
+    },
+    Some(Breakpoint::Xl) | Some(Breakpoint::Sm) | None => ServersLayoutMetrics {
+      content_max_width: 860.0,
+      page_padding_y: 28.0,
+      top_bar_padding_x: 20.0,
+      empty_copy_width: 480.0,
+    },
+  }
+}
 
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
@@ -192,6 +220,8 @@ impl SavedServersScreen {
   }
 
   fn empty_state(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let metrics = servers_layout_metrics(ctx);
+
     Column::new()
       .width(Dimension::Pct(100.0))
       .flex(1.0)
@@ -215,7 +245,8 @@ impl SavedServersScreen {
       )
       .child(
         Column::new()
-          .width(480.0)
+          .width(Dimension::Pct(100.0))
+          .max_width(metrics.empty_copy_width)
           .align_items(Alignment::Center)
           .spacing(theme::SpacingSize::Md)
           .child(Text::new(&ctx.t("servers.empty.title")).variant(theme::TypographyStyle::Title))
@@ -234,6 +265,7 @@ impl SavedServersScreen {
   }
 
   fn servers_state(&self, ctx: &mut Ctx, servers: Vec<StoredServer>) -> impl Into<Element> {
+    let metrics = servers_layout_metrics(ctx);
     let count = servers.len();
     let connecting = self.connecting.get();
     let failed = self.failed.get();
@@ -249,10 +281,7 @@ impl SavedServersScreen {
       .count()
       > query_results.len();
 
-    let mut list = Column::new()
-      .width(Dimension::Pct(100.0))
-      .spacing(SERVER_LIST_GAP)
-      .padding_right(16.0);
+    let mut list = Column::new().width(Dimension::Pct(100.0)).spacing(SERVER_LIST_GAP);
 
     for server in servers {
       let address = server.address.clone();
@@ -280,33 +309,44 @@ impl SavedServersScreen {
       ));
     }
 
-    Column::new()
-      .width(Dimension::Pct(100.0))
-      .flex(1.0)
-      .align_items(Alignment::Center)
-      .padding_vertical(theme::SpacingSize::Section)
-      .child(
-        Column::new()
-          .width(860.0)
-          .spacing(theme::SpacingSize::Xl)
-          .child(header(ctx))
-          .child(server_list_view(list, count))
-          .child(
-            Row::new()
-              .align_items(Alignment::Center)
-              .spacing(theme::SpacingSize::Sm)
-              .child(ctx.mount::<LucideIcon>(LucideIconProps {
-                icon: "lock",
-                size: 14.0,
-                color: theme::palette().text_muted,
-              }))
-              .child(
-                Text::new(&ctx.t_args("servers.footer.saved_count", [("count", count.to_string())]))
-                  .variant(theme::TypographyStyle::Link)
-                  .color(theme::PaletteColor::TextMuted),
-              ),
-          ),
-      )
+    ScrollVertical::new(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .padding_vertical(metrics.page_padding_y)
+        .child(
+          Column::new()
+            .width(Dimension::Pct(100.0))
+            .max_width(metrics.content_max_width)
+            .spacing(theme::SpacingSize::Xl)
+            .child(header(ctx))
+            .child(list)
+            .child(
+              Row::new()
+                .align_items(Alignment::Center)
+                .spacing(theme::SpacingSize::Sm)
+                .child(ctx.mount::<LucideIcon>(LucideIconProps {
+                  icon: "lock",
+                  size: 14.0,
+                  color: theme::palette().text_muted,
+                }))
+                .child(
+                  Text::new(&ctx.t_args("servers.footer.saved_count", [("count", count.to_string())]))
+                    .variant(theme::TypographyStyle::Link)
+                    .color(theme::PaletteColor::TextMuted),
+                ),
+            ),
+        ),
+    )
+    .width(Dimension::Pct(100.0))
+    .flex(1.0)
+    .scrollbar(server_list_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.75);
+      style
+    })
   }
 }
 
@@ -379,24 +419,6 @@ fn server_live_info(state: Option<&ServerQueryState>, querying: bool) -> server_
   }
 }
 
-fn server_list_view(list: Column, count: usize) -> Element {
-  if count <= VISIBLE_SERVER_COUNT {
-    return list.into();
-  }
-
-  ScrollVertical::new(list)
-    .width(Dimension::Pct(100.0))
-    .height(SERVER_LIST_MAX_HEIGHT)
-    .scrollbar(server_list_scrollbar_style())
-    .scrollbar_hovered(|mut style| {
-      let palette = theme::palette();
-      style.thumb_color = palette.accent_hover;
-      style.track_color = palette.surface_input.with_opacity(0.75);
-      style
-    })
-    .into()
-}
-
 fn server_list_scrollbar_style() -> ScrollBarStyle {
   let palette = theme::palette();
   ScrollBarStyle {
@@ -413,6 +435,7 @@ fn server_list_scrollbar_style() -> ScrollBarStyle {
 }
 
 fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
+  let metrics = servers_layout_metrics(ctx);
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let identity_name = ctx
     .use_context::<Storage>()
@@ -446,7 +469,7 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
     .height(56.0)
     .align_items(Alignment::Center)
     .justify(Justify::SpaceBetween)
-    .padding_horizontal(theme::SpacingSize::Xl)
+    .padding_horizontal(metrics.top_bar_padding_x)
     .background(BackgroundColor::Color(Color::from_hex("#0D0E10")))
     .border_inside(1.0, theme::PaletteColor::Border)
     .child(

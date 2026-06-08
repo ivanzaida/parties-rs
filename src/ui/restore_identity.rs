@@ -42,6 +42,7 @@ impl Component for RestoreIdentityScreen {
         },
       ),
       onboarding_shell::panel(
+        ctx.breakpoint(),
         Column::new()
           .width(Dimension::Pct(100.0))
           .spacing(theme::SpacingSize::Xl)
@@ -207,7 +208,8 @@ fn panel_header(overline: &str, title: &str, subtitle: &str) -> Column {
     .child(
       Text::new(subtitle)
         .variant(theme::TypographyStyle::Description)
-        .width(430.0),
+        .width(Dimension::Pct(100.0))
+        .max_width(430.0),
     )
 }
 

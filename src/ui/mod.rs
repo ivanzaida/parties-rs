@@ -9,5 +9,6 @@ pub mod loading_identity;
 pub mod lobby;
 pub mod onboarding_shell;
 pub mod restore_identity;
+pub mod server_settings;
 pub mod servers;
 pub mod settings;

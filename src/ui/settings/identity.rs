@@ -187,7 +187,7 @@ impl Component for SettingsIdentityScreen {
       ctx.mount::<ConfirmModal>(confirm_props)
     });
 
-    let content = page_stack()
+    let content = page_stack(ctx)
       .child(header(
         &ctx.t("settings.identity.title"),
         &ctx.t("settings.identity.description"),

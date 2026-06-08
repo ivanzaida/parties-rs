@@ -17,7 +17,7 @@ use crate::{
     },
     settings::{
       audio::{audio_row, audio_section_label},
-      shell::{SettingsPage, SettingsPopupHandle, card, header, page_stack, screen},
+      shell::{SettingsPage, SettingsPopupHandle, card, header, page_stack, screen, settings_section_spacing},
       toggle::settings_toggle,
     },
   },
@@ -122,7 +122,8 @@ impl Component for SettingsOverviewScreen {
       &last_server,
       &servers_action,
     );
-    let content = page_stack()
+    let section_spacing = settings_section_spacing(ctx);
+    let content = page_stack(ctx)
       .child(header(
         &ctx.t("settings.overview.title"),
         &ctx.t("settings.overview.description"),
@@ -130,7 +131,7 @@ impl Component for SettingsOverviewScreen {
       .child(
         Row::new()
           .width(Dimension::Pct(100.0))
-          .spacing(theme::SpacingSize::Section)
+          .spacing(section_spacing)
           .child(identity_card.flex(1.0))
           .child(servers_card.flex(1.0)),
       )
@@ -372,7 +373,7 @@ fn overview_card(
   page: SettingsPage,
   route: &'static str,
 ) -> Column {
-  card()
+  card(ctx)
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))

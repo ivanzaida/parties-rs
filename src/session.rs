@@ -21,7 +21,10 @@ use crate::{
     },
     server::{Server, ServerError},
   },
-  services::voice::{LocalVoiceCallback, VoiceEngine},
+  services::{
+    video::{VideoBroadcast, VideoBroadcastConfig},
+    voice::{LocalVoiceCallback, VoiceEngine},
+  },
   storage::AppSettings,
 };
 
@@ -244,6 +247,7 @@ pub struct ServerSession {
   speaking_clear_scheduled: Arc<Mutex<HashSet<UserId>>>,
   pending_keepalive_ping: Arc<Mutex<Option<Instant>>>,
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
+  video_broadcast: Arc<Mutex<Option<VideoBroadcast>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   revision: Signal<u64>,
 }
@@ -262,6 +266,7 @@ impl Default for ServerSession {
       speaking_clear_scheduled: Arc::new(Mutex::new(HashSet::new())),
       pending_keepalive_ping: Arc::new(Mutex::new(None)),
       voice_engine: Arc::new(Mutex::new(None)),
+      video_broadcast: Arc::new(Mutex::new(None)),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
       revision: Signal::new(0),
     }
@@ -272,6 +277,7 @@ impl Default for ServerSession {
 impl ServerSession {
   pub fn set_connected(&self, connected: ConnectedServer) {
     self.stop_voice();
+    self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = Some(connected);
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
     *self.receiver_started.lock().expect("server session lock poisoned") = false;
@@ -288,6 +294,7 @@ impl ServerSession {
 
   pub fn clear(&self) {
     self.stop_voice();
+    self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = None;
     self.clear_tofu_warning();
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
@@ -308,6 +315,14 @@ impl ServerSession {
       server.disconnect();
     }
     self.clear();
+  }
+
+  pub fn disconnect_for_shutdown(&self) {
+    self.stop_voice();
+    self.stop_video_broadcast();
+    if let Some(server) = self.server() {
+      server.disconnect();
+    }
   }
 
   pub fn info(&self) -> Option<ConnectedServerInfo> {
@@ -563,6 +578,7 @@ impl ServerSession {
   pub fn leave_channel_locally(&self) {
     let local_user_id = self.info().map(|info| info.user_id);
     self.stop_voice();
+    self.stop_video_broadcast();
 
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
@@ -691,6 +707,22 @@ impl ServerSession {
 
   pub fn stop_voice(&self) {
     self.voice_engine.lock().expect("server session lock poisoned").take();
+  }
+
+  pub fn start_video_broadcast(&self, config: VideoBroadcastConfig) -> Result<(), String> {
+    let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
+    let broadcast = VideoBroadcast::start(server, config).map_err(|error| error.to_string())?;
+    let mut video_broadcast = self.video_broadcast.lock().expect("server session lock poisoned");
+    video_broadcast.replace(broadcast);
+    Ok(())
+  }
+
+  pub fn stop_video_broadcast(&self) {
+    self
+      .video_broadcast
+      .lock()
+      .expect("server session lock poisoned")
+      .take();
   }
 
   fn local_voice_callback(&self) -> LocalVoiceCallback {
@@ -1012,11 +1044,10 @@ impl ServerSession {
       S2C::ScreenShareDenied { reason } | S2C::ServerError { message: reason } => {
         lobby.last_error = Some(reason);
       }
-      S2C::AdminResult(result) if !result.success => {
-        lobby.last_error = Some(result.message);
+      S2C::AdminResult(result) => {
+        lobby.last_error = if result.success { None } else { Some(result.message) };
       }
       S2C::AuthResponse(_)
-      | S2C::AdminResult(_)
       | S2C::ChatFileUploadResp(_)
       | S2C::ChatFileReady { .. }
       | S2C::ChatSearchResp { .. }
@@ -1041,6 +1072,7 @@ impl ServerSession {
     }
     if stop_local_voice {
       self.stop_voice();
+      self.stop_video_broadcast();
       if let Some(user_id) = local_user_id {
         self
           .speaking_marks

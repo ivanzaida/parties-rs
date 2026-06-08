@@ -8,7 +8,7 @@ use lurq::{
   components::{Row, Stack, Text},
   core::Signal,
   layout::{Alignment, StackAlignment},
-  node::{dimension::Dimension, Element},
+  node::{Element, dimension::Dimension},
 };
 
 use crate::{theme, ui::common::slider as app_slider};
@@ -82,7 +82,7 @@ impl Component for PercentSlider {
   }
 }
 
-fn percent_slider_control(
+pub fn percent_slider_control(
   value: Signal<i32>,
   control_width: f32,
   track_width: f32,

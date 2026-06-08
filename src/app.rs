@@ -15,8 +15,8 @@ use lurq::{
 use crate::{
   routes::{
     ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
-    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
-    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SERVER_SETTINGS, ROUTE_SETTINGS,
+    ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
@@ -27,7 +27,7 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
-    app_chrome::{AppChrome, modal_layer, window_resize_handles},
+    app_chrome::{AppChrome, modal_layer, window_affordance_layers},
     connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
@@ -35,6 +35,7 @@ use crate::{
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
     lobby::LobbyScreen,
     restore_identity::RestoreIdentityScreen,
+    server_settings::ServerSettingsScreen,
     servers::SavedServersScreen,
     settings::{
       SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsPage, SettingsPopup,
@@ -51,6 +52,7 @@ pub struct App {
   storage: Signal<Option<Storage>>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
+  window_affordances_open: Signal<bool>,
   active_toggle_hotkeys: Signal<Vec<String>>,
   global_hotkeys: GlobalVoiceHotkeys,
 }
@@ -107,6 +109,7 @@ impl Component for App {
         .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
         .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
         .route(ROUTE_LOBBY, |ctx| ctx.mount::<LobbyScreen>(()))
+        .route(ROUTE_SERVER_SETTINGS, |ctx| ctx.mount::<ServerSettingsScreen>(()))
         .route(ROUTE_SETTINGS, |ctx| ctx.mount::<SettingsOverviewScreen>(()))
         .route(ROUTE_SETTINGS_IDENTITY, |ctx| ctx.mount::<SettingsIdentityScreen>(()))
         .route(ROUTE_SETTINGS_SERVERS, |ctx| {
@@ -130,6 +133,7 @@ impl Component for App {
       storage,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
+      window_affordances_open: ctx.signal(true),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
       global_hotkeys,
     }
@@ -191,11 +195,9 @@ impl Component for App {
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
+      .border_inside(1.0, theme::PaletteColor::Border)
       .clip()
       .child(content);
-    for handle in window_resize_handles(ctx) {
-      root = root.child(handle);
-    }
 
     let settings_open = self.settings_open.clone();
     let settings_window = ctx.window();
@@ -212,6 +214,10 @@ impl Component for App {
         }
       })
     });
+
+    for layer in window_affordance_layers(ctx) {
+      ctx.modal(self.window_affordances_open.clone(), move |_| layer);
+    }
 
     if local_hotkeys_enabled {
       let window = ctx.window();

@@ -266,6 +266,7 @@ impl Server {
   // -- screen share --
 
   pub async fn start_screen_share(&self, codec: VideoCodecId, width: u16, height: u16) -> Result<(), ServerError> {
+    validate_video_codec(codec)?;
     self
       .send_control(C2S::ScreenShareStart(ScreenShareMetadata { codec, width, height }))
       .await
@@ -284,6 +285,7 @@ impl Server {
   }
 
   pub async fn update_screen_share(&self, codec: VideoCodecId, width: u16, height: u16) -> Result<(), ServerError> {
+    validate_video_codec(codec)?;
     self
       .send_control(C2S::ScreenShareUpdate(ScreenShareMetadata { codec, width, height }))
       .await
@@ -310,6 +312,7 @@ impl Server {
   }
 
   pub async fn send_video_frame(&self, frame: VideoFrame) -> Result<(), ServerError> {
+    validate_video_codec(frame.codec)?;
     self.send_video_packet(&frame.encode_packet()).await
   }
 
@@ -521,6 +524,17 @@ fn validate_video_stream_packet_len(len: usize) -> Result<(), DecodeError> {
     Err(DecodeError::InvalidLength {
       len,
       max: MAX_VIDEO_FRAME_LEN,
+    })
+  }
+}
+
+fn validate_video_codec(codec: VideoCodecId) -> Result<(), DecodeError> {
+  if codec.is_supported_stream_codec() {
+    Ok(())
+  } else {
+    Err(DecodeError::InvalidEnumValue {
+      field: "video codec",
+      value: codec as u8,
     })
   }
 }

@@ -5,7 +5,7 @@ use lurq::{
   components::{Row, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
-  node::{CursorIcon, Element, color::Color, dimension::Dimension, transform::Transform2D},
+  node::{CursorIcon, Element, color::Color, dimension::Dimension},
 };
 
 use crate::{
@@ -19,6 +19,7 @@ pub(super) fn section_head(
   label: &str,
   right_icon: Option<&'static str>,
   right_action: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+  right_active: bool,
 ) -> Element {
   let toggle = expanded.clone();
   let left_icon = if expanded.get() {
@@ -32,11 +33,12 @@ pub(super) fn section_head(
     .justify(Justify::SpaceBetween)
     .padding_vertical(0.0)
     .padding_horizontal(8.0)
-    .cursor(CursorIcon::Pointer)
     .child(
       Row::new()
         .align_items(Alignment::Center)
         .spacing(theme::SpacingSize::Xs)
+        .cursor(CursorIcon::Pointer)
+        .on_click(move |_| toggle.set(!toggle.get()))
         .child(ctx.mount::<LucideIcon>(LucideIconProps {
           icon: left_icon,
           size: 12.0,
@@ -50,6 +52,11 @@ pub(super) fn section_head(
     );
 
   if let Some(icon) = right_icon {
+    let icon_color = if right_active {
+      theme::palette().accent
+    } else {
+      theme::palette().text_muted
+    };
     let mut action = Row::new()
       .width(20.0)
       .height(20.0)
@@ -58,17 +65,17 @@ pub(super) fn section_head(
       .child(ctx.mount::<LucideIcon>(LucideIconProps {
         icon,
         size: 14.0,
-        color: theme::palette().text_muted,
+        color: icon_color,
       }));
 
     if let Some(right_action) = right_action {
-      action = action.on_click(move |_| right_action());
+      action = action.cursor(CursorIcon::Pointer).on_click(move |_| right_action());
     }
 
     row = row.child(action);
   }
 
-  row.on_click(move |_| toggle.set(!toggle.get())).into()
+  row.into()
 }
 
 pub(super) fn aligned_channel_icon(ctx: &mut Ctx, icon: &'static str, size: f32) -> Element {
@@ -81,7 +88,6 @@ pub(super) fn aligned_channel_icon_with_color(ctx: &mut Ctx, icon: &'static str,
     .height(size)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
-    .transform(Transform2D::translate(0.0, 1.5))
     .child(ctx.mount::<LucideIcon>(LucideIconProps { icon, size, color }))
     .into()
 }

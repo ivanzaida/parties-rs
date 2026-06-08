@@ -12,6 +12,8 @@ pub struct ScreenShareSource {
   pub id: u32,
   pub name: String,
   pub description: String,
+  pub width: u32,
+  pub height: u32,
   pub resolution: Option<String>,
 }
 
@@ -69,6 +71,8 @@ fn monitor_source(index: usize, monitor: Monitor) -> ScreenShareSource {
     id,
     name,
     description: details.join(" · "),
+    width,
+    height,
     resolution,
   }
 }
@@ -91,6 +95,8 @@ fn window_source(window: Window) -> Option<ScreenShareSource> {
     id,
     name,
     description: app_name,
+    width,
+    height,
     resolution,
   })
 }

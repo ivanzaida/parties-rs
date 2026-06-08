@@ -1,5 +1,5 @@
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{component::Component, ctx::Ctx, theme::Breakpoint},
   components::{Column, Row, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
@@ -15,6 +15,41 @@ use crate::{
     loader::loader,
   },
 };
+
+#[derive(Clone, Copy)]
+struct ServerCardLayoutMetrics {
+  avatar_size: f32,
+  row_spacing: f32,
+  row_padding_x: f32,
+  row_padding_y: f32,
+  status_spacing: f32,
+}
+
+fn server_card_layout_metrics(ctx: &Ctx) -> ServerCardLayoutMetrics {
+  match ctx.breakpoint() {
+    Some(Breakpoint::Md) => ServerCardLayoutMetrics {
+      avatar_size: 36.0,
+      row_spacing: 12.0,
+      row_padding_x: 16.0,
+      row_padding_y: 14.0,
+      status_spacing: 8.0,
+    },
+    Some(Breakpoint::Lg) => ServerCardLayoutMetrics {
+      avatar_size: 40.0,
+      row_spacing: 14.0,
+      row_padding_x: 18.0,
+      row_padding_y: 14.0,
+      status_spacing: 10.0,
+    },
+    Some(Breakpoint::Xl) | Some(Breakpoint::Sm) | None => ServerCardLayoutMetrics {
+      avatar_size: 40.0,
+      row_spacing: 14.0,
+      row_padding_x: 20.0,
+      row_padding_y: 14.0,
+      status_spacing: 10.0,
+    },
+  }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub enum ServerCardState {
@@ -102,6 +137,7 @@ impl Component for ServerCard {
 }
 
 fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
+  let metrics = server_card_layout_metrics(ctx);
   let name = display_server_name(props);
   let letter = server_letter(&name);
   let address = props.server.address.clone();
@@ -114,9 +150,9 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Lg)
-    .padding_vertical(theme::SpacingSize::Lg)
-    .padding_horizontal(theme::SpacingSize::Xl)
+    .spacing(metrics.row_spacing)
+    .padding_vertical(metrics.row_padding_y)
+    .padding_horizontal(metrics.row_padding_x)
     .border_top(border.clone())
     .border_right(border.clone())
     .border_left(border.clone())
@@ -136,7 +172,7 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
   }
 
   row
-    .child(avatar(&letter, props.server.role))
+    .child(avatar(&letter, props.server.role, metrics.avatar_size))
     .child(
       Column::new()
         .flex(1.0)
@@ -160,7 +196,7 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
         )
         .child(live_meta_row(ctx, props)),
     )
-    .child(card_status(ctx, props))
+    .child(card_status(ctx, props, metrics))
 }
 
 fn state_border(state: ServerCardState) -> theme::PaletteColor {
@@ -171,7 +207,7 @@ fn state_border(state: ServerCardState) -> theme::PaletteColor {
   }
 }
 
-fn card_status(ctx: &mut Ctx, props: &ServerCardProps) -> Element {
+fn card_status(ctx: &mut Ctx, props: &ServerCardProps, metrics: ServerCardLayoutMetrics) -> Element {
   match props.state {
     ServerCardState::Connecting => Row::new()
       .align_items(Alignment::Center)
@@ -186,7 +222,7 @@ fn card_status(ctx: &mut Ctx, props: &ServerCardProps) -> Element {
     ServerCardState::Error => retry_button(ctx, props).into(),
     ServerCardState::Idle => Row::new()
       .align_items(Alignment::Center)
-      .spacing(theme::SpacingSize::Md)
+      .spacing(metrics.status_spacing)
       .child(live_state_chip(ctx, &props.live))
       .child(trusted_chip(ctx, !props.server.certificate_fingerprint.is_empty()))
       .child(ctx.mount::<LucideIcon>(LucideIconProps {
@@ -345,7 +381,7 @@ fn error_bar(ctx: &mut Ctx, message: Option<&str>) -> impl Into<Element> {
     )
 }
 
-fn avatar(letter: &str, role: Role) -> impl Into<Element> {
+fn avatar(letter: &str, role: Role, size: f32) -> impl Into<Element> {
   let (background, text_color) = if matches!(role, Role::Admin | Role::Owner) {
     (
       BackgroundColor::Palette(theme::PaletteColor::Accent),
@@ -359,8 +395,8 @@ fn avatar(letter: &str, role: Role) -> impl Into<Element> {
   };
 
   Row::new()
-    .width(40.0)
-    .height(40.0)
+    .width(size)
+    .height(size)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .rounded(theme::RadiusSize::Lg)

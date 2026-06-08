@@ -1,8 +1,11 @@
 use lurq::{
-  app::ctx::Ctx,
-  components::{Column, Row, Text},
+  app::{ctx::Ctx, theme::Breakpoint},
+  components::{Column, Row, ScrollVertical, Text},
   core::Signal,
-  layout::Alignment,
+  layout::{
+    Alignment,
+    scrollbar::{ScrollBarPlacement, ScrollBarStyle},
+  },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, dimension::Dimension},
 };
 
@@ -20,6 +23,88 @@ use crate::{
 };
 
 const NAV_LABEL_Y_OFFSET: f32 = -1.0;
+
+#[derive(Clone, Copy)]
+pub(super) struct SettingsLayoutMetrics {
+  pub nav_width: f32,
+  pub nav_padding_x: f32,
+  pub content_padding_x: f32,
+  pub content_padding_y: f32,
+  pub page_spacing: f32,
+  pub section_spacing: f32,
+  pub card_padding_x: f32,
+  pub card_padding_y: f32,
+}
+
+pub(super) fn settings_layout_metrics(ctx: &Ctx) -> SettingsLayoutMetrics {
+  match ctx.breakpoint() {
+    Some(Breakpoint::Md) => SettingsLayoutMetrics {
+      nav_width: 236.0,
+      nav_padding_x: 10.0,
+      content_padding_x: 24.0,
+      content_padding_y: 28.0,
+      page_spacing: 22.0,
+      section_spacing: 20.0,
+      card_padding_x: 16.0,
+      card_padding_y: 16.0,
+    },
+    Some(Breakpoint::Lg) => SettingsLayoutMetrics {
+      nav_width: 280.0,
+      nav_padding_x: 12.0,
+      content_padding_x: 32.0,
+      content_padding_y: 34.0,
+      page_spacing: 24.0,
+      section_spacing: 22.0,
+      card_padding_x: 18.0,
+      card_padding_y: 18.0,
+    },
+    Some(Breakpoint::Xl) | Some(Breakpoint::Sm) | None => SettingsLayoutMetrics {
+      nav_width: 320.0,
+      nav_padding_x: 14.0,
+      content_padding_x: 40.0,
+      content_padding_y: 40.0,
+      page_spacing: 26.0,
+      section_spacing: 24.0,
+      card_padding_x: 20.0,
+      card_padding_y: 20.0,
+    },
+  }
+}
+
+pub(super) fn settings_content_padding(ctx: &Ctx) -> (f32, f32) {
+  let metrics = settings_layout_metrics(ctx);
+  (metrics.content_padding_x, metrics.content_padding_y)
+}
+
+pub(super) fn settings_section_spacing(ctx: &Ctx) -> f32 {
+  settings_layout_metrics(ctx).section_spacing
+}
+
+fn settings_scroll_view(content: impl Into<Element>) -> ScrollVertical {
+  ScrollVertical::new(content)
+    .scrollbar(settings_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.75);
+      style
+    })
+}
+
+fn settings_scrollbar_style() -> ScrollBarStyle {
+  let palette = theme::palette();
+  ScrollBarStyle {
+    width: 8.0,
+    min_thumb_length: 32.0,
+    track_color: palette.surface_input.with_opacity(0.55),
+    thumb_color: palette.accent,
+    thumb_radius: 4.0,
+    track_radius: 4.0,
+    padding: 0.0,
+    placement: ScrollBarPlacement::Reserved,
+    ..ScrollBarStyle::default()
+  }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub enum SettingsPage {
@@ -64,15 +149,19 @@ impl SettingsPopupHandle {
 }
 
 pub(super) fn screen(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
+  let metrics = settings_layout_metrics(ctx);
+  let content = Column::new()
+    .width(Dimension::Pct(100.0))
+    .padding_vertical(metrics.content_padding_y)
+    .padding_horizontal(metrics.content_padding_x)
+    .child(content);
+
   screen_base(
     ctx,
     page,
-    Column::new()
+    settings_scroll_view(content)
       .width(Dimension::Pct(100.0))
-      .height(Dimension::Pct(100.0))
-      .padding_vertical(40.0)
-      .padding_horizontal(40.0)
-      .child(content),
+      .height(Dimension::Pct(100.0)),
   )
 }
 
@@ -99,8 +188,10 @@ fn screen_base(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -
     .into()
 }
 
-pub(super) fn page_stack() -> Column {
-  Column::new().width(Dimension::Pct(100.0)).spacing(26.0)
+pub(super) fn page_stack(ctx: &Ctx) -> Column {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .spacing(settings_layout_metrics(ctx).page_spacing)
 }
 
 pub(super) fn header(title: &str, description: &str) -> Element {
@@ -116,24 +207,26 @@ pub(super) fn header(title: &str, description: &str) -> Element {
     .into()
 }
 
-pub(super) fn card() -> Column {
+pub(super) fn card(ctx: &Ctx) -> Column {
+  let metrics = settings_layout_metrics(ctx);
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Lg)
-    .padding_vertical(theme::SpacingSize::Xl)
-    .padding_horizontal(theme::SpacingSize::Xl)
+    .padding_vertical(metrics.card_padding_y)
+    .padding_horizontal(metrics.card_padding_x)
     .rounded(theme::RadiusSize::Lg)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
     .border_inside(1.0, theme::PaletteColor::Border)
 }
 
 pub(super) fn muted_notice(ctx: &mut Ctx, title: &str, description: &str) -> Element {
+  let metrics = settings_layout_metrics(ctx);
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Start)
     .spacing(theme::SpacingSize::Lg)
     .padding_vertical(theme::SpacingSize::Lg)
-    .padding_horizontal(theme::SpacingSize::Xl)
+    .padding_horizontal(metrics.card_padding_x)
     .rounded(theme::RadiusSize::Lg)
     .border_inside(1.0, theme::PaletteColor::BorderStrong)
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
@@ -163,12 +256,14 @@ pub(super) fn value_text(value: &str) -> Element {
 }
 
 fn nav(ctx: &mut Ctx, page: SettingsPage) -> Element {
+  let metrics = settings_layout_metrics(ctx);
+
   Column::new()
-    .width(320.0)
+    .width(metrics.nav_width)
     .height(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Sm)
     .padding_vertical(theme::SpacingSize::Xl)
-    .padding_horizontal(theme::SpacingSize::Lg)
+    .padding_horizontal(metrics.nav_padding_x)
     .background(BackgroundColor::Color(theme::palette().surface_base.with_opacity(0.55)))
     .border_right(Border::inside(1.0, theme::PaletteColor::Border))
     .child(back_row(ctx))

@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub(crate) const CHROME_HEIGHT: f32 = 36.0;
-const RESIZE_HANDLE_SIZE: f32 = 6.0;
+pub(crate) const RESIZE_HANDLE_SIZE: f32 = 6.0;
 
 pub struct AppChrome;
 
@@ -56,7 +56,38 @@ pub(crate) fn modal_layer(ctx: &mut Ctx, content: impl Into<Element>) -> Row {
     .child(content)
 }
 
-pub(crate) fn window_resize_handles(ctx: &mut Ctx) -> Vec<Element> {
+pub(crate) fn window_affordance_layers(ctx: &mut Ctx) -> Vec<Element> {
+  let mut layers = window_border_strips(ctx);
+  layers.extend(window_resize_handles(ctx));
+  layers
+}
+
+fn window_border_strips(ctx: &Ctx) -> Vec<Element> {
+  let window = ctx.window();
+  let width = window.logical_width();
+  let height = window.logical_height();
+  let size = 1.0;
+  let horizontal_width = width.max(0.0);
+  let vertical_height = height.max(0.0);
+  let right = (width - size).max(0.0);
+  let bottom = (height - size).max(0.0);
+
+  vec![
+    border_strip(0.0, 0.0, horizontal_width, size),
+    border_strip(0.0, bottom, horizontal_width, size),
+    border_strip(0.0, 0.0, size, vertical_height),
+    border_strip(right, 0.0, size, vertical_height),
+  ]
+}
+
+fn border_strip(x: f32, y: f32, width: f32, height: f32) -> Element {
+  Row::new()
+    .absolute(x, y, width, height)
+    .background(BackgroundColor::Palette(theme::PaletteColor::BorderStrong))
+    .into()
+}
+
+fn window_resize_handles(ctx: &mut Ctx) -> Vec<Element> {
   let window = ctx.window();
   if window.is_maximized || window.is_full_screen {
     return Vec::new();
@@ -235,7 +266,7 @@ fn window_controls(ctx: &mut Ctx) -> Element {
     )
     .child(window_control_button(ctx, "x", ControlTone::Danger).on_click(move |_| {
       if let Some(session) = session.as_ref() {
-        session.disconnect();
+        session.disconnect_for_shutdown();
       }
       close_window.close();
     }))

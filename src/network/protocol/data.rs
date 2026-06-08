@@ -105,6 +105,12 @@ impl VideoFrame {
       field: "video codec",
       value: raw_codec,
     })?;
+    if !codec.is_supported_stream_codec() {
+      return Err(DecodeError::InvalidEnumValue {
+        field: "video codec",
+        value: raw_codec,
+      });
+    }
     let encoded = r.read_remaining().to_vec();
     Ok(Self {
       frame_number,

@@ -19,6 +19,8 @@ use storage::{Storage, WindowState};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 900;
+const MIN_WINDOW_WIDTH: u32 = 768;
+const MIN_WINDOW_HEIGHT: u32 = 640;
 
 fn main() {
   let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -26,6 +28,7 @@ fn main() {
     .build()
     .expect("failed to create tokio runtime");
   let (startup_storage, window_state, startup_error) = load_startup_storage();
+  let window_state = window_state.map(clamp_window_state_size);
   let session = ServerSession::default();
   install_shutdown_handlers(&tokio_runtime, session.clone());
 
@@ -62,6 +65,7 @@ fn main() {
       window_state.map_or(DEFAULT_WINDOW_WIDTH, |state| state.width),
       window_state.map_or(DEFAULT_WINDOW_HEIGHT, |state| state.height),
     )
+    .with_min_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
     .with_decorations(false);
 
   if let Some(state) = window_state {
@@ -145,4 +149,10 @@ fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<Strin
     Ok(state) => (Some(storage), state, None),
     Err(error) => (Some(storage), None, Some(error.to_string())),
   }
+}
+
+fn clamp_window_state_size(mut state: WindowState) -> WindowState {
+  state.width = state.width.max(MIN_WINDOW_WIDTH);
+  state.height = state.height.max(MIN_WINDOW_HEIGHT);
+  state
 }
