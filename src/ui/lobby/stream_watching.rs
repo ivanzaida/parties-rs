@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use lurq::{
   app::ctx::Ctx,
-  components::{Column, Image, Row, Stack, Text, TextOverflow},
+  components::{Column, Row, Stack, Text, TextOverflow},
   core::Signal,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
@@ -13,9 +15,18 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, UserId, VideoCodecId},
   session::{LobbyScreenShare, LobbyState, ServerSession},
+  storage::Storage,
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::common::{
+    lucide_icon::{LucideIcon, LucideIconProps},
+    percent_slider::{PercentSlider, PercentSliderProps},
+  },
 };
+
+const STREAM_VOLUME_CONTROL_WIDTH: f32 = 168.0;
+const STREAM_VOLUME_TRACK_WIDTH: f32 = 104.0;
+const STREAM_VOLUME_VALUE_WIDTH: f32 = 36.0;
+const STREAM_VOLUME_VALUE_SPACING: f32 = 8.0;
 
 pub(super) fn watched_stream_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Option<ChannelScreenShare<'_>> {
   let watching_user_id = lobby.watching_user_id?;
@@ -61,6 +72,7 @@ pub(super) fn stream_watching(
   stream: ChannelScreenShare<'_>,
   streams: Vec<ChannelScreenShare<'_>>,
   error: Option<&str>,
+  storage: Option<Storage>,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -71,7 +83,7 @@ pub(super) fn stream_watching(
     .flex(1.0)
     .spacing(16.0)
     .padding(20.0)
-    .child(stage(ctx, &stream, &session))
+    .child(stage(ctx, &stream, storage, &session))
     .child(stream_switcher(ctx, watched_user_id, streams, watch_stream));
 
   if let Some(error) = error {
@@ -81,7 +93,7 @@ pub(super) fn stream_watching(
   body.into()
 }
 
-fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, session: &ServerSession) -> Element {
+fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage>, session: &ServerSession) -> Element {
   let name = stream_name(ctx, stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let meta = stream_footer_meta(&name, stream.share);
@@ -98,11 +110,7 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, session: &ServerSession
     .border_inside(1.0, theme::PaletteColor::Border);
 
   if let Some(image) = image {
-    stage = stage.child(
-      Image::new(image)
-        .width(Dimension::Pct(100.0))
-        .height(Dimension::Pct(100.0)),
-    );
+    stage = stage.background_image(image).background_contain();
   } else {
     stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "monitor",
@@ -132,7 +140,7 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, session: &ServerSession
             .align_items(Alignment::End)
             .justify(Justify::SpaceBetween)
             .child(streamer_label(&name, &title, &meta, speaking))
-            .child(stage_controls(ctx)),
+            .child(stage_controls(ctx, session, storage, stream.share.sharer_user_id)),
         ),
     )
     .into()
@@ -264,14 +272,41 @@ fn streamer_label(name: &str, title: &str, meta: &str, active: bool) -> Element 
     .into()
 }
 
-fn stage_controls(ctx: &mut Ctx) -> Element {
+fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storage>, user_id: UserId) -> Element {
+  let server_id = session.info().map(|info| info.address);
+  let volume = storage
+    .as_ref()
+    .zip(server_id.as_deref())
+    .and_then(|(storage, server_id)| storage.load_volume_override(server_id, user_id).ok().flatten())
+    .unwrap_or_else(|| session.user_volume(user_id))
+    .clamp(0, 100);
+  session.set_user_volume(user_id, volume);
+
+  let save_session = session.clone();
+  let save_storage = storage.clone();
+  let save_server_id = server_id.clone();
+
   Row::new()
     .align_items(Alignment::Center)
-    .spacing(4.0)
+    .spacing(8.0)
     .padding(6.0)
     .rounded(10.0)
     .background(BackgroundColor::Color(Color::from_hex("#000000A6")))
     .child(stage_control_icon(ctx, "volume-2"))
+    .child(ctx.mount::<PercentSlider>(PercentSliderProps {
+      initial_value: volume,
+      control_width: STREAM_VOLUME_CONTROL_WIDTH,
+      track_width: STREAM_VOLUME_TRACK_WIDTH,
+      value_width: STREAM_VOLUME_VALUE_WIDTH,
+      value_spacing: STREAM_VOLUME_VALUE_SPACING,
+      on_blur: Arc::new(move |volume| {
+        let volume = volume.clamp(0, 100);
+        save_session.set_user_volume(user_id, volume);
+        if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
+          let _ = storage.save_volume_override(server_id, user_id, volume);
+        }
+      }),
+    }))
     .child(stage_control_icon(ctx, "maximize"))
     .into()
 }

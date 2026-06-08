@@ -1,4 +1,9 @@
+use bytes::Bytes;
+
 use super::{BinaryReader, BinaryWriter, DecodeError, DecodeResult, UserId, VIDEO_FLAG_KEYFRAME, VideoCodecId};
+
+const FORWARDED_VOICE_HEADER_LEN: usize = 1 + 4 + 2;
+const FORWARDED_STREAM_AUDIO_HEADER_LEN: usize = 1 + 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -50,7 +55,7 @@ impl VoicePacket {
 pub struct ForwardedVoicePacket {
   pub sender_id: UserId,
   pub sequence: u16,
-  pub opus: Vec<u8>,
+  pub opus: Bytes,
 }
 
 impl ForwardedVoicePacket {
@@ -60,6 +65,27 @@ impl ForwardedVoicePacket {
     let sender_id = r.read_u32()?;
     let sequence = r.read_u16()?;
     let opus = r.read_remaining().to_vec();
+    Ok(Self {
+      sender_id,
+      sequence,
+      opus: Bytes::from(opus),
+    })
+  }
+
+  pub fn decode_bytes(bytes: Bytes) -> DecodeResult<Self> {
+    if bytes.len() < FORWARDED_VOICE_HEADER_LEN {
+      return Err(DecodeError::UnexpectedEof {
+        needed: FORWARDED_VOICE_HEADER_LEN,
+        remaining: bytes.len(),
+      });
+    }
+    if bytes[0] != PacketType::Voice as u8 {
+      return Err(DecodeError::InvalidPacketType(bytes[0]));
+    }
+
+    let sender_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+    let sequence = u16::from_le_bytes([bytes[5], bytes[6]]);
+    let opus = bytes.slice(FORWARDED_VOICE_HEADER_LEN..);
     Ok(Self {
       sender_id,
       sequence,
@@ -246,7 +272,7 @@ impl StreamAudioPacket {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardedStreamAudioPacket {
   pub sender_id: UserId,
-  pub opus: Vec<u8>,
+  pub opus: Bytes,
 }
 
 impl ForwardedStreamAudioPacket {
@@ -255,6 +281,25 @@ impl ForwardedStreamAudioPacket {
     expect_packet_type(&mut r, PacketType::StreamAudio)?;
     let sender_id = r.read_u32()?;
     let opus = r.read_remaining().to_vec();
+    Ok(Self {
+      sender_id,
+      opus: Bytes::from(opus),
+    })
+  }
+
+  pub fn decode_bytes(bytes: Bytes) -> DecodeResult<Self> {
+    if bytes.len() < FORWARDED_STREAM_AUDIO_HEADER_LEN {
+      return Err(DecodeError::UnexpectedEof {
+        needed: FORWARDED_STREAM_AUDIO_HEADER_LEN,
+        remaining: bytes.len(),
+      });
+    }
+    if bytes[0] != PacketType::StreamAudio as u8 {
+      return Err(DecodeError::InvalidPacketType(bytes[0]));
+    }
+
+    let sender_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+    let opus = bytes.slice(FORWARDED_STREAM_AUDIO_HEADER_LEN..);
     Ok(Self { sender_id, opus })
   }
 }

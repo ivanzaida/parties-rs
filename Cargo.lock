@@ -2354,7 +2354,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -3348,6 +3348,7 @@ name = "parties-rs"
 version = "0.1.0"
 dependencies = [
  "bip39",
+ "bytes",
  "cc",
  "chrono",
  "core-foundation-sys 0.8.7",

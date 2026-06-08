@@ -8,7 +8,7 @@ use crate::{
   network::protocol::VideoCodecId,
   services::{logger, video::VideoBroadcastConfig},
   session::{ConnectedServerInfo, ServerSession},
-  storage::{Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::connect_and_store,
 };
 
@@ -157,8 +157,13 @@ pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopS
   })
 }
 
-pub(super) fn watch_stream_action(ctx: &mut Ctx, session: ServerSession) -> WatchStreamAction {
+pub(super) fn watch_stream_action(
+  ctx: &mut Ctx,
+  storage: Option<Storage>,
+  session: ServerSession,
+) -> WatchStreamAction {
   ctx.future_action(move |user_id| {
+    let storage = storage.clone();
     let session = session.clone();
     async move {
       let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
@@ -188,6 +193,13 @@ pub(super) fn watch_stream_action(ctx: &mut Ctx, session: ServerSession) -> Watc
       }
       logger::log(&format!("[video] stream view active for user {user_id}"));
       session.set_watching_user(Some(user_id));
+      let settings = storage
+        .as_ref()
+        .and_then(|storage| storage.load_settings().ok())
+        .unwrap_or_else(AppSettings::default);
+      if let Err(error) = session.ensure_stream_audio_playback(settings) {
+        logger::log(&format!("[audio] stream playback unavailable: {error}"));
+      }
       Ok(())
     }
   })

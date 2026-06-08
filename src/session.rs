@@ -22,9 +22,9 @@ use crate::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
       },
-      data::ForwardedVideoFrame,
+      data::{ForwardedStreamAudioPacket, ForwardedVideoFrame},
     },
-    server::{Server, ServerError},
+    server::{ReceivedAudioPacket, Server, ServerError},
   },
   services::{
     logger,
@@ -969,11 +969,15 @@ impl ServerSession {
   }
 
   pub fn set_watching_user(&self, user_id: Option<UserId>) {
-    self
-      .lobby
-      .lock()
-      .expect("server session lock poisoned")
-      .watching_user_id = user_id;
+    let previous_user_id = {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      let previous_user_id = lobby.watching_user_id;
+      lobby.watching_user_id = user_id;
+      previous_user_id
+    };
+    if previous_user_id != user_id {
+      self.clear_stream_audio(previous_user_id);
+    }
     self.retain_video_cache(user_id);
     self.bump_revision();
   }
@@ -1035,12 +1039,40 @@ impl ServerSession {
     Ok(())
   }
 
+  pub fn ensure_stream_audio_playback(&self, settings: AppSettings) -> Result<(), String> {
+    if self
+      .voice_engine
+      .lock()
+      .expect("server session lock poisoned")
+      .is_some()
+    {
+      return Ok(());
+    }
+
+    let (_, deafened) = self.local_voice_state().unwrap_or((false, false));
+    let engine = VoiceEngine::start_playback(settings, deafened).map_err(|error| error.to_string())?;
+    for (user_id, volume) in self
+      .user_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .iter()
+      .map(|(user_id, volume)| (*user_id, *volume))
+      .collect::<Vec<_>>()
+    {
+      engine.set_user_volume(user_id, volume);
+    }
+    let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+    *voice_engine = Some(engine);
+    Ok(())
+  }
+
   pub fn voice_active(&self) -> bool {
     self
       .voice_engine
       .lock()
       .expect("server session lock poisoned")
-      .is_some()
+      .as_ref()
+      .is_some_and(VoiceEngine::captures_voice)
   }
 
   pub fn stop_voice(&self) {
@@ -1171,15 +1203,18 @@ impl ServerSession {
 
   async fn run_voice_activity_receiver(&self, server: Arc<Server>) {
     loop {
-      match server.recv_voice().await {
-        Ok(packet) => {
+      match server.recv_audio().await {
+        Ok(ReceivedAudioPacket::Voice(packet)) => {
           let speaking = self.handle_voice_packet(packet.clone());
           if speaking {
             self.mark_user_speaking(packet.sender_id);
           }
         }
+        Ok(ReceivedAudioPacket::Stream(packet)) => {
+          self.handle_stream_audio_packet(packet);
+        }
         Err(ServerError::Protocol(error)) => {
-          logger::log(&format!("[voice] ignored malformed voice packet: {error}"));
+          logger::log(&format!("[voice] ignored malformed audio packet: {error}"));
           continue;
         }
         Err(error) => {
@@ -1387,6 +1422,37 @@ impl ServerSession {
       .as_mut()
       .map(|engine| engine.push_packet(packet))
       .unwrap_or(true)
+  }
+
+  fn handle_stream_audio_packet(&self, packet: ForwardedStreamAudioPacket) {
+    if self.info().is_some_and(|info| info.user_id == packet.sender_id) {
+      return;
+    }
+    if self.watching_user_id() != Some(packet.sender_id) {
+      return;
+    }
+
+    if let Some(engine) = self
+      .voice_engine
+      .lock()
+      .expect("server session lock poisoned")
+      .as_mut()
+    {
+      engine.push_stream_audio_packet(packet);
+    }
+  }
+
+  fn clear_stream_audio(&self, user_id: Option<UserId>) {
+    let voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+    let Some(engine) = voice_engine.as_ref() else {
+      return;
+    };
+
+    if let Some(user_id) = user_id {
+      engine.clear_stream_audio(user_id);
+    } else {
+      engine.clear_all_stream_audio();
+    }
   }
 
   fn handle_video_frame(&self, frame: DecodedVideoFrame) {

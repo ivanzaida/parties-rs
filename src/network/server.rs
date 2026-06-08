@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, fmt, net::SocketAddr, sync::Arc, time::Duration};
 
+use bytes::Bytes;
 use quinn::{Connection, Endpoint, VarInt};
 use rustls::{
   DigitallySignedStruct, SignatureScheme,
@@ -13,8 +14,8 @@ use super::protocol::{
   C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
   control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
   data::{
-    FileStreamRequest, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN, PacketType, VideoControl,
-    VideoFrame, VoicePacket,
+    FileStreamRequest, ForwardedStreamAudioPacket, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN,
+    PacketType, VideoControl, VideoFrame,
   },
 };
 
@@ -27,6 +28,12 @@ pub enum ServerError {
   Read(quinn::ReadExactError),
   Datagram(quinn::SendDatagramError),
   Io(std::io::Error),
+}
+
+#[derive(Debug)]
+pub enum ReceivedAudioPacket {
+  Voice(ForwardedVoicePacket),
+  Stream(ForwardedStreamAudioPacket),
 }
 
 impl fmt::Display for ServerError {
@@ -256,17 +263,30 @@ impl Server {
       .await
   }
 
-  pub fn send_voice(&self, sequence: u16, opus: Vec<u8>) -> Result<(), ServerError> {
-    let data = VoicePacket { sequence, opus }.encode();
+  pub fn send_voice(&self, sequence: u16, opus: &[u8]) -> Result<(), ServerError> {
+    let mut data = Vec::with_capacity(1 + 2 + opus.len());
+    data.push(PacketType::Voice as u8);
+    data.extend_from_slice(&sequence.to_le_bytes());
+    data.extend_from_slice(opus);
     self.connection.send_datagram(data.into())?;
     Ok(())
   }
 
   pub async fn recv_voice(&self) -> Result<ForwardedVoicePacket, ServerError> {
     loop {
+      match self.recv_audio().await? {
+        ReceivedAudioPacket::Voice(packet) => return Ok(packet),
+        ReceivedAudioPacket::Stream(_) => {}
+      }
+    }
+  }
+
+  pub async fn recv_audio(&self) -> Result<ReceivedAudioPacket, ServerError> {
+    loop {
       let data = self.connection.read_datagram().await?;
-      match decode_datagram(data.as_ref())? {
-        DecodedDatagram::Voice(packet) => return Ok(packet),
+      match decode_datagram(data)? {
+        DecodedDatagram::Voice(packet) => return Ok(ReceivedAudioPacket::Voice(packet)),
+        DecodedDatagram::StreamAudio(packet) => return Ok(ReceivedAudioPacket::Stream(packet)),
         DecodedDatagram::Video(packet) => {
           self.pending_video_datagrams.lock().await.push_back(packet);
           self.pending_video_notify.notify_one();
@@ -568,11 +588,12 @@ fn validate_video_codec(codec: VideoCodecId) -> Result<(), DecodeError> {
 #[derive(Debug)]
 enum DecodedDatagram {
   Voice(ForwardedVoicePacket),
+  StreamAudio(ForwardedStreamAudioPacket),
   Video(ForwardedVideoFrame),
   Ignored,
 }
 
-fn decode_datagram(data: &[u8]) -> Result<DecodedDatagram, DecodeError> {
+fn decode_datagram(data: Bytes) -> Result<DecodedDatagram, DecodeError> {
   let Some(packet_type) = data.first().copied() else {
     return Err(DecodeError::UnexpectedEof {
       needed: 1,
@@ -581,9 +602,10 @@ fn decode_datagram(data: &[u8]) -> Result<DecodedDatagram, DecodeError> {
   };
 
   match PacketType::from_u8(packet_type).ok_or(DecodeError::InvalidPacketType(packet_type))? {
-    PacketType::Voice => ForwardedVoicePacket::decode(data).map(DecodedDatagram::Voice),
-    PacketType::VideoFrame => ForwardedVideoFrame::decode(data).map(DecodedDatagram::Video),
-    PacketType::VideoControl | PacketType::StreamAudio => Ok(DecodedDatagram::Ignored),
+    PacketType::Voice => ForwardedVoicePacket::decode_bytes(data).map(DecodedDatagram::Voice),
+    PacketType::VideoFrame => ForwardedVideoFrame::decode(data.as_ref()).map(DecodedDatagram::Video),
+    PacketType::StreamAudio => ForwardedStreamAudioPacket::decode_bytes(data).map(DecodedDatagram::StreamAudio),
+    PacketType::VideoControl => Ok(DecodedDatagram::Ignored),
   }
 }
 
@@ -627,17 +649,21 @@ mod tests {
   }
 
   #[test]
-  fn voice_datagram_decoder_skips_stream_audio_packets() {
-    assert!(matches!(
-      decode_datagram(&[PacketType::StreamAudio as u8, 7, 0, 0, 0]).unwrap(),
-      DecodedDatagram::Ignored
-    ));
+  fn datagram_decoder_routes_forwarded_stream_audio_packets() {
+    let DecodedDatagram::StreamAudio(decoded) =
+      decode_datagram(Bytes::from_static(&[PacketType::StreamAudio as u8, 7, 0, 0, 0, 1, 2, 3])).unwrap()
+    else {
+      panic!("expected stream audio datagram");
+    };
+
+    assert_eq!(decoded.sender_id, 7);
+    assert_eq!(decoded.opus.as_ref(), &[1, 2, 3]);
   }
 
   #[test]
   fn voice_datagram_decoder_rejects_unknown_packet_type() {
     assert_eq!(
-      decode_datagram(&[0xff]).unwrap_err(),
+      decode_datagram(Bytes::from_static(&[0xff])).unwrap_err(),
       DecodeError::InvalidPacketType(0xff)
     );
   }
@@ -645,13 +671,13 @@ mod tests {
   #[test]
   fn voice_datagram_decoder_accepts_forwarded_voice_packets() {
     let packet = [PacketType::Voice as u8, 42, 0, 0, 0, 9, 0, 1, 2, 3];
-    let DecodedDatagram::Voice(decoded) = decode_datagram(&packet).unwrap() else {
+    let DecodedDatagram::Voice(decoded) = decode_datagram(Bytes::copy_from_slice(&packet)).unwrap() else {
       panic!("expected voice datagram");
     };
 
     assert_eq!(decoded.sender_id, 42);
     assert_eq!(decoded.sequence, 9);
-    assert_eq!(decoded.opus, vec![1, 2, 3]);
+    assert_eq!(decoded.opus.as_ref(), &[1, 2, 3]);
   }
 
   #[test]
@@ -680,7 +706,7 @@ mod tests {
       2,
       3,
     ];
-    let DecodedDatagram::Video(decoded) = decode_datagram(&packet).unwrap() else {
+    let DecodedDatagram::Video(decoded) = decode_datagram(Bytes::copy_from_slice(&packet)).unwrap() else {
       panic!("expected video datagram");
     };
 

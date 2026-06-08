@@ -23,7 +23,10 @@ use sonora::{
 use super::audio_devices;
 use crate::{
   network::{
-    protocol::{UserId, data::ForwardedVoicePacket},
+    protocol::{
+      UserId,
+      data::{ForwardedStreamAudioPacket, ForwardedVoicePacket},
+    },
     server::Server,
   },
   storage::AppSettings,
@@ -31,6 +34,7 @@ use crate::{
 
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 1;
+const STREAM_CHANNELS: usize = 2;
 const PROCESS_FRAME_SIZE: usize = 480;
 const OPUS_FRAME_SIZE: usize = 960;
 const OPUS_BITRATE: i32 = 32_000;
@@ -77,6 +81,8 @@ pub struct VoiceEngine {
   control: Arc<VoiceControlState>,
   mixer: Arc<Mutex<VoiceMixer>>,
   decoders: HashMap<UserId, DecodeStream>,
+  stream_decoders: HashMap<UserId, DecodeStream>,
+  captures_voice: bool,
 }
 
 impl VoiceEngine {
@@ -101,6 +107,7 @@ impl VoiceEngine {
         input_error.unwrap_or_else(|| "No usable audio input or output device.".to_owned()),
       ));
     }
+    let captures_voice = input_stream.is_some() || encoder_thread.is_some();
 
     Ok(Self {
       _input_stream: input_stream,
@@ -110,7 +117,32 @@ impl VoiceEngine {
       control,
       mixer,
       decoders: HashMap::new(),
+      stream_decoders: HashMap::new(),
+      captures_voice,
     })
+  }
+
+  pub fn start_playback(settings: AppSettings, deafened: bool) -> Result<Self, VoiceError> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let control = Arc::new(VoiceControlState::new(&settings, true, deafened));
+    let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
+    let output_stream = build_output_stream(&settings, control.clone(), mixer.clone())?;
+
+    Ok(Self {
+      _input_stream: None,
+      _output_stream: Some(output_stream),
+      encoder_thread: None,
+      stop,
+      control,
+      mixer,
+      decoders: HashMap::new(),
+      stream_decoders: HashMap::new(),
+      captures_voice: false,
+    })
+  }
+
+  pub fn captures_voice(&self) -> bool {
+    self.captures_voice
   }
 
   pub fn set_voice_state(&self, muted: bool, deafened: bool) {
@@ -142,17 +174,22 @@ impl VoiceEngine {
       return false;
     }
 
+    let mut pcm = self.take_pcm_buffer(OPUS_FRAME_SIZE * CHANNELS);
     let stream = match self.decoders.entry(packet.sender_id) {
       std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-      std::collections::hash_map::Entry::Vacant(entry) => match DecodeStream::new() {
+      std::collections::hash_map::Entry::Vacant(entry) => match DecodeStream::new(Channels::Mono) {
         Ok(stream) => entry.insert(stream),
-        Err(_) => return false,
+        Err(_) => {
+          self.recycle_pcm_buffer(pcm);
+          return false;
+        }
       },
     };
 
-    let Ok(mut pcm) = stream.decode(packet.sequence, &packet.opus) else {
+    if stream.decode_into(packet.sequence, &packet.opus, &mut pcm).is_err() {
+      self.recycle_pcm_buffer(pcm);
       return false;
-    };
+    }
 
     if self.control.voice_normalization {
       stream.apply_normalization(&mut pcm, self.control.voice_normalization_target);
@@ -165,10 +202,76 @@ impl VoiceEngine {
         .mixer
         .lock()
         .expect("voice mixer lock poisoned")
-        .push_frame(packet.sender_id, pcm);
+        .push_frame(AudioStreamId::Voice(packet.sender_id), pcm);
     }
 
     speaking
+  }
+
+  pub fn push_stream_audio_packet(&mut self, packet: ForwardedStreamAudioPacket) -> bool {
+    if self.control.deafened.load(Ordering::Relaxed) {
+      return false;
+    }
+
+    let mut pcm = self.take_pcm_buffer(OPUS_FRAME_SIZE * CHANNELS);
+    let stream = match self.stream_decoders.entry(packet.sender_id) {
+      std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+      std::collections::hash_map::Entry::Vacant(entry) => match DecodeStream::new(Channels::Stereo) {
+        Ok(stream) => entry.insert(stream),
+        Err(_) => {
+          self.recycle_pcm_buffer(pcm);
+          return false;
+        }
+      },
+    };
+
+    if stream.decode_stereo_downmix_into(&packet.opus, &mut pcm).is_err() {
+      self.recycle_pcm_buffer(pcm);
+      return false;
+    }
+    if pcm.is_empty() {
+      self.recycle_pcm_buffer(pcm);
+      return false;
+    }
+
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .push_frame(AudioStreamId::Stream(packet.sender_id), pcm);
+    true
+  }
+
+  fn take_pcm_buffer(&self, capacity: usize) -> Vec<f32> {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .take_frame_buffer(capacity)
+  }
+
+  fn recycle_pcm_buffer(&self, frame: Vec<f32>) {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .recycle_frame(frame);
+  }
+
+  pub fn clear_stream_audio(&self, user_id: UserId) {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .clear_stream_audio(user_id);
+  }
+
+  pub fn clear_all_stream_audio(&self) {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .clear_all_stream_audio();
   }
 }
 
@@ -392,7 +495,7 @@ fn spawn_encoder_thread(
           continue;
         }
 
-        if server.send_voice(sequence, opus[..len].to_vec()).is_ok() {
+        if server.send_voice(sequence, &opus[..len]).is_ok() {
           on_local_voice();
         }
         sequence = sequence.wrapping_add(1);
@@ -819,8 +922,23 @@ fn mix_samples_nonblocking(mixer: &Arc<Mutex<VoiceMixer>>, output: &mut [f32]) {
 
 #[derive(Default)]
 struct VoiceMixer {
-  streams: HashMap<UserId, PcmStream>,
+  streams: HashMap<AudioStreamId, PcmStream>,
   volumes: HashMap<UserId, f32>,
+  frame_pool: Vec<Vec<f32>>,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum AudioStreamId {
+  Voice(UserId),
+  Stream(UserId),
+}
+
+impl AudioStreamId {
+  fn user_id(self) -> UserId {
+    match self {
+      Self::Voice(user_id) | Self::Stream(user_id) => user_id,
+    }
+  }
 }
 
 impl VoiceMixer {
@@ -833,19 +951,27 @@ impl VoiceMixer {
     }
   }
 
-  fn push_frame(&mut self, user_id: UserId, pcm: Vec<f32>) {
-    let stream = self.streams.entry(user_id).or_default();
-    if stream.frames.len() >= MAX_PCM_FRAMES_PER_USER {
-      stream.frames.pop_front();
+  fn push_frame(&mut self, stream_id: AudioStreamId, pcm: Vec<f32>) {
+    let dropped = {
+      let stream = self.streams.entry(stream_id).or_default();
+      let dropped = if stream.frames.len() >= MAX_PCM_FRAMES_PER_USER {
+        stream.frames.pop_front()
+      } else {
+        None
+      };
+      stream.frames.push_back(pcm);
+      dropped
+    };
+    if let Some(frame) = dropped {
+      self.recycle_frame(frame);
     }
-    stream.frames.push_back(pcm);
   }
 
   fn mix_samples(&mut self, output: &mut [f32]) {
     output.fill(0.0);
 
-    for (user_id, stream) in &mut self.streams {
-      let volume = self.volumes.get(user_id).copied().unwrap_or(1.0);
+    for (stream_id, stream) in &mut self.streams {
+      let volume = self.volumes.get(&stream_id.user_id()).copied().unwrap_or(1.0);
       for sample in output.iter_mut() {
         if let Some(next) = stream.next_sample() {
           *sample += next * volume;
@@ -853,7 +979,14 @@ impl VoiceMixer {
       }
     }
 
+    let mut recycled = Vec::new();
+    for stream in self.streams.values_mut() {
+      stream.drain_recycled_frames(&mut recycled);
+    }
     self.streams.retain(|_, stream| stream.has_audio());
+    for frame in recycled {
+      self.recycle_frame(frame);
+    }
 
     for sample in output {
       *sample = sample.clamp(-1.0, 1.0);
@@ -861,7 +994,58 @@ impl VoiceMixer {
   }
 
   fn clear(&mut self) {
-    self.streams.clear();
+    let streams = std::mem::take(&mut self.streams);
+    for (_, stream) in streams {
+      self.recycle_stream(stream);
+    }
+  }
+
+  fn clear_stream_audio(&mut self, user_id: UserId) {
+    if let Some(stream) = self.streams.remove(&AudioStreamId::Stream(user_id)) {
+      self.recycle_stream(stream);
+    }
+  }
+
+  fn clear_all_stream_audio(&mut self) {
+    let stream_ids = self
+      .streams
+      .keys()
+      .copied()
+      .filter(|stream_id| matches!(stream_id, AudioStreamId::Stream(_)))
+      .collect::<Vec<_>>();
+    for stream_id in stream_ids {
+      if let Some(stream) = self.streams.remove(&stream_id) {
+        self.recycle_stream(stream);
+      }
+    }
+  }
+
+  fn take_frame_buffer(&mut self, capacity: usize) -> Vec<f32> {
+    let capacity = capacity.max(OPUS_FRAME_SIZE * CHANNELS);
+    if let Some(index) = self.frame_pool.iter().position(|frame| frame.capacity() >= capacity) {
+      let mut frame = self.frame_pool.swap_remove(index);
+      frame.clear();
+      frame
+    } else {
+      Vec::with_capacity(capacity)
+    }
+  }
+
+  fn recycle_frame(&mut self, mut frame: Vec<f32>) {
+    frame.clear();
+    self.frame_pool.push(frame);
+  }
+
+  fn recycle_stream(&mut self, mut stream: PcmStream) {
+    for frame in stream.frames.drain(..) {
+      self.recycle_frame(frame);
+    }
+    if !stream.current.is_empty() {
+      self.recycle_frame(stream.current);
+    }
+    for frame in stream.recycled.drain(..) {
+      self.recycle_frame(frame);
+    }
   }
 }
 
@@ -871,11 +1055,15 @@ struct PcmStream {
   current: Vec<f32>,
   position: usize,
   started: bool,
+  recycled: Vec<Vec<f32>>,
 }
 
 impl PcmStream {
   fn next_sample(&mut self) -> Option<f32> {
     if self.position >= self.current.len() {
+      if !self.current.is_empty() {
+        self.recycled.push(std::mem::take(&mut self.current));
+      }
       if !self.started && self.frames.len() < MIN_PCM_FRAMES_BEFORE_PLAYOUT {
         return None;
       }
@@ -893,50 +1081,77 @@ impl PcmStream {
   fn has_audio(&self) -> bool {
     self.position < self.current.len() || !self.frames.is_empty()
   }
+
+  fn drain_recycled_frames(&mut self, recycled: &mut Vec<Vec<f32>>) {
+    recycled.append(&mut self.recycled);
+  }
 }
 
 struct DecodeStream {
   decoder: Decoder,
+  channels: usize,
   next_sequence: Option<u16>,
   normalizer: NormalizationState,
+  scratch: Vec<f32>,
 }
 
 impl DecodeStream {
-  fn new() -> Result<Self, opus::Error> {
+  fn new(channels: Channels) -> Result<Self, opus::Error> {
     Ok(Self {
-      decoder: Decoder::new(SAMPLE_RATE, Channels::Mono)?,
+      decoder: Decoder::new(SAMPLE_RATE, channels)?,
+      channels: match channels {
+        Channels::Mono => CHANNELS,
+        Channels::Stereo => STREAM_CHANNELS,
+      },
       next_sequence: None,
       normalizer: NormalizationState::default(),
+      scratch: Vec::new(),
     })
   }
 
-  fn decode(&mut self, sequence: u16, opus: &[u8]) -> Result<Vec<f32>, opus::Error> {
-    let mut decoded = Vec::new();
+  fn decode_into(&mut self, sequence: u16, opus: &[u8], decoded: &mut Vec<f32>) -> Result<(), opus::Error> {
+    decoded.clear();
 
     if let Some(expected) = self.next_sequence {
       let delta = seq_delta(expected, sequence);
       if delta < 0 {
-        return Ok(Vec::new());
+        return Ok(());
       }
 
       if delta > MAX_PLC_FRAMES {
         self.decoder.reset_state()?;
       } else {
         for _ in 0..delta {
-          let mut plc = vec![0.0; OPUS_FRAME_SIZE];
-          let samples = self.decoder.decode_float(&[], &mut plc, false)?;
-          plc.truncate(samples);
-          decoded.extend(plc);
+          self.decode_frame_into(&[], decoded)?;
         }
       }
     }
 
-    let mut pcm = vec![0.0; OPUS_FRAME_SIZE];
-    let samples = self.decoder.decode_float(opus, &mut pcm, false)?;
-    pcm.truncate(samples);
-    decoded.extend(pcm);
+    self.decode_frame_into(opus, decoded)?;
     self.next_sequence = Some(sequence.wrapping_add(1));
-    Ok(decoded)
+    Ok(())
+  }
+
+  fn decode_stereo_downmix_into(&mut self, opus: &[u8], mono: &mut Vec<f32>) -> Result<(), opus::Error> {
+    mono.clear();
+    self.scratch.resize(OPUS_FRAME_SIZE * self.channels, 0.0);
+    let samples = self.decoder.decode_float(opus, &mut self.scratch, false)?;
+    let len = samples * self.channels;
+    mono.reserve(samples);
+    for frame in self.scratch[..len].chunks(STREAM_CHANNELS) {
+      let left = frame.first().copied().unwrap_or(0.0);
+      let right = frame.get(1).copied().unwrap_or(left);
+      mono.push(((left + right) * 0.5).clamp(-1.0, 1.0));
+    }
+    Ok(())
+  }
+
+  fn decode_frame_into(&mut self, opus: &[u8], decoded: &mut Vec<f32>) -> Result<(), opus::Error> {
+    let start = decoded.len();
+    decoded.resize(start + OPUS_FRAME_SIZE * self.channels, 0.0);
+    let samples = self.decoder.decode_float(opus, &mut decoded[start..], false)?;
+    decoded.truncate(start + samples * self.channels);
+    Ok(())
   }
 
   fn apply_normalization(&mut self, pcm: &mut [f32], target: f32) {
