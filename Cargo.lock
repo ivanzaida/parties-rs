@@ -2364,6 +2364,8 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "lurq"
 version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e9c5bdf8d29648e43429887077d5f92b47a80dd2b00d814ae02a245de8ee087"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2390,6 +2392,8 @@ dependencies = [
 [[package]]
 name = "lurq_macros"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8427f3290280203fbed0728d463b1c8fd980648d1e48496a411cb28c6b93439"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3390,6 +3394,7 @@ dependencies = [
  "sonora",
  "tokio",
  "windows 0.62.2",
+ "windows-core 0.62.2",
  "xcap",
 ]
 

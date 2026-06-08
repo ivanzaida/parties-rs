@@ -15,9 +15,13 @@ use ::windows::{
     Foundation::{CloseHandle, HANDLE, RPC_E_CHANGED_MODE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Media::{
       Audio::{
-        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, eConsole, eRender,
+        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+        AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AUDCLNT_BUFFERFLAGS_SILENT,
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, ActivateAudioInterfaceAsync,
+        IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+        IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
+        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
       },
       MediaFoundation::{
         IMFActivate, IMFMediaBuffer, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
@@ -33,11 +37,14 @@ use ::windows::{
       Multimedia::WAVE_FORMAT_IEEE_FLOAT,
     },
     System::{
-      Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize},
-      Threading::{CreateEventW, WaitForSingleObject},
+      Com::{
+        COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+        StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
+      },
+      Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
     },
   },
-  core::{Error as WindowsError, GUID, PCWSTR},
+  core::{Error as WindowsError, GUID, IUnknown, Interface, PCWSTR},
 };
 use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as OpusChannels, Encoder as OpusEncoder};
 use xcap::{Monitor, Window};
@@ -427,7 +434,7 @@ fn spawn_stream_audio_thread(server: Arc<Server>, stop: Arc<AtomicBool>) -> Resu
 }
 
 fn run_stream_audio_loop(server: Arc<Server>, stop: Arc<AtomicBool>) -> Result<(), VideoError> {
-  logger::log("[audio/windows] opening default render loopback capture");
+  logger::log("[audio/windows] opening process loopback capture excluding Parties");
   let _com = ComSession::start("stream audio")?;
   let capture = WasapiLoopbackCapture::open()?;
   let mut encoder = OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
@@ -597,20 +604,7 @@ struct WasapiLoopbackCapture {
 
 impl WasapiLoopbackCapture {
   fn open() -> Result<Self, VideoError> {
-    let enumerator = unsafe {
-      CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
-        .map_err(|error| VideoError::new(format!("Failed to create audio device enumerator: {error}")))?
-    };
-    let device = unsafe {
-      enumerator
-        .GetDefaultAudioEndpoint(eRender, eConsole)
-        .map_err(|error| VideoError::new(format!("Failed to open default render endpoint: {error}")))?
-    };
-    let audio_client = unsafe {
-      device
-        .Activate::<IAudioClient>(CLSCTX_ALL, None)
-        .map_err(|error| VideoError::new(format!("Failed to activate render loopback audio client: {error}")))?
-    };
+    let audio_client = activate_parties_excluded_loopback_client()?;
     let format = stream_audio_wave_format();
     let event = unsafe {
       CreateEventW(None, false, false, PCWSTR::null())
@@ -650,6 +644,78 @@ impl WasapiLoopbackCapture {
       }
     }
   }
+}
+
+fn activate_parties_excluded_loopback_client() -> Result<IAudioClient, VideoError> {
+  let process_id = unsafe { GetCurrentProcessId() };
+  let activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
+    ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+    Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+      ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+        TargetProcessId: process_id,
+        ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+      },
+    },
+  };
+  let propvariant = unsafe {
+    InitPropVariantFromBuffer(
+      (&activation_params as *const AUDIOCLIENT_ACTIVATION_PARAMS).cast::<c_void>(),
+      std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+    )
+    .map_err(|error| VideoError::new(format!("Failed to build process loopback activation params: {error}")))?
+  };
+
+  unsafe { activate_audio_interface_sync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, Some(&propvariant)) }
+    .map_err(|error| VideoError::new(format!("Failed to activate process loopback capture: {error}")))
+}
+
+unsafe fn activate_audio_interface_sync(
+  device_interface_path: PCWSTR,
+  activation_params: Option<&PROPVARIANT>,
+) -> ::windows::core::Result<IAudioClient> {
+  #[::windows::core::implement(IActivateAudioInterfaceCompletionHandler)]
+  struct CompletionHandler(std::sync::mpsc::Sender<::windows::core::Result<IUnknown>>);
+
+  fn retrieve_activation_result(operation: &IActivateAudioInterfaceAsyncOperation) -> ::windows::core::Result<IUnknown> {
+    let mut result = ::windows::core::HRESULT::default();
+    let mut interface: Option<IUnknown> = None;
+    unsafe {
+      operation.GetActivateResult(&mut result, &mut interface)?;
+    }
+    result.ok()?;
+    interface.ok_or_else(|| {
+      ::windows::core::Error::new(
+        ::windows::Win32::Media::Audio::AUDCLNT_E_DEVICE_INVALIDATED,
+        "audio interface not available after activation",
+      )
+    })
+  }
+
+  impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
+    fn ActivateCompleted(
+      &self,
+      operation: ::windows::core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
+    ) -> ::windows::core::Result<()> {
+      let result = operation.ok().and_then(retrieve_activation_result);
+      let _ = self.0.send(result);
+      Ok(())
+    }
+  }
+
+  let (tx, rx) = std::sync::mpsc::channel();
+  let handler: IActivateAudioInterfaceCompletionHandler = CompletionHandler(tx).into();
+  unsafe {
+    ActivateAudioInterfaceAsync(
+      device_interface_path,
+      &IAudioClient::IID,
+      activation_params.map(|params| params as *const PROPVARIANT),
+      &handler,
+    )?;
+  }
+  let result = rx
+    .recv()
+    .map_err(|_| ::windows::core::Error::from(::windows::core::HRESULT(0x8000FFFFu32 as i32)))?;
+  result?.cast()
 }
 
 impl Drop for WasapiLoopbackCapture {
