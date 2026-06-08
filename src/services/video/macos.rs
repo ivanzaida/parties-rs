@@ -4,26 +4,40 @@ use std::{
   ptr,
   ptr::NonNull,
   slice,
-  sync::{Arc, mpsc},
+  sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
+  },
+  thread,
+  time::{Duration, Instant},
 };
 
 use core_foundation_sys::{
-  base::{CFAllocatorRef, CFRelease, CFTypeRef, OSStatus, kCFAllocatorDefault},
+  array::{CFArrayGetValueAtIndex, CFArrayRef},
+  base::{Boolean, CFAllocatorRef, CFRelease, CFTypeRef, OSStatus, kCFAllocatorDefault},
   data::CFDataCreate,
-  dictionary::{CFDictionaryCreate, CFDictionaryRef, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks},
+  dictionary::{
+    CFDictionaryCreate, CFDictionaryGetValue, CFDictionaryRef, kCFTypeDictionaryKeyCallBacks,
+    kCFTypeDictionaryValueCallBacks,
+  },
   number::{CFNumberCreate, kCFBooleanFalse, kCFBooleanTrue, kCFNumberSInt32Type},
   string::{CFStringCreateWithBytes, CFStringRef, kCFStringEncodingUTF8},
 };
 use core_media_sys::{
-  block_buffer::{CMBlockBufferCreateWithMemoryBlock, CMBlockBufferRef, CMBlockBufferReplaceDataBytes},
+  block_buffer::{
+    CMBlockBufferCopyDataBytes, CMBlockBufferCreateWithMemoryBlock, CMBlockBufferGetDataLength, CMBlockBufferRef,
+    CMBlockBufferReplaceDataBytes,
+  },
   format_description::CMVideoFormatDescriptionRef,
   sample_buffer::{CMSampleBufferRef, CMSampleTimingInfo},
   time::{CMTime, kCMTimeFlags_Valid, kCMTimeInvalid},
 };
 use core_video_sys::pixel_buffer::{
-  CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferRef,
-  kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferPixelFormatTypeKey,
-  kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+  CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight,
+  CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferRef,
+  CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
+  kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use rav1d::{
   Dav1dResult,
@@ -44,13 +58,20 @@ use super::{
   VideoDecodeConfig, VideoDecoder, VideoError,
 };
 use crate::{
-  network::{protocol::VideoCodecId, protocol::data::VideoFrame, server::Server},
-  services::logger,
+  network::{
+    protocol::VideoCodecId,
+    protocol::data::VideoFrame,
+    server::{Server, VideoFrameSend},
+  },
+  services::{logger, screen_share_sources::ScreenShareSourceKind},
 };
+use xcap::{Monitor, Window};
 
 #[allow(dead_code)]
 const BACKEND_ORDER: [NativeVideoBackend; 1] = [NativeVideoBackend::AppleVideoToolbox];
 const NO_ERR: OSStatus = 0;
+const K_CM_VIDEO_CODEC_TYPE_H264: u32 = 0x6176_6331; // 'avc1'
+const K_CM_VIDEO_CODEC_TYPE_HEVC: u32 = 0x6876_6331; // 'hvc1'
 const K_CM_VIDEO_CODEC_TYPE_AV1: u32 = 0x6176_3031; // 'av01'
 const OBU_SEQUENCE_HEADER: u8 = 1;
 const DAV1D_EAGAIN: i32 = -35;
@@ -58,6 +79,7 @@ const MAX_SOFTWARE_AV1_PIXELS: u32 = 1920 * 1080;
 const SOFTWARE_AV1_THREADS: i32 = 2;
 const SOFTWARE_AV1_ENV: &str = "PARTIES_MACOS_SOFTWARE_AV1";
 const SIMULATE_UNSUPPORTED_AV1_ENV: &str = "PARTIES_SIMULATE_UNSUPPORTED_AV1";
+const ENCODE_FRAME_DURATION_100NS: i64 = 10_000_000;
 
 #[repr(C)]
 struct VTDecompressionSession(c_void);
@@ -65,6 +87,12 @@ struct VTDecompressionSession(c_void);
 type VTDecompressionSessionRef = *mut VTDecompressionSession;
 type VTDecodeFrameFlags = u32;
 type VTDecodeInfoFlags = u32;
+
+#[repr(C)]
+struct VTCompressionSession(c_void);
+
+type VTCompressionSessionRef = *mut VTCompressionSession;
+type VTEncodeInfoFlags = u32;
 
 type VTDecompressionOutputCallback = extern "C" fn(
   decompression_output_ref_con: *mut c_void,
@@ -81,6 +109,14 @@ struct VTDecompressionOutputCallbackRecord {
   decompression_output_callback: VTDecompressionOutputCallback,
   decompression_output_ref_con: *mut c_void,
 }
+
+type VTCompressionOutputCallback = extern "C" fn(
+  output_callback_ref_con: *mut c_void,
+  source_frame_ref_con: *mut c_void,
+  status: OSStatus,
+  info_flags: VTEncodeInfoFlags,
+  sample_buffer: CMSampleBufferRef,
+);
 
 unsafe extern "C" {
   fn CMVideoFormatDescriptionCreateFromH264ParameterSets(
@@ -123,6 +159,44 @@ unsafe extern "C" {
     sample_buffer_out: *mut CMSampleBufferRef,
   ) -> OSStatus;
 
+  fn CMSampleBufferDataIsReady(sample_buffer: CMSampleBufferRef) -> Boolean;
+
+  fn CMSampleBufferGetDataBuffer(sample_buffer: CMSampleBufferRef) -> CMBlockBufferRef;
+
+  fn CMSampleBufferGetFormatDescription(sample_buffer: CMSampleBufferRef) -> CMVideoFormatDescriptionRef;
+
+  fn CMSampleBufferGetSampleAttachmentsArray(
+    sample_buffer: CMSampleBufferRef,
+    create_if_necessary: Boolean,
+  ) -> CFArrayRef;
+
+  fn CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+    video_desc: CMVideoFormatDescriptionRef,
+    parameter_set_index: usize,
+    parameter_set_pointer_out: *mut *const u8,
+    parameter_set_size_out: *mut usize,
+    parameter_set_count_out: *mut usize,
+    nal_unit_header_length_out: *mut i32,
+  ) -> OSStatus;
+
+  fn CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+    video_desc: CMVideoFormatDescriptionRef,
+    parameter_set_index: usize,
+    parameter_set_pointer_out: *mut *const u8,
+    parameter_set_size_out: *mut usize,
+    parameter_set_count_out: *mut usize,
+    nal_unit_header_length_out: *mut i32,
+  ) -> OSStatus;
+
+  fn CVPixelBufferCreate(
+    allocator: CFAllocatorRef,
+    width: usize,
+    height: usize,
+    pixel_format_type: u32,
+    pixel_buffer_attributes: CFDictionaryRef,
+    pixel_buffer_out: *mut CVPixelBufferRef,
+  ) -> OSStatus;
+
   fn VTDecompressionSessionCreate(
     allocator: CFAllocatorRef,
     video_format_description: CMVideoFormatDescriptionRef,
@@ -141,13 +215,882 @@ unsafe extern "C" {
   ) -> OSStatus;
 
   fn VTDecompressionSessionInvalidate(session: VTDecompressionSessionRef);
+
+  fn VTCompressionSessionCreate(
+    allocator: CFAllocatorRef,
+    width: i32,
+    height: i32,
+    codec_type: u32,
+    encoder_specification: CFDictionaryRef,
+    source_image_buffer_attributes: CFDictionaryRef,
+    compressed_data_allocator: CFAllocatorRef,
+    output_callback: VTCompressionOutputCallback,
+    output_callback_ref_con: *mut c_void,
+    compression_session_out: *mut VTCompressionSessionRef,
+  ) -> OSStatus;
+
+  fn VTCompressionSessionSetProperty(
+    session: VTCompressionSessionRef,
+    property_key: CFStringRef,
+    property_value: CFTypeRef,
+  ) -> OSStatus;
+
+  fn VTCompressionSessionPrepareToEncodeFrames(session: VTCompressionSessionRef) -> OSStatus;
+
+  fn VTCompressionSessionEncodeFrame(
+    session: VTCompressionSessionRef,
+    image_buffer: CVPixelBufferRef,
+    presentation_time_stamp: CMTime,
+    duration: CMTime,
+    frame_properties: CFDictionaryRef,
+    source_frame_ref_con: *mut c_void,
+    info_flags_out: *mut VTEncodeInfoFlags,
+  ) -> OSStatus;
+
+  fn VTCompressionSessionCompleteFrames(
+    session: VTCompressionSessionRef,
+    complete_until_presentation_time_stamp: CMTime,
+  ) -> OSStatus;
+
+  fn VTCompressionSessionInvalidate(session: VTCompressionSessionRef);
+
+  static kCMSampleAttachmentKey_NotSync: CFStringRef;
 }
 
-pub(super) fn encode(_server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
-  let _ = (&config.source_kind, config.source_id);
-  Err(VideoError::new(
-    "macOS native video encoder is not wired yet. Backend is VideoToolbox.",
+pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
+  let runtime = tokio::runtime::Handle::try_current()
+    .map_err(|_| VideoError::new("Video broadcasting must be started from the Tokio runtime."))?;
+  let stop = Arc::new(AtomicBool::new(false));
+  let keyframe_requests = Arc::new(AtomicU64::new(0));
+  let thread_stop = Arc::clone(&stop);
+  let thread_keyframe_requests = Arc::clone(&keyframe_requests);
+  let (init_tx, init_rx) = mpsc::channel();
+  let thread = thread::Builder::new()
+    .name("parties-video-macos-encode".to_owned())
+    .spawn(move || {
+      let loop_stop = Arc::clone(&thread_stop);
+      if let Err(error) = run_broadcast_loop(
+        server,
+        config,
+        runtime,
+        loop_stop,
+        thread_keyframe_requests,
+        Some(init_tx),
+      ) {
+        thread_stop.store(true, Ordering::Relaxed);
+        logger::log(&format!("[video/macos] broadcast loop stopped with error: {error}"));
+      }
+    })
+    .map_err(|error| VideoError::new(format!("Failed to start macOS video broadcast thread: {error}")))?;
+
+  match init_rx.recv() {
+    Ok(Ok(())) => {}
+    Ok(Err(error)) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      return Err(VideoError::new(error));
+    }
+    Err(_) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      return Err(VideoError::new(
+        "macOS video broadcast thread stopped before encoder initialization completed.",
+      ));
+    }
+  }
+
+  Ok(VideoBroadcast::from_parts_with_stop_and_keyframes(
+    NativeVideoBackend::AppleVideoToolbox,
+    stop,
+    Some(keyframe_requests),
+    vec![thread],
   ))
+}
+
+fn run_broadcast_loop(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  runtime: tokio::runtime::Handle,
+  stop: Arc<AtomicBool>,
+  keyframe_requests: Arc<AtomicU64>,
+  init_tx: Option<mpsc::Sender<Result<(), String>>>,
+) -> Result<(), VideoError> {
+  logger::log("[video/macos] creating VideoToolbox encoder");
+  let mut encoder = match VTEncoder::new(&config) {
+    Ok(encoder) => encoder,
+    Err(error) => {
+      if let Some(init_tx) = init_tx {
+        let _ = init_tx.send(Err(error.to_string()));
+      }
+      return Err(error);
+    }
+  };
+  logger::log(&format!(
+    "[video/macos] encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
+    config.codec,
+    config.source_width,
+    config.source_height,
+    config.output_width,
+    config.output_height,
+    config.fps,
+    config.bitrate_kbps
+  ));
+  logger::log("[video/macos] opening CPU capture source");
+  let mut source = match CaptureSource::open(&config) {
+    Ok(source) => source,
+    Err(error) => {
+      if let Some(init_tx) = init_tx {
+        let _ = init_tx.send(Err(error.to_string()));
+      }
+      return Err(error);
+    }
+  };
+  if let Some(init_tx) = init_tx {
+    let _ = init_tx.send(Ok(()));
+  }
+  let frame_interval = Duration::from_nanos(1_000_000_000u64 / u64::from(config.fps.max(1)));
+  let started_at = Instant::now();
+  let mut frame_number = 0u32;
+  let mut logged_first_frame = false;
+  let mut logged_stream_fallback = false;
+  let mut dropped_live_frames = 0u64;
+  let mut handled_keyframe_requests = keyframe_requests.load(Ordering::Relaxed);
+
+  while !stop.load(Ordering::Relaxed) {
+    let loop_started_at = Instant::now();
+    let requested_keyframes = keyframe_requests.load(Ordering::Relaxed);
+    let force_keyframe = requested_keyframes != handled_keyframe_requests || frame_number == 0;
+    if requested_keyframes != handled_keyframe_requests {
+      handled_keyframe_requests = requested_keyframes;
+      logger::log("[video/macos] keyframe requested by PLI");
+    }
+
+    let rgba = source.capture_rgba(config.output_width, config.output_height)?;
+    let timestamp_100ns = started_at.elapsed().as_nanos().saturating_div(100) as i64;
+    let timestamp_ms = started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+    let samples = encoder.encode(&rgba, timestamp_100ns, force_keyframe)?;
+
+    for sample in samples {
+      let sample_len = sample.bytes.len();
+      let sample_keyframe = sample.keyframe;
+      let send_result = runtime
+        .block_on(server.send_live_video_frame(VideoFrame {
+          frame_number,
+          timestamp: timestamp_ms,
+          keyframe: sample_keyframe,
+          width: config.output_width,
+          height: config.output_height,
+          codec: config.codec,
+          encoded: sample.bytes,
+        }))
+        .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
+      if send_result == VideoFrameSend::Dropped {
+        dropped_live_frames += 1;
+        if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
+          logger::log(&format!(
+            "[video/macos] dropped live video frame before network queue: frame={} total_dropped={}",
+            frame_number, dropped_live_frames
+          ));
+        }
+        continue;
+      }
+      if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
+        logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
+        logged_stream_fallback = true;
+      }
+      if !logged_first_frame {
+        logger::log(&format!(
+          "[video/macos] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
+          frame_number, sample_len, sample_keyframe, send_result
+        ));
+        logged_first_frame = true;
+      } else if frame_number > 0 && frame_number % 120 == 0 {
+        logger::log(&format!(
+          "[video/macos] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
+          frame_number, sample_len, sample_keyframe, send_result
+        ));
+      }
+    }
+
+    frame_number = frame_number.wrapping_add(1);
+    let elapsed = loop_started_at.elapsed();
+    if elapsed < frame_interval {
+      thread::sleep(frame_interval - elapsed);
+    }
+  }
+
+  logger::log("[video/macos] broadcast loop stopped by request");
+  Ok(())
+}
+
+struct CaptureSource {
+  kind: CaptureSourceKind,
+}
+
+enum CaptureSourceKind {
+  Screen(Monitor),
+  Window(Window),
+}
+
+impl CaptureSource {
+  fn open(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let kind = match config.source_kind {
+      ScreenShareSourceKind::Screen => CaptureSourceKind::Screen(find_monitor(config.source_id)?),
+      ScreenShareSourceKind::Window => CaptureSourceKind::Window(find_window(config.source_id)?),
+    };
+    Ok(Self { kind })
+  }
+
+  fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
+    let image = match &self.kind {
+      CaptureSourceKind::Screen(monitor) => monitor
+        .capture_image()
+        .map_err(|error| VideoError::new(format!("Failed to capture monitor frame: {error}")))?,
+      CaptureSourceKind::Window(window) => window
+        .capture_image()
+        .map_err(|error| VideoError::new(format!("Failed to capture window frame: {error}")))?,
+    };
+
+    let frame_width = image.width();
+    let frame_height = image.height();
+    normalize_rgba_frame(image.into_raw(), frame_width, frame_height, width, height)
+  }
+}
+
+fn find_monitor(source_id: u32) -> Result<Monitor, VideoError> {
+  Monitor::all()
+    .map_err(|error| VideoError::new(format!("Failed to list monitors: {error}")))?
+    .into_iter()
+    .find(|monitor| monitor.id().ok() == Some(source_id))
+    .ok_or_else(|| VideoError::new("Selected monitor is no longer available."))
+}
+
+fn find_window(source_id: u32) -> Result<Window, VideoError> {
+  Window::all()
+    .map_err(|error| VideoError::new(format!("Failed to list windows: {error}")))?
+    .into_iter()
+    .find(|window| window.id().ok() == Some(source_id))
+    .ok_or_else(|| VideoError::new("Selected window is no longer available."))
+}
+
+struct VTEncoder {
+  session: VTCompressionSessionRef,
+  output_rx: mpsc::Receiver<EncodedCallbackSample>,
+  _callback_tx: Box<mpsc::Sender<EncodedCallbackSample>>,
+  width: u16,
+  height: u16,
+  codec: VideoCodecId,
+  frame_duration_100ns: i64,
+}
+
+unsafe impl Send for VTEncoder {}
+
+struct EncodedCallbackSample {
+  status: OSStatus,
+  sample_buffer: CMSampleBufferRef,
+}
+
+unsafe impl Send for EncodedCallbackSample {}
+
+struct EncodedSample {
+  bytes: Vec<u8>,
+  keyframe: bool,
+}
+
+impl VTEncoder {
+  fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let attributes = PixelBufferAttributes::native_nv12()?;
+    let (output_tx, output_rx) = mpsc::channel();
+    let mut callback_tx = Box::new(output_tx);
+    let mut session = ptr::null_mut();
+    let status = unsafe {
+      VTCompressionSessionCreate(
+        kCFAllocatorDefault,
+        i32::from(config.output_width),
+        i32::from(config.output_height),
+        compression_codec_type(config.codec)?,
+        ptr::null(),
+        attributes.ptr,
+        kCFAllocatorDefault,
+        compression_output_callback,
+        (&mut *callback_tx as *mut mpsc::Sender<EncodedCallbackSample>).cast(),
+        &mut session,
+      )
+    };
+    if status != NO_ERR || session.is_null() {
+      return Err(VideoError::new(format!(
+        "Failed to create VideoToolbox encoder session for {:?}: OSStatus {status}.",
+        config.codec
+      )));
+    }
+
+    set_vt_property_bool(session, "RealTime", true)?;
+    set_vt_property_i32(
+      session,
+      "AverageBitRate",
+      config.bitrate_kbps.saturating_mul(1000) as i32,
+    )?;
+    set_vt_property_i32(session, "ExpectedFrameRate", config.fps.max(1) as i32)?;
+    set_vt_property_i32(
+      session,
+      "MaxKeyFrameInterval",
+      config.fps.max(1).saturating_mul(2) as i32,
+    )?;
+    if config.codec == VideoCodecId::H264 {
+      set_vt_property_string(session, "ProfileLevel", "H264_Baseline_AutoLevel")?;
+    } else if config.codec == VideoCodecId::H265 {
+      set_vt_property_string(session, "ProfileLevel", "HEVC_Main_AutoLevel")?;
+    }
+
+    let status = unsafe { VTCompressionSessionPrepareToEncodeFrames(session) };
+    if status != NO_ERR {
+      unsafe {
+        VTCompressionSessionInvalidate(session);
+        CFRelease(session.cast());
+      }
+      return Err(VideoError::new(format!(
+        "Failed to prepare VideoToolbox encoder session: OSStatus {status}."
+      )));
+    }
+
+    Ok(Self {
+      session,
+      output_rx,
+      _callback_tx: callback_tx,
+      width: config.output_width,
+      height: config.output_height,
+      codec: config.codec,
+      frame_duration_100ns: ENCODE_FRAME_DURATION_100NS / i64::from(config.fps.max(1)),
+    })
+  }
+
+  fn encode(
+    &mut self,
+    rgba: &[u8],
+    timestamp_100ns: i64,
+    force_keyframe: bool,
+  ) -> Result<Vec<EncodedSample>, VideoError> {
+    while let Ok(sample) = self.output_rx.try_recv() {
+      unsafe {
+        CFRelease(sample.sample_buffer.cast());
+      }
+    }
+
+    let pixel_buffer = RentedPixelBuffer::from_rgba(rgba, self.width, self.height)?;
+    let frame_properties = if force_keyframe {
+      Some(ForceKeyFrameProperties::new()?)
+    } else {
+      None
+    };
+    let mut info_flags = 0;
+    let status = unsafe {
+      VTCompressionSessionEncodeFrame(
+        self.session,
+        pixel_buffer.ptr,
+        cm_time_100ns(timestamp_100ns),
+        cm_time_100ns(self.frame_duration_100ns),
+        frame_properties
+          .as_ref()
+          .map(|properties| properties.ptr)
+          .unwrap_or(ptr::null()),
+        ptr::null_mut(),
+        &mut info_flags,
+      )
+    };
+    if status != NO_ERR {
+      return Err(VideoError::new(format!(
+        "VideoToolbox failed to encode frame: OSStatus {status}."
+      )));
+    }
+
+    let status = unsafe { VTCompressionSessionCompleteFrames(self.session, kCMTimeInvalid) };
+    if status != NO_ERR {
+      return Err(VideoError::new(format!(
+        "VideoToolbox failed to complete encoded frames: OSStatus {status}."
+      )));
+    }
+
+    let mut out = Vec::new();
+    while let Ok(sample) = self.output_rx.try_recv() {
+      let converted = encoded_sample_from_callback(self.codec, &sample)?;
+      unsafe {
+        CFRelease(sample.sample_buffer.cast());
+      }
+      if let Some(converted) = converted {
+        out.push(converted);
+      }
+    }
+    Ok(out)
+  }
+}
+
+impl Drop for VTEncoder {
+  fn drop(&mut self) {
+    unsafe {
+      VTCompressionSessionInvalidate(self.session);
+      CFRelease(self.session.cast());
+    }
+  }
+}
+
+extern "C" fn compression_output_callback(
+  output_callback_ref_con: *mut c_void,
+  _source_frame_ref_con: *mut c_void,
+  status: OSStatus,
+  _info_flags: VTEncodeInfoFlags,
+  sample_buffer: CMSampleBufferRef,
+) {
+  if output_callback_ref_con.is_null() || sample_buffer.is_null() {
+    return;
+  }
+  unsafe {
+    CFRetain(sample_buffer.cast());
+    let tx = &*(output_callback_ref_con.cast::<mpsc::Sender<EncodedCallbackSample>>());
+    let _ = tx.send(EncodedCallbackSample { status, sample_buffer });
+  }
+}
+
+unsafe extern "C" {
+  fn CFRetain(cf: CFTypeRef) -> CFTypeRef;
+}
+
+struct RentedPixelBuffer {
+  ptr: CVPixelBufferRef,
+}
+
+impl RentedPixelBuffer {
+  fn from_rgba(rgba: &[u8], width: u16, height: u16) -> Result<Self, VideoError> {
+    let expected_len = usize::from(width) * usize::from(height) * 4;
+    if rgba.len() != expected_len {
+      return Err(VideoError::new(format!(
+        "Invalid RGBA frame length: got {} bytes, expected {}.",
+        rgba.len(),
+        expected_len
+      )));
+    }
+
+    let attributes = PixelBufferAttributes::native_nv12()?;
+    let mut pixel_buffer = ptr::null_mut();
+    let status = unsafe {
+      CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        usize::from(width),
+        usize::from(height),
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        attributes.ptr,
+        &mut pixel_buffer,
+      )
+    };
+    if status != NO_ERR || pixel_buffer.is_null() {
+      return Err(VideoError::new(format!(
+        "Failed to create encoder pixel buffer: OSStatus {status}."
+      )));
+    }
+
+    let lock_status = unsafe { CVPixelBufferLockBaseAddress(pixel_buffer, 0) };
+    if lock_status != NO_ERR {
+      unsafe {
+        CFRelease(pixel_buffer.cast());
+      }
+      return Err(VideoError::new(format!(
+        "Failed to lock encoder pixel buffer: OSStatus {lock_status}."
+      )));
+    }
+
+    let result = write_rgba_to_nv12_pixel_buffer(pixel_buffer, rgba, width, height);
+    let unlock_status = unsafe { CVPixelBufferUnlockBaseAddress(pixel_buffer, 0) };
+    if let Err(error) = result {
+      unsafe {
+        CFRelease(pixel_buffer.cast());
+      }
+      return Err(error);
+    }
+    if unlock_status != NO_ERR {
+      unsafe {
+        CFRelease(pixel_buffer.cast());
+      }
+      return Err(VideoError::new(format!(
+        "Failed to unlock encoder pixel buffer: OSStatus {unlock_status}."
+      )));
+    }
+
+    Ok(Self { ptr: pixel_buffer })
+  }
+}
+
+impl Drop for RentedPixelBuffer {
+  fn drop(&mut self) {
+    unsafe {
+      CFRelease(self.ptr.cast());
+    }
+  }
+}
+
+struct ForceKeyFrameProperties {
+  ptr: CFDictionaryRef,
+  key: CFStringRef,
+}
+
+impl ForceKeyFrameProperties {
+  fn new() -> Result<Self, VideoError> {
+    let key = cf_string("ForceKeyFrame")?;
+    let keys = [key.cast::<c_void>()];
+    let values = [unsafe { kCFBooleanTrue }.cast::<c_void>()];
+    let dictionary = unsafe {
+      CFDictionaryCreate(
+        kCFAllocatorDefault,
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks,
+      )
+    };
+    if dictionary.is_null() {
+      unsafe {
+        CFRelease(key.cast());
+      }
+      return Err(VideoError::new("Failed to create VideoToolbox keyframe properties."));
+    }
+    Ok(Self { ptr: dictionary, key })
+  }
+}
+
+impl Drop for ForceKeyFrameProperties {
+  fn drop(&mut self) {
+    unsafe {
+      CFRelease(self.ptr.cast());
+      CFRelease(self.key.cast());
+    }
+  }
+}
+
+fn encoded_sample_from_callback(
+  codec: VideoCodecId,
+  sample: &EncodedCallbackSample,
+) -> Result<Option<EncodedSample>, VideoError> {
+  if sample.status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "VideoToolbox encoder callback failed: OSStatus {}.",
+      sample.status
+    )));
+  }
+  let ready = unsafe { CMSampleBufferDataIsReady(sample.sample_buffer) };
+  if ready == 0 {
+    return Ok(None);
+  }
+  let block = unsafe { CMSampleBufferGetDataBuffer(sample.sample_buffer) };
+  if block.is_null() {
+    return Ok(None);
+  }
+  let len = unsafe { CMBlockBufferGetDataLength(block) };
+  if len == 0 {
+    return Ok(None);
+  }
+
+  let mut bytes = vec![0u8; len];
+  let status = unsafe { CMBlockBufferCopyDataBytes(block, 0, len, bytes.as_mut_ptr().cast()) };
+  if status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "Failed to copy VideoToolbox encoded sample: OSStatus {status}."
+    )));
+  }
+
+  let keyframe = sample_is_keyframe(sample.sample_buffer);
+  if codec == VideoCodecId::Av1 {
+    return Ok(Some(EncodedSample { bytes, keyframe }));
+  }
+
+  if keyframe {
+    let format_description = unsafe { CMSampleBufferGetFormatDescription(sample.sample_buffer) };
+    let mut prefixed = parameter_sets_annex_b(codec, format_description)?;
+    prefixed.extend(length_prefixed_sample_to_annex_b(&bytes)?);
+    bytes = prefixed;
+  } else {
+    bytes = length_prefixed_sample_to_annex_b(&bytes)?;
+  }
+
+  Ok(Some(EncodedSample { bytes, keyframe }))
+}
+
+fn sample_is_keyframe(sample_buffer: CMSampleBufferRef) -> bool {
+  let attachments = unsafe { CMSampleBufferGetSampleAttachmentsArray(sample_buffer, 0) };
+  if attachments.is_null() {
+    return true;
+  }
+  let attachment = unsafe { CFArrayGetValueAtIndex(attachments, 0) };
+  if attachment.is_null() {
+    return true;
+  }
+  let not_sync = unsafe { CFDictionaryGetValue(attachment.cast(), kCMSampleAttachmentKey_NotSync.cast()) };
+  not_sync.is_null()
+}
+
+fn parameter_sets_annex_b(
+  codec: VideoCodecId,
+  format_description: CMVideoFormatDescriptionRef,
+) -> Result<Vec<u8>, VideoError> {
+  if format_description.is_null() {
+    return Ok(Vec::new());
+  }
+  let mut out = Vec::new();
+  match codec {
+    VideoCodecId::H264 => {
+      append_h264_parameter_set(format_description, 0, &mut out)?;
+      append_h264_parameter_set(format_description, 1, &mut out)?;
+    }
+    VideoCodecId::H265 => {
+      append_h265_parameter_set(format_description, 0, &mut out)?;
+      append_h265_parameter_set(format_description, 1, &mut out)?;
+      append_h265_parameter_set(format_description, 2, &mut out)?;
+    }
+    VideoCodecId::Av1 | VideoCodecId::Unknown => {}
+  }
+  Ok(out)
+}
+
+fn append_h264_parameter_set(
+  format_description: CMVideoFormatDescriptionRef,
+  index: usize,
+  out: &mut Vec<u8>,
+) -> Result<(), VideoError> {
+  let mut ptr = ptr::null();
+  let mut len = 0usize;
+  let mut count = 0usize;
+  let mut nal_header_len = 0;
+  let status = unsafe {
+    CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+      format_description,
+      index,
+      &mut ptr,
+      &mut len,
+      &mut count,
+      &mut nal_header_len,
+    )
+  };
+  if status != NO_ERR || ptr.is_null() || len == 0 {
+    return Err(VideoError::new(format!(
+      "Failed to read H.264 parameter set {index}: OSStatus {status}."
+    )));
+  }
+  out.extend_from_slice(&[0, 0, 0, 1]);
+  out.extend_from_slice(unsafe { slice::from_raw_parts(ptr, len) });
+  Ok(())
+}
+
+fn append_h265_parameter_set(
+  format_description: CMVideoFormatDescriptionRef,
+  index: usize,
+  out: &mut Vec<u8>,
+) -> Result<(), VideoError> {
+  let mut ptr = ptr::null();
+  let mut len = 0usize;
+  let mut count = 0usize;
+  let mut nal_header_len = 0;
+  let status = unsafe {
+    CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+      format_description,
+      index,
+      &mut ptr,
+      &mut len,
+      &mut count,
+      &mut nal_header_len,
+    )
+  };
+  if status != NO_ERR || ptr.is_null() || len == 0 {
+    return Err(VideoError::new(format!(
+      "Failed to read H.265 parameter set {index}: OSStatus {status}."
+    )));
+  }
+  out.extend_from_slice(&[0, 0, 0, 1]);
+  out.extend_from_slice(unsafe { slice::from_raw_parts(ptr, len) });
+  Ok(())
+}
+
+fn length_prefixed_sample_to_annex_b(sample: &[u8]) -> Result<Vec<u8>, VideoError> {
+  let mut out = Vec::with_capacity(sample.len() + 16);
+  let mut offset = 0usize;
+  while offset < sample.len() {
+    if sample.len().saturating_sub(offset) < 4 {
+      return Err(VideoError::new(
+        "VideoToolbox encoded sample has a truncated NAL length prefix.",
+      ));
+    }
+    let len = u32::from_be_bytes([
+      sample[offset],
+      sample[offset + 1],
+      sample[offset + 2],
+      sample[offset + 3],
+    ]) as usize;
+    offset += 4;
+    if len == 0 || sample.len().saturating_sub(offset) < len {
+      return Err(VideoError::new(
+        "VideoToolbox encoded sample has an invalid NAL length prefix.",
+      ));
+    }
+    out.extend_from_slice(&[0, 0, 0, 1]);
+    out.extend_from_slice(&sample[offset..offset + len]);
+    offset += len;
+  }
+  Ok(out)
+}
+
+fn write_rgba_to_nv12_pixel_buffer(
+  pixel_buffer: CVPixelBufferRef,
+  rgba: &[u8],
+  width: u16,
+  height: u16,
+) -> Result<(), VideoError> {
+  let width = usize::from(width);
+  let height = usize::from(height);
+  let y_base = unsafe { CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) };
+  let uv_base = unsafe { CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) };
+  if y_base.is_null() || uv_base.is_null() {
+    return Err(VideoError::new("Encoder pixel buffer does not expose NV12 planes."));
+  }
+  let y_stride = unsafe { CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0) };
+  let uv_stride = unsafe { CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1) };
+  let y_plane = unsafe { slice::from_raw_parts_mut(y_base.cast::<u8>(), y_stride * height) };
+  let uv_plane = unsafe { slice::from_raw_parts_mut(uv_base.cast::<u8>(), uv_stride * (height / 2)) };
+
+  for y in 0..height {
+    for x in 0..width {
+      let src = (y * width + x) * 4;
+      let r = rgba[src] as f32;
+      let g = rgba[src + 1] as f32;
+      let b = rgba[src + 2] as f32;
+      y_plane[y * y_stride + x] = clamp_u8(16.0 + 0.257 * r + 0.504 * g + 0.098 * b);
+    }
+  }
+
+  for y in (0..height).step_by(2) {
+    for x in (0..width).step_by(2) {
+      let mut u = 0.0f32;
+      let mut v = 0.0f32;
+      let mut samples = 0.0f32;
+      for dy in 0..2 {
+        for dx in 0..2 {
+          let px = x + dx;
+          let py = y + dy;
+          if px >= width || py >= height {
+            continue;
+          }
+          let src = (py * width + px) * 4;
+          let r = rgba[src] as f32;
+          let g = rgba[src + 1] as f32;
+          let b = rgba[src + 2] as f32;
+          u += 128.0 - 0.148 * r - 0.291 * g + 0.439 * b;
+          v += 128.0 + 0.439 * r - 0.368 * g - 0.071 * b;
+          samples += 1.0;
+        }
+      }
+      let uv = (y / 2) * uv_stride + x;
+      uv_plane[uv] = clamp_u8(u / samples);
+      uv_plane[uv + 1] = clamp_u8(v / samples);
+    }
+  }
+
+  Ok(())
+}
+
+fn clamp_u8(value: f32) -> u8 {
+  value.round().clamp(0.0, 255.0) as u8
+}
+
+fn normalize_rgba_frame(
+  rgba: Vec<u8>,
+  frame_width: u32,
+  frame_height: u32,
+  output_width: u16,
+  output_height: u16,
+) -> Result<Vec<u8>, VideoError> {
+  let output_width = u32::from(output_width);
+  let output_height = u32::from(output_height);
+  if frame_width == output_width && frame_height == output_height {
+    return Ok(rgba);
+  }
+
+  if frame_width == 0 || frame_height == 0 || output_width == 0 || output_height == 0 {
+    return Err(VideoError::new(format!(
+      "Invalid captured frame dimensions: captured={}x{} output={}x{}.",
+      frame_width, frame_height, output_width, output_height
+    )));
+  }
+
+  let src_stride = frame_width as usize * 4;
+  let dst_stride = output_width as usize * 4;
+  let mut out = vec![0u8; dst_stride * output_height as usize];
+  for row in 0..output_height as usize {
+    let src_y = row * frame_height as usize / output_height as usize;
+    let dst_start = row * dst_stride;
+    for column in 0..output_width as usize {
+      let src_x = column * frame_width as usize / output_width as usize;
+      let src_start = src_y * src_stride + src_x * 4;
+      let dst_start = dst_start + column * 4;
+      out[dst_start..dst_start + 4].copy_from_slice(&rgba[src_start..src_start + 4]);
+    }
+  }
+  Ok(out)
+}
+
+fn compression_codec_type(codec: VideoCodecId) -> Result<u32, VideoError> {
+  match codec {
+    VideoCodecId::H264 => Ok(K_CM_VIDEO_CODEC_TYPE_H264),
+    VideoCodecId::H265 => Ok(K_CM_VIDEO_CODEC_TYPE_HEVC),
+    VideoCodecId::Av1 => Ok(K_CM_VIDEO_CODEC_TYPE_AV1),
+    VideoCodecId::Unknown => Err(VideoError::new("Unknown video codec cannot be encoded.")),
+  }
+}
+
+fn set_vt_property_bool(session: VTCompressionSessionRef, key: &str, value: bool) -> Result<(), VideoError> {
+  let key = cf_string(key)?;
+  let value = if value {
+    unsafe { kCFBooleanTrue }.cast()
+  } else {
+    unsafe { kCFBooleanFalse }.cast()
+  };
+  let status = unsafe { VTCompressionSessionSetProperty(session, key, value) };
+  unsafe {
+    CFRelease(key.cast());
+  }
+  if status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "Failed to set VideoToolbox encoder property: OSStatus {status}."
+    )));
+  }
+  Ok(())
+}
+
+fn set_vt_property_i32(session: VTCompressionSessionRef, key: &str, value: i32) -> Result<(), VideoError> {
+  let key = cf_string(key)?;
+  let value = cf_number_i32(value)?;
+  let status = unsafe { VTCompressionSessionSetProperty(session, key, value) };
+  unsafe {
+    CFRelease(key.cast());
+    CFRelease(value);
+  }
+  if status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "Failed to set VideoToolbox encoder property: OSStatus {status}."
+    )));
+  }
+  Ok(())
+}
+
+fn set_vt_property_string(session: VTCompressionSessionRef, key: &str, value: &str) -> Result<(), VideoError> {
+  let key = cf_string(key)?;
+  let value = cf_string(value)?;
+  let status = unsafe { VTCompressionSessionSetProperty(session, key, value.cast()) };
+  unsafe {
+    CFRelease(key.cast());
+    CFRelease(value.cast());
+  }
+  if status != NO_ERR {
+    logger::log(&format!(
+      "[video/macos] VideoToolbox ignored encoder string property {key:?}: OSStatus {status}"
+    ));
+  }
+  Ok(())
 }
 
 pub(super) struct NativeVideoDecoder {
@@ -1666,6 +2609,15 @@ fn cm_time_millis(timestamp_ms: u32) -> CMTime {
   CMTime {
     value: i64::from(timestamp_ms),
     timescale: 1000,
+    flags: kCMTimeFlags_Valid,
+    epoch: 0,
+  }
+}
+
+fn cm_time_100ns(timestamp_100ns: i64) -> CMTime {
+  CMTime {
+    value: timestamp_100ns,
+    timescale: 10_000_000,
     flags: kCMTimeFlags_Valid,
     epoch: 0,
   }

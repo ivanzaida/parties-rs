@@ -213,6 +213,9 @@ fn stream_modal_codec_label(storage: Option<&Storage>) -> String {
 
   match codec.trim() {
     "H.265" | "H.264" => codec.trim().to_owned(),
+    #[cfg(target_os = "macos")]
+    _ => "H.265".to_owned(),
+    #[cfg(not(target_os = "macos"))]
     _ => "AV1".to_owned(),
   }
 }
