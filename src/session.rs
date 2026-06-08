@@ -1274,7 +1274,7 @@ impl ServerSession {
     let mut decoder_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
     #[cfg(target_os = "windows")]
     let mut dx12_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
-    let mut awaiting_keyframes = HashSet::<UserId>::new();
+    let mut awaiting_keyframes = self.watching_user_id().into_iter().collect::<HashSet<_>>();
     let mut received_counts = HashMap::<UserId, u64>::new();
     let mut decoded_counts = HashMap::<UserId, u64>::new();
     let mut last_watched_user = self.watching_user_id();
@@ -1292,6 +1292,9 @@ impl ServerSession {
         #[cfg(target_os = "windows")]
         dx12_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
+        if let Some(user_id) = watched_user {
+          awaiting_keyframes.insert(user_id);
+        }
         last_watched_user = watched_user;
         logger::log(&format!("[video] watch target changed: {watched_user:?}"));
       }
@@ -1303,6 +1306,13 @@ impl ServerSession {
           .map(|packet| packet.sender_id)
           .collect::<HashSet<_>>();
         for user_id in &affected_users {
+          let failed_decode_config = decoders
+            .get(user_id)
+            .map(|decoder| ((*user_id), decoder.config().clone()))
+            .is_some_and(|failure_key| decoder_failures.contains(&failure_key));
+          if failed_decode_config {
+            continue;
+          }
           decoders.remove(user_id);
           awaiting_keyframes.insert(*user_id);
           if let Err(error) = runtime.block_on(server.request_keyframe_stream(*user_id)) {
@@ -1338,6 +1348,9 @@ impl ServerSession {
             continue;
           }
           awaiting_keyframes.remove(&packet.sender_id);
+          decoder_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          dx12_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           logger::log(&format!(
             "[video] catch-up keyframe received for user {}: frame={}",
             packet.sender_id, packet.frame.frame_number
@@ -1394,6 +1407,9 @@ impl ServerSession {
             continue;
           }
 
+          let missing_initial_image =
+            packet.frame.keyframe && !self.has_video_frame(packet.sender_id, packet.frame.width, packet.frame.height);
+          let output = output || missing_initial_image;
           let output_buffer = if output {
             self.take_video_pixel_buffer(packet.sender_id, packet.frame.width, packet.frame.height)
           } else {
@@ -1489,6 +1505,10 @@ impl ServerSession {
   }
 
   fn handle_video_frame(&self, frame: DecodedVideoFrame) {
+    if self.watching_user_id() != Some(frame.sender_id) {
+      return;
+    }
+
     let mut force_revision = false;
     #[cfg(target_os = "macos")]
     if let Some(native_image) = frame.native_image.clone() {
@@ -1662,6 +1682,17 @@ impl ServerSession {
         image.image_data().width() == u32::from(width) && image.image_data().height() == u32::from(height)
       })
       .and_then(VideoFrameImage::take_cpu_buffer)
+  }
+
+  fn has_video_frame(&self, user_id: UserId, width: u16, height: u16) -> bool {
+    self
+      .video_frames
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .is_some_and(|image| {
+        image.image_data().width() == u32::from(width) && image.image_data().height() == u32::from(height)
+      })
   }
 
   fn should_bump_video_revision(&self, user_id: UserId) -> bool {
