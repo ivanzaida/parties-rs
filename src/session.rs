@@ -22,7 +22,7 @@ use crate::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
       },
-      data::{ForwardedStreamAudioPacket, ForwardedVideoFrame},
+      data::{ForwardedStreamAudioPacket, ForwardedVideoFrame, VideoControl},
     },
     server::{ReceivedAudioPacket, Server, ServerError},
   },
@@ -508,6 +508,7 @@ pub struct ServerSession {
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
+  shutdown_requested: Arc<AtomicBool>,
   revision: Signal<u64>,
 }
 
@@ -532,6 +533,7 @@ impl Default for ServerSession {
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
       stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
+      shutdown_requested: Arc::new(AtomicBool::new(false)),
       revision: Signal::new(0),
     }
   }
@@ -560,6 +562,7 @@ impl ServerSession {
   }
 
   pub fn set_connected(&self, connected: ConnectedServer) {
+    self.shutdown_requested.store(false, Ordering::Relaxed);
     self.stop_voice();
     self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = Some(connected);
@@ -588,6 +591,7 @@ impl ServerSession {
   }
 
   pub fn clear(&self) {
+    self.shutdown_requested.store(false, Ordering::Relaxed);
     self.stop_voice();
     self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = None;
@@ -626,6 +630,7 @@ impl ServerSession {
 
   pub fn disconnect_for_shutdown(&self) {
     logger::log("[session] disconnect requested for shutdown");
+    self.shutdown_requested.store(true, Ordering::Relaxed);
     self.stop_voice();
     self.stop_video_broadcast();
     if let Some(server) = self.server() {
@@ -1229,6 +1234,9 @@ impl ServerSession {
         Ok(ReceivedAudioPacket::Stream(packet)) => {
           self.handle_stream_audio_packet(packet);
         }
+        Ok(ReceivedAudioPacket::VideoControl(control)) => {
+          self.handle_video_control_packet(control);
+        }
         Err(ServerError::Protocol(error)) => {
           logger::log(&format!("[voice] ignored malformed audio packet: {error}"));
           continue;
@@ -1267,6 +1275,38 @@ impl ServerSession {
             }
           }
           queue.close();
+        })
+        .ok()
+    };
+    let datagram_reader_thread = {
+      let server = server.clone();
+      let runtime = runtime.clone();
+      let stop = stop.clone();
+      let queue = queue.clone();
+      thread::Builder::new()
+        .name("parties-video-datagram-reader".to_owned())
+        .spawn(move || {
+          while !stop.load(Ordering::Relaxed) {
+            let packet = runtime.block_on(async {
+              tokio::time::timeout(Duration::from_millis(100), server.recv_forwarded_video_datagram())
+                .await
+                .ok()
+            });
+            let Some(packet) = packet else {
+              continue;
+            };
+            match packet {
+              Ok(packet) => queue.push(packet),
+              Err(ServerError::Protocol(error)) => {
+                logger::log(&format!("[video] ignored malformed video datagram: {error}"));
+                continue;
+              }
+              Err(error) => {
+                logger::log(&format!("[video] video datagram reader stopped: {error}"));
+                break;
+              }
+            }
+          }
         })
         .ok()
     };
@@ -1423,6 +1463,7 @@ impl ServerSession {
 
     queue.close();
     drop(reader_thread);
+    drop(datagram_reader_thread);
     logger::log("[video] receiver thread stopping");
   }
 
@@ -1438,6 +1479,15 @@ impl ServerSession {
       .as_mut()
       .map(|engine| engine.push_packet(packet))
       .unwrap_or(true)
+  }
+
+  fn handle_video_control_packet(&self, control: VideoControl) {
+    if let VideoControl::Pli { user_id } = control
+      && let Some(broadcast) = self.video_broadcast.lock().expect("video broadcast lock poisoned").as_ref()
+    {
+      broadcast.request_keyframe();
+      logger::log(&format!("[video] local keyframe requested by viewer {user_id}"));
+    }
   }
 
   fn handle_stream_audio_packet(&self, packet: ForwardedStreamAudioPacket) {
@@ -1681,6 +1731,13 @@ impl ServerSession {
   }
 
   pub fn mark_lobby_error(&self, message: String) {
+    if self.shutdown_requested.load(Ordering::Relaxed) {
+      logger::log(&format!(
+        "[network] ignoring lobby receiver error during shutdown: {message}"
+      ));
+      return;
+    }
+
     logger::log(&format!("[network] marking lobby disconnected: {message}"));
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");

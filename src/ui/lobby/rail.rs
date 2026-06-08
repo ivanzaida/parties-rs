@@ -110,7 +110,15 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
     let storage = storage.clone();
     async move {
       let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
-      let (muted, deafened) = session.local_voice_state().unwrap_or((false, false));
+      let settings = storage
+        .as_ref()
+        .and_then(|storage| storage.load_settings().ok())
+        .unwrap_or_else(AppSettings::default);
+      let already_in_voice = session.lobby().selected_channel_id.is_some();
+      let (mut muted, deafened) = session.local_voice_state().unwrap_or((false, false));
+      if !already_in_voice {
+        muted = settings.start_muted_when_joining || deafened;
+      }
       server
         .join_channel(channel_id)
         .await
@@ -121,10 +129,6 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         .await
         .map_err(|error| error.to_string())?;
       session.set_local_voice_state(muted, deafened);
-      let settings = storage
-        .as_ref()
-        .and_then(|storage| storage.load_settings().ok())
-        .unwrap_or_else(AppSettings::default);
       let _ = session.start_voice(settings);
       Ok(())
     }

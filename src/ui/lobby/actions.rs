@@ -88,9 +88,10 @@ pub(super) fn start_stream_action(
         codec,
         fps: settings.video_fps.clamp(1, 120) as u32,
         bitrate_kbps: (settings.video_bitrate_mbps.max(0.1) * 1000.0).round() as u32,
+        audio_enabled: input.audio_enabled,
       };
       logger::log(&format!(
-        "[video] starting broadcast: source={:?}/{} source_size={}x{} output={}x{} codec={:?} fps={} bitrate={}kbps",
+        "[video] starting broadcast: source={:?}/{} source_size={}x{} output={}x{} codec={:?} fps={} bitrate={}kbps audio={}",
         config.source_kind,
         config.source_id,
         config.source_width,
@@ -99,7 +100,8 @@ pub(super) fn start_stream_action(
         config.output_height,
         config.codec,
         config.fps,
-        config.bitrate_kbps
+        config.bitrate_kbps,
+        config.audio_enabled
       ));
       if let Err(error) = session.start_video_broadcast(config) {
         logger::log(&format!("[video] failed to start local broadcaster: {error}"));
