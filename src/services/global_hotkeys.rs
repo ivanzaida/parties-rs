@@ -6,7 +6,11 @@ use std::{
 
 use rdev::{Event, EventType, Key, listen};
 
-use crate::{session::ServerSession, storage::AppSettings};
+use crate::{
+  services::voice_controls::{VoiceControlAction, apply_voice_control},
+  session::ServerSession,
+  storage::AppSettings,
+};
 
 #[derive(Clone)]
 pub struct GlobalVoiceHotkeys {
@@ -27,13 +31,7 @@ struct GlobalVoiceHotkeysState {
   toggle_mute: String,
   toggle_deafen: String,
   pressed: HashSet<Key>,
-  active_toggles: HashSet<VoiceHotkeyAction>,
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum VoiceHotkeyAction {
-  ToggleMute,
-  ToggleDeafen,
+  active_toggles: HashSet<VoiceControlAction>,
 }
 
 impl GlobalVoiceHotkeys {
@@ -109,18 +107,18 @@ impl GlobalVoiceHotkeysInner {
       if state.push_to_talk_enabled && event_hotkey == state.push_to_talk {
         self.session.set_push_to_talk_active(true);
       } else if event_hotkey == state.toggle_mute {
-        if state.active_toggles.insert(VoiceHotkeyAction::ToggleMute) {
-          pending_action = Some(VoiceHotkeyAction::ToggleMute);
+        if state.active_toggles.insert(VoiceControlAction::ToggleMute) {
+          pending_action = Some(VoiceControlAction::ToggleMute);
         }
-      } else if event_hotkey == state.toggle_deafen && state.active_toggles.insert(VoiceHotkeyAction::ToggleDeafen) {
-        pending_action = Some(VoiceHotkeyAction::ToggleDeafen);
+      } else if event_hotkey == state.toggle_deafen && state.active_toggles.insert(VoiceControlAction::ToggleDeafen) {
+        pending_action = Some(VoiceControlAction::ToggleDeafen);
       }
     }
 
     if let Some(action) = pending_action {
       let session = self.session.clone();
       self.tokio.spawn(async move {
-        let _ = apply_voice_hotkey(session, action).await;
+        let _ = apply_voice_control(session, action).await;
       });
     }
   }
@@ -140,10 +138,10 @@ impl GlobalVoiceHotkeysInner {
         stop_push_to_talk = true;
       }
       if hotkey_contains_part(&state.toggle_mute, &label) {
-        state.active_toggles.remove(&VoiceHotkeyAction::ToggleMute);
+        state.active_toggles.remove(&VoiceControlAction::ToggleMute);
       }
       if hotkey_contains_part(&state.toggle_deafen, &label) {
-        state.active_toggles.remove(&VoiceHotkeyAction::ToggleDeafen);
+        state.active_toggles.remove(&VoiceControlAction::ToggleDeafen);
       }
     }
 
@@ -341,28 +339,6 @@ fn unknown_key_label(code: u32) -> Option<&'static str> {
 
 fn is_modifier_label(label: &str) -> bool {
   matches!(label, "Ctrl" | "Alt" | "Shift" | "Meta")
-}
-
-async fn apply_voice_hotkey(session: ServerSession, action: VoiceHotkeyAction) -> Result<(), String> {
-  let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
-  let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
-
-  match action {
-    VoiceHotkeyAction::ToggleMute => muted = !muted,
-    VoiceHotkeyAction::ToggleDeafen => {
-      deafened = !deafened;
-      if deafened {
-        muted = true;
-      }
-    }
-  }
-
-  server
-    .update_voice_state(muted, deafened)
-    .await
-    .map_err(|error| error.to_string())?;
-  session.set_local_voice_state(muted, deafened);
-  Ok(())
 }
 
 #[cfg(test)]

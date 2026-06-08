@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
@@ -13,13 +15,14 @@ use crate::{
   network::protocol::ChannelId,
   session::{LobbyTextChannel, ServerSession},
   theme,
-  ui::lobby::channel_section::{aligned_channel_icon_with_color, section_head},
+  ui::lobby::{ChannelManagerKind, channel_section::{aligned_channel_icon_with_color, section_head}},
 };
 
 #[derive(Clone)]
 pub(super) struct TextChannelsProps {
   pub channels: Vec<LobbyTextChannel>,
   pub selected_channel_id: Option<ChannelId>,
+  pub channel_manager: Signal<Option<ChannelManagerKind>>,
 }
 
 impl PartialEq for TextChannelsProps {
@@ -59,6 +62,10 @@ impl Component for TextChannels {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let is_expanded = self.expanded.get();
+    let manager = props.channel_manager.clone();
+    let open_manager: Arc<dyn Fn() + Send + Sync + 'static> = Arc::new(move || {
+      manager.set(Some(ChannelManagerKind::Text));
+    });
     let mut section = Column::new()
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Xs)
@@ -66,7 +73,8 @@ impl Component for TextChannels {
         ctx,
         self.expanded.clone(),
         &ctx.t("lobby.text_channels.title"),
-        Some("plus"),
+        Some("settings"),
+        Some(open_manager),
       ));
 
     if is_expanded {

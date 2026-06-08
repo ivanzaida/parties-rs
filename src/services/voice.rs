@@ -17,10 +17,7 @@ use cpal::{
 use opus::{Application, Bitrate, Channels, Decoder, Encoder, Signal};
 use sonora::{
   AudioProcessing, Config, StreamConfig,
-  config::{
-    AdaptiveDigital, CaptureLevelAdjustment, EchoCanceller, GainController2, HighPassFilter, MaxProcessingRate,
-    NoiseSuppression, NoiseSuppressionLevel, Pipeline,
-  },
+  config::{EchoCanceller, HighPassFilter, MaxProcessingRate, NoiseSuppression, NoiseSuppressionLevel, Pipeline},
 };
 
 use super::audio_devices;
@@ -132,6 +129,14 @@ impl VoiceEngine {
     self.control.set_push_to_talk_active(active);
   }
 
+  pub fn set_user_volume(&self, user_id: UserId, volume_percent: i32) {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .set_user_volume(user_id, volume_percent);
+  }
+
   pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> bool {
     if self.control.deafened.load(Ordering::Relaxed) {
       return false;
@@ -145,9 +150,15 @@ impl VoiceEngine {
       },
     };
 
-    let Ok((pcm, rms)) = stream.decode(packet.sequence, &packet.opus) else {
+    let Ok(mut pcm) = stream.decode(packet.sequence, &packet.opus) else {
       return false;
     };
+
+    if self.control.voice_normalization {
+      stream.apply_normalization(&mut pcm, self.control.voice_normalization_target);
+    }
+
+    let speaking = rms(&pcm) > 0.001;
 
     if !pcm.is_empty() {
       self
@@ -157,7 +168,7 @@ impl VoiceEngine {
         .push_frame(packet.sender_id, pcm);
     }
 
-    rms > 0.001
+    speaking
   }
 }
 
@@ -225,7 +236,7 @@ impl VoiceControlState {
 }
 
 fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProcessing>>> {
-  if !settings.noise_cancellation && !settings.voice_normalization && !settings.echo_cancellation {
+  if !settings.noise_cancellation && !settings.echo_cancellation {
     return None;
   }
 
@@ -238,18 +249,6 @@ fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProce
     echo_canceller: settings.echo_cancellation.then(EchoCanceller::default),
     noise_suppression: settings.noise_cancellation.then(|| NoiseSuppression {
       level: NoiseSuppressionLevel::High,
-      ..Default::default()
-    }),
-    gain_controller2: settings.voice_normalization.then(|| GainController2 {
-      adaptive_digital: Some(AdaptiveDigital {
-        max_gain_db: 30.0,
-        initial_gain_db: normalization_initial_gain_db(settings.voice_normalization_target_level),
-        ..Default::default()
-      }),
-      ..Default::default()
-    }),
-    capture_level_adjustment: settings.voice_normalization.then(|| CaptureLevelAdjustment {
-      post_gain_factor: normalization_post_gain(settings.voice_normalization_target_level),
       ..Default::default()
     }),
     ..Default::default()
@@ -525,7 +524,6 @@ fn trim_front_samples(samples: &mut VecDeque<f32>, max_len: usize) {
 
 #[derive(Default)]
 struct CaptureProcessor {
-  normalize_gain: f32,
   processed_frame: Vec<f32>,
 }
 
@@ -578,31 +576,34 @@ impl CaptureProcessor {
       return false;
     }
 
-    if control.voice_normalization {
-      self.apply_normalization(frame, control.voice_normalization_target);
-    }
-
     for sample in frame {
       *sample = sample.clamp(-1.0, 1.0);
     }
 
     true
   }
+}
 
-  fn apply_normalization(&mut self, frame: &mut [f32], target: f32) {
+#[derive(Default)]
+struct NormalizationState {
+  gain: f32,
+}
+
+impl NormalizationState {
+  fn apply(&mut self, frame: &mut [f32], target: f32) {
     let level = rms(frame);
     if level < 0.001 || target <= 0.0 {
-      self.normalize_gain = lerp(self.normalize_gain.max(1.0), 1.0, 0.08);
+      self.gain = lerp(self.gain.max(1.0), 1.0, 0.08);
       return;
     }
 
     let desired = (target / level).clamp(0.25, 8.0);
-    let current = if self.normalize_gain <= 0.0 {
+    let current = if self.gain <= 0.0 {
       desired
     } else {
-      lerp(self.normalize_gain, desired, 0.12)
+      lerp(self.gain, desired, 0.12)
     };
-    self.normalize_gain = current;
+    self.gain = current;
     apply_gain(frame, current);
   }
 }
@@ -819,9 +820,19 @@ fn mix_samples_nonblocking(mixer: &Arc<Mutex<VoiceMixer>>, output: &mut [f32]) {
 #[derive(Default)]
 struct VoiceMixer {
   streams: HashMap<UserId, PcmStream>,
+  volumes: HashMap<UserId, f32>,
 }
 
 impl VoiceMixer {
+  fn set_user_volume(&mut self, user_id: UserId, volume_percent: i32) {
+    let volume_percent = volume_percent.clamp(0, 100);
+    if volume_percent == 100 {
+      self.volumes.remove(&user_id);
+    } else {
+      self.volumes.insert(user_id, volume_percent as f32 / 100.0);
+    }
+  }
+
   fn push_frame(&mut self, user_id: UserId, pcm: Vec<f32>) {
     let stream = self.streams.entry(user_id).or_default();
     if stream.frames.len() >= MAX_PCM_FRAMES_PER_USER {
@@ -833,10 +844,11 @@ impl VoiceMixer {
   fn mix_samples(&mut self, output: &mut [f32]) {
     output.fill(0.0);
 
-    for stream in self.streams.values_mut() {
+    for (user_id, stream) in &mut self.streams {
+      let volume = self.volumes.get(user_id).copied().unwrap_or(1.0);
       for sample in output.iter_mut() {
         if let Some(next) = stream.next_sample() {
-          *sample += next;
+          *sample += next * volume;
         }
       }
     }
@@ -886,6 +898,7 @@ impl PcmStream {
 struct DecodeStream {
   decoder: Decoder,
   next_sequence: Option<u16>,
+  normalizer: NormalizationState,
 }
 
 impl DecodeStream {
@@ -893,16 +906,17 @@ impl DecodeStream {
     Ok(Self {
       decoder: Decoder::new(SAMPLE_RATE, Channels::Mono)?,
       next_sequence: None,
+      normalizer: NormalizationState::default(),
     })
   }
 
-  fn decode(&mut self, sequence: u16, opus: &[u8]) -> Result<(Vec<f32>, f32), opus::Error> {
+  fn decode(&mut self, sequence: u16, opus: &[u8]) -> Result<Vec<f32>, opus::Error> {
     let mut decoded = Vec::new();
 
     if let Some(expected) = self.next_sequence {
       let delta = seq_delta(expected, sequence);
       if delta < 0 {
-        return Ok((Vec::new(), 0.0));
+        return Ok(Vec::new());
       }
 
       if delta > MAX_PLC_FRAMES {
@@ -920,10 +934,13 @@ impl DecodeStream {
     let mut pcm = vec![0.0; OPUS_FRAME_SIZE];
     let samples = self.decoder.decode_float(opus, &mut pcm, false)?;
     pcm.truncate(samples);
-    let level = rms(&pcm);
     decoded.extend(pcm);
     self.next_sequence = Some(sequence.wrapping_add(1));
-    Ok((decoded, level))
+    Ok(decoded)
+  }
+
+  fn apply_normalization(&mut self, pcm: &mut [f32], target: f32) {
+    self.normalizer.apply(pcm, target);
   }
 }
 
@@ -979,16 +996,6 @@ fn activation_threshold(level: i32) -> f32 {
 fn normalize_target(level: i32) -> f32 {
   let value = (level.clamp(0, 100) as f32) / 100.0;
   (value * value * value).clamp(0.0, 1.0)
-}
-
-fn normalization_initial_gain_db(level: i32) -> f32 {
-  let value = (level.clamp(0, 100) as f32) / 100.0;
-  lerp(3.0, 18.0, value)
-}
-
-fn normalization_post_gain(level: i32) -> f32 {
-  let value = (level.clamp(0, 100) as f32) / 100.0;
-  lerp(0.5, 1.5, value)
 }
 
 fn apply_gain(frame: &mut [f32], gain: f32) {
@@ -1060,17 +1067,19 @@ mod tests {
 
   #[test]
   fn normalization_raises_quiet_frames_toward_target() {
-    let mut processor = CaptureProcessor::default();
+    let mut normalizer = NormalizationState::default();
     let mut frame = vec![0.02; OPUS_FRAME_SIZE];
-    processor.apply_normalization(&mut frame, 0.2);
+    normalizer.apply(&mut frame, 0.2);
     assert!(rms(&frame) > 0.02);
   }
 
   #[test]
-  fn normalization_apm_mappings_are_bounded() {
-    assert_eq!(normalization_initial_gain_db(-1), 3.0);
-    assert_eq!(normalization_initial_gain_db(101), 18.0);
-    assert_eq!(normalization_post_gain(-1), 0.5);
-    assert_eq!(normalization_post_gain(101), 1.5);
+  fn voice_normalization_does_not_enable_capture_processing_by_itself() {
+    let mut settings = AppSettings::default();
+    settings.noise_cancellation = false;
+    settings.echo_cancellation = false;
+    settings.voice_normalization = true;
+
+    assert!(build_audio_processing(&settings).is_none());
   }
 }

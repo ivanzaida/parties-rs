@@ -2,38 +2,89 @@ use std::{collections::HashSet, process::Command};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Weekday};
 use lurq::{
-  app::{component::Component, ctx::Ctx},
-  components::{Column, Row, ScrollVertical, Text, TextInput},
+  animation::Transition,
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::Ctx,
+  },
+  components::{Column, Row, ScrollVertical, Stack, Text, TextInput, TextOverflow},
   core::Signal,
   layout::{
     Alignment,
     layout_kind::{Justify, ScrollState},
     scrollbar::{ScrollBarPlacement, ScrollBarStyle},
   },
-  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
+  node::{
+    BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension,
+    transform::Transform2D,
+  },
 };
 
 use crate::{
-  network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
+  network::protocol::{ChannelId, Role, UserId, VideoCodecId, control::ChatMessage as ProtocolChatMessage},
   routes::ROUTE_CHOOSE_SERVER,
-  session::{ConnectedServerInfo, LobbyChannel, LobbyState, LobbyTextChannel, LobbyUser, ServerSession},
+  services::screen_share_sources::{ScreenShareSource, list_screen_sources, list_window_sources},
+  session::{
+    ConnectedServerInfo, LobbyChannel, LobbyScreenShare, LobbyState, LobbyTextChannel, LobbyUser, ServerSession,
+  },
   theme,
   ui::{
+    app_chrome::{CHROME_HEIGHT, content_height},
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
   },
 };
 
 mod channel_section;
+mod channel_management;
 mod rail;
 mod text_channels;
 mod voice_channels;
 
-use rail::{LobbyRail, LobbyRailProps, role_label_lower, server_avatar};
+use channel_management::channel_management_screen;
+use rail::{LobbyRail, LobbyRailProps, server_avatar};
 
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
 type ChatHistoryAction = lurq::app::ctx::FutureAction<ChatHistoryRequest, (), String>;
 type SendChatAction = lurq::app::ctx::FutureAction<SendChatInput, (), String>;
+type StartStreamAction = lurq::app::ctx::FutureAction<(), (), String>;
+type StopStreamAction = lurq::app::ctx::FutureAction<(), (), String>;
+type WatchStreamAction = lurq::app::ctx::FutureAction<UserId, (), String>;
+type StopWatchingAction = lurq::app::ctx::FutureAction<(), (), String>;
+pub(super) type ChannelAdminAction = lurq::app::ctx::FutureAction<ChannelAdminRequest, (), String>;
+
+const STREAM_TOGGLE_TRANSITION_MS: u64 = 240;
+const STREAM_SOURCE_CARD_HEIGHT: f32 = 150.0;
+const STREAM_SOURCE_PREVIEW_HEIGHT: f32 = 108.0;
+const STREAM_SOURCE_GRID_VISIBLE_HEIGHT: f32 = STREAM_SOURCE_CARD_HEIGHT * 2.0 + 12.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ChannelManagerKind {
+  Text,
+  Voice,
+}
+
+impl DevtoolsInspectable for ChannelManagerKind {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "kind",
+      std::any::type_name::<Self>(),
+      match self {
+        Self::Text => "Text",
+        Self::Voice => "Voice",
+      },
+    ));
+  }
+}
+
+#[derive(Clone)]
+pub(super) enum ChannelAdminRequest {
+  CreateText { name: String },
+  DeleteText { channel_id: ChannelId },
+  CreateVoice { name: String, max_users: u32 },
+  RenameVoice { channel_id: ChannelId, name: String },
+  DeleteVoice { channel_id: ChannelId },
+}
 
 #[derive(Clone, Copy)]
 struct ChatHistoryRequest {
@@ -52,6 +103,14 @@ pub struct LobbyScreen {
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  start_stream_modal_open: Signal<bool>,
+  channel_manager: Signal<Option<ChannelManagerKind>>,
+  stream_source_screen_tab: Signal<bool>,
+  stream_source_index: Signal<usize>,
+  stream_audio_enabled: Signal<bool>,
+  text_channel_name: Signal<String>,
+  voice_channel_name: Signal<String>,
+  voice_channel_max_users: Signal<String>,
 }
 
 impl Component for LobbyScreen {
@@ -63,6 +122,14 @@ impl Component for LobbyScreen {
       chat_scroll_state: ScrollState::new(),
       chat_bottom_anchor: ctx.signal(None),
       chat_top_anchor: ctx.signal(None),
+      start_stream_modal_open: ctx.signal(false),
+      channel_manager: ctx.signal(None),
+      stream_source_screen_tab: ctx.signal(true),
+      stream_source_index: ctx.signal(0),
+      stream_audio_enabled: ctx.signal(true),
+      text_channel_name: ctx.signal(String::new()),
+      voice_channel_name: ctx.signal(String::new()),
+      voice_channel_max_users: ctx.signal("8".to_owned()),
     }
   }
 
@@ -98,6 +165,26 @@ impl Component for LobbyScreen {
       });
     }
     let send_chat = send_chat_action(ctx, session.clone());
+    let start_stream = start_stream_action(ctx, session.clone());
+    let stop_stream = stop_stream_action(ctx, session.clone());
+    let watch_stream = watch_stream_action(ctx, session.clone());
+    let stop_watching = stop_watching_action(ctx, session.clone());
+    let channel_admin = channel_admin_action(ctx, session.clone());
+    let modal_open = self.start_stream_modal_open.clone();
+    let modal_start_stream = start_stream.clone();
+    let modal_screen_tab = self.stream_source_screen_tab.clone();
+    let modal_source_index = self.stream_source_index.clone();
+    let modal_audio_enabled = self.stream_audio_enabled.clone();
+    ctx.modal(modal_open.clone(), move |ctx| {
+      start_stream_modal(
+        ctx,
+        modal_open.clone(),
+        modal_screen_tab.clone(),
+        modal_source_index.clone(),
+        modal_audio_enabled.clone(),
+        modal_start_stream.clone(),
+      )
+    });
 
     Row::new()
       .width(Dimension::Pct(100.0))
@@ -107,6 +194,8 @@ impl Component for LobbyScreen {
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         lobby: lobby.clone(),
+        start_stream_modal_open: self.start_stream_modal_open.clone(),
+        channel_manager: self.channel_manager.clone(),
       }))
       .child(main(
         ctx,
@@ -119,6 +208,15 @@ impl Component for LobbyScreen {
         session,
         &chat_history,
         &send_chat,
+        self.start_stream_modal_open.clone(),
+        self.channel_manager.clone(),
+        self.text_channel_name.clone(),
+        self.voice_channel_name.clone(),
+        self.voice_channel_max_users.clone(),
+        &channel_admin,
+        &stop_stream,
+        &watch_stream,
+        &stop_watching,
       ))
       .into()
   }
@@ -170,6 +268,618 @@ fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendChatAction {
   })
 }
 
+fn start_stream_action(ctx: &mut Ctx, session: ServerSession) -> StartStreamAction {
+  ctx.future_action(move |()| {
+    let session = session.clone();
+    async move {
+      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      server
+        .start_screen_share(VideoCodecId::Unknown, 0, 0)
+        .await
+        .map_err(|error| error.to_string())?;
+      Ok(())
+    }
+  })
+}
+
+fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopStreamAction {
+  ctx.future_action(move |()| {
+    let session = session.clone();
+    async move {
+      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      server.stop_screen_share().await.map_err(|error| error.to_string())?;
+      Ok(())
+    }
+  })
+}
+
+fn watch_stream_action(ctx: &mut Ctx, session: ServerSession) -> WatchStreamAction {
+  ctx.future_action(move |user_id| {
+    let session = session.clone();
+    async move {
+      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      server
+        .view_screen_share(user_id)
+        .await
+        .map_err(|error| error.to_string())?;
+      if let Err(error) = server.request_keyframe(user_id) {
+        return Err(error.to_string());
+      }
+      session.set_watching_user(Some(user_id));
+      Ok(())
+    }
+  })
+}
+
+fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> StopWatchingAction {
+  ctx.future_action(move |()| {
+    let session = session.clone();
+    async move {
+      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      server
+        .unsubscribe_screen_share()
+        .await
+        .map_err(|error| error.to_string())?;
+      session.set_watching_user(None);
+      Ok(())
+    }
+  })
+}
+
+fn channel_admin_action(ctx: &mut Ctx, session: ServerSession) -> ChannelAdminAction {
+  ctx.future_action(move |request| {
+    let session = session.clone();
+    async move {
+      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      match request {
+        ChannelAdminRequest::CreateText { name } => server.create_text_channel(name).await,
+        ChannelAdminRequest::DeleteText { channel_id } => server.delete_text_channel(channel_id).await,
+        ChannelAdminRequest::CreateVoice { name, max_users } => server.create_channel(name, max_users).await,
+        ChannelAdminRequest::RenameVoice { channel_id, name } => server.rename_channel(channel_id, name).await,
+        ChannelAdminRequest::DeleteVoice { channel_id } => server.delete_channel(channel_id).await,
+      }
+      .map_err(|error| error.to_string())
+    }
+  })
+}
+
+fn start_stream_modal(
+  ctx: &mut Ctx,
+  open: Signal<bool>,
+  screen_tab: Signal<bool>,
+  source_index: Signal<usize>,
+  audio_enabled: Signal<bool>,
+  start_stream: StartStreamAction,
+) -> Element {
+  let window = ctx.window();
+  let window_width = window.logical_width();
+  let modal_height = content_height(ctx);
+  let dialog_width = (window_width - 32.0).min(560.0).max(320.0);
+
+  Column::new()
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .background(BackgroundColor::Color(Color::from_hex("#00000099")))
+    .child(
+      Column::new()
+        .width(dialog_width)
+        .spacing(20.0)
+        .padding(28.0)
+        .rounded(10.0)
+        .background(BackgroundColor::Color(Color::from_hex("#15171A")))
+        .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#30343A")))
+        .child(stream_modal_header(ctx, open.clone()))
+        .child(stream_modal_sources(ctx, screen_tab, source_index))
+        .child(stream_modal_audio_toggle(ctx, audio_enabled))
+        .child(stream_modal_actions(ctx, open, start_stream)),
+    )
+    .into()
+}
+
+fn stream_modal_header(ctx: &mut Ctx, open: Signal<bool>) -> Element {
+  let close = open.clone();
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Lg)
+    .child(
+      Row::new()
+        .width(44.0)
+        .height(44.0)
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .rounded(12.0)
+        .background(BackgroundColor::Palette(theme::PaletteColor::AccentMuted))
+        .border_inside(1.0, theme::PaletteColor::Accent)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "monitor-up",
+          size: 22.0,
+          color: theme::palette().accent,
+        })),
+    )
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(3.0)
+        .child(
+          Text::new(&ctx.t("lobby.stream_modal.title"))
+            .variant(theme::TypographyStyle::Title)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(
+          Text::new(&ctx.t("lobby.stream_modal.subtitle"))
+            .variant(theme::TypographyStyle::Caption)
+            .color(theme::PaletteColor::TextSecondary)
+            .width(Dimension::Pct(100.0)),
+        ),
+    )
+    .child(
+      Row::new()
+        .width(30.0)
+        .height(30.0)
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .rounded(theme::RadiusSize::Lg)
+        .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+        .cursor(CursorIcon::Pointer)
+        .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+        .on_click(move |_| close.set(false))
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "x",
+          size: 16.0,
+          color: theme::palette().text_muted,
+        })),
+    )
+    .into()
+}
+
+fn stream_modal_sources(ctx: &mut Ctx, screen_tab: Signal<bool>, source_index: Signal<usize>) -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .spacing(12.0)
+    .child(stream_modal_tabs(ctx, screen_tab.clone()))
+    .child(stream_source_grid(ctx, screen_tab, source_index))
+    .into()
+}
+
+fn stream_modal_tabs(ctx: &mut Ctx, screen_tab: Signal<bool>) -> Element {
+  let screen_active = screen_tab.get();
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .spacing(3.0)
+    .padding(3.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .child(stream_modal_tab(
+      ctx,
+      "lobby.stream_modal.tab.screen",
+      screen_active,
+      screen_tab.clone(),
+      true,
+    ))
+    .child(stream_modal_tab(
+      ctx,
+      "lobby.stream_modal.tab.window",
+      !screen_active,
+      screen_tab,
+      false,
+    ))
+    .into()
+}
+
+fn stream_modal_tab(
+  ctx: &mut Ctx,
+  label_key: &'static str,
+  active: bool,
+  screen_tab: Signal<bool>,
+  value: bool,
+) -> Element {
+  Row::new()
+    .height(32.0)
+    .width(Dimension::Pct(100.0))
+    .flex(1.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(if active {
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)
+    } else {
+      BackgroundColor::Color(Color::from_hex("#00000000"))
+    })
+    .cursor(CursorIcon::Pointer)
+    .on_click(move |_| screen_tab.set(value))
+    .child(
+      Text::new(&ctx.t(label_key))
+        .variant(theme::TypographyStyle::Button)
+        .color(if active {
+          theme::PaletteColor::TextPrimary
+        } else {
+          theme::PaletteColor::TextSecondary
+        }),
+    )
+    .into()
+}
+
+fn stream_source_grid(ctx: &mut Ctx, screen_tab: Signal<bool>, source_index: Signal<usize>) -> Element {
+  let sources = if screen_tab.get() {
+    list_screen_sources()
+  } else {
+    list_window_sources()
+  };
+  let selected_index = source_index.get().min(sources.len().saturating_sub(1));
+
+  if sources.is_empty() {
+    return stream_source_empty_state(ctx, screen_tab.get());
+  }
+
+  let mut grid = Column::new().width(Dimension::Pct(100.0)).spacing(12.0);
+
+  for (row_index, row_sources) in sources.chunks(2).enumerate() {
+    grid = grid.child(stream_source_row(
+      ctx,
+      row_sources,
+      row_index * 2,
+      selected_index,
+      source_index.clone(),
+    ));
+  }
+
+  ScrollVertical::new(grid)
+    .width(Dimension::Pct(100.0))
+    .height(STREAM_SOURCE_GRID_VISIBLE_HEIGHT)
+    .scrollbar(source_grid_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.75);
+      style
+    })
+    .into()
+}
+
+fn stream_source_empty_state(ctx: &mut Ctx, screen_tab: bool) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(160.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      Text::new(&ctx.t(if screen_tab {
+        "lobby.stream_modal.source.empty_screens"
+      } else {
+        "lobby.stream_modal.source.empty_windows"
+      }))
+      .variant(theme::TypographyStyle::Caption)
+      .color(theme::PaletteColor::TextMuted),
+    )
+    .into()
+}
+
+fn source_grid_scrollbar_style() -> ScrollBarStyle {
+  let palette = theme::palette();
+  ScrollBarStyle {
+    width: 6.0,
+    min_thumb_length: 24.0,
+    track_color: palette.surface_input.with_opacity(0.55),
+    thumb_color: palette.accent,
+    thumb_radius: 3.0,
+    track_radius: 3.0,
+    padding: 2.0,
+    placement: ScrollBarPlacement::Reserved,
+    ..ScrollBarStyle::default()
+  }
+}
+
+fn stream_source_row(
+  ctx: &mut Ctx,
+  sources: &[ScreenShareSource],
+  offset: usize,
+  selected_index: usize,
+  source_index: Signal<usize>,
+) -> Element {
+  let mut row = Row::new().width(Dimension::Pct(100.0)).spacing(12.0);
+
+  for (column_index, source) in sources.iter().enumerate() {
+    row = row.child(stream_source_card(
+      ctx,
+      source,
+      offset + column_index,
+      selected_index,
+      source_index.clone(),
+    ));
+  }
+
+  if sources.len() == 1 {
+    row = row.child(Row::new().width(Dimension::Pct(100.0)).flex(1.0));
+  }
+
+  row.into()
+}
+
+fn stream_source_card(
+  ctx: &mut Ctx,
+  source: &ScreenShareSource,
+  index: usize,
+  selected_index: usize,
+  source_index: Signal<usize>,
+) -> Element {
+  let selected = selected_index == index;
+  let select = source_index.clone();
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .flex(1.0)
+    .height(STREAM_SOURCE_CARD_HEIGHT)
+    .spacing(6.0)
+    .padding(8.0)
+    .rounded(8.0)
+    .clip()
+    .background(BackgroundColor::Palette(if selected {
+      theme::PaletteColor::AccentMuted
+    } else {
+      theme::PaletteColor::SurfaceInput
+    }))
+    .border_inside(
+      1.0,
+      if selected {
+        theme::PaletteColor::Accent
+      } else {
+        theme::PaletteColor::Border
+      },
+    )
+    .cursor(CursorIcon::Pointer)
+    .on_click(move |_| select.set(index))
+    .child(stream_source_preview(ctx, selected, source.resolution.as_deref()))
+    .child(
+      Row::new()
+        .width(Dimension::Pct(100.0))
+        .height(18.0)
+        .align_items(Alignment::Center)
+        .spacing(8.0)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: if selected { "check-circle" } else { "monitor" },
+          size: 14.0,
+          color: if selected {
+            theme::palette().accent
+          } else {
+            theme::palette().text_muted
+          },
+        }))
+        .child(
+          Text::new(&source.name)
+            .variant(theme::TypographyStyle::Caption)
+            .color(if selected {
+              theme::PaletteColor::TextPrimary
+            } else {
+              theme::PaletteColor::TextSecondary
+            })
+            .nowrap()
+            .text_overflow(TextOverflow::Elipsis)
+            .width(Dimension::Pct(100.0))
+            .min_width(0.0)
+            .flex(1.0),
+        ),
+    )
+    .into()
+}
+
+fn stream_source_preview(ctx: &mut Ctx, selected: bool, resolution: Option<&str>) -> Element {
+  let mut preview = Stack::new()
+    .width(Dimension::Pct(100.0))
+    .height(STREAM_SOURCE_PREVIEW_HEIGHT)
+    .rounded(theme::RadiusSize::Lg)
+    .clip()
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .height(STREAM_SOURCE_PREVIEW_HEIGHT)
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "monitor",
+          size: 26.0,
+          color: if selected {
+            theme::palette().accent
+          } else {
+            theme::palette().text_muted
+          },
+        })),
+    );
+
+  if let Some(resolution) = resolution.filter(|value| !value.trim().is_empty()) {
+    preview = preview.child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .height(STREAM_SOURCE_PREVIEW_HEIGHT)
+        .align_items(Alignment::End)
+        .padding_top(8.0)
+        .padding_right(8.0)
+        .child(stream_source_resolution_badge(resolution)),
+    );
+  }
+
+  preview.into()
+}
+
+fn stream_source_resolution_badge(resolution: &str) -> Element {
+  Row::new()
+    .height(20.0)
+    .align_items(Alignment::Center)
+    .padding_horizontal(6.0)
+    .rounded(theme::RadiusSize::Sm)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      Text::new(resolution)
+        .variant(theme::TypographyStyle::FieldLabel)
+        .color(theme::PaletteColor::TextMuted)
+        .nowrap(),
+    )
+    .into()
+}
+
+fn stream_modal_audio_toggle(ctx: &mut Ctx, audio_enabled: Signal<bool>) -> Element {
+  let enabled = audio_enabled.get();
+  let palette = theme::palette();
+  let knob_translate = if enabled { 16.0 } else { 0.0 };
+  let toggle = audio_enabled.clone();
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(12.0)
+    .padding_vertical(12.0)
+    .padding_horizontal(14.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "volume-2",
+      size: 18.0,
+      color: theme::palette().text_secondary,
+    }))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(2.0)
+        .child(
+          Text::new(&ctx.t("lobby.stream_modal.audio.title"))
+            .variant(theme::TypographyStyle::Button)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(
+          Text::new(&ctx.t("lobby.stream_modal.audio.description"))
+            .variant(theme::TypographyStyle::FieldLabel)
+            .color(theme::PaletteColor::TextMuted)
+            .width(Dimension::Pct(100.0)),
+        ),
+    )
+    .child(
+      Row::new()
+        .width(38.0)
+        .height(22.0)
+        .align_items(Alignment::Center)
+        .padding_left(2.0)
+        .rounded(11.0)
+        .background(BackgroundColor::Color(if enabled {
+          palette.accent
+        } else {
+          palette.surface_raised
+        }))
+        .border_inside(
+          1.0,
+          BackgroundColor::Color(if enabled {
+            palette.surface_raised
+          } else {
+            Color::from_hex("#3A4047")
+          }),
+        )
+        .transition(Transition::background_color().duration_ms(STREAM_TOGGLE_TRANSITION_MS))
+        .cursor(CursorIcon::Pointer)
+        .on_click(move |_| toggle.set(!enabled))
+        .child(
+          Row::new()
+            .width(18.0)
+            .height(18.0)
+            .rounded(9.0)
+            .background(BackgroundColor::Color(if enabled {
+              palette.surface_base
+            } else {
+              palette.text_muted
+            }))
+            .transform(Transform2D::translate(knob_translate, 0.0))
+            .transition(Transition::background_color().duration_ms(STREAM_TOGGLE_TRANSITION_MS))
+            .transition(Transition::transform().duration_ms(STREAM_TOGGLE_TRANSITION_MS)),
+        ),
+    )
+    .into()
+}
+
+fn stream_modal_actions(ctx: &mut Ctx, open: Signal<bool>, start_stream: StartStreamAction) -> Element {
+  let close = open.clone();
+  let confirm_open = open.clone();
+  let pending = start_stream.state().get().is_pending();
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .justify(Justify::End)
+    .spacing(10.0)
+    .child(
+      stream_modal_button(ctx, None, "common.action.cancel", false).on_click(move |_| {
+        close.set(false);
+      }),
+    )
+    .child({
+      let mut button = stream_modal_button(ctx, Some("monitor-up"), "lobby.stream_modal.action.start", true);
+      if !pending {
+        button = button.on_click(move |_| {
+          confirm_open.set(false);
+          start_stream.run(());
+        });
+      }
+      button
+    })
+    .into()
+}
+
+fn stream_modal_button(ctx: &mut Ctx, icon: Option<&'static str>, label_key: &'static str, primary: bool) -> Row {
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(7.0)
+    .padding_horizontal(if primary { 14.0 } else { 16.0 })
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(if primary {
+      theme::PaletteColor::Accent
+    } else {
+      theme::PaletteColor::SurfaceBase
+    }))
+    .border_inside(
+      1.0,
+      if primary {
+        theme::PaletteColor::Accent
+      } else {
+        theme::PaletteColor::Border
+      },
+    )
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(if primary {
+      theme::PaletteColor::AccentHover
+    } else {
+      theme::PaletteColor::SurfaceRaised
+    })));
+
+  if let Some(icon) = icon {
+    button = button.child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 16.0,
+      color: if primary {
+        theme::palette().text_inverse
+      } else {
+        theme::palette().text_secondary
+      },
+    }));
+  }
+
+  button.child(
+    Text::new(&ctx.t(label_key))
+      .variant(theme::TypographyStyle::Button)
+      .color(if primary {
+        theme::PaletteColor::TextInverse
+      } else {
+        theme::PaletteColor::TextSecondary
+      }),
+  )
+}
+
 fn main(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
@@ -181,13 +891,41 @@ fn main(
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
+  start_stream_modal_open: Signal<bool>,
+  channel_manager: Signal<Option<ChannelManagerKind>>,
+  text_channel_name: Signal<String>,
+  voice_channel_name: Signal<String>,
+  voice_channel_max_users: Signal<String>,
+  channel_admin: &ChannelAdminAction,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+  stop_watching: &StopWatchingAction,
 ) -> Element {
+  if let Some(kind) = channel_manager.get() {
+    return channel_management_screen(
+      ctx,
+      kind,
+      lobby,
+      channel_manager,
+      text_channel_name,
+      voice_channel_name,
+      voice_channel_max_users,
+      channel_admin,
+    );
+  }
+
   Column::new()
     .width(Dimension::Pct(100.0))
     .height(Dimension::Pct(100.0))
     .flex(1.0)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
-    .child(main_top_bar(ctx, lobby))
+    .child(main_top_bar(
+      ctx,
+      info.user_id,
+      lobby,
+      start_stream_modal_open.clone(),
+      stop_stream,
+    ))
     .child(main_body(
       ctx,
       info,
@@ -199,13 +937,35 @@ fn main(
       session,
       chat_history,
       send_chat,
+      start_stream_modal_open,
+      stop_stream,
+      watch_stream,
+      stop_watching,
     ))
     .into()
 }
 
-fn main_top_bar(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
+fn main_top_bar(
+  ctx: &mut Ctx,
+  local_user_id: UserId,
+  lobby: &LobbyState,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+) -> Element {
   if let Some(channel) = selected_text_channel(lobby) {
     return text_channel_top_bar(ctx, channel, unique_lobby_member_count(lobby));
+  }
+
+  if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
+    if watched_stream_for_channel(lobby, channel.id).is_some() {
+      return watching_top_bar(ctx, channel, local_user_id, lobby, start_stream_modal_open, stop_stream);
+    }
+    return voice_stream_top_bar(
+      ctx,
+      channel,
+      screen_share_count_for_channel(lobby, channel.id),
+      start_stream_modal_open,
+    );
   }
 
   Row::new()
@@ -272,6 +1032,182 @@ fn text_channel_top_bar(ctx: &mut Ctx, channel: &LobbyTextChannel, member_count:
     .into()
 }
 
+fn voice_stream_top_bar(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  stream_count: usize,
+  start_stream_modal_open: Signal<bool>,
+) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(56.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::SpaceBetween)
+    .spacing(theme::SpacingSize::Md)
+    .padding_horizontal(theme::SpacingSize::Xl)
+    .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+    .child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .spacing(10.0)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "volume-2",
+          size: 16.0,
+          color: theme::palette().text_secondary,
+        }))
+        .child(
+          Text::new(&channel.name)
+            .variant(theme::TypographyStyle::Heading)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(stream_count_chip(ctx, stream_count)),
+    )
+    .child(top_bar_share_button(ctx, start_stream_modal_open))
+    .into()
+}
+
+fn stream_count_chip(ctx: &mut Ctx, stream_count: usize) -> Element {
+  if stream_count == 0 {
+    return Row::new().into();
+  }
+
+  Row::new()
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(5.0)
+    .padding_vertical(3.0)
+    .padding_horizontal(8.0)
+    .rounded(theme::RadiusSize::Sm)
+    .background(BackgroundColor::Color(Color::from_hex("#2A1A1C")))
+    .child(
+      Row::new()
+        .width(6.0)
+        .height(6.0)
+        .rounded(3.0)
+        .background(BackgroundColor::Color(Color::from_hex("#FF6B5F"))),
+    )
+    .child(
+      Text::new(&ctx.t_args("lobby.stream_browser.live_short", [("count", stream_count.to_string())]))
+        .variant(theme::TypographyStyle::FieldLabel)
+        .color(theme::PaletteColor::Danger),
+    )
+    .into()
+}
+
+fn watching_top_bar(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  local_user_id: UserId,
+  lobby: &LobbyState,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+) -> Element {
+  let local_sharing = screen_shares_for_channel(lobby, channel.id)
+    .iter()
+    .any(|stream| stream.share.sharer_user_id == local_user_id);
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(56.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::SpaceBetween)
+    .spacing(theme::SpacingSize::Md)
+    .padding_horizontal(theme::SpacingSize::Xl)
+    .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+    .child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .spacing(10.0)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "volume-2",
+          size: 16.0,
+          color: theme::palette().text_secondary,
+        }))
+        .child(
+          Text::new(&channel.name)
+            .variant(theme::TypographyStyle::Heading)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(watching_badge(ctx)),
+    )
+    .child(if local_sharing {
+      top_bar_stop_stream_button(ctx, stop_stream)
+    } else {
+      top_bar_share_button(ctx, start_stream_modal_open)
+    })
+    .into()
+}
+
+fn watching_badge(ctx: &mut Ctx) -> Element {
+  Row::new()
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(5.0)
+    .padding_vertical(3.0)
+    .padding_horizontal(8.0)
+    .rounded(theme::RadiusSize::Sm)
+    .background(BackgroundColor::Color(Color::from_hex("#2A1A1C")))
+    .child(
+      Row::new()
+        .width(6.0)
+        .height(6.0)
+        .rounded(3.0)
+        .background(BackgroundColor::Color(Color::from_hex("#FF6B5F"))),
+    )
+    .child(
+      Text::new(&ctx.t("lobby.stream_browser.watching.badge"))
+        .variant(theme::TypographyStyle::FieldLabel)
+        .color(theme::PaletteColor::Danger),
+    )
+    .into()
+}
+
+fn top_bar_share_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>) -> Element {
+  let open = start_stream_modal_open.clone();
+  let mut button = dark_top_bar_button(ctx, "monitor-up", "lobby.stream_browser.watching.share_screen");
+  button = button.on_click(move |_| open.set(true));
+
+  button.into()
+}
+
+fn top_bar_stop_stream_button(ctx: &mut Ctx, stop_stream: &StopStreamAction) -> Element {
+  let pending = stop_stream.state().get().is_pending();
+  let action = stop_stream.clone();
+  let mut button = dark_top_bar_button(ctx, "screen-share-off", "lobby.stream_browser.list.stop");
+
+  if !pending {
+    button = button.on_click(move |_| action.run(()));
+  }
+
+  button.into()
+}
+
+fn dark_top_bar_button(ctx: &mut Ctx, icon: &'static str, label_key: &'static str) -> Row {
+  Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(7.0)
+    .padding_horizontal(14.0)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 16.0,
+      color: theme::palette().text_secondary,
+    }))
+    .child(
+      Text::new(&ctx.t(label_key))
+        .variant(theme::TypographyStyle::Button)
+        .color(theme::PaletteColor::TextPrimary),
+    )
+}
+
 fn top_bar_label(text: &str, variant: theme::TypographyStyle, color: theme::PaletteColor) -> Element {
   Row::new()
     .height(Dimension::Pct(100.0))
@@ -318,6 +1254,10 @@ fn main_body(
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+  stop_watching: &StopWatchingAction,
 ) -> Element {
   if let Some(channel) = selected_text_channel(lobby) {
     return text_channel_detail(
@@ -335,16 +1275,21 @@ fn main_body(
     );
   }
 
-  let selected = lobby
-    .selected_channel_id
-    .and_then(|id| lobby.channels.iter().find(|channel| channel.id == id));
+  if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
+    return stream_browser(
+      ctx,
+      channel,
+      info.user_id,
+      lobby,
+      start_stream_modal_open,
+      stop_stream,
+      watch_stream,
+      stop_watching,
+    );
+  }
 
   if lobby.channels.is_empty() {
     return empty_voice_state(ctx, lobby.last_error.as_deref());
-  }
-
-  if let Some(channel) = selected {
-    return channel_detail(ctx, channel, info, lobby);
   }
 
   select_channel_state(ctx, lobby.last_error.as_deref())
@@ -538,6 +1483,59 @@ fn selected_text_channel(lobby: &LobbyState) -> Option<&LobbyTextChannel> {
   lobby
     .selected_text_channel_id
     .and_then(|id| lobby.text_channels.iter().find(|channel| channel.id == id))
+}
+
+fn stream_browser_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
+  lobby
+    .stream_browser_channel_id
+    .and_then(|id| lobby.channels.iter().find(|channel| channel.id == id))
+}
+
+fn selected_voice_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
+  lobby
+    .selected_channel_id
+    .and_then(|id| lobby.channels.iter().find(|channel| channel.id == id))
+}
+
+fn screen_share_count_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> usize {
+  let Some(users) = lobby.users_by_channel.get(&channel_id) else {
+    return 0;
+  };
+  let user_ids = users.iter().map(|user| user.user_id).collect::<HashSet<_>>();
+  lobby
+    .screen_shares
+    .iter()
+    .filter(|share| user_ids.contains(&share.sharer_user_id))
+    .count()
+}
+
+struct ChannelScreenShare<'a> {
+  share: &'a LobbyScreenShare,
+  user: Option<&'a LobbyUser>,
+}
+
+fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Vec<ChannelScreenShare<'_>> {
+  let Some(users) = lobby.users_by_channel.get(&channel_id) else {
+    return Vec::new();
+  };
+  let user_ids = users.iter().map(|user| user.user_id).collect::<HashSet<_>>();
+
+  lobby
+    .screen_shares
+    .iter()
+    .filter(|share| user_ids.contains(&share.sharer_user_id))
+    .map(|share| ChannelScreenShare {
+      share,
+      user: users.iter().find(|user| user.user_id == share.sharer_user_id),
+    })
+    .collect()
+}
+
+fn watched_stream_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Option<ChannelScreenShare<'_>> {
+  let watching_user_id = lobby.watching_user_id?;
+  screen_shares_for_channel(lobby, channel_id)
+    .into_iter()
+    .find(|stream| stream.share.sharer_user_id == watching_user_id)
 }
 
 fn unique_lobby_member_count(lobby: &LobbyState) -> usize {
@@ -1098,148 +2096,1093 @@ fn select_channel_state(ctx: &mut Ctx, error: Option<&str>) -> Element {
   body.into()
 }
 
-fn channel_detail(ctx: &mut Ctx, channel: &LobbyChannel, info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
-  let mut users = Column::new().width(520.0).spacing(theme::SpacingSize::Sm);
+fn stream_browser(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  local_user_id: UserId,
+  lobby: &LobbyState,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+  stop_watching: &StopWatchingAction,
+) -> Element {
+  let mut streams = screen_shares_for_channel(lobby, channel.id);
+  let users = lobby
+    .users_by_channel
+    .get(&channel.id)
+    .map(Vec::as_slice)
+    .unwrap_or(&[]);
 
-  if lobby.users.is_empty() {
-    users = users.child(
-      Text::new(&ctx.t("lobby.users.empty"))
-        .variant(theme::TypographyStyle::Description)
-        .color(theme::PaletteColor::TextMuted),
+  if let Some(watching_user_id) = lobby.watching_user_id
+    && let Some(watched_index) = streams
+      .iter()
+      .position(|stream| stream.share.sharer_user_id == watching_user_id)
+  {
+    let watched_stream = streams.remove(watched_index);
+    return stream_watching(
+      ctx,
+      channel,
+      watched_stream,
+      streams,
+      stop_watching,
+      watch_stream,
+      lobby.last_error.as_deref(),
     );
-  } else {
-    for user in &lobby.users {
-      users = users.child(user_row(ctx, user, info.user_id));
-    }
   }
+
+  if streams.is_empty() {
+    return stream_browser_empty_channel(ctx, users, lobby.last_error.as_deref(), start_stream_modal_open);
+  }
+
+  stream_browser_streams(
+    ctx,
+    channel,
+    streams,
+    users,
+    local_user_id,
+    lobby.watching_user_id,
+    lobby.last_error.as_deref(),
+    start_stream_modal_open,
+    stop_stream,
+    watch_stream,
+  )
+}
+
+fn stream_watching(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  stream: ChannelScreenShare<'_>,
+  switch_streams: Vec<ChannelScreenShare<'_>>,
+  stop_watching: &StopWatchingAction,
+  watch_stream: &WatchStreamAction,
+  error: Option<&str>,
+) -> Element {
+  let sharer_id = stream.share.sharer_user_id;
+  let name = stream
+    .user
+    .map(|user| user.username.clone())
+    .unwrap_or_else(|| format!("User #{sharer_id}"));
+  let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
+  let metadata = stream_metadata_label(ctx, stream.share);
 
   let mut body = Column::new()
     .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
     .flex(1.0)
-    .align_items(Alignment::Center)
-    .justify(Justify::Center)
-    .spacing(theme::SpacingSize::Xl)
-    .child(
-      Column::new()
-        .width(520.0)
-        .spacing(theme::SpacingSize::Sm)
-        .child(Text::new(&channel.name).variant(theme::TypographyStyle::Title))
-        .child(
-          Text::new(&ctx.t("lobby.channel.description"))
-            .variant(theme::TypographyStyle::Description)
-            .color(theme::PaletteColor::TextMuted),
-        ),
-    )
-    .child(users);
+    .spacing(10.0)
+    .padding(20.0)
+    .child(stream_viewer_placeholder(ctx, &metadata))
+    .child(stream_info_bar(ctx, &name, &title, channel, stop_watching));
 
-  if let Some(error) = lobby.last_error.as_deref() {
+  if !switch_streams.is_empty() {
+    body = body.child(stream_switcher(ctx, switch_streams, watch_stream));
+  }
+
+  if let Some(error) = error {
     body = body.child(error_notice(ctx, error));
   }
 
   body.into()
 }
 
-fn user_row(ctx: &mut Ctx, user: &LobbyUser, local_user_id: u32) -> Element {
-  let local = user.user_id == local_user_id;
+fn stream_viewer_placeholder(ctx: &mut Ctx, metadata: &str) -> Element {
+  Stack::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Color(Color::from_hex("#0E0F12")))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .height(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .spacing(10.0)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon: "monitor",
+          size: 44.0,
+          color: theme::palette().border,
+        }))
+        .child(
+          Text::new(metadata)
+            .variant(theme::TypographyStyle::Mono)
+            .color(theme::PaletteColor::TextMuted),
+        ),
+    )
+    .child(viewer_live_badge(ctx).absolute(16.0, 16.0, 76.0, 24.0))
+    .into()
+}
 
+fn viewer_live_badge(ctx: &mut Ctx) -> Row {
+  Row::new()
+    .width(76.0)
+    .height(24.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(5.0)
+    .padding_vertical(4.0)
+    .padding_horizontal(9.0)
+    .rounded(theme::RadiusSize::Sm)
+    .background(BackgroundColor::Color(Color::from_hex("#2A1A1C")))
+    .child(
+      Row::new()
+        .width(6.0)
+        .height(6.0)
+        .rounded(3.0)
+        .background(BackgroundColor::Color(Color::from_hex("#FF6B5F"))),
+    )
+    .child(
+      Text::new(&ctx.t("lobby.stream_browser.watching.live"))
+        .variant(theme::TypographyStyle::FieldLabel)
+        .color(theme::PaletteColor::Danger),
+    )
+}
+
+fn stream_info_bar(
+  ctx: &mut Ctx,
+  name: &str,
+  title: &str,
+  channel: &LobbyChannel,
+  stop_watching: &StopWatchingAction,
+) -> Element {
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
-    .justify(Justify::SpaceBetween)
-    .padding_vertical(8.0)
-    .padding_horizontal(10.0)
-    .rounded(theme::RadiusSize::Lg)
-    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .border_inside(1.0, theme::PaletteColor::Border)
+    .spacing(10.0)
+    .padding_vertical(10.0)
+    .padding_horizontal(12.0)
+    .child(server_avatar(name, 26.0, false))
     .child(
       Row::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
         .align_items(Alignment::Center)
-        .spacing(theme::SpacingSize::Md)
-        .child(server_avatar(&user.username, 32.0, false))
+        .spacing(6.0)
+        .child(
+          Text::new(title)
+            .variant(theme::TypographyStyle::Button)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(
+          Text::new(&ctx.t_args(
+            "lobby.stream_browser.watching.display",
+            [("channel", channel.name.clone())],
+          ))
+          .variant(theme::TypographyStyle::Caption)
+          .color(theme::PaletteColor::TextMuted),
+        ),
+    )
+    .child(stream_icon_button(ctx, "volume-2"))
+    .child(stream_icon_button(ctx, "layout-grid"))
+    .child(stop_watching_button(ctx, stop_watching))
+    .into()
+}
+
+fn stream_icon_button(ctx: &mut Ctx, icon: &'static str) -> Element {
+  Row::new()
+    .width(36.0)
+    .height(36.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 16.0,
+      color: theme::palette().text_secondary,
+    }))
+    .into()
+}
+
+fn stop_watching_button(ctx: &mut Ctx, stop_watching: &StopWatchingAction) -> Element {
+  let pending = stop_watching.state().get().is_pending();
+  let action = stop_watching.clone();
+  let mut button = dark_top_bar_button(ctx, "eye-off", "lobby.stream_browser.watching.stop");
+
+  if !pending {
+    button = button.on_click(move |_| action.run(()));
+  }
+
+  button.into()
+}
+
+fn stream_browser_empty_channel(
+  ctx: &mut Ctx,
+  users: &[LobbyUser],
+  error: Option<&str>,
+  start_stream_modal_open: Signal<bool>,
+) -> Element {
+  let mut body = Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .justify(Justify::SpaceBetween)
+    .spacing(theme::SpacingSize::Lg)
+    .padding(20.0)
+    .child(stream_user_tiles(ctx, users, &[]))
+    .child(stream_share_bar(ctx, start_stream_modal_open));
+
+  if let Some(error) = error {
+    body = body.child(error_notice(ctx, error));
+  }
+
+  body.into()
+}
+
+fn stream_user_tiles(ctx: &mut Ctx, users: &[LobbyUser], streaming_user_ids: &[UserId]) -> Element {
+  let visible = users.iter().take(3).collect::<Vec<_>>();
+  let mut row = Row::new().width(Dimension::Pct(100.0)).spacing(16.0);
+
+  if visible.is_empty() {
+    row = row.child(stream_user_tile_placeholder(ctx));
+  } else {
+    for user in visible {
+      row = row.child(stream_user_tile(ctx, user, streaming_user_ids.contains(&user.user_id)));
+    }
+  }
+
+  row.into()
+}
+
+fn stream_user_tile(ctx: &mut Ctx, user: &LobbyUser, streaming: bool) -> Element {
+  let speaking = user.speaking && !user.muted && !user.deafened;
+  let mut name_row = Row::new()
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(5.0);
+
+  name_row = name_row.child(
+    Text::new(&user.username)
+      .variant(theme::TypographyStyle::Button)
+      .color(theme::PaletteColor::TextPrimary),
+  );
+
+  if speaking {
+    name_row = name_row.child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "mic",
+      size: 12.0,
+      color: theme::palette().success,
+    }));
+  }
+
+  Stack::new()
+    .width(260.0)
+    .height(150.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(
+      1.0,
+      if speaking {
+        theme::PaletteColor::Success
+      } else {
+        theme::PaletteColor::Border
+      },
+    )
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .height(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .spacing(theme::SpacingSize::Lg)
+        .child(stream_user_avatar(&user.username, speaking, 50.0))
         .child(
           Column::new()
-            .spacing(theme::SpacingSize::Xs)
-            .child(user_name(ctx, &user.username, local))
+            .align_items(Alignment::Center)
+            .spacing(4.0)
+            .child(name_row)
             .child(
-              Text::new(role_label_lower(user.role))
+              Text::new(user_role_label(user.role))
                 .variant(theme::TypographyStyle::Caption)
                 .color(theme::PaletteColor::TextMuted),
             ),
         ),
     )
-    .child(voice_state(ctx, user))
+    .child(stream_role_badge(ctx, user.role).absolute(12.0, 12.0, 24.0, 24.0))
+    .child(stream_user_status_badges(ctx, user, streaming).absolute(164.0, 12.0, 84.0, 24.0))
     .into()
 }
 
-fn user_name(ctx: &mut Ctx, username: &str, local: bool) -> Element {
-  let name = Text::new(username)
-    .variant(theme::TypographyStyle::Description)
-    .color(theme::PaletteColor::TextPrimary);
+fn stream_user_avatar(name: &str, active: bool, size: f32) -> Element {
+  Row::new()
+    .width(size)
+    .height(size)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(size / 2.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(
+      1.5,
+      BackgroundColor::Palette(if active {
+        theme::PaletteColor::Success
+      } else {
+        theme::PaletteColor::Border
+      }),
+    )
+    .child(
+      Text::new(&initials_for_user(name))
+        .variant(theme::TypographyStyle::Heading)
+        .color(if active {
+          theme::PaletteColor::TextPrimary
+        } else {
+          theme::PaletteColor::TextSecondary
+        }),
+    )
+    .into()
+}
 
-  if !local {
-    return name.into();
-  }
+fn stream_role_badge(ctx: &mut Ctx, role: Role) -> Row {
+  let palette = theme::palette();
+  let (icon, color, background) = match role {
+    Role::Owner => ("shield-check", palette.warning, palette.warning_muted),
+    Role::Admin => ("shield", palette.accent, palette.accent_muted),
+    Role::Moderator => ("key-round", palette.info, palette.info_muted),
+    Role::User => ("user", palette.text_muted, palette.surface_raised),
+  };
 
   Row::new()
+    .width(24.0)
+    .height(24.0)
     .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Xs)
-    .child(name)
+    .justify(Justify::Center)
+    .rounded(12.0)
+    .background(BackgroundColor::Color(background))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 13.0,
+      color,
+    }))
+}
+
+fn stream_user_status_badges(ctx: &mut Ctx, user: &LobbyUser, streaming: bool) -> Row {
+  let mut badges = Row::new()
+    .width(84.0)
+    .height(24.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::End)
+    .spacing(5.0);
+
+  if streaming {
+    badges = badges.child(stream_status_badge(ctx, "monitor-up", theme::palette().accent));
+  }
+
+  if user.deafened {
+    badges = badges
+      .child(stream_status_badge(ctx, "headphone-off", theme::palette().danger))
+      .child(stream_status_badge(ctx, "mic-off", theme::palette().danger));
+  } else if user.muted {
+    badges = badges.child(stream_status_badge(ctx, "mic-off", theme::palette().danger));
+  }
+
+  badges
+}
+
+fn stream_status_badge(ctx: &mut Ctx, icon: &'static str, color: Color) -> Row {
+  Row::new()
+    .width(22.0)
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(11.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon,
+      size: 12.0,
+      color,
+    }))
+}
+
+fn stream_user_tile_placeholder(ctx: &mut Ctx) -> Element {
+  Column::new()
+    .width(260.0)
+    .height(150.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(theme::SpacingSize::Md)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "users",
+      size: 28.0,
+      color: theme::palette().text_muted,
+    }))
     .child(
-      Text::new(&ctx.t("lobby.users.you"))
+      Text::new(&ctx.t("lobby.users.empty"))
         .variant(theme::TypographyStyle::Caption)
         .color(theme::PaletteColor::TextMuted),
     )
     .into()
 }
 
-fn voice_state(ctx: &mut Ctx, user: &LobbyUser) -> Element {
-  let speaking = user.speaking && !user.muted && !user.deafened;
-  let icon = if user.deafened {
-    "headphone-off"
-  } else if user.muted {
-    "mic-off"
-  } else {
-    "mic"
-  };
-  let label = if user.deafened {
-    ctx.t("lobby.voice.deafened")
-  } else if user.muted {
-    ctx.t("lobby.voice.muted")
-  } else {
-    ctx.t("lobby.voice.live")
-  };
-  let color = if user.deafened || user.muted {
-    theme::palette().danger
-  } else if speaking {
-    theme::palette().success
-  } else {
-    theme::palette().text_muted
-  };
-
+fn stream_share_bar(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>) -> Element {
   Row::new()
+    .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Xs)
-    .padding_vertical(5.0)
-    .padding_horizontal(8.0)
-    .rounded(theme::RadiusSize::Md)
-    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .spacing(10.0)
+    .padding_vertical(14.0)
+    .padding_horizontal(16.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(1.0, theme::PaletteColor::Border)
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon,
-      size: 13.0,
-      color,
+      icon: "monitor",
+      size: 16.0,
+      color: theme::palette().text_muted,
     }))
     .child(
-      Text::new(&label)
+      Text::new(&ctx.t("lobby.stream_browser.empty.share_bar"))
         .variant(theme::TypographyStyle::Caption)
-        .color(if user.deafened || user.muted {
-          theme::PaletteColor::Danger
-        } else if speaking {
-          theme::PaletteColor::Success
+        .color(theme::PaletteColor::TextSecondary)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
+    .child(start_stream_button(ctx, start_stream_modal_open))
+    .into()
+}
+
+fn user_role_label(role: Role) -> &'static str {
+  match role {
+    Role::Owner => "owner",
+    Role::Admin => "admin",
+    Role::Moderator => "moderator",
+    Role::User => "member",
+  }
+}
+
+fn initials_for_user(name: &str) -> String {
+  let initials = name
+    .chars()
+    .filter(|ch| ch.is_alphanumeric())
+    .flat_map(|ch| ch.to_uppercase())
+    .take(1)
+    .collect::<String>();
+
+  if initials.is_empty() { "?".to_owned() } else { initials }
+}
+
+fn stream_browser_streams(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  streams: Vec<ChannelScreenShare<'_>>,
+  users: &[LobbyUser],
+  local_user_id: UserId,
+  watching_user_id: Option<UserId>,
+  error: Option<&str>,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+) -> Element {
+  let local_sharing = streams
+    .iter()
+    .any(|stream| stream.share.sharer_user_id == local_user_id);
+  let stream_count = streams.len();
+
+  if stream_count == 1 {
+    let mut streams = streams;
+    let stream = streams.remove(0);
+    let streaming_user_ids = [stream.share.sharer_user_id];
+    let mut body = Column::new()
+      .width(Dimension::Pct(100.0))
+      .height(Dimension::Pct(100.0))
+      .flex(1.0)
+      .justify(Justify::SpaceBetween)
+      .spacing(20.0)
+      .padding(20.0)
+      .child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .spacing(14.0)
+          .child(
+            Text::new(&ctx.t_args("lobby.stream_browser.live_label", [("count", stream_count.to_string())]))
+              .variant(theme::TypographyStyle::FieldLabel)
+              .color(theme::PaletteColor::TextMuted),
+          )
+          .child(stream_live_row(
+            ctx,
+            channel,
+            stream,
+            local_user_id,
+            watching_user_id,
+            stop_stream,
+            watch_stream,
+          ))
+          .child(stream_user_tiles(ctx, users, &streaming_user_ids)),
+      )
+      .child(if local_sharing {
+        stop_stream_button(ctx, stop_stream)
+      } else {
+        start_stream_button(ctx, start_stream_modal_open)
+      });
+
+    if let Some(error) = error {
+      body = body.child(error_notice(ctx, error));
+    }
+
+    return body.into();
+  }
+
+  let description = ctx.t_args(
+    "lobby.stream_browser.picker.description",
+    [("count", stream_count.to_string())],
+  );
+  let mut cards = Row::new().width(Dimension::Pct(100.0)).wrap().spacing(12.0);
+
+  for stream in streams {
+    cards = cards.child(stream_card(
+      ctx,
+      channel,
+      stream,
+      local_user_id,
+      watching_user_id,
+      stop_stream,
+      watch_stream,
+    ));
+  }
+
+  let mut body = Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .spacing(32.0)
+    .padding_vertical(40.0)
+    .padding_horizontal(24.0)
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .spacing(16.0)
+        .child(
+          Row::new()
+            .width(60.0)
+            .height(60.0)
+            .align_items(Alignment::Center)
+            .justify(Justify::Center)
+            .rounded(14.0)
+            .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+            .border_inside(1.0, theme::PaletteColor::Border)
+            .child(ctx.mount::<LucideIcon>(LucideIconProps {
+              icon: "monitor-play",
+              size: 28.0,
+              color: theme::palette().text_secondary,
+            })),
+        )
+        .child(
+          Text::new(&ctx.t("lobby.stream_browser.picker.title"))
+            .variant(theme::TypographyStyle::Title)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(
+          Text::new(&description)
+            .variant(theme::TypographyStyle::Description)
+            .color(theme::PaletteColor::TextSecondary)
+            .text_align(Alignment::Center)
+            .width(440.0),
+        ),
+    )
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .spacing(12.0)
+        .child(
+          Row::new()
+            .width(Dimension::Pct(100.0))
+            .align_items(Alignment::Center)
+            .justify(Justify::SpaceBetween)
+            .child(
+              Text::new(&ctx.t("lobby.stream_browser.picker.live_streams"))
+                .variant(theme::TypographyStyle::FieldLabel)
+                .color(theme::PaletteColor::TextMuted),
+            )
+            .child(stream_filter_chip(ctx)),
+        )
+        .child(cards),
+    )
+    .child(
+      Row::new()
+        .width(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .justify(Justify::End)
+        .child(if local_sharing {
+          stop_stream_button(ctx, stop_stream)
         } else {
-          theme::PaletteColor::TextMuted
+          start_stream_button(ctx, start_stream_modal_open)
         }),
+    );
+
+  if let Some(error) = error {
+    body = body.child(error_notice(ctx, error));
+  }
+
+  body.into()
+}
+
+fn stream_live_row(
+  ctx: &mut Ctx,
+  channel: &LobbyChannel,
+  stream: ChannelScreenShare<'_>,
+  local_user_id: UserId,
+  watching_user_id: Option<UserId>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+) -> Element {
+  let sharer_id = stream.share.sharer_user_id;
+  let name = stream
+    .user
+    .map(|user| user.username.clone())
+    .unwrap_or_else(|| format!("User #{sharer_id}"));
+  let local = sharer_id == local_user_id;
+  let watching = watching_user_id == Some(sharer_id);
+  let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
+  let metadata = stream_metadata_label(ctx, stream.share);
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(70.0)
+    .align_items(Alignment::Center)
+    .spacing(12.0)
+    .padding_vertical(10.0)
+    .padding_horizontal(12.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Color(Color::from_hex("#15171A")))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(stream_thumb(ctx))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(3.0)
+        .child(
+          Row::new()
+            .align_items(Alignment::Center)
+            .spacing(8.0)
+            .child(
+              Text::new(&title)
+                .variant(theme::TypographyStyle::Button)
+                .color(theme::PaletteColor::TextPrimary),
+            )
+            .child(if local { local_badge(ctx) } else { Row::new().into() }),
+        )
+        .child(
+          Text::new(&format!(
+            "{} · {}",
+            ctx.t_args("lobby.stream_browser.list.channel", [("channel", channel.name.clone())],),
+            metadata
+          ))
+          .variant(theme::TypographyStyle::Caption)
+          .color(theme::PaletteColor::TextMuted),
+        ),
+    )
+    .child(if local {
+      stop_stream_button(ctx, stop_stream)
+    } else {
+      watch_stream_button(ctx, sharer_id, watching, watch_stream)
+    })
+    .into()
+}
+
+fn stream_card(
+  ctx: &mut Ctx,
+  _channel: &LobbyChannel,
+  stream: ChannelScreenShare<'_>,
+  local_user_id: UserId,
+  watching_user_id: Option<UserId>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+) -> Element {
+  let sharer_id = stream.share.sharer_user_id;
+  let name = stream
+    .user
+    .map(|user| user.username.clone())
+    .unwrap_or_else(|| format!("User #{sharer_id}"));
+  let local = sharer_id == local_user_id;
+  let watching = watching_user_id == Some(sharer_id);
+  let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
+  let action = watch_stream.clone();
+
+  let mut card = Row::new()
+    .width(226.0)
+    .height(58.0)
+    .align_items(Alignment::Center)
+    .spacing(10.0)
+    .padding_vertical(10.0)
+    .padding_horizontal(12.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Color(if watching {
+      Color::from_hex("#121A23")
+    } else {
+      Color::from_hex("#15171A")
+    }))
+    .border_inside(
+      1.0,
+      if watching {
+        theme::PaletteColor::Accent
+      } else {
+        theme::PaletteColor::Border
+      },
+    )
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+    .child(stream_thumb(ctx))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(2.0)
+        .child(
+          Row::new()
+            .align_items(Alignment::Center)
+            .spacing(theme::SpacingSize::Sm)
+            .child(
+              Text::new(&title)
+                .variant(theme::TypographyStyle::Button)
+                .color(theme::PaletteColor::TextPrimary),
+            )
+            .child(if local { local_badge(ctx) } else { Row::new().into() }),
+        )
+        .child(
+          Text::new(&stream_resolution_label(stream.share))
+            .variant(theme::TypographyStyle::Mono)
+            .color(theme::PaletteColor::TextMuted),
+        ),
+    )
+    .child(if local {
+      stream_card_stop_button(ctx, stop_stream)
+    } else {
+      stream_card_watch_icon(ctx, watching)
+    });
+
+  if !local && !watching && !watch_stream.state().get().is_pending() {
+    card = card.on_click(move |_| action.run(sharer_id));
+  }
+
+  card.into()
+}
+
+fn stream_switcher(ctx: &mut Ctx, streams: Vec<ChannelScreenShare<'_>>, watch_stream: &WatchStreamAction) -> Element {
+  let mut cards = Row::new().width(Dimension::Pct(100.0)).spacing(12.0);
+
+  for stream in streams.into_iter().take(3) {
+    cards = cards.child(stream_switch_card(ctx, stream, watch_stream));
+  }
+
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .spacing(10.0)
+    .child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .spacing(6.0)
+        .child(
+          Text::new(&ctx.t("lobby.stream_browser.switch.title"))
+            .variant(theme::TypographyStyle::FieldLabel)
+            .color(theme::PaletteColor::TextMuted),
+        )
+        .child(
+          Text::new(&ctx.t("lobby.stream_browser.switch.hint"))
+            .variant(theme::TypographyStyle::Caption)
+            .color(theme::PaletteColor::TextMuted),
+        ),
+    )
+    .child(cards)
+    .into()
+}
+
+fn stream_switch_card(ctx: &mut Ctx, stream: ChannelScreenShare<'_>, watch_stream: &WatchStreamAction) -> Element {
+  let sharer_id = stream.share.sharer_user_id;
+  let name = stream
+    .user
+    .map(|user| user.username.clone())
+    .unwrap_or_else(|| format!("User #{sharer_id}"));
+  let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
+  let action = watch_stream.clone();
+  let pending = watch_stream.state().get().is_pending();
+  let mut card = Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(58.0)
+    .align_items(Alignment::Center)
+    .spacing(10.0)
+    .padding_vertical(10.0)
+    .padding_horizontal(12.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Color(Color::from_hex("#15171A")))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#121A23"))))
+    .child(stream_thumb(ctx))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(2.0)
+        .child(
+          Text::new(&title)
+            .variant(theme::TypographyStyle::Button)
+            .color(theme::PaletteColor::TextPrimary),
+        )
+        .child(
+          Text::new(&ctx.t("lobby.stream_browser.watching.display_plain"))
+            .variant(theme::TypographyStyle::Caption)
+            .color(theme::PaletteColor::TextMuted),
+        ),
+    );
+
+  if !pending {
+    card = card.on_click(move |_| action.run(sharer_id));
+  }
+
+  card.into()
+}
+
+fn stream_thumb(ctx: &mut Ctx) -> Element {
+  Stack::new()
+    .width(52.0)
+    .height(34.0)
+    .rounded(4.0)
+    .background(BackgroundColor::Color(Color::from_hex("#0B0C0E")))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      Row::new()
+        .width(6.0)
+        .height(6.0)
+        .rounded(3.0)
+        .background(BackgroundColor::Color(Color::from_hex("#FF6B5F")))
+        .absolute(6.0, 6.0, 6.0, 6.0),
+    )
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "monitor",
+      size: 14.0,
+      color: theme::palette().border,
+    }))
+    .into()
+}
+
+fn stream_filter_chip(ctx: &mut Ctx) -> Element {
+  Row::new()
+    .width(280.0)
+    .height(36.0)
+    .align_items(Alignment::Center)
+    .spacing(8.0)
+    .padding_horizontal(12.0)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Color(Color::from_hex("#171A1E")))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "search",
+      size: 14.0,
+      color: theme::palette().text_muted,
+    }))
+    .child(
+      Text::new(&ctx.t("lobby.stream_browser.picker.filter"))
+        .variant(theme::TypographyStyle::Mono)
+        .color(theme::PaletteColor::TextMuted),
     )
     .into()
+}
+
+fn stream_card_watch_icon(ctx: &mut Ctx, watching: bool) -> Element {
+  Row::new()
+    .width(28.0)
+    .height(28.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(if watching {
+      theme::PaletteColor::AccentMuted
+    } else {
+      theme::PaletteColor::SurfaceRaised
+    }))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: if watching { "eye" } else { "play" },
+      size: 14.0,
+      color: if watching {
+        theme::palette().accent
+      } else {
+        theme::palette().text_secondary
+      },
+    }))
+    .into()
+}
+
+fn stream_card_stop_button(ctx: &mut Ctx, stop_stream: &StopStreamAction) -> Element {
+  let pending = stop_stream.state().get().is_pending();
+  let action = stop_stream.clone();
+  let mut button = Row::new()
+    .width(28.0)
+    .height(28.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "screen-share-off",
+      size: 14.0,
+      color: theme::palette().text_secondary,
+    }));
+
+  if !pending {
+    button = button.on_click(move |_| action.run(()));
+  }
+
+  button.into()
+}
+
+fn stream_resolution_label(stream: &LobbyScreenShare) -> String {
+  if stream.metadata.width == 0 || stream.metadata.height == 0 {
+    return "Pending".to_owned();
+  }
+
+  format!("{}x{}", stream.metadata.width, stream.metadata.height)
+}
+
+fn stream_metadata_label(ctx: &mut Ctx, stream: &LobbyScreenShare) -> String {
+  let codec = match stream.metadata.codec {
+    VideoCodecId::Unknown => ctx.t("lobby.stream_browser.list.pending").to_string(),
+    VideoCodecId::Av1 => "AV1".to_owned(),
+    VideoCodecId::H265 => "H.265".to_owned(),
+    VideoCodecId::H264 => "H.264".to_owned(),
+  };
+
+  if stream.metadata.width == 0 || stream.metadata.height == 0 {
+    return codec;
+  }
+
+  format!("{} x {} · {}", stream.metadata.width, stream.metadata.height, codec)
+}
+
+fn local_badge(ctx: &mut Ctx) -> Element {
+  Text::new(&ctx.t("lobby.users.you"))
+    .variant(theme::TypographyStyle::Caption)
+    .color(theme::PaletteColor::TextMuted)
+    .into()
+}
+
+fn start_stream_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>) -> Element {
+  let open = start_stream_modal_open.clone();
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::TextPrimary))
+    .border_inside(1.0, theme::PaletteColor::TextPrimary)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::TextSecondary)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "screen-share",
+      size: 16.0,
+      color: theme::palette().text_inverse,
+    }))
+    .child(
+      Text::new(&ctx.t("lobby.stream_browser.empty.start"))
+        .variant(theme::TypographyStyle::Button)
+        .color(theme::PaletteColor::TextInverse),
+    );
+
+  button = button.on_click(move |_| open.set(true));
+
+  button.into()
+}
+
+fn stop_stream_button(ctx: &mut Ctx, stop_stream: &StopStreamAction) -> Element {
+  let pending = stop_stream.state().get().is_pending();
+  let action = stop_stream.clone();
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "screen-share-off",
+      size: 16.0,
+      color: theme::palette().text_secondary,
+    }))
+    .child(
+      Text::new(&ctx.t("lobby.stream_browser.list.stop"))
+        .variant(theme::TypographyStyle::Button)
+        .color(theme::PaletteColor::TextSecondary),
+    );
+
+  if !pending {
+    button = button.on_click(move |_| action.run(()));
+  }
+
+  button.into()
+}
+
+fn watch_stream_button(ctx: &mut Ctx, sharer_id: UserId, watching: bool, watch_stream: &WatchStreamAction) -> Element {
+  let pending = watch_stream.state().get().is_pending();
+  let action = watch_stream.clone();
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(if watching {
+      theme::PaletteColor::SurfaceInput
+    } else {
+      theme::PaletteColor::Accent
+    }))
+    .border_inside(
+      1.0,
+      if watching {
+        theme::PaletteColor::Border
+      } else {
+        theme::PaletteColor::Accent
+      },
+    )
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(if watching {
+      theme::PaletteColor::SurfaceInput
+    } else {
+      theme::PaletteColor::AccentHover
+    })))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: if watching { "eye" } else { "play" },
+      size: 16.0,
+      color: if watching {
+        theme::palette().text_secondary
+      } else {
+        theme::palette().text_inverse
+      },
+    }))
+    .child(
+      Text::new(&ctx.t(if watching {
+        "lobby.stream_browser.list.watching"
+      } else {
+        "lobby.stream_browser.list.watch"
+      }))
+      .variant(theme::TypographyStyle::Button)
+      .color(if watching {
+        theme::PaletteColor::TextSecondary
+      } else {
+        theme::PaletteColor::TextInverse
+      }),
+    );
+
+  if !pending && !watching {
+    button = button.on_click(move |_| action.run(sharer_id));
+  }
+
+  button.into()
 }
 
 fn create_voice_button(ctx: &mut Ctx) -> Element {

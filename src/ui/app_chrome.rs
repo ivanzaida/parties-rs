@@ -6,6 +6,7 @@ use lurq::{
 };
 
 use crate::{
+  session::ServerSession,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -211,6 +212,7 @@ fn window_controls(ctx: &mut Ctx) -> Element {
   let minimize_window = window.clone();
   let maximize_window = window.clone();
   let close_window = window.clone();
+  let session = ctx.use_context::<ServerSession>();
   let maximized = window.is_maximized;
 
   Row::new()
@@ -232,6 +234,9 @@ fn window_controls(ctx: &mut Ctx) -> Element {
       }),
     )
     .child(window_control_button(ctx, "x", ControlTone::Danger).on_click(move |_| {
+      if let Some(session) = session.as_ref() {
+        session.disconnect();
+      }
       close_window.close();
     }))
     .into()

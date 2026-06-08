@@ -1,7 +1,7 @@
 use lurq::{
   components::{Rect, Slider},
   core::Signal,
-  node::{BackgroundColor, Element, SliderPartStyle, color::Color},
+  node::{color::Color, BackgroundColor, Element, SliderPartStyle},
 };
 
 use crate::theme;

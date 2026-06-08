@@ -1,8 +1,8 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Row, Text},
-  layout::{Alignment, layout_kind::Justify, text_style::TextStyle},
-  node::{Element, color::Color},
+  layout::{layout_kind::Justify, text_style::TextStyle, Alignment},
+  node::{color::Color, Element},
 };
 
 #[derive(Clone, PartialEq, lurq::DevtoolsInspectable)]
@@ -48,9 +48,13 @@ fn name_to_char(name: &str) -> char {
     "arrow-left" => '\u{e048}',
     "arrow-right" => '\u{e049}',
     "alert-circle" | "circle-alert" => '\u{e077}',
+    "activity" => '\u{e038}',
     "check" => '\u{e06c}',
+    "check-circle" => '\u{e07c}',
     "chevron-down" => '\u{e06d}',
     "chevron-right" => '\u{e06f}',
+    "circle" => '\u{e076}',
+    "corner-down-right" => '\u{e0a2}',
     "copy" => '\u{e09e}',
     "database" => '\u{e0ad}',
     "ellipsis" => '\u{e0b6}',
@@ -64,6 +68,7 @@ fn name_to_char(name: &str) -> char {
     "info" => '\u{e0f9}',
     "key" => '\u{e0fd}',
     "key-round" => '\u{e4a3}',
+    "layout-grid" => '\u{e0ff}',
     "list-tree" => '\u{e408}',
     "loader" => '\u{e109}',
     "lock" => '\u{e10b}',
@@ -74,14 +79,21 @@ fn name_to_char(name: &str) -> char {
     "minimize-2" => '\u{e11b}',
     "minus" => '\u{e11c}',
     "monitor" => '\u{e11d}',
+    "monitor-play" => '\u{e485}',
     "monitor-up" => '\u{e422}',
     "moon" => '\u{e11e}',
     "palette" => '\u{e1dd}',
+    "phone-off" => '\u{e138}',
     "pin" => '\u{e259}',
+    "play" => '\u{e13c}',
     "plug" => '\u{e37f}',
     "plus" => '\u{e13d}',
+    "radar" => '\u{e497}',
+    "radio" => '\u{e142}',
     "refresh-cw" => '\u{e145}',
     "rotate-cw" => '\u{e149}',
+    "screen-share" => '\u{e14f}',
+    "screen-share-off" => '\u{e150}',
     "search" => '\u{e151}',
     "send" => '\u{e152}',
     "send-horizontal" => '\u{e4f2}',
@@ -92,14 +104,20 @@ fn name_to_char(name: &str) -> char {
     "sliders-horizontal" => '\u{e29a}',
     "sprout" => '\u{e1eb}',
     "trash-2" => '\u{e18e}',
+    "unlock" => '\u{e4a3}',
     "user" => '\u{e19f}',
+    "user-x" => '\u{e1a3}',
     "users" => '\u{e1a4}',
     "unplug" => '\u{e45d}',
     "video" => '\u{e1a5}',
     "volume-2" => '\u{e1ab}',
+    "wifi-off" => '\u{e1af}',
     "x" => '\u{e1b2}',
     "audio-lines" => '\u{e55a}',
     "alert-triangle" | "triangle-alert" => '\u{e193}',
-    _ => '\u{e06f}',
+    _ => {
+      crate::log_once!("Unknown icon name: {name}");
+      '\u{e06f}'
+    }
   }
 }

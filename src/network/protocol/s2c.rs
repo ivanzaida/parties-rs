@@ -164,6 +164,8 @@ impl S2C {
       | M::AdminSetRole
       | M::AdminKickUser
       | M::AdminRenameChannel
+      | M::AdminSetUserVoiceState
+      | M::AdminDisconnectUser
       | M::ChatSend
       | M::ChatHistoryReq
       | M::ChatPin

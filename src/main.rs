@@ -9,8 +9,12 @@ mod storage;
 mod theme;
 mod ui;
 
-use std::sync::{Arc, Mutex};
+use std::{
+  panic,
+  sync::{Arc, Mutex},
+};
 
+use session::ServerSession;
 use storage::{Storage, WindowState};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
@@ -22,6 +26,8 @@ fn main() {
     .build()
     .expect("failed to create tokio runtime");
   let (startup_storage, window_state, startup_error) = load_startup_storage();
+  let session = ServerSession::default();
+  install_shutdown_handlers(&tokio_runtime, session.clone());
 
   let mut lurq_app = lurq::app::App::new();
   lurq_app.set_tokio_handle(tokio_runtime.handle().clone());
@@ -45,6 +51,7 @@ fn main() {
       tokio: tokio_runtime.handle().clone(),
       startup_storage: startup_storage.clone(),
       startup_error,
+      session: session.clone(),
     },
   );
   tree.mount_devtools(&mut lurq_app);
@@ -109,6 +116,23 @@ fn main() {
   }
 
   window.run();
+  session.disconnect();
+}
+
+fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: ServerSession) {
+  let panic_session = session.clone();
+  let default_panic_hook = panic::take_hook();
+  panic::set_hook(Box::new(move |info| {
+    panic_session.disconnect();
+    default_panic_hook(info);
+  }));
+
+  tokio_runtime.spawn(async move {
+    if tokio::signal::ctrl_c().await.is_ok() {
+      session.disconnect();
+      std::process::exit(0);
+    }
+  });
 }
 
 fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<String>) {

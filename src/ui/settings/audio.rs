@@ -11,13 +11,13 @@ use lurq::{
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
   core::Signal,
   layout::{
-    Alignment, StackAlignment,
     scrollbar::ScrollBarStyle,
     text_style::{FontWeight, TextStyle},
+    Alignment, StackAlignment,
   },
   node::{
-    BackgroundColor, CursorIcon, Element, Gradient, GradientStop, SliderPartStyle, Style, border::Border, color::Color,
-    dimension::Dimension,
+    border::Border, color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Gradient, GradientStop,
+    SliderPartStyle, Style,
   },
 };
 
@@ -28,12 +28,12 @@ use crate::{
   theme,
   ui::{
     common::{
-      dropdown_menu::{DropdownOption, dropdown_menu},
-      slider as app_slider,
+      dropdown_menu::{dropdown_menu, DropdownOption},
+      percent_slider::{PercentSlider, PercentSliderProps, PercentSliderSaveAction},
     },
     settings::{
-      refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
-      shell::{SettingsPage, header, page_stack, screen_full},
+      refresh_button::{refresh_button, REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING},
+      shell::{header, page_stack, screen_full, SettingsPage},
       toggle::settings_toggle,
     },
   },
@@ -523,7 +523,7 @@ impl Component for AudioToggleSetting {
   }
 }
 
-type AudioSliderSaveAction = Arc<dyn Fn(i32) + Send + Sync>;
+type AudioSliderSaveAction = PercentSliderSaveAction;
 
 #[derive(Clone)]
 struct AudioPercentSliderSettingProps {
@@ -556,17 +556,13 @@ impl DevtoolsInspectable for AudioPercentSliderSettingProps {
   }
 }
 
-struct AudioPercentSliderSetting {
-  value: Signal<i32>,
-}
+struct AudioPercentSliderSetting {}
 
 impl Component for AudioPercentSliderSetting {
   type Props = AudioPercentSliderSettingProps;
 
-  fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      value: ctx.signal(ctx.props::<Self::Props>().initial_value),
-    }
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self {}
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -574,7 +570,14 @@ impl Component for AudioPercentSliderSetting {
     audio_row(
       &ctx.t(props.title_key),
       &ctx.t(props.description_key),
-      percent_slider(self.value.clone(), props.on_blur),
+      ctx.mount::<PercentSlider>(PercentSliderProps {
+        initial_value: props.initial_value,
+        control_width: AUDIO_CONTROL_WIDTH,
+        track_width: AUDIO_SLIDER_WIDTH,
+        value_width: AUDIO_CONTROL_VALUE_WIDTH,
+        value_spacing: AUDIO_CONTROL_VALUE_SPACING,
+        on_blur: props.on_blur,
+      }),
       true,
     )
   }
@@ -812,10 +815,6 @@ enum AudioSliderSetting {
   VoiceActivationThreshold,
 }
 
-fn percent_slider(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
-  slider_control(value, on_blur)
-}
-
 fn threshold_slider(
   value: Signal<i32>,
   input_level: f32,
@@ -925,34 +924,6 @@ fn threshold_status(label: &str, active: bool) -> Element {
         .background(BackgroundColor::Color(color)),
     )
     .child(Text::styled(label, threshold_status_label_style(color)))
-    .into()
-}
-
-fn slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
-  let current = value.get().clamp(0, 100);
-  let fill_width = AUDIO_SLIDER_WIDTH * current as f32 / 100.0;
-  let value_label = format!("{current}%");
-
-  let mut slider = app_slider::slider(value.clone(), AUDIO_SLIDER_WIDTH, 0, 100);
-
-  slider = slider.on_blur(move || {
-    on_blur(value.get_untracked());
-  });
-
-  Row::new()
-    .width(AUDIO_CONTROL_WIDTH)
-    .align_items(Alignment::Center)
-    .spacing(AUDIO_CONTROL_VALUE_SPACING)
-    .child(
-      Stack::new()
-        .stack_align(StackAlignment::CenterStart)
-        .width(AUDIO_SLIDER_WIDTH)
-        .height(app_slider::SLIDER_HEIGHT)
-        .child(app_slider::track(AUDIO_SLIDER_WIDTH))
-        .child(app_slider::fill(fill_width))
-        .child(slider),
-    )
-    .child(audio_value_label(&value_label))
     .into()
 }
 

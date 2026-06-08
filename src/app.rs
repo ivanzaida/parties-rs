@@ -18,7 +18,11 @@ use crate::{
     ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
     ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
-  services::{global_hotkeys::GlobalVoiceHotkeys, hotkeys},
+  services::{
+    global_hotkeys::GlobalVoiceHotkeys,
+    hotkeys,
+    voice_controls::{VoiceControlAction, apply_voice_control},
+  },
   session::ServerSession,
   storage::Storage,
   theme,
@@ -39,6 +43,8 @@ use crate::{
   },
 };
 
+const DEVTOOLS_HOTKEY: &str = "Ctrl+Shift+F12";
+
 pub struct App {
   router: RouterHandle,
   session: ServerSession,
@@ -54,6 +60,7 @@ pub struct AppProps {
   pub tokio: tokio::runtime::Handle,
   pub startup_storage: Option<Storage>,
   pub startup_error: Option<String>,
+  pub session: ServerSession,
 }
 
 impl PartialEq for AppProps {
@@ -69,12 +76,6 @@ impl DevtoolsInspectable for AppProps {
       std::any::type_name::<tokio::runtime::Handle>(),
     ));
   }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VoiceHotkeyAction {
-  ToggleMute,
-  ToggleDeafen,
 }
 
 impl Component for App {
@@ -116,7 +117,7 @@ impl Component for App {
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );
     router.replace(ROUTE_LOADING);
-    let session = ServerSession::default();
+    let session = props.session.clone();
     let global_hotkeys = GlobalVoiceHotkeys::new(session.clone(), tokio);
     let poll_global_hotkeys = global_hotkeys.clone();
     let interval = ctx.create_interval(Duration::from_millis(16), move || {
@@ -165,9 +166,9 @@ impl Component for App {
       .update_settings(settings.as_ref(), global_hotkeys_enabled);
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
-      move |action: VoiceHotkeyAction| {
+      move |action: VoiceControlAction| {
         let session = session.clone();
-        async move { apply_voice_hotkey(session, action).await }
+        async move { apply_voice_control(session, action).await }
       }
     });
 
@@ -197,18 +198,23 @@ impl Component for App {
     }
 
     let settings_open = self.settings_open.clone();
+    let settings_window = ctx.window();
     ctx.modal(settings_open, move |ctx| {
       let close_settings = settings_popup.clone();
+      let window = settings_window.clone();
       ctx.provide(settings_popup.clone());
       let popup = ctx.mount::<SettingsPopup>(());
       modal_layer(ctx, popup).on_key_down(move |event| {
-        if hotkeys::is_cancel_key(event) {
+        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
+          window.open_devtools();
+        } else if hotkeys::is_cancel_key(event) {
           close_settings.close();
         }
       })
     });
 
     if local_hotkeys_enabled {
+      let window = ctx.window();
       let voice_hotkey = voice_hotkey.clone();
       let ptt_session = self.session.clone();
       let ptt_down_hotkey = push_to_talk_hotkey.clone();
@@ -216,15 +222,17 @@ impl Component for App {
       let deafen_down_hotkey = deafen_hotkey.clone();
       let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
       root = root.on_key_down(move |event| {
-        if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
+        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
+          window.open_devtools();
+        } else if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
           ptt_session.set_push_to_talk_active(true);
         } else if hotkeys::event_matches_hotkey(&mute_down_hotkey, event) {
           if activate_toggle_hotkey(&active_toggle_hotkeys, &mute_down_hotkey) {
-            voice_hotkey.run(VoiceHotkeyAction::ToggleMute);
+            voice_hotkey.run(VoiceControlAction::ToggleMute);
           }
         } else if hotkeys::event_matches_hotkey(&deafen_down_hotkey, event) {
           if activate_toggle_hotkey(&active_toggle_hotkeys, &deafen_down_hotkey) {
-            voice_hotkey.run(VoiceHotkeyAction::ToggleDeafen);
+            voice_hotkey.run(VoiceControlAction::ToggleDeafen);
           }
         }
       });
@@ -237,6 +245,13 @@ impl Component for App {
         }
         release_toggle_hotkey(&active_toggle_hotkeys, &mute_hotkey, event);
         release_toggle_hotkey(&active_toggle_hotkeys, &deafen_hotkey, event);
+      });
+    } else {
+      let window = ctx.window();
+      root = root.on_key_down(move |event| {
+        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
+          window.open_devtools();
+        }
       });
     }
 
@@ -285,28 +300,6 @@ fn release_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str, eve
 
 fn hotkey_key(hotkey: &str) -> String {
   hotkey.trim().to_ascii_lowercase()
-}
-
-async fn apply_voice_hotkey(session: ServerSession, action: VoiceHotkeyAction) -> Result<(), String> {
-  let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
-  let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
-
-  match action {
-    VoiceHotkeyAction::ToggleMute => muted = !muted,
-    VoiceHotkeyAction::ToggleDeafen => {
-      deafened = !deafened;
-      if deafened {
-        muted = true;
-      }
-    }
-  }
-
-  server
-    .update_voice_state(muted, deafened)
-    .await
-    .map_err(|error| error.to_string())?;
-  session.set_local_voice_state(muted, deafened);
-  Ok(())
 }
 
 #[cfg(test)]

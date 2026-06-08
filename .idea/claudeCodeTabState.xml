@@ -7,7 +7,7 @@
           <value>
             <TabSessionState>
               <option name="provider" value="codex" />
-              <option name="sessionId" value="019ea3b3-7760-7ba2-be2f-05f371075a53" />
+              <option name="sessionId" value="019ea3f7-57b2-7c80-bc79-2c791105da30" />
               <option name="cwd" value="$PROJECT_DIR$" />
               <option name="model" value="gpt-5.5" />
               <option name="permissionMode" value="bypassPermissions" />
@@ -19,7 +19,19 @@
           <value>
             <TabSessionState>
               <option name="provider" value="codex" />
-              <option name="sessionId" value="019ea3f7-57b2-7c80-bc79-2c791105da30" />
+              <option name="sessionId" value="019ea633-58c6-7760-9706-c9d0c4c66505" />
+              <option name="cwd" value="$PROJECT_DIR$" />
+              <option name="model" value="gpt-5.5" />
+              <option name="permissionMode" value="bypassPermissions" />
+              <option name="reasoningEffort" value="high" />
+            </TabSessionState>
+          </value>
+        </entry>
+        <entry key="2">
+          <value>
+            <TabSessionState>
+              <option name="provider" value="codex" />
+              <option name="sessionId" value="019ea634-f33f-75c2-b87f-9caabfba0d47" />
               <option name="cwd" value="$PROJECT_DIR$" />
               <option name="model" value="gpt-5.5" />
               <option name="permissionMode" value="bypassPermissions" />
@@ -29,6 +41,6 @@
         </entry>
       </map>
     </option>
-    <option name="tabCount" value="2" />
+    <option name="tabCount" value="3" />
   </component>
 </project>

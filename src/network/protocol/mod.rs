@@ -4,12 +4,14 @@ pub mod c2s;
 pub mod codec;
 pub mod control;
 pub mod data;
+pub mod permissions;
 pub mod s2c;
 
 pub use c2s::C2S;
 pub use codec::{BinaryReader, BinaryWriter, DecodeError, DecodeResult};
 pub use control::*;
 pub use data::*;
+pub use permissions::*;
 pub use s2c::S2C;
 
 pub const DEFAULT_PORT: u16 = 7800;
@@ -54,6 +56,7 @@ impl Role {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum VideoCodecId {
+  Unknown = 0x00,
   Av1 = 0x01,
   H265 = 0x02,
   H264 = 0x03,
@@ -62,6 +65,7 @@ pub enum VideoCodecId {
 impl VideoCodecId {
   pub fn from_u8(value: u8) -> Option<Self> {
     match value {
+      0x00 => Some(Self::Unknown),
       0x01 => Some(Self::Av1),
       0x02 => Some(Self::H265),
       0x03 => Some(Self::H264),

@@ -12,7 +12,7 @@ Multiple streams may be live at the same time, but the client watches only one s
 
 | Active streams | UI behavior |
 | --- | --- |
-| 0 | Hide stream picker UI. Show the normal voice-channel state. |
+| 0 | Show the no-stream browser empty state for the selected voice channel. Do not show a standalone voice member-list detail screen. |
 | 1 | Show one compact watch target. If the user is already watching it, show the single stream viewer. |
 | 2-5 | Show an inline stream picker in the voice stage. Each stream is a watch target, not a preview. |
 | 6+ | Show overflow handling: first 5 visible streams, search/filter affordance, and an `N more / browse` action. |
@@ -23,6 +23,8 @@ Multiple streams may be live at the same time, but the client watches only one s
 Clicking `browse` opens the full stream browser.
 
 Opening the browser does not start watching a stream. The user remains in voice-only mode until they select a specific stream row and trigger `watch`.
+
+Clicking the currently selected voice channel keeps the user in the full stream browser for that channel. When the channel has no live streams, the browser shows the no-stream empty state instead of returning to the member list.
 
 ## Watch Behavior
 
@@ -42,4 +44,4 @@ For larger stream counts, the left rail should collapse to a count summary, such
 - `Opxse`: compact overflow stream picker for large counts.
 - `CtDtg`: overflow browse row.
 - `y30dT3`: full stream browser opened after clicking browse.
-
+- `Af1Ek`: full stream browser opened for a selected voice channel with no live streams.

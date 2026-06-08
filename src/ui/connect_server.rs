@@ -341,6 +341,10 @@ pub async fn connect_and_store(
     role: response.role,
     certificate_fingerprint: fingerprint.clone(),
   };
+  let volume_overrides = storage
+    .as_ref()
+    .and_then(|storage| storage.load_volume_overrides(&info.address).ok())
+    .unwrap_or_default();
 
   if let Some(storage) = storage.as_ref() {
     storage
@@ -361,6 +365,9 @@ pub async fn connect_and_store(
       info: info.clone(),
       server: Arc::new(server),
     });
+    for (user_id, volume) in volume_overrides {
+      session.set_user_volume(user_id, volume);
+    }
   }
 
   Ok(info)

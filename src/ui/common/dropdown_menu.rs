@@ -3,8 +3,8 @@ use std::sync::Arc;
 use lurq::{
   components::{Row, Select, Text, TextOverflow},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify, text_style::TextStyle},
-  node::{Element, SelectPartStyle, SelectStyle, color::Color, dimension::Dimension, padding::Padding},
+  layout::{layout_kind::Justify, text_style::TextStyle, Alignment},
+  node::{color::Color, dimension::Dimension, padding::Padding, Element, SelectPartStyle, SelectStyle},
 };
 
 use crate::theme;

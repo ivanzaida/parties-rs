@@ -8,17 +8,17 @@ use lurq::{
   components::{Column, Row, Text},
   core::Signal,
   layout::{
-    Alignment,
     layout_kind::Justify,
     text_style::{FontWeight, TextStyle},
+    Alignment,
   },
-  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  node::{color::Color, dimension::Dimension, BackgroundColor, CursorIcon, Element, Style},
 };
 
 use crate::{
   theme,
   ui::{
-    app_chrome::{CHROME_HEIGHT, content_height},
+    app_chrome::{content_height, CHROME_HEIGHT},
     common::lucide_icon::{LucideIcon, LucideIconProps},
   },
 };

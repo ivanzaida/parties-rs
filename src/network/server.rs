@@ -12,7 +12,10 @@ use tokio::sync::Mutex;
 use super::protocol::{
   C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
   control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
-  data::{FileStreamRequest, ForwardedVoicePacket, VideoControl, VoicePacket},
+  data::{
+    FileStreamRequest, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN, VideoControl, VideoFrame,
+    VoicePacket,
+  },
 };
 
 #[derive(Debug)]
@@ -123,6 +126,8 @@ pub struct Server {
   connection: Connection,
   control_send: Mutex<quinn::SendStream>,
   control_recv: Mutex<quinn::RecvStream>,
+  video_send: Mutex<quinn::SendStream>,
+  video_recv: Mutex<quinn::RecvStream>,
 }
 
 impl Server {
@@ -154,13 +159,15 @@ impl Server {
 
     let connection = endpoint.connect(addr, "parties")?.await?;
     let (control_send, control_recv) = connection.open_bi().await?;
-    let (_video_send, _video_recv) = connection.open_bi().await?;
+    let (video_send, video_recv) = connection.open_bi().await?;
 
     Ok(Self {
       _endpoint: endpoint,
       connection,
       control_send: Mutex::new(control_send),
       control_recv: Mutex::new(control_recv),
+      video_send: Mutex::new(video_send),
+      video_recv: Mutex::new(video_recv),
     })
   }
 
@@ -288,8 +295,40 @@ impl Server {
     Ok(())
   }
 
+  pub async fn send_video_control_stream(&self, control: VideoControl) -> Result<(), ServerError> {
+    self.send_video_packet(&control.encode_datagram()).await
+  }
+
   pub fn request_keyframe(&self, user_id: UserId) -> Result<(), ServerError> {
     self.send_video_control(VideoControl::Pli { user_id })
+  }
+
+  pub async fn send_video_packet(&self, packet: &[u8]) -> Result<(), ServerError> {
+    let framed = encode_video_stream_packet(packet)?;
+    self.video_send.lock().await.write_all(&framed).await?;
+    Ok(())
+  }
+
+  pub async fn send_video_frame(&self, frame: VideoFrame) -> Result<(), ServerError> {
+    self.send_video_packet(&frame.encode_packet()).await
+  }
+
+  pub async fn recv_video_packet(&self) -> Result<Vec<u8>, ServerError> {
+    let mut recv = self.video_recv.lock().await;
+
+    let mut len_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf).await?;
+    let packet_len = u32::from_le_bytes(len_buf) as usize;
+    validate_video_stream_packet_len(packet_len)?;
+
+    let mut packet = vec![0u8; packet_len];
+    recv.read_exact(&mut packet).await?;
+    Ok(packet)
+  }
+
+  pub async fn recv_video_frame(&self) -> Result<ForwardedVideoFrame, ServerError> {
+    let packet = self.recv_video_packet().await?;
+    Ok(ForwardedVideoFrame::decode(&packet)?)
   }
 
   // -- admin: channels --
@@ -316,6 +355,25 @@ impl Server {
 
   pub async fn kick_user(&self, target_user_id: UserId) -> Result<(), ServerError> {
     self.send_control(C2S::AdminKickUser { target_user_id }).await
+  }
+
+  pub async fn set_user_voice_state(
+    &self,
+    target_user_id: UserId,
+    muted: bool,
+    deafened: bool,
+  ) -> Result<(), ServerError> {
+    self
+      .send_control(C2S::AdminSetUserVoiceState {
+        target_user_id,
+        muted,
+        deafened,
+      })
+      .await
+  }
+
+  pub async fn disconnect_user_from_voice(&self, target_user_id: UserId) -> Result<(), ServerError> {
+    self.send_control(C2S::AdminDisconnectUser { target_user_id }).await
   }
 
   // -- chat --
@@ -444,5 +502,65 @@ fn hex_char(value: u8) -> char {
     0..=9 => (b'0' + value) as char,
     10..=15 => (b'a' + value - 10) as char,
     _ => '0',
+  }
+}
+
+fn encode_video_stream_packet(packet: &[u8]) -> Result<Vec<u8>, DecodeError> {
+  validate_video_stream_packet_len(packet.len())?;
+
+  let mut bytes = Vec::with_capacity(4 + packet.len());
+  bytes.extend_from_slice(&(packet.len() as u32).to_le_bytes());
+  bytes.extend_from_slice(packet);
+  Ok(bytes)
+}
+
+fn validate_video_stream_packet_len(len: usize) -> Result<(), DecodeError> {
+  if (1..=MAX_VIDEO_FRAME_LEN).contains(&len) {
+    Ok(())
+  } else {
+    Err(DecodeError::InvalidLength {
+      len,
+      max: MAX_VIDEO_FRAME_LEN,
+    })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn video_stream_packets_are_len_prefixed() {
+    let packet = [0x02, 0x11, 0x22, 0x33];
+    let framed = encode_video_stream_packet(&packet).unwrap();
+
+    assert_eq!(&framed[..4], &(packet.len() as u32).to_le_bytes());
+    assert_eq!(&framed[4..], &packet);
+  }
+
+  #[test]
+  fn video_stream_packet_rejects_zero_len() {
+    let err = encode_video_stream_packet(&[]).unwrap_err();
+
+    assert_eq!(
+      err,
+      DecodeError::InvalidLength {
+        len: 0,
+        max: MAX_VIDEO_FRAME_LEN
+      }
+    );
+  }
+
+  #[test]
+  fn video_stream_packet_rejects_oversized_len() {
+    let err = validate_video_stream_packet_len(MAX_VIDEO_FRAME_LEN + 1).unwrap_err();
+
+    assert_eq!(
+      err,
+      DecodeError::InvalidLength {
+        len: MAX_VIDEO_FRAME_LEN + 1,
+        max: MAX_VIDEO_FRAME_LEN
+      }
+    );
   }
 }

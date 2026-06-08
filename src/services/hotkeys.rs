@@ -101,4 +101,12 @@ mod tests {
       &key_event("M", "KeyM", true, false, false),
     ));
   }
+
+  #[test]
+  fn ctrl_shift_f12_matches_physical_function_key() {
+    assert!(event_matches_hotkey(
+      "Ctrl+Shift+F12",
+      &key_event("", "F12", true, false, true),
+    ));
+  }
 }

@@ -703,6 +703,71 @@
     "channel": {
       "description": "Voice channel members"
     },
+    "stream_modal": {
+      "title": "Start stream",
+      "subtitle": "Choose a screen or window to share",
+      "tab": {
+        "screen": "Screen",
+        "window": "Window"
+      },
+      "source": {
+        "entire_screen": "Entire screen",
+        "display_2": "Display 2",
+        "discord": "Discord",
+        "browser": "Browser — Atlas",
+        "editor": "Editor",
+        "terminal": "Terminal",
+        "empty_screens": "No screens found",
+        "empty_windows": "No windows found"
+      },
+      "audio": {
+        "title": "Share system audio",
+        "description": "Stream what you hear on this source"
+      },
+      "action": {
+        "start": "Start stream"
+      }
+    },
+    "stream_browser": {
+      "title": "Browse streams",
+      "live_count": "{{count}} live",
+      "live_short": "{{count}} live",
+      "live_label": "{{count}} STREAM LIVE",
+      "search_placeholder": "Search streams",
+      "empty": {
+        "title": "No streams in this channel",
+        "description": "{{channel}} does not have any live streams right now. When someone starts sharing, it will appear here.",
+        "start": "Start stream",
+        "share_bar": "No one is sharing their screen. Start a share or wait for a stream to appear here."
+      },
+      "picker": {
+        "title": "Pick a stream to watch",
+        "description": "{{count}} people are sharing in this channel. You're in voice only - choose one to open the viewer.",
+        "live_streams": "LIVE STREAMS",
+        "filter": "Filter streams"
+      },
+      "list": {
+        "title": "Live streams",
+        "channel": "Live in {{channel}}",
+        "pending": "Pending video",
+        "watch": "Watch",
+        "watching": "Watching",
+        "stop": "Stop stream"
+      },
+      "watching": {
+        "badge": "WATCHING",
+        "live": "LIVE",
+        "share_screen": "Share screen",
+        "screen_name": "{{user}}'s screen",
+        "display": "· Display 1",
+        "display_plain": "Display 1",
+        "stop": "Stop watching"
+      },
+      "switch": {
+        "title": "SWITCH STREAM",
+        "hint": "· selecting replaces the current view"
+      }
+    },
     "users": {
       "title": "No channel selected",
       "empty": "Join a channel to see users.",

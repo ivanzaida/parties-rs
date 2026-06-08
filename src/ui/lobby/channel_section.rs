@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use lurq::{
   app::ctx::Ctx,
   components::{Row, Text},
@@ -16,6 +18,7 @@ pub(super) fn section_head(
   expanded: Signal<bool>,
   label: &str,
   right_icon: Option<&'static str>,
+  right_action: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
 ) -> Element {
   let toggle = expanded.clone();
   let left_icon = if expanded.get() {
@@ -47,11 +50,22 @@ pub(super) fn section_head(
     );
 
   if let Some(icon) = right_icon {
-    row = row.child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon,
-      size: 14.0,
-      color: theme::palette().text_muted,
-    }));
+    let mut action = Row::new()
+      .width(20.0)
+      .height(20.0)
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .child(ctx.mount::<LucideIcon>(LucideIconProps {
+        icon,
+        size: 14.0,
+        color: theme::palette().text_muted,
+      }));
+
+    if let Some(right_action) = right_action {
+      action = action.on_click(move |_| right_action());
+    }
+
+    row = row.child(action);
   }
 
   row.on_click(move |_| toggle.set(!toggle.get())).into()

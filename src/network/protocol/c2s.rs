@@ -33,6 +33,14 @@ pub enum C2S {
   AdminKickUser {
     target_user_id: UserId,
   },
+  AdminSetUserVoiceState {
+    target_user_id: UserId,
+    muted: bool,
+    deafened: bool,
+  },
+  AdminDisconnectUser {
+    target_user_id: UserId,
+  },
   AdminRenameChannel {
     channel_id: ChannelId,
     new_name: String,
@@ -121,6 +129,22 @@ impl C2S {
         let mut w = BinaryWriter::new();
         w.write_u32(*target_user_id);
         (M::AdminKickUser, w.into_bytes())
+      }
+      Self::AdminSetUserVoiceState {
+        target_user_id,
+        muted,
+        deafened,
+      } => {
+        let mut w = BinaryWriter::new();
+        w.write_u32(*target_user_id);
+        w.write_u8(*muted as u8);
+        w.write_u8(*deafened as u8);
+        (M::AdminSetUserVoiceState, w.into_bytes())
+      }
+      Self::AdminDisconnectUser { target_user_id } => {
+        let mut w = BinaryWriter::new();
+        w.write_u32(*target_user_id);
+        (M::AdminDisconnectUser, w.into_bytes())
       }
       Self::AdminRenameChannel { channel_id, new_name } => {
         let mut w = BinaryWriter::new();
@@ -221,5 +245,25 @@ mod tests {
     let frame = C2S::ChannelJoin { channel_id: 42 }.encode().unwrap();
     assert_eq!(frame.ty, ControlMessageType::ChannelJoin);
     assert_eq!(frame.payload, 42_u32.to_le_bytes());
+  }
+
+  #[test]
+  fn admin_set_user_voice_state_encodes_target_and_state() {
+    let frame = C2S::AdminSetUserVoiceState {
+      target_user_id: 7,
+      muted: true,
+      deafened: false,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(frame.ty, ControlMessageType::AdminSetUserVoiceState);
+    assert_eq!(frame.payload, [7, 0, 0, 0, 1, 0]);
+  }
+
+  #[test]
+  fn admin_disconnect_user_encodes_target() {
+    let frame = C2S::AdminDisconnectUser { target_user_id: 7 }.encode().unwrap();
+    assert_eq!(frame.ty, ControlMessageType::AdminDisconnectUser);
+    assert_eq!(frame.payload, 7_u32.to_le_bytes());
   }
 }

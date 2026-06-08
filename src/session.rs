@@ -2,7 +2,7 @@ use std::{
   collections::{HashMap, HashSet},
   sync::{Arc, Mutex},
   thread,
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use lurq::{
@@ -24,6 +24,9 @@ use crate::{
   services::voice::{LocalVoiceCallback, VoiceEngine},
   storage::AppSettings,
 };
+
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_USER_VOLUME: i32 = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedServerInfo {
@@ -210,6 +213,7 @@ pub struct LobbyScreenShare {
 pub struct LobbyState {
   pub channels: Vec<LobbyChannel>,
   pub selected_channel_id: Option<ChannelId>,
+  pub stream_browser_channel_id: Option<ChannelId>,
   pub text_channels: Vec<LobbyTextChannel>,
   pub selected_text_channel_id: Option<ChannelId>,
   pub chat_messages_by_channel: HashMap<ChannelId, Vec<ProtocolChatMessage>>,
@@ -222,6 +226,7 @@ pub struct LobbyState {
   pub receiver_running: bool,
   pub channel_list_received: bool,
   pub keepalive_ok: bool,
+  pub ping_ms: Option<u32>,
   pub disconnected: bool,
   pub last_error: Option<String>,
 }
@@ -237,7 +242,9 @@ pub struct ServerSession {
   speaking_marks: Arc<Mutex<HashMap<UserId, u64>>>,
   speaking_mark_counter: Arc<Mutex<u64>>,
   speaking_clear_scheduled: Arc<Mutex<HashSet<UserId>>>,
+  pending_keepalive_ping: Arc<Mutex<Option<Instant>>>,
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
+  user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   revision: Signal<u64>,
 }
 
@@ -253,7 +260,9 @@ impl Default for ServerSession {
       speaking_marks: Arc::new(Mutex::new(HashMap::new())),
       speaking_mark_counter: Arc::new(Mutex::new(0)),
       speaking_clear_scheduled: Arc::new(Mutex::new(HashSet::new())),
+      pending_keepalive_ping: Arc::new(Mutex::new(None)),
       voice_engine: Arc::new(Mutex::new(None)),
+      user_volumes: Arc::new(Mutex::new(HashMap::new())),
       revision: Signal::new(0),
     }
   }
@@ -273,6 +282,7 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .clear();
+    self.user_volumes.lock().expect("server session lock poisoned").clear();
     self.bump_revision();
   }
 
@@ -289,6 +299,7 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .clear();
+    self.user_volumes.lock().expect("server session lock poisoned").clear();
     self.bump_revision();
   }
 
@@ -377,6 +388,31 @@ impl ServerSession {
       self.set_user_speaking(user_id, true);
     } else if !active {
       self.clear_user_speaking(user_id);
+    }
+  }
+
+  pub fn user_volume(&self, user_id: UserId) -> i32 {
+    self
+      .user_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .copied()
+      .unwrap_or(DEFAULT_USER_VOLUME)
+  }
+
+  pub fn set_user_volume(&self, user_id: UserId, volume: i32) {
+    let volume = volume.clamp(0, 100);
+    {
+      let mut user_volumes = self.user_volumes.lock().expect("server session lock poisoned");
+      if volume == DEFAULT_USER_VOLUME {
+        user_volumes.remove(&user_id);
+      } else {
+        user_volumes.insert(user_id, volume);
+      }
+    }
+    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
+      engine.set_user_volume(user_id, volume);
     }
   }
 
@@ -514,6 +550,8 @@ impl ServerSession {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       lobby.selected_channel_id = Some(channel_id);
+      lobby.selected_text_channel_id = None;
+      lobby.stream_browser_channel_id = None;
       for channel in &mut lobby.channels {
         channel.key_received = false;
       }
@@ -522,10 +560,64 @@ impl ServerSession {
     self.bump_revision();
   }
 
+  pub fn leave_channel_locally(&self) {
+    let local_user_id = self.info().map(|info| info.user_id);
+    self.stop_voice();
+
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if let Some(channel_id) = lobby.selected_channel_id.take()
+        && let Some(user_id) = local_user_id
+        && let Some(users) = lobby.users_by_channel.get_mut(&channel_id)
+      {
+        users.retain(|user| user.user_id != user_id);
+      }
+      lobby.stream_browser_channel_id = None;
+      lobby.users.clear();
+      Self::sync_cached_channel_counts(&mut lobby);
+    }
+
+    if let Some(user_id) = local_user_id {
+      self
+        .speaking_marks
+        .lock()
+        .expect("server session lock poisoned")
+        .remove(&user_id);
+      self
+        .speaking_clear_scheduled
+        .lock()
+        .expect("server session lock poisoned")
+        .remove(&user_id);
+    }
+
+    self.bump_revision();
+  }
+
   pub fn select_text_channel(&self, channel_id: ChannelId) {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       lobby.selected_text_channel_id = Some(channel_id);
+      lobby.stream_browser_channel_id = None;
+    }
+    self.bump_revision();
+  }
+
+  pub fn open_stream_browser(&self, channel_id: ChannelId) {
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if lobby.selected_channel_id == Some(channel_id) && lobby.channels.iter().any(|channel| channel.id == channel_id)
+      {
+        lobby.selected_text_channel_id = None;
+        lobby.stream_browser_channel_id = Some(channel_id);
+      }
+    }
+    self.bump_revision();
+  }
+
+  pub fn close_stream_browser(&self) {
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      lobby.stream_browser_channel_id = None;
     }
     self.bump_revision();
   }
@@ -572,9 +664,20 @@ impl ServerSession {
     let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
     let on_local_voice = self.local_voice_callback();
+    let engine =
+      VoiceEngine::start(server, settings, muted, deafened, on_local_voice).map_err(|error| error.to_string())?;
+    for (user_id, volume) in self
+      .user_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .iter()
+      .map(|(user_id, volume)| (*user_id, *volume))
+      .collect::<Vec<_>>()
+    {
+      engine.set_user_volume(user_id, volume);
+    }
     let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
-    *voice_engine =
-      Some(VoiceEngine::start(server, settings, muted, deafened, on_local_voice).map_err(|error| error.to_string())?);
+    *voice_engine = Some(engine);
     Ok(())
   }
 
@@ -625,7 +728,11 @@ impl ServerSession {
     self.bump_revision();
 
     let session = self.clone();
-    let _ = server.ping().await;
+    let ping_session = self.clone();
+    let ping_server = server.clone();
+    let ping_task = tokio::spawn(async move {
+      ping_session.run_keepalive_sender(ping_server).await;
+    });
     let voice_session = self.clone();
     let voice_server = server.clone();
     let voice_task = tokio::spawn(async move {
@@ -645,6 +752,7 @@ impl ServerSession {
     }
 
     voice_task.abort();
+    ping_task.abort();
     *session.receiver_started.lock().expect("server session lock poisoned") = false;
     session
       .lobby
@@ -652,6 +760,17 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .receiver_running = false;
     session.bump_revision();
+  }
+
+  async fn run_keepalive_sender(&self, server: Arc<Server>) {
+    loop {
+      *self
+        .pending_keepalive_ping
+        .lock()
+        .expect("server session lock poisoned") = Some(Instant::now());
+      let _ = server.ping().await;
+      tokio::time::sleep(KEEPALIVE_INTERVAL).await;
+    }
   }
 
   async fn run_voice_activity_receiver(&self, server: Arc<Server>) {
@@ -697,6 +816,8 @@ impl ServerSession {
     let local_user_id = self.info().map(|info| info.user_id);
     let local_voice_state = *self.local_voice_fallback.lock().expect("server session lock poisoned");
     let mut local_voice_update = None;
+    let mut stop_local_voice = false;
+    let mut clear_speaking_user = None;
     let mut lobby = self.lobby.lock().expect("server session lock poisoned");
 
     match message {
@@ -715,6 +836,7 @@ impl ServerSession {
           Self::sync_selected_users(&mut lobby);
         } else {
           lobby.selected_channel_id = None;
+          lobby.stream_browser_channel_id = None;
           lobby.users.clear();
         }
       }
@@ -803,10 +925,23 @@ impl ServerSession {
         }
       }
       S2C::UserLeftChannel(left) => {
-        if let Some(users) = lobby.users_by_channel.get_mut(&left.channel_id) {
+        let local_left = local_user_id == Some(left.user_id);
+        for users in lobby.users_by_channel.values_mut() {
           users.retain(|user| user.user_id != left.user_id);
         }
-        if lobby.selected_channel_id == Some(left.channel_id) {
+        if local_left {
+          stop_local_voice = true;
+        }
+        clear_speaking_user = Some(left.user_id);
+        lobby.screen_shares.retain(|share| share.sharer_user_id != left.user_id);
+        if lobby.watching_user_id == Some(left.user_id) {
+          lobby.watching_user_id = None;
+        }
+        if local_left && lobby.selected_channel_id == Some(left.channel_id) {
+          lobby.selected_channel_id = None;
+          lobby.stream_browser_channel_id = None;
+          lobby.users.clear();
+        } else if lobby.selected_channel_id == Some(left.channel_id) {
           Self::sync_selected_users(&mut lobby);
         }
         Self::sync_cached_channel_counts(&mut lobby);
@@ -838,6 +973,14 @@ impl ServerSession {
       }
       S2C::KeepalivePong => {
         lobby.keepalive_ok = true;
+        if let Some(sent_at) = self
+          .pending_keepalive_ping
+          .lock()
+          .expect("server session lock poisoned")
+          .take()
+        {
+          lobby.ping_ms = Some(sent_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
+        }
       }
       S2C::ChannelKey(key) => {
         if let Some(channel) = lobby.channels.iter_mut().find(|channel| channel.id == key.channel_id) {
@@ -883,6 +1026,33 @@ impl ServerSession {
     drop(lobby);
     if let Some(state) = local_voice_update {
       *self.local_voice_fallback.lock().expect("server session lock poisoned") = state;
+    }
+    if let Some(user_id) = clear_speaking_user {
+      self
+        .speaking_marks
+        .lock()
+        .expect("server session lock poisoned")
+        .remove(&user_id);
+      self
+        .speaking_clear_scheduled
+        .lock()
+        .expect("server session lock poisoned")
+        .remove(&user_id);
+    }
+    if stop_local_voice {
+      self.stop_voice();
+      if let Some(user_id) = local_user_id {
+        self
+          .speaking_marks
+          .lock()
+          .expect("server session lock poisoned")
+          .remove(&user_id);
+        self
+          .speaking_clear_scheduled
+          .lock()
+          .expect("server session lock poisoned")
+          .remove(&user_id);
+      }
     }
     self.bump_revision();
   }

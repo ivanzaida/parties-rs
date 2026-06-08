@@ -4,6 +4,7 @@ use lurq::{
     ctx::Ctx,
   },
   components::{Column, Rect, Row, Text},
+  core::Signal,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
@@ -11,12 +12,14 @@ use lurq::{
 use crate::{
   network::protocol::{ChannelId, Role},
   routes::ROUTE_CHOOSE_SERVER,
+  services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::{ConnectedServerInfo, LobbyState, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     lobby::{
+      ChannelManagerKind,
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, VoiceChannels, VoiceChannelsProps},
     },
@@ -27,18 +30,20 @@ use crate::{
 const RAIL_WIDTH: f32 = 280.0;
 const RAIL_DIVIDER_WIDTH: f32 = 1.0;
 
-type VoiceControlAction = lurq::app::ctx::FutureAction<VoiceControl, (), String>;
+type VoiceControlFuture = lurq::app::ctx::FutureAction<VoiceControlAction, (), String>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VoiceControl {
-  ToggleMute,
-  ToggleDeafen,
-}
-
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub lobby: LobbyState,
+  pub start_stream_modal_open: Signal<bool>,
+  pub channel_manager: Signal<Option<ChannelManagerKind>>,
+}
+
+impl PartialEq for LobbyRailProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info && self.lobby == other.lobby
+  }
 }
 
 impl DevtoolsInspectable for LobbyRailProps {
@@ -93,6 +98,8 @@ impl Component for LobbyRail {
       ctx,
       &props.info,
       &props.lobby,
+      props.start_stream_modal_open.clone(),
+      props.channel_manager.clone(),
       join_channel.as_ref(),
       voice_control.as_ref(),
     )
@@ -126,39 +133,10 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
   })
 }
 
-fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlAction {
+fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFuture {
   ctx.future_action(move |control| {
     let session = session.clone();
-    async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
-      let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
-
-      match control {
-        VoiceControl::ToggleMute => {
-          if deafened && muted {
-            return Ok(());
-          }
-          muted = !muted;
-        }
-        VoiceControl::ToggleDeafen => {
-          if deafened {
-            deafened = false;
-            muted = session.take_muted_before_deafen().unwrap_or(muted);
-          } else {
-            session.remember_muted_before_deafen(muted);
-            deafened = true;
-            muted = true;
-          }
-        }
-      }
-
-      server
-        .update_voice_state(muted, deafened)
-        .await
-        .map_err(|error| error.to_string())?;
-      session.set_local_voice_state(muted, deafened);
-      Ok(())
-    }
+    async move { apply_voice_control(session, control).await }
   })
 }
 
@@ -166,8 +144,10 @@ fn rail(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
+  start_stream_modal_open: Signal<bool>,
+  channel_manager: Signal<Option<ChannelManagerKind>>,
   join_channel: Option<&JoinChannelAction>,
-  voice_control: Option<&VoiceControlAction>,
+  voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
   Row::new()
     .border_right(Border::inside(1.0, theme::PaletteColor::Border))
@@ -180,8 +160,8 @@ fn rail(
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
         .child(rail_header(ctx, info, lobby))
-        .child(rail_channels(ctx, info, lobby, join_channel))
-        .child(rail_bottom(ctx, info, lobby, voice_control)),
+        .child(rail_channels(ctx, info, lobby, channel_manager, join_channel))
+        .child(rail_bottom(ctx, info, lobby, start_stream_modal_open, voice_control)),
     )
     .child(
       Rect::new(RAIL_DIVIDER_WIDTH, 1.0)
@@ -254,6 +234,7 @@ fn rail_channels(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
+  channel_manager: Signal<Option<ChannelManagerKind>>,
   join_channel: Option<&JoinChannelAction>,
 ) -> Element {
   Column::new()
@@ -265,14 +246,18 @@ fn rail_channels(
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
       channels: lobby.text_channels.clone(),
       selected_channel_id: lobby.selected_text_channel_id,
+      channel_manager: channel_manager.clone(),
     }))
     .child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
       channels: lobby.channels.clone(),
       users_by_channel: lobby.users_by_channel.clone(),
       streaming_user_ids: lobby.screen_shares.iter().map(|share| share.sharer_user_id).collect(),
       selected_channel_id: lobby.selected_channel_id,
+      disconnected: lobby.disconnected,
       local_user_id: info.user_id,
+      local_role: info.role,
       join_channel: join_channel.cloned(),
+      channel_manager,
     }))
     .into()
 }
@@ -281,7 +266,8 @@ fn rail_bottom(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
-  voice_control: Option<&VoiceControlAction>,
+  start_stream_modal_open: Signal<bool>,
+  voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
   Column::new()
     .width(Dimension::Pct(100.0))
@@ -289,7 +275,7 @@ fn rail_bottom(
     .padding(12.0)
     .child(connection_status(ctx, lobby))
     .child(local_user_row(info, lobby))
-    .child(control_row(ctx, info, lobby, voice_control))
+    .child(control_row(ctx, info, lobby, start_stream_modal_open, voice_control))
     .into()
 }
 
@@ -372,8 +358,9 @@ fn status_sub(connected_to_voice: bool, label: &str) -> Element {
 
 fn local_user_row(info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
   let username = local_user_label(lobby, info);
+  let ping_label = lobby.ping_ms.map(|ping_ms| format!("{ping_ms} ms"));
 
-  Row::new()
+  let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Md)
@@ -394,15 +381,25 @@ fn local_user_row(info: &ConnectedServerInfo, lobby: &LobbyState) -> Element {
             .variant(theme::TypographyStyle::Caption)
             .color(theme::PaletteColor::TextMuted),
         ),
-    )
-    .into()
+    );
+
+  if let Some(ping_label) = ping_label {
+    row = row.child(
+      Text::new(&ping_label)
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted),
+    );
+  }
+
+  row.into()
 }
 
 fn control_row(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
-  voice_control: Option<&VoiceControlAction>,
+  start_stream_modal_open: Signal<bool>,
+  voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
   let (muted, deafened) = ctx
     .use_context::<ServerSession>()
@@ -411,6 +408,7 @@ fn control_row(
   let mic_icon = if muted { "mic-off" } else { "mic" };
   let headphones_icon = if deafened { "headphone-off" } else { "headphones" };
   let mute_locked = muted && deafened;
+  let connected_to_voice = lobby.selected_channel_id.is_some() && !lobby.disconnected;
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -421,7 +419,7 @@ fn control_row(
     mic_icon,
     muted,
     voice_control,
-    Some(VoiceControl::ToggleMute),
+    Some(VoiceControlAction::ToggleMute),
     mute_locked,
   ));
   row = row.child(control_button(
@@ -429,10 +427,18 @@ fn control_row(
     headphones_icon,
     deafened,
     voice_control,
-    Some(VoiceControl::ToggleDeafen),
+    Some(VoiceControlAction::ToggleDeafen),
     false,
   ));
-  row = row.child(control_button(ctx, "monitor-up", false, None, None, false));
+  row = row.child(stream_control_button(ctx, start_stream_modal_open, !connected_to_voice));
+  row = row.child(control_button(
+    ctx,
+    "phone-off",
+    connected_to_voice,
+    voice_control,
+    Some(VoiceControlAction::LeaveChannel),
+    !connected_to_voice,
+  ));
 
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   if let Some(settings_popup) = settings_popup {
@@ -444,12 +450,23 @@ fn control_row(
   row.into()
 }
 
+fn stream_control_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>, disabled: bool) -> Element {
+  let open = start_stream_modal_open.clone();
+  let mut button = icon_button(ctx, "monitor-up", false, disabled);
+
+  if !disabled {
+    button = button.on_click(move |_| open.set(true));
+  }
+
+  button.into()
+}
+
 fn control_button(
   ctx: &mut Ctx,
   icon: &'static str,
   active: bool,
-  voice_control: Option<&VoiceControlAction>,
-  action: Option<VoiceControl>,
+  voice_control: Option<&VoiceControlFuture>,
+  action: Option<VoiceControlAction>,
   disabled: bool,
 ) -> Element {
   let mut button = icon_button(ctx, icon, active, disabled);
@@ -508,7 +525,7 @@ fn local_avatar(name: &str) -> Element {
     .justify(Justify::Center)
     .rounded(15.0)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .border_inside(1.5, BackgroundColor::Palette(theme::PaletteColor::Success))
+    .border_inside(1.5, BackgroundColor::Palette(theme::PaletteColor::Border))
     .child(
       Text::new(&initials_for(name))
         .variant(theme::TypographyStyle::Mono)

@@ -1,4 +1,5 @@
 use std::{
+  collections::HashMap,
   env,
   error::Error,
   fmt, fs,
@@ -520,7 +521,60 @@ impl Storage {
 
   pub fn delete_server(&self, address: &str) -> Result<(), StorageError> {
     let conn = self.connection()?;
+    conn.execute("DELETE FROM volume_overrides WHERE server_id = ?1", params![address])?;
     conn.execute("DELETE FROM servers WHERE address = ?1", params![address])?;
+    Ok(())
+  }
+
+  pub fn load_volume_override(&self, server_id: &str, user_id: UserId) -> Result<Option<i32>, StorageError> {
+    let conn = self.connection()?;
+    let volume = conn
+      .query_row(
+        "SELECT volume FROM volume_overrides WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id as i64],
+        |row| row.get::<_, i32>(0),
+      )
+      .optional()?
+      .map(|volume| volume.clamp(0, 100));
+    Ok(volume)
+  }
+
+  pub fn load_volume_overrides(&self, server_id: &str) -> Result<HashMap<UserId, i32>, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare("SELECT user_id, volume FROM volume_overrides WHERE server_id = ?1")?;
+    let rows = stmt.query_map(params![server_id], |row| {
+      Ok((row.get::<_, i64>(0)? as UserId, row.get::<_, i32>(1)?.clamp(0, 100)))
+    })?;
+
+    let mut volumes = HashMap::new();
+    for row in rows {
+      let (user_id, volume) = row?;
+      if volume != 100 {
+        volumes.insert(user_id, volume);
+      }
+    }
+    Ok(volumes)
+  }
+
+  pub fn save_volume_override(&self, server_id: &str, user_id: UserId, volume: i32) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    let volume = volume.clamp(0, 100);
+    if volume == 100 {
+      conn.execute(
+        "DELETE FROM volume_overrides WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id as i64],
+      )?;
+      return Ok(());
+    }
+
+    conn.execute(
+      r#"
+      INSERT INTO volume_overrides (server_id, user_id, volume)
+      VALUES (?1, ?2, ?3)
+      ON CONFLICT(server_id, user_id) DO UPDATE SET volume = excluded.volume
+      "#,
+      params![server_id, user_id as i64, volume],
+    )?;
     Ok(())
   }
 
@@ -585,6 +639,13 @@ impl Storage {
         y INTEGER NOT NULL,
         width INTEGER NOT NULL DEFAULT 1280,
         height INTEGER NOT NULL DEFAULT 900
+      );
+
+      CREATE TABLE IF NOT EXISTS volume_overrides (
+        server_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        volume INTEGER NOT NULL,
+        PRIMARY KEY (server_id, user_id)
       );
       "#,
     )?;
@@ -804,6 +865,10 @@ fn int_to_bool(value: i64) -> bool {
 }
 
 fn default_db_path() -> PathBuf {
+  if let Some(path) = startup_db_file_arg(env::args_os().skip(1)) {
+    return path;
+  }
+
   if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
     return PathBuf::from(local_app_data).join("Parties").join("parties.db");
   }
@@ -833,6 +898,26 @@ fn default_db_path() -> PathBuf {
   PathBuf::from("parties.db")
 }
 
+fn startup_db_file_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {
+  let mut args = args.into_iter();
+
+  while let Some(arg) = args.next() {
+    let arg_text = arg.to_string_lossy();
+
+    for prefix in ["-db_file=", "--db_file="] {
+      if let Some(path) = arg_text.strip_prefix(prefix).filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+      }
+    }
+
+    if arg_text == "-db_file" || arg_text == "--db_file" {
+      return args.next().map(PathBuf::from);
+    }
+  }
+
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{SystemTime, UNIX_EPOCH};
@@ -841,6 +926,25 @@ mod tests {
   use crate::identity;
 
   const PHRASE: &str = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+
+  #[test]
+  fn startup_db_file_arg_supports_equals_form() {
+    assert_eq!(
+      startup_db_file_arg([std::ffi::OsString::from("-db_file=custom.db")]),
+      Some(PathBuf::from("custom.db"))
+    );
+  }
+
+  #[test]
+  fn startup_db_file_arg_supports_separate_value_form() {
+    assert_eq!(
+      startup_db_file_arg([
+        std::ffi::OsString::from("--db_file"),
+        std::ffi::OsString::from("custom.db")
+      ]),
+      Some(PathBuf::from("custom.db"))
+    );
+  }
 
   #[test]
   fn identity_round_trips() {
@@ -946,6 +1050,31 @@ mod tests {
     };
     storage.save_window_state(state).unwrap();
     assert_eq!(storage.load_window_state().unwrap(), Some(state));
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn volume_overrides_round_trip() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-volume-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+
+    assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
+
+    storage.save_volume_override("server-a", 7, 42).unwrap();
+    storage.save_volume_override("server-a", 9, 75).unwrap();
+    storage.save_volume_override("server-b", 7, 88).unwrap();
+
+    assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), Some(42));
+    assert_eq!(storage.load_volume_override("server-b", 7).unwrap(), Some(88));
+    assert_eq!(storage.load_volume_overrides("server-a").unwrap().len(), 2);
+
+    storage.save_volume_override("server-a", 7, 100).unwrap();
+    assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
+    assert_eq!(storage.load_volume_override("server-a", 9).unwrap(), Some(75));
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));
