@@ -154,6 +154,7 @@ impl Component for App {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     ctx.provide(self.session.clone());
+    ctx.provide(self.global_hotkeys.clone());
     let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
     ctx.provide(settings_popup.clone());
     let storage = self.storage.get();
@@ -161,6 +162,9 @@ impl Component for App {
       ctx.provide(storage);
     }
     let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
+    if let Some(settings) = settings.as_ref() {
+      self.session.set_notification_audio_settings(settings);
+    }
     let mute_hotkey = settings
       .as_ref()
       .map(|settings| settings.hotkey_toggle_mute.clone())
@@ -178,9 +182,10 @@ impl Component for App {
     let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
     let local_hotkeys_enabled = app_focused && !settings_active;
     let global_hotkeys_enabled = !app_focused;
+    let global_mouse_hotkeys_enabled = !settings_active;
     self
       .global_hotkeys
-      .update_settings(settings.as_ref(), global_hotkeys_enabled);
+      .update_settings(settings.as_ref(), global_hotkeys_enabled, global_mouse_hotkeys_enabled);
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
       move |action: VoiceControlAction| {

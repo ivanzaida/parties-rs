@@ -15,13 +15,13 @@ use ::windows::{
     Foundation::{CloseHandle, HANDLE, RPC_E_CHANGED_MODE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Media::{
       Audio::{
-        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-        AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AUDCLNT_BUFFERFLAGS_SILENT,
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-        AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, ActivateAudioInterfaceAsync,
-        IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
-        IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
-        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
+        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+        IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
+        IAudioClient, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        WAVEFORMATEX,
       },
       MediaFoundation::{
         IMFActivate, IMFMediaBuffer, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
@@ -676,7 +676,9 @@ unsafe fn activate_audio_interface_sync(
   #[::windows::core::implement(IActivateAudioInterfaceCompletionHandler)]
   struct CompletionHandler(std::sync::mpsc::Sender<::windows::core::Result<IUnknown>>);
 
-  fn retrieve_activation_result(operation: &IActivateAudioInterfaceAsyncOperation) -> ::windows::core::Result<IUnknown> {
+  fn retrieve_activation_result(
+    operation: &IActivateAudioInterfaceAsyncOperation,
+  ) -> ::windows::core::Result<IUnknown> {
     let mut result = ::windows::core::HRESULT::default();
     let mut interface: Option<IUnknown> = None;
     unsafe {
@@ -1004,7 +1006,12 @@ impl NvencVideoEncoder {
     })
   }
 
-  fn encode(&mut self, rgba: &[u8], _frame_number: u32, timestamp_100ns: i64) -> Result<Vec<EncodedSample>, VideoError> {
+  fn encode(
+    &mut self,
+    rgba: &[u8],
+    _frame_number: u32,
+    timestamp_100ns: i64,
+  ) -> Result<Vec<EncodedSample>, VideoError> {
     let result = unsafe { parties_nvenc_encode_rgba(self.handle.as_ptr(), rgba.as_ptr(), rgba.len(), timestamp_100ns) };
     if result < 0 {
       return Err(VideoError::new("NVENC failed to encode frame."));

@@ -37,6 +37,17 @@ pub enum ConnectOrigin {
   SettingsPopup,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConnectServerRouteState {
+  pub origin: ConnectOrigin,
+}
+
+impl ConnectServerRouteState {
+  pub fn new(origin: ConnectOrigin) -> Self {
+    Self { origin }
+  }
+}
+
 pub struct ConnectServerScreen {
   address: Signal<String>,
   seed: Signal<String>,
@@ -65,10 +76,11 @@ impl Component for ConnectServerScreen {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
 
-    let origin = ctx
-      .route_state::<ConnectOrigin>()
-      .as_deref()
-      .copied()
+    let route_state = ctx.route_state::<ConnectServerRouteState>().as_deref().cloned();
+    let origin = route_state
+      .as_ref()
+      .map(|state| state.origin)
+      .or_else(|| ctx.route_state::<ConnectOrigin>().as_deref().copied())
       .unwrap_or(ConnectOrigin::ServerList);
     let from_settings = matches!(origin, ConnectOrigin::Settings | ConnectOrigin::SettingsPopup);
     let settings_popup = matches!(origin, ConnectOrigin::SettingsPopup)
@@ -371,6 +383,53 @@ pub async fn connect_and_store(
   }
 
   Ok(info)
+}
+
+#[allow(dead_code)]
+pub async fn test_connection(
+  address: String,
+  seed: String,
+  display_name: String,
+  storage: Option<Storage>,
+) -> Result<ConnectedServerInfo, String> {
+  let address = with_default_port(&address);
+  let display_name = display_name.trim().to_owned();
+
+  let identity = storage
+    .as_ref()
+    .ok_or_else(|| "Local storage is unavailable.".to_owned())?
+    .load_identity()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "No local identity found.".to_owned())?;
+
+  let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let socket = resolve_address(address.clone()).await?;
+    let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
+    let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
+    let fingerprint = server.certificate_fingerprint().unwrap_or_default();
+
+    let timestamp = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map_err(|error| error.to_string())?
+      .as_secs();
+    let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
+    let response = authenticate_with_query(&server, auth, query.as_ref()).await?;
+
+    Ok::<_, String>((server, fingerprint, response))
+  })
+  .await
+  .map_err(|_| format!("Connection timed out after {} seconds.", CONNECT_TIMEOUT.as_secs()))??;
+
+  server.disconnect();
+
+  Ok(ConnectedServerInfo {
+    address,
+    server_name: response.server_name,
+    display_name,
+    user_id: response.user_id,
+    role: response.role,
+    certificate_fingerprint: fingerprint,
+  })
 }
 
 enum AuthAttempt {

@@ -26,7 +26,10 @@ use super::{
   VideoDecodeConfig, VideoDecoder, VideoError,
 };
 use crate::{
-  network::{protocol::VideoCodecId, protocol::data::VideoFrame, server::Server},
+  network::{
+    protocol::{VideoCodecId, data::VideoFrame},
+    server::Server,
+  },
   services::logger,
 };
 

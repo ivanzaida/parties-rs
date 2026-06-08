@@ -2,6 +2,7 @@ pub mod audio_devices;
 pub mod global_hotkeys;
 pub mod hotkeys;
 pub(crate) mod logger;
+pub mod notifications;
 pub mod screen_share_sources;
 pub mod startup;
 pub mod video;

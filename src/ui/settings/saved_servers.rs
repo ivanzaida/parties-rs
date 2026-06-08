@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::Ctx,
+  },
   clipboard,
-  components::{Column, Rect, Row, ScrollVertical, Text},
+  components::{Column, Rect, Row, ScrollVertical, Text, TextInput},
   core::Signal,
   layout::{
     Alignment,
@@ -17,6 +20,7 @@ use lurq::{
 use crate::{
   network::protocol::Role,
   routes::ROUTE_CONNECT_SERVER,
+  session::ConnectedServerInfo,
   storage::{Storage, StoredServer},
   theme,
   ui::{
@@ -25,7 +29,7 @@ use crate::{
       confirm_modal::{ConfirmAction, ConfirmModal, ConfirmModalProps},
       lucide_icon::{LucideIcon, LucideIconProps},
     },
-    connect_server::ConnectOrigin,
+    connect_server::{ConnectOrigin, ConnectServerRouteState, test_connection},
     settings::shell::{SettingsPage, SettingsPopupHandle, muted_notice, page_stack, screen, value_text},
   },
 };
@@ -41,6 +45,8 @@ pub struct SettingsSavedServersScreen {
   forget_address: Signal<Option<String>>,
   fingerprint_open: Signal<bool>,
   fingerprint_address: Signal<Option<String>>,
+  edit_open: Signal<bool>,
+  edit_address: Signal<Option<String>>,
 }
 
 impl Component for SettingsSavedServersScreen {
@@ -55,6 +61,8 @@ impl Component for SettingsSavedServersScreen {
       forget_address: ctx.signal(None::<String>),
       fingerprint_open: ctx.signal(false),
       fingerprint_address: ctx.signal(None::<String>),
+      edit_open: ctx.signal(false),
+      edit_address: ctx.signal(None::<String>),
     }
   }
 
@@ -68,6 +76,7 @@ impl Component for SettingsSavedServersScreen {
     let menu_address = self.menu_address.get();
     let pending_address = self.forget_address.get();
     let fingerprint_address = self.fingerprint_address.get();
+    let edit_address = self.edit_address.get();
 
     let mut list = Column::new()
       .width(Dimension::Pct(100.0))
@@ -103,6 +112,8 @@ impl Component for SettingsSavedServersScreen {
         self.fingerprint_address.clone(),
         self.forget_open.clone(),
         self.forget_address.clone(),
+        self.edit_open.clone(),
+        self.edit_address.clone(),
       );
       ctx.modal(self.menu_open.clone(), move |_| menu);
     }
@@ -143,6 +154,21 @@ impl Component for SettingsSavedServersScreen {
       let open = self.fingerprint_open.clone();
       ctx.modal(self.fingerprint_open.clone(), move |ctx| {
         fingerprint_modal(ctx, &server, open.clone())
+      });
+    }
+
+    if let Some(address) = edit_address
+      && let Some(server) = storage
+        .as_ref()
+        .and_then(|storage| storage.load_server(&address).ok())
+        .flatten()
+    {
+      let props = EditSavedServerModalProps {
+        open: self.edit_open.clone(),
+        server,
+      };
+      ctx.modal(self.edit_open.clone(), move |ctx| {
+        ctx.mount::<EditSavedServerModal>(props.clone())
       });
     }
 
@@ -241,13 +267,15 @@ fn add_server_button(ctx: &mut Ctx) -> impl Into<Element> {
 
   if let Some(navigator) = navigator {
     button = button.on_click(move |_| {
-      let origin = if let Some(settings_popup) = settings_popup.as_ref() {
-        settings_popup.close();
+      let origin = if settings_popup.as_ref().is_some() {
         ConnectOrigin::SettingsPopup
       } else {
         ConnectOrigin::Settings
       };
-      navigator.push_with_state(ROUTE_CONNECT_SERVER, origin);
+      navigator.push_with_state(ROUTE_CONNECT_SERVER, ConnectServerRouteState::new(origin));
+      if let Some(settings_popup) = settings_popup.as_ref() {
+        settings_popup.close();
+      }
     });
   }
 
@@ -332,16 +360,19 @@ fn server_action_menu(
   fingerprint_address: Signal<Option<String>>,
   forget_open: Signal<bool>,
   forget_address: Signal<Option<String>>,
+  edit_open: Signal<bool>,
+  edit_address: Signal<Option<String>>,
 ) -> Element {
   let window = ctx.window();
   let window_width = window.logical_width();
   let modal_height = content_height(ctx);
   let menu_top = server_action_menu_top(anchor_y.map(modal_y), modal_height);
   let address = server.address.clone();
+  let edit_address_value = address.clone();
   let copy_address = address.clone();
   let fingerprint_address_value = address.clone();
   let forget_address_value = address.clone();
-  let close_connect = menu_open.clone();
+  let close_edit = menu_open.clone();
   let close_copy = menu_open.clone();
   let close_fingerprint = menu_open.clone();
   let close_forget = menu_open.clone();
@@ -366,8 +397,11 @@ fn server_action_menu(
         .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
         .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")))
         .child(
-          menu_item(ctx, "plug", &ctx.t("settings.servers.menu.connect"), false, true)
-            .on_click(move |_| close_connect.set(false)),
+          menu_item(ctx, "settings", &ctx.t("settings.servers.menu.edit"), false, true).on_click(move |_| {
+            close_edit.set(false);
+            edit_address.set(Some(edit_address_value.clone()));
+            edit_open.set(true);
+          }),
         )
         .child(
           menu_item(ctx, "copy", &ctx.t("settings.servers.menu.copy_address"), false, false).on_click(move |_| {
@@ -414,6 +448,495 @@ fn server_action_menu_top(anchor_y: Option<f32>, window_height: f32) -> f32 {
   let top = anchor_y.map(|y| y - TRIGGER_OFFSET).unwrap_or(FALLBACK_TOP);
   let max_top = (window_height - MENU_HEIGHT - EDGE_PADDING).max(EDGE_PADDING);
   top.clamp(EDGE_PADDING, max_top)
+}
+
+type EditServerInput = (String, String, String);
+type EditServerTestAction = lurq::app::ctx::FutureAction<EditServerInput, ConnectedServerInfo, String>;
+type EditServerSaveAction = lurq::app::ctx::FutureAction<EditServerInput, (), String>;
+
+#[derive(Clone)]
+struct EditSavedServerModalProps {
+  open: Signal<bool>,
+  server: StoredServer,
+}
+
+impl PartialEq for EditSavedServerModalProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.server == other.server
+  }
+}
+
+impl DevtoolsInspectable for EditSavedServerModalProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "server",
+      std::any::type_name::<String>(),
+      self.server.address.clone(),
+    ));
+  }
+}
+
+struct EditSavedServerModal {
+  loaded_address: Signal<String>,
+  address: Signal<String>,
+  seed: Signal<String>,
+  display_name: Signal<String>,
+}
+
+impl Component for EditSavedServerModal {
+  type Props = EditSavedServerModalProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    Self {
+      loaded_address: ctx.signal(props.server.address.clone()),
+      address: ctx.signal(props.server.address),
+      seed: ctx.signal(props.server.server_password),
+      display_name: ctx.signal(props.server.display_name),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    if self.loaded_address.get_untracked() != props.server.address {
+      self.loaded_address.set(props.server.address.clone());
+      self.address.set(props.server.address.clone());
+      self.seed.set(props.server.server_password.clone());
+      self.display_name.set(props.server.display_name.clone());
+    }
+
+    let test = edit_server_test_action(ctx);
+    let save = edit_server_save_action(ctx, props.server.clone());
+    let test_state = test.state().get();
+    let save_state = save.state().get();
+    if save_state.data.is_some() {
+      props.open.set(false);
+    }
+    let error = save_state.error.as_deref().or(test_state.error.as_deref());
+    let test_result = test_state.data.clone();
+
+    edit_server_modal(
+      ctx,
+      props.open,
+      self.address.clone(),
+      self.seed.clone(),
+      self.display_name.clone(),
+      &test,
+      &save,
+      test_state.is_pending(),
+      save_state.is_pending(),
+      error,
+      test_result.as_ref(),
+    )
+  }
+}
+
+fn edit_server_test_action(ctx: &mut Ctx) -> EditServerTestAction {
+  let storage = ctx.use_context::<Storage>();
+  ctx.future_action(move |(address, seed, display_name): EditServerInput| {
+    let storage = storage.clone();
+    async move {
+      let info = test_connection(address, seed, display_name, storage).await?;
+      Ok(info)
+    }
+  })
+}
+
+fn edit_server_save_action(ctx: &mut Ctx, server: StoredServer) -> EditServerSaveAction {
+  let storage = ctx.use_context::<Storage>();
+  ctx.future_action(move |(address, seed, display_name): EditServerInput| {
+    let storage = storage.clone();
+    let server = server.clone();
+    async move {
+      let storage = storage.ok_or_else(|| "Local storage is unavailable.".to_owned())?;
+      let old_address = server.address.clone();
+      let new_address = address.trim().to_owned();
+      storage
+        .save_server(&StoredServer {
+          address: new_address.clone(),
+          server_name: server.server_name,
+          user_id: server.user_id,
+          role: server.role,
+          certificate_fingerprint: server.certificate_fingerprint,
+          server_password: seed,
+          display_name: display_name.trim().to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
+      if old_address != new_address {
+        storage.delete_server(&old_address).map_err(|error| error.to_string())?;
+      }
+      Ok(())
+    }
+  })
+}
+
+fn edit_server_modal(
+  ctx: &mut Ctx,
+  open: Signal<bool>,
+  address: Signal<String>,
+  seed: Signal<String>,
+  display_name: Signal<String>,
+  test: &EditServerTestAction,
+  save: &EditServerSaveAction,
+  testing: bool,
+  saving: bool,
+  error: Option<&str>,
+  test_result: Option<&ConnectedServerInfo>,
+) -> Element {
+  let window = ctx.window();
+  let window_width = window.logical_width();
+  let modal_height = content_height(ctx);
+  let panel_width = (window_width - 32.0).min(600.0).max(320.0);
+  let busy = testing || saving;
+  let can_submit = !address.get().trim().is_empty() && !display_name.get().trim().is_empty() && !busy;
+  let close = open.clone();
+  let test_submit = test.clone();
+  let test_address = address.clone();
+  let test_seed = seed.clone();
+  let test_display_name = display_name.clone();
+  let save_submit = save.clone();
+  let save_address = address.clone();
+  let save_seed = seed.clone();
+  let save_display_name = display_name.clone();
+  let mut panel = Column::new()
+    .width(panel_width)
+    .spacing(18.0)
+    .padding(28.0)
+    .rounded(12.0)
+    .background(BackgroundColor::Color(Color::from_hex("#15171A")))
+    .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .spacing(6.0)
+        .child(Text::new(&ctx.t("settings.servers.edit.title")).variant(theme::TypographyStyle::Title))
+        .child(
+          Text::new(&ctx.t("settings.servers.edit.description"))
+            .variant(theme::TypographyStyle::Description)
+            .color(theme::PaletteColor::TextSecondary)
+            .width(Dimension::Pct(100.0)),
+        ),
+    )
+    .child(edit_server_field(
+      ctx,
+      &ctx.t("connect_server.address.label"),
+      address.clone(),
+      &ctx.t("connect_server.address.placeholder"),
+      "globe",
+      "edit_server_address",
+      1,
+    ))
+    .child(edit_server_field(
+      ctx,
+      &ctx.t("connect_server.display_name.label"),
+      display_name.clone(),
+      &ctx.t("connect_server.display_name.placeholder"),
+      "user",
+      "edit_server_display_name",
+      2,
+    ))
+    .child(edit_server_field(
+      ctx,
+      &ctx.t("connect_server.seed.label"),
+      seed.clone(),
+      &ctx.t("connect_server.seed.placeholder"),
+      "eye",
+      "edit_server_seed",
+      3,
+    ));
+
+  if testing {
+    panel = panel.child(testing_banner(ctx, &address.get()));
+  } else if let Some(error) = error {
+    panel = panel.child(edit_error_banner(ctx, error));
+  } else if let Some(info) = test_result {
+    panel = panel.child(edit_connection_info_banner(ctx, info));
+  }
+
+  panel = panel.child(
+    Row::new()
+      .width(Dimension::Pct(100.0))
+      .align_items(Alignment::Center)
+      .justify(Justify::SpaceBetween)
+      .child(
+        edit_modal_button(&ctx.t("common.action.cancel"), false, true).on_click(move |_| {
+          close.set(false);
+        }),
+      )
+      .child(
+        Row::new()
+          .align_items(Alignment::Center)
+          .justify(Justify::End)
+          .spacing(theme::SpacingSize::Sm)
+          .child(
+            edit_modal_button(
+              &ctx.t(if testing {
+                "settings.servers.edit.testing"
+              } else {
+                "settings.servers.edit.test"
+              }),
+              false,
+              can_submit,
+            )
+            .on_click(move |_| {
+              if can_submit {
+                test_submit.run((
+                  test_address.get_untracked(),
+                  test_seed.get_untracked(),
+                  test_display_name.get_untracked(),
+                ));
+              }
+            }),
+          )
+          .child(
+            edit_modal_button(
+              &ctx.t(if saving {
+                "settings.servers.edit.saving"
+              } else {
+                "settings.servers.edit.save"
+              }),
+              true,
+              can_submit,
+            )
+            .on_click(move |_| {
+              if can_submit {
+                save_submit.run((
+                  save_address.get_untracked(),
+                  save_seed.get_untracked(),
+                  save_display_name.get_untracked(),
+                ));
+              }
+            }),
+          ),
+      ),
+  );
+
+  Row::new()
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .background(BackgroundColor::Color(Color::from_hex("#00000099")))
+    .child(panel)
+    .into()
+}
+
+fn edit_server_field(
+  ctx: &mut Ctx,
+  label: &str,
+  value: Signal<String>,
+  placeholder: &str,
+  icon: &'static str,
+  name: &'static str,
+  tab_index: i32,
+) -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .spacing(8.0)
+    .child(
+      Text::new(label)
+        .variant(theme::TypographyStyle::FieldLabel)
+        .color(theme::PaletteColor::TextMuted),
+    )
+    .child(edit_input_box(ctx, value, placeholder, icon, name, tab_index))
+    .into()
+}
+
+fn edit_input_box(
+  ctx: &mut Ctx,
+  value: Signal<String>,
+  placeholder: &str,
+  icon: &'static str,
+  name: &'static str,
+  tab_index: i32,
+) -> Row {
+  let text_style = ctx.theme().typography().mono.clone();
+  let mut placeholder_style = text_style.clone();
+  placeholder_style.color = theme::palette().text_muted.with_opacity(0.55);
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(46.0)
+    .align_items(Alignment::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      TextInput::styled(value, text_style)
+        .placeholder(placeholder)
+        .placeholder_style(placeholder_style)
+        .single_line()
+        .name(name)
+        .flex(1.0)
+        .height(Dimension::Pct(100.0))
+        .padding_left(theme::SpacingSize::Lg)
+        .padding_right(theme::SpacingSize::Sm)
+        .tab_index(tab_index)
+        .background(BackgroundColor::Color(Color::from_hex("#00000000")))
+        .caret_color(theme::PaletteColor::Accent),
+    )
+    .child(
+      Row::new()
+        .height(Dimension::Pct(100.0))
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .padding_left(theme::SpacingSize::Sm)
+        .padding_right(theme::SpacingSize::Lg)
+        .child(ctx.mount::<LucideIcon>(LucideIconProps {
+          icon,
+          size: 16.0,
+          color: theme::palette().text_muted,
+        })),
+    )
+}
+
+fn testing_banner(ctx: &mut Ctx, address: &str) -> Element {
+  let host = address.split(':').next().unwrap_or(address).to_owned();
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Md)
+    .padding_vertical(theme::SpacingSize::Lg)
+    .padding_horizontal(16.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(crate::ui::loader::loader(16.0))
+    .child(
+      Text::new(&ctx.t_args("connect_server.authenticating", [("host", host)]))
+        .variant(theme::TypographyStyle::Description)
+        .color(theme::PaletteColor::TextSecondary)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
+    .into()
+}
+
+fn edit_error_banner(ctx: &mut Ctx, message: &str) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Md)
+    .padding_vertical(theme::SpacingSize::Lg)
+    .padding_horizontal(16.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::DangerMuted))
+    .border_inside(1.0, theme::PaletteColor::Danger)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "triangle-alert",
+      size: 16.0,
+      color: theme::palette().danger,
+    }))
+    .child(
+      Text::new(message)
+        .variant(theme::TypographyStyle::Description)
+        .color(theme::PaletteColor::Danger)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
+    .into()
+}
+
+fn edit_connection_info_banner(ctx: &mut Ctx, info: &ConnectedServerInfo) -> Element {
+  let fingerprint = if info.certificate_fingerprint.trim().is_empty() {
+    ctx.t("settings.servers.edit.fingerprint_empty").to_string()
+  } else {
+    ctx
+      .t_args(
+        "settings.servers.edit.fingerprint",
+        [("fingerprint", info.certificate_fingerprint.clone())],
+      )
+      .to_string()
+  };
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Start)
+    .spacing(theme::SpacingSize::Md)
+    .padding_vertical(theme::SpacingSize::Lg)
+    .padding_horizontal(16.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SuccessMuted))
+    .border_inside(1.0, BackgroundColor::Color(theme::palette().success.with_opacity(0.4)))
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "circle-check",
+      size: 16.0,
+      color: theme::palette().success,
+    }))
+    .child(
+      Column::new()
+        .flex(1.0)
+        .spacing(4.0)
+        .child(
+          Text::new(&ctx.t("settings.servers.edit.connected"))
+            .variant(theme::TypographyStyle::Description)
+            .color(theme::PaletteColor::TextPrimary)
+            .width(Dimension::Pct(100.0)),
+        )
+        .child(
+          Text::new(&ctx.t_args(
+            "settings.servers.edit.connected_body",
+            [
+              ("server", info.server_name.clone()),
+              ("address", info.address.clone()),
+              ("user", info.user_id.to_string()),
+              ("role", role_label(info.role).to_owned()),
+            ],
+          ))
+          .variant(theme::TypographyStyle::Description)
+          .color(theme::PaletteColor::TextSecondary)
+          .width(Dimension::Pct(100.0)),
+        )
+        .child(
+          Text::new(&fingerprint)
+            .variant(theme::TypographyStyle::Description)
+            .color(theme::PaletteColor::TextSecondary)
+            .width(Dimension::Pct(100.0)),
+        ),
+    )
+    .into()
+}
+
+fn edit_modal_button(label: &str, primary: bool, enabled: bool) -> Row {
+  let palette = theme::palette();
+  let (background, border, text_color, hover) = if primary {
+    (
+      BackgroundColor::Palette(theme::PaletteColor::Accent),
+      BackgroundColor::Palette(theme::PaletteColor::Accent),
+      palette.text_inverse,
+      BackgroundColor::Palette(theme::PaletteColor::AccentHover),
+    )
+  } else {
+    (
+      BackgroundColor::Color(Color::from_hex("#00000000")),
+      BackgroundColor::Palette(theme::PaletteColor::Border),
+      palette.text_secondary,
+      BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised),
+    )
+  };
+  let mut button = Row::new()
+    .height(34.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .padding_horizontal(16.0)
+    .rounded(theme::RadiusSize::Md)
+    .background(background)
+    .border_inside(1.0, border)
+    .child(
+      Text::new(label)
+        .variant(theme::TypographyStyle::Button)
+        .color(text_color),
+    );
+
+  if enabled {
+    button = button
+      .cursor(CursorIcon::Pointer)
+      .hovered_style(Style::new().background(hover.clone()))
+      .active_style(Style::new().background(hover));
+  }
+
+  button
 }
 
 fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -> Element {

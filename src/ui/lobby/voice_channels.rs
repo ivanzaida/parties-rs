@@ -8,7 +8,11 @@ use lurq::{
   },
   components::{Column, Row, Stack, Text},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify},
+  layout::{
+    Alignment,
+    layout_kind::Justify,
+    text_style::{FontWeight, TextStyle},
+  },
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
@@ -1093,15 +1097,21 @@ fn user_avatar_sized(name: &str, active: bool, size: f32) -> Element {
         theme::PaletteColor::Border
       }),
     )
-    .child(
-      Text::new(&initials_for(name))
-        .variant(theme::TypographyStyle::FieldLabel)
-        .color(if active {
-          theme::PaletteColor::TextPrimary
+    .child(Text::styled(
+      &initials_for(name),
+      TextStyle {
+        font_family: Arc::from("Inter"),
+        font_size: (size * 0.5).round(),
+        line_height: 1.0,
+        weight: FontWeight::Bold,
+        color: if active {
+          theme::palette().text_primary
         } else {
-          theme::PaletteColor::TextSecondary
-        }),
-    );
+          theme::palette().text_secondary
+        },
+        ..TextStyle::default()
+      },
+    ));
 
   avatar.into()
 }

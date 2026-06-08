@@ -291,7 +291,6 @@ struct VoiceControlState {
   deafened: AtomicBool,
   voice_normalization: bool,
   voice_normalization_target: f32,
-  voice_activation: bool,
   voice_activation_threshold: AtomicU32,
   push_to_talk: bool,
   push_to_talk_active: AtomicBool,
@@ -305,7 +304,6 @@ impl VoiceControlState {
       deafened: AtomicBool::new(deafened),
       voice_normalization: settings.voice_normalization,
       voice_normalization_target: normalize_target(settings.voice_normalization_target_level),
-      voice_activation: settings.voice_activation,
       voice_activation_threshold: AtomicU32::new(activation_threshold(settings.voice_activation_threshold).to_bits()),
       push_to_talk: settings.push_to_talk,
       push_to_talk_active: AtomicBool::new(false),
@@ -638,7 +636,7 @@ struct VoiceActivationGate {
 impl VoiceActivationGate {
   fn should_transmit(&mut self, control: &VoiceControlState, frame: &[f32]) -> bool {
     self.should_transmit_level(
-      control.voice_activation,
+      !control.push_to_talk,
       rms_to_perceptual(rms(frame)),
       control.voice_activation_threshold(),
     )

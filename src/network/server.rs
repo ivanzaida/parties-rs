@@ -1,4 +1,13 @@
-use std::{collections::VecDeque, fmt, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+  collections::VecDeque,
+  fmt,
+  net::SocketAddr,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::Duration,
+};
 
 use bytes::Bytes;
 use quinn::{Connection, Endpoint, VarInt};
@@ -190,12 +199,18 @@ impl Server {
     })
   }
 
+  #[allow(dead_code)]
   pub fn connection(&self) -> &Connection {
     &self.connection
   }
 
   pub fn disconnect(&self) {
     self.connection.close(VarInt::from_u32(0), b"client disconnect");
+    self.pending_video_notify.notify_waiters();
+  }
+
+  pub fn wake_video_datagram_reader(&self) {
+    self.pending_video_notify.notify_waiters();
   }
 
   pub fn certificate_fingerprint(&self) -> Option<String> {
@@ -280,6 +295,7 @@ impl Server {
     Ok(())
   }
 
+  #[allow(dead_code)]
   pub async fn recv_voice(&self) -> Result<ForwardedVoicePacket, ServerError> {
     loop {
       match self.recv_audio().await? {
@@ -326,6 +342,7 @@ impl Server {
     self.send_control(C2S::ScreenShareView { target_user_id: 0 }).await
   }
 
+  #[allow(dead_code)]
   pub async fn update_screen_share(&self, codec: VideoCodecId, width: u16, height: u16) -> Result<(), ServerError> {
     validate_video_codec(codec)?;
     self
@@ -357,6 +374,7 @@ impl Server {
     Ok(())
   }
 
+  #[allow(dead_code)]
   pub async fn send_video_frame(&self, frame: VideoFrame) -> Result<(), ServerError> {
     validate_video_codec(frame.codec)?;
     self.send_video_packet(&frame.encode_packet()).await
@@ -367,7 +385,11 @@ impl Server {
     let packet = frame.encode_packet();
     match self.connection.send_datagram(packet.clone().into()) {
       Ok(()) => Ok(VideoFrameSend::Datagram),
-      Err(quinn::SendDatagramError::TooLarge | quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled) => {
+      Err(
+        quinn::SendDatagramError::TooLarge
+        | quinn::SendDatagramError::UnsupportedByPeer
+        | quinn::SendDatagramError::Disabled,
+      ) => {
         self.send_video_packet(&packet).await?;
         Ok(VideoFrameSend::StreamFallback)
       }
@@ -401,10 +423,19 @@ impl Server {
     Ok(ForwardedVideoFrame::decode_owned(packet)?)
   }
 
-  pub async fn recv_forwarded_video_datagram(&self) -> Result<ForwardedVideoFrame, ServerError> {
+  pub async fn recv_forwarded_video_datagram_until(
+    &self,
+    stop: &AtomicBool,
+  ) -> Result<Option<ForwardedVideoFrame>, ServerError> {
     loop {
+      if stop.load(Ordering::Relaxed) {
+        return Ok(None);
+      }
       if let Some(packet) = self.pending_video_datagrams.lock().await.pop_front() {
-        return Ok(packet);
+        return Ok(Some(packet));
+      }
+      if let Some(error) = self.connection.close_reason() {
+        return Err(ServerError::Connection(error));
       }
       self.pending_video_notify.notified().await;
     }
@@ -491,18 +522,22 @@ impl Server {
       .await
   }
 
+  #[allow(dead_code)]
   pub async fn pin_message(&self, message_id: u64) -> Result<(), ServerError> {
     self.send_control(C2S::ChatPin { message_id }).await
   }
 
+  #[allow(dead_code)]
   pub async fn unpin_message(&self, message_id: u64) -> Result<(), ServerError> {
     self.send_control(C2S::ChatUnpin { message_id }).await
   }
 
+  #[allow(dead_code)]
   pub async fn delete_message(&self, message_id: u64) -> Result<(), ServerError> {
     self.send_control(C2S::ChatDelete { message_id }).await
   }
 
+  #[allow(dead_code)]
   pub async fn upload_file(&self, attachment_id: u64, data: Vec<u8>) -> Result<(), ServerError> {
     let payload = FileStreamRequest::Upload { attachment_id, data }.encode();
     let mut stream = self.connection.open_uni().await?;
@@ -513,6 +548,7 @@ impl Server {
     Ok(())
   }
 
+  #[allow(dead_code)]
   pub async fn download_file(&self, attachment_id: u64) -> Result<(), ServerError> {
     let payload = FileStreamRequest::Download { attachment_id }.encode();
     let mut stream = self.connection.open_uni().await?;
@@ -523,6 +559,7 @@ impl Server {
     Ok(())
   }
 
+  #[allow(dead_code)]
   pub async fn search_chat(
     &self,
     channel_id: ChannelId,
@@ -540,6 +577,7 @@ impl Server {
       .await
   }
 
+  #[allow(dead_code)]
   pub async fn request_pinned_messages(&self, channel_id: ChannelId) -> Result<(), ServerError> {
     self.send_control(C2S::ChatPinnedReq { channel_id }).await
   }
@@ -680,9 +718,17 @@ mod tests {
 
   #[test]
   fn datagram_decoder_routes_forwarded_stream_audio_packets() {
-    let DecodedDatagram::StreamAudio(decoded) =
-      decode_datagram(Bytes::from_static(&[PacketType::StreamAudio as u8, 7, 0, 0, 0, 1, 2, 3])).unwrap()
-    else {
+    let DecodedDatagram::StreamAudio(decoded) = decode_datagram(Bytes::from_static(&[
+      PacketType::StreamAudio as u8,
+      7,
+      0,
+      0,
+      0,
+      1,
+      2,
+      3,
+    ]))
+    .unwrap() else {
       panic!("expected stream audio datagram");
     };
 

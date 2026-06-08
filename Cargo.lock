@@ -933,7 +933,7 @@ dependencies = [
  "jni 0.22.4",
  "js-sys",
  "libc",
- "mach2",
+ "mach2 0.6.0",
  "ndk",
  "ndk-context",
  "num-derive",
@@ -2363,16 +2363,17 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e9c5bdf8d29648e43429887077d5f92b47a80dd2b00d814ae02a245de8ee087"
+version = "0.10.7"
 dependencies = [
  "arboard",
  "bytemuck",
+ "core-foundation-sys 0.8.7",
+ "core-video-sys",
  "cosmic-text",
  "image",
  "lurq_macros",
  "lyon",
+ "metal 0.31.0",
  "objc2 0.6.4",
  "parking_lot",
  "paste",
@@ -2385,6 +2386,7 @@ dependencies = [
  "ureq",
  "usvg",
  "wgpu",
+ "wgpu-hal",
  "windows 0.58.0",
  "winit",
 ]
@@ -2392,8 +2394,6 @@ dependencies = [
 [[package]]
 name = "lurq_macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8427f3290280203fbed0728d463b1c8fd980648d1e48496a411cb28c6b93439"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2450,6 +2450,15 @@ dependencies = [
  "float_next_after",
  "lyon_path",
  "num-traits",
+]
+
+[[package]]
+name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -2526,6 +2535,26 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minimp3"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82acfc4ecae15a73fc88d4f5f6ba6e2eece7ed980f1a63fccd1ae374c2a0b7c5"
+dependencies = [
+ "minimp3-sys",
+ "slice-ring-buffer",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "minimp3-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa16a1fbac806d94e230e0a6b9b5a137d051897a188944cf07645da4b73a9fae"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -3383,6 +3412,7 @@ dependencies = [
  "getrandom 0.4.2",
  "log",
  "lurq",
+ "minimp3",
  "nokhwa",
  "opus",
  "quinn",
@@ -4345,6 +4375,17 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slice-ring-buffer"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84ae312bda09b2368f79f985fdb4df4a0b5cbc75546b511303972d195f8c27d6"
+dependencies = [
+ "libc",
+ "mach2 0.4.3",
+ "winapi",
+]
 
 [[package]]
 name = "slotmap"

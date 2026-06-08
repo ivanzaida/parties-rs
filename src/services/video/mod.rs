@@ -49,6 +49,7 @@ pub struct DecodedVideoFrame {
   pub height: u16,
   pub format: DecodedVideoPixelFormat,
   pub pixels: Vec<u8>,
+  #[allow(dead_code)]
   pub native_image: Option<lurq::images::ImageData>,
 }
 

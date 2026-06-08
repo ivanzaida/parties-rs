@@ -3,7 +3,6 @@ use std::{
   sync::{Arc, Mutex},
   thread,
 };
-
 #[cfg(target_os = "macos")]
 use std::{
   ffi::c_void,
@@ -11,10 +10,10 @@ use std::{
   sync::mpsc::{self, Receiver, Sender},
 };
 
-#[cfg(any(not(target_os = "macos"), test))]
-use rdev::Key;
 #[cfg(not(target_os = "macos"))]
 use rdev::listen;
+#[cfg(any(not(target_os = "macos"), test))]
+use rdev::{Button, Key};
 #[cfg(not(target_os = "macos"))]
 use rdev::{Event, EventType};
 
@@ -27,6 +26,21 @@ use crate::{
 #[derive(Clone)]
 pub struct GlobalVoiceHotkeys {
   inner: Arc<GlobalVoiceHotkeysInner>,
+}
+
+#[derive(Clone, Default)]
+pub struct GlobalMouseHotkeyCapture {
+  inner: Arc<Mutex<Option<String>>>,
+}
+
+impl GlobalMouseHotkeyCapture {
+  pub fn take_hotkey(&self) -> Option<String> {
+    self
+      .inner
+      .lock()
+      .expect("global mouse hotkey capture lock poisoned")
+      .take()
+  }
 }
 
 struct GlobalVoiceHotkeysInner {
@@ -44,6 +58,8 @@ struct GlobalVoiceHotkeysState {
   push_to_talk: String,
   toggle_mute: String,
   toggle_deafen: String,
+  mouse_enabled: bool,
+  mouse_capture: Option<Arc<Mutex<Option<String>>>>,
   #[cfg(not(target_os = "macos"))]
   pressed: HashSet<Key>,
   active_toggles: HashSet<VoiceControlAction>,
@@ -75,10 +91,32 @@ impl GlobalVoiceHotkeys {
     Self { inner }
   }
 
-  pub fn update_settings(&self, settings: Option<&AppSettings>, enabled: bool) {
+  pub fn begin_mouse_capture(&self) -> GlobalMouseHotkeyCapture {
+    let capture = GlobalMouseHotkeyCapture::default();
+    self
+      .inner
+      .state
+      .lock()
+      .expect("global hotkey lock poisoned")
+      .mouse_capture = Some(capture.inner.clone());
+    capture
+  }
+
+  pub fn cancel_mouse_capture(&self) {
+    self
+      .inner
+      .state
+      .lock()
+      .expect("global hotkey lock poisoned")
+      .mouse_capture = None;
+  }
+
+  pub fn update_settings(&self, settings: Option<&AppSettings>, enabled: bool, mouse_enabled: bool) {
     let global_hotkeys_enabled = enabled && settings.is_some();
+    let global_mouse_hotkeys_enabled = mouse_enabled && settings.is_some();
     let mut state = self.inner.state.lock().expect("global hotkey lock poisoned");
     state.enabled = global_hotkeys_enabled;
+    state.mouse_enabled = global_mouse_hotkeys_enabled;
 
     if let Some(settings) = settings {
       state.push_to_talk_enabled = settings.push_to_talk;
@@ -92,7 +130,7 @@ impl GlobalVoiceHotkeys {
       state.toggle_deafen.clear();
     }
 
-    if !state.enabled {
+    if !state.enabled && !state.mouse_enabled {
       state.active_toggles.clear();
       #[cfg(not(target_os = "macos"))]
       state.pressed.clear();
@@ -136,6 +174,8 @@ impl GlobalVoiceHotkeysInner {
     match event.event_type {
       EventType::KeyPress(key) => self.handle_key_press(key),
       EventType::KeyRelease(key) => self.handle_key_release(key),
+      EventType::ButtonPress(button) => self.handle_button_press(button),
+      EventType::ButtonRelease(button) => self.handle_button_release(button),
       _ => {}
     }
   }
@@ -185,6 +225,78 @@ impl GlobalVoiceHotkeysInner {
         return;
       };
       let label = label.to_ascii_lowercase();
+
+      if state.push_to_talk_enabled && hotkey_contains_part(&state.push_to_talk, &label) {
+        stop_push_to_talk = true;
+      }
+      if hotkey_contains_part(&state.toggle_mute, &label) {
+        state.active_toggles.remove(&VoiceControlAction::ToggleMute);
+      }
+      if hotkey_contains_part(&state.toggle_deafen, &label) {
+        state.active_toggles.remove(&VoiceControlAction::ToggleDeafen);
+      }
+    }
+
+    if stop_push_to_talk {
+      self.session.set_push_to_talk_active(false);
+    }
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  fn handle_button_press(&self, button: Button) {
+    let Some(label) = mouse_button_label(button) else {
+      return;
+    };
+
+    let mut pending_action = None;
+    let mut captured_hotkey = None;
+    let mut capture_target = None;
+    {
+      let mut state = self.state.lock().expect("global hotkey lock poisoned");
+      let event_hotkey = mouse_event_hotkey(&state.pressed, label);
+
+      if let Some(capture) = state.mouse_capture.take() {
+        captured_hotkey = Some(event_hotkey);
+        capture_target = Some(capture);
+      } else if state.mouse_enabled {
+        if state.push_to_talk_enabled && event_hotkey == state.push_to_talk {
+          self.session.set_push_to_talk_active(true);
+        } else if event_hotkey == state.toggle_mute {
+          if state.active_toggles.insert(VoiceControlAction::ToggleMute) {
+            pending_action = Some(VoiceControlAction::ToggleMute);
+          }
+        } else if event_hotkey == state.toggle_deafen && state.active_toggles.insert(VoiceControlAction::ToggleDeafen) {
+          pending_action = Some(VoiceControlAction::ToggleDeafen);
+        }
+      }
+    }
+
+    if let (Some(capture), Some(hotkey)) = (capture_target, captured_hotkey) {
+      *capture.lock().expect("global mouse hotkey capture lock poisoned") = Some(hotkey);
+      return;
+    }
+
+    if let Some(action) = pending_action {
+      let session = self.session.clone();
+      self.tokio.spawn(async move {
+        let _ = apply_voice_control(session, action).await;
+      });
+    }
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  fn handle_button_release(&self, button: Button) {
+    let Some(label) = mouse_button_label(button) else {
+      return;
+    };
+    let label = label.to_ascii_lowercase();
+
+    let mut stop_push_to_talk = false;
+    {
+      let mut state = self.state.lock().expect("global hotkey lock poisoned");
+      if !state.mouse_enabled {
+        return;
+      }
 
       if state.push_to_talk_enabled && hotkey_contains_part(&state.push_to_talk, &label) {
         stop_push_to_talk = true;
@@ -273,6 +385,25 @@ fn event_hotkey(pressed: &HashSet<Key>, key: Key) -> Option<String> {
   }
   parts.push(key.to_ascii_lowercase());
   Some(parts.join("+"))
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn mouse_event_hotkey(pressed: &HashSet<Key>, button: String) -> String {
+  let mut parts = Vec::new();
+  if pressed.contains(&Key::ControlLeft) || pressed.contains(&Key::ControlRight) {
+    parts.push("ctrl".to_owned());
+  }
+  if pressed.contains(&Key::Alt) || pressed.contains(&Key::AltGr) {
+    parts.push("alt".to_owned());
+  }
+  if pressed.contains(&Key::ShiftLeft) || pressed.contains(&Key::ShiftRight) {
+    parts.push("shift".to_owned());
+  }
+  if pressed.contains(&Key::MetaLeft) || pressed.contains(&Key::MetaRight) {
+    parts.push("meta".to_owned());
+  }
+  parts.push(button.to_ascii_lowercase());
+  parts.join("+")
 }
 
 fn normalize_hotkey(hotkey: &str) -> String {
@@ -408,6 +539,15 @@ fn key_label(key: Key) -> Option<String> {
   };
 
   Some(label.to_owned())
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn mouse_button_label(button: Button) -> Option<String> {
+  match button {
+    Button::Middle => Some("MouseMiddle".to_owned()),
+    Button::Unknown(code) => Some(format!("Mouse{code}")),
+    Button::Left | Button::Right => None,
+  }
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -851,6 +991,17 @@ mod tests {
   fn normalizes_arrow_aliases() {
     assert_eq!(normalize_hotkey("UpArrow"), "arrowup");
     assert_eq!(normalize_hotkey("Ctrl+DownArrow"), "ctrl+arrowdown");
+  }
+
+  #[test]
+  fn mouse_buttons_can_be_hotkeys() {
+    let pressed = HashSet::from([Key::ControlLeft]);
+    assert_eq!(
+      mouse_event_hotkey(&pressed, "MouseMiddle".to_owned()),
+      "ctrl+mousemiddle"
+    );
+    assert_eq!(mouse_button_label(Button::Middle).as_deref(), Some("MouseMiddle"));
+    assert_eq!(mouse_button_label(Button::Unknown(2)).as_deref(), Some("Mouse2"));
   }
 
   #[cfg(target_os = "windows")]

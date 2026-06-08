@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
     ctx::Ctx,
   },
-  components::{Column, Row, Text},
+  components::{Column, Rect, Row, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
@@ -20,11 +22,14 @@ use crate::{
 pub(super) struct TextChannelsProps {
   pub channels: Vec<LobbyTextChannel>,
   pub selected_channel_id: Option<ChannelId>,
+  pub unread_channel_ids: HashSet<ChannelId>,
 }
 
 impl PartialEq for TextChannelsProps {
   fn eq(&self, other: &Self) -> bool {
-    self.channels == other.channels && self.selected_channel_id == other.selected_channel_id
+    self.channels == other.channels
+      && self.selected_channel_id == other.selected_channel_id
+      && self.unread_channel_ids == other.unread_channel_ids
   }
 }
 
@@ -86,11 +91,15 @@ impl Component for TextChannels {
         );
       } else {
         let selected_channel_id = props.selected_channel_id;
+        let unread_channel_ids = props.unread_channel_ids.clone();
         let session = ctx.use_context::<ServerSession>();
         section = section.with_children(ctx.for_each(
           props.channels,
           |channel| channel.id,
-          move |ctx, channel| text_channel_row(ctx, &channel, selected_channel_id, session.clone()),
+          move |ctx, channel| {
+            let unread = unread_channel_ids.contains(&channel.id);
+            text_channel_row(ctx, &channel, selected_channel_id, unread, session.clone())
+          },
         ));
       }
     }
@@ -103,6 +112,7 @@ fn text_channel_row(
   ctx: &mut Ctx,
   channel: &LobbyTextChannel,
   selected_channel_id: Option<ChannelId>,
+  unread: bool,
   session: Option<ServerSession>,
 ) -> Element {
   let selected = selected_channel_id == Some(channel.id);
@@ -139,6 +149,13 @@ fn text_channel_row(
           theme::PaletteColor::TextSecondary
         }),
     );
+  if unread {
+    row = row.child(
+      Rect::new(7.0, 7.0)
+        .rounded(4.0)
+        .background(BackgroundColor::Palette(theme::PaletteColor::Accent)),
+    );
+  }
 
   if let Some(session) = session {
     row = row.on_click(move |_| session.select_text_channel(channel_id));

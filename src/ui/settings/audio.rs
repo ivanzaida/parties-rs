@@ -7,6 +7,7 @@ use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
     ctx::Ctx,
+    events::MouseButton,
   },
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
   core::Signal,
@@ -22,13 +23,18 @@ use lurq::{
 };
 
 use crate::{
-  services::{audio_devices, hotkeys},
+  services::{
+    audio_devices,
+    global_hotkeys::{GlobalMouseHotkeyCapture, GlobalVoiceHotkeys},
+    hotkeys,
+  },
   session::ServerSession,
   storage::{AppSettings, Storage},
   theme,
   ui::{
     common::{
       dropdown_menu::{DropdownOption, dropdown_menu},
+      lucide_icon::{LucideIcon, LucideIconProps},
       percent_slider::{PercentSlider, PercentSliderProps, PercentSliderSaveAction},
     },
     settings::{
@@ -64,7 +70,6 @@ pub struct SettingsAudioScreen {
   voice_normalization: bool,
   voice_normalization_target_level: i32,
   echo_cancellation: bool,
-  voice_activation: bool,
   voice_activation_threshold: i32,
   push_to_talk: bool,
   hotkey_push_to_talk: String,
@@ -92,7 +97,6 @@ impl Component for SettingsAudioScreen {
     let voice_normalization = settings.voice_normalization;
     let voice_normalization_target_level = settings.voice_normalization_target_level.clamp(0, 100);
     let echo_cancellation = settings.echo_cancellation;
-    let voice_activation = settings.voice_activation;
     let voice_activation_threshold = settings.voice_activation_threshold.clamp(0, 100);
     let push_to_talk = settings.push_to_talk;
     let hotkey_push_to_talk = settings.hotkey_push_to_talk;
@@ -137,7 +141,6 @@ impl Component for SettingsAudioScreen {
       voice_normalization,
       voice_normalization_target_level,
       echo_cancellation,
-      voice_activation,
       voice_activation_threshold,
       push_to_talk,
       hotkey_push_to_talk,
@@ -240,12 +243,6 @@ impl Component for SettingsAudioScreen {
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.audio.transmission")))
-                .child(ctx.mount::<AudioToggleSetting>(AudioToggleSettingProps {
-                  title_key: "settings.audio.voice_activation",
-                  description_key: "settings.audio.voice_activation.description",
-                  initial_enabled: self.voice_activation,
-                  setting: AudioBoolSetting::VoiceActivation,
-                }))
                 .child(ctx.mount::<AudioThresholdSetting>(AudioThresholdSettingProps {
                   initial_value: self.voice_activation_threshold,
                   input_level: self.input_level.clone(),
@@ -382,7 +379,12 @@ impl Component for AudioDeviceSetting {
     ctx.watch(&value, move |value| {
       props.selected.set(value.clone());
       if let Some(storage) = storage.as_ref() {
-        save_audio_string_setting(&storage, setting, value.clone());
+        let settings = save_audio_string_setting(&storage, setting, value.clone());
+        if matches!(setting, AudioStringSetting::AudioOutputDevice)
+          && let Some(session) = session.as_ref()
+        {
+          session.set_notification_audio_settings(&settings);
+        }
         restart_voice_for_audio_setting(&storage, session.as_ref());
       }
     });
@@ -469,7 +471,6 @@ enum AudioBoolSetting {
   NoiseCancellation,
   VoiceNormalization,
   EchoCancellation,
-  VoiceActivation,
   PushToTalk,
 }
 
@@ -625,7 +626,7 @@ impl Component for AudioThresholdSetting {
     let session = ctx.use_context::<ServerSession>();
     if let Some(storage) = storage {
       ctx.watch(&value, move |value| {
-        save_slider_setting(&storage, AudioSliderSetting::VoiceActivationThreshold, *value);
+        let _ = save_slider_setting(&storage, AudioSliderSetting::VoiceActivationThreshold, *value);
         if let Some(session) = session.as_ref() {
           session.set_voice_activation_threshold(*value);
         }
@@ -682,6 +683,9 @@ impl PartialEq for AudioHotkeySettingProps {
 struct AudioHotkeySetting {
   value: Signal<String>,
   recording: Signal<bool>,
+  suppress_next_click: Signal<bool>,
+  mouse_capture: Arc<Mutex<Option<GlobalMouseHotkeyCapture>>>,
+  global_hotkeys: Option<GlobalVoiceHotkeys>,
 }
 
 impl Component for AudioHotkeySetting {
@@ -691,12 +695,37 @@ impl Component for AudioHotkeySetting {
     let props = ctx.props::<Self::Props>().clone();
     let value = ctx.signal(props.initial_value.clone());
     let recording = ctx.signal(false);
+    let suppress_next_click = ctx.signal(false);
+    let mouse_capture = Arc::new(Mutex::new(None));
+    let global_hotkeys = ctx.use_context::<GlobalVoiceHotkeys>();
     if let Some(storage) = ctx.use_context::<Storage>() {
       ctx.watch(&value, move |value| {
         save_audio_string_setting(&storage, props.setting, value.clone());
       });
     }
-    Self { value, recording }
+
+    {
+      let capture = mouse_capture.clone();
+      let capture_value = value.clone();
+      let capture_recording = recording.clone();
+      let capture_suppress_next_click = suppress_next_click.clone();
+      let interval = ctx.create_interval(Duration::from_millis(16), move || {
+        if let Some(hotkey) = take_mouse_hotkey_capture(&capture) {
+          capture_value.set(hotkey);
+          capture_recording.set(false);
+          capture_suppress_next_click.set(true);
+        }
+      });
+      interval.start();
+    }
+
+    Self {
+      value,
+      recording,
+      suppress_next_click,
+      mouse_capture,
+      global_hotkeys,
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -705,10 +734,14 @@ impl Component for AudioHotkeySetting {
       &ctx.t(props.title_key),
       &ctx.t(props.description_key),
       hotkey_button(
+        ctx,
         &ctx.t("settings.audio.hotkey.not_set"),
         &ctx.t("settings.audio.hotkey.recording"),
         self.value.clone(),
         self.recording.clone(),
+        self.suppress_next_click.clone(),
+        self.mouse_capture.clone(),
+        self.global_hotkeys.clone(),
       ),
       true,
     )
@@ -774,8 +807,8 @@ pub(super) fn audio_row(label: &str, description: &str, trailing: Element, divid
       Column::new()
         .flex(1.0)
         .spacing(theme::SpacingSize::Xs)
-        .child(Text::styled(label, row_title_style()))
-        .child(Text::styled(description, row_subtitle_style())),
+        .child(Text::styled(label, row_title_style()).nowrap())
+        .child(Text::styled(description, row_subtitle_style()).nowrap()),
     )
     .child(trailing)
     .into()
@@ -936,7 +969,12 @@ fn audio_slider_save_action(
 ) -> AudioSliderSaveAction {
   Arc::new(move |value| {
     if let Some(storage) = storage.as_ref() {
-      save_slider_setting(storage, setting, value);
+      let settings = save_slider_setting(storage, setting, value);
+      if matches!(setting, AudioSliderSetting::NotificationVolume)
+        && let Some(session) = session.as_ref()
+      {
+        session.set_notification_audio_settings(&settings);
+      }
       if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
         restart_voice_for_audio_setting(storage, session.as_ref());
       }
@@ -955,17 +993,21 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
   let _ = session.start_voice(settings);
 }
 
-fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) {
+fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) -> AppSettings {
   let mut settings = storage.load_settings().unwrap_or_default();
   let value = value.clamp(0, 100);
 
   match setting {
     AudioSliderSetting::NotificationVolume => settings.notification_volume = value,
     AudioSliderSetting::VoiceNormalizationTargetLevel => settings.voice_normalization_target_level = value,
-    AudioSliderSetting::VoiceActivationThreshold => settings.voice_activation_threshold = value,
+    AudioSliderSetting::VoiceActivationThreshold => {
+      settings.voice_activation_threshold = value;
+      settings.voice_activation = true;
+    }
   }
 
   let _ = storage.save_settings(&settings);
+  settings
 }
 
 fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: bool) {
@@ -975,14 +1017,16 @@ fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: 
     AudioBoolSetting::NoiseCancellation => settings.noise_cancellation = value,
     AudioBoolSetting::VoiceNormalization => settings.voice_normalization = value,
     AudioBoolSetting::EchoCancellation => settings.echo_cancellation = value,
-    AudioBoolSetting::VoiceActivation => settings.voice_activation = value,
-    AudioBoolSetting::PushToTalk => settings.push_to_talk = value,
+    AudioBoolSetting::PushToTalk => {
+      settings.push_to_talk = value;
+      settings.voice_activation = true;
+    }
   }
 
   let _ = storage.save_settings(&settings);
 }
 
-fn save_audio_string_setting(storage: &Storage, setting: AudioStringSetting, value: String) {
+fn save_audio_string_setting(storage: &Storage, setting: AudioStringSetting, value: String) -> AppSettings {
   let mut settings = storage.load_settings().unwrap_or_default();
 
   match setting {
@@ -994,13 +1038,18 @@ fn save_audio_string_setting(storage: &Storage, setting: AudioStringSetting, val
   }
 
   let _ = storage.save_settings(&settings);
+  settings
 }
 
 fn hotkey_button(
+  ctx: &mut Ctx,
   not_set_label: &str,
   recording_label: &str,
   value: Signal<String>,
   recording: Signal<bool>,
+  suppress_next_click: Signal<bool>,
+  mouse_capture: Arc<Mutex<Option<GlobalMouseHotkeyCapture>>>,
+  global_hotkeys: Option<GlobalVoiceHotkeys>,
 ) -> Element {
   let is_recording = recording.get();
   let current = value.get();
@@ -1017,10 +1066,21 @@ fn hotkey_button(
     theme::PaletteColor::Border
   };
   let click_recording = recording.clone();
+  let click_suppress_next_click = suppress_next_click.clone();
+  let click_value = value.clone();
   let key_recording = recording.clone();
   let key_value = value.clone();
+  let click_capture = mouse_capture.clone();
+  let click_global_hotkeys = global_hotkeys.clone();
+  let key_capture = mouse_capture.clone();
+  let key_global_hotkeys = global_hotkeys.clone();
+  let clear_capture = mouse_capture.clone();
+  let clear_global_hotkeys = global_hotkeys.clone();
+  let clear_value = value.clone();
+  let clear_recording = recording.clone();
+  let has_value = !current.trim().is_empty();
 
-  Button::empty()
+  let hotkey = Button::empty()
     .width(150.0)
     .height(36.0)
     .align_items(Alignment::Center)
@@ -1032,8 +1092,28 @@ fn hotkey_button(
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .on_click(move |_| {
+    .on_click(move |event| {
+      if event.button != MouseButton::Left {
+        return;
+      }
+      if let Some(hotkey) = take_mouse_hotkey_capture(&click_capture) {
+        click_value.set(hotkey);
+        click_recording.set(false);
+        click_suppress_next_click.set(true);
+        return;
+      }
+      if click_suppress_next_click.get_untracked() {
+        click_suppress_next_click.set(false);
+        return;
+      }
+      if click_recording.get_untracked() {
+        return;
+      }
       click_recording.set(true);
+      if let Some(global_hotkeys) = click_global_hotkeys.as_ref() {
+        let capture = global_hotkeys.begin_mouse_capture();
+        *click_capture.lock().expect("audio hotkey capture lock poisoned") = Some(capture);
+      }
     })
     .on_key_down(move |event| {
       if !key_recording.get_untracked() {
@@ -1041,20 +1121,80 @@ fn hotkey_button(
       }
       if hotkeys::is_cancel_key(event) {
         key_recording.set(false);
+        cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());
       } else if hotkeys::is_clear_key(event) {
         key_value.set(String::new());
         key_recording.set(false);
+        cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());
       } else if let Some(hotkey) = hotkeys::event_to_hotkey(event) {
         key_value.set(hotkey);
         key_recording.set(false);
+        cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());
       }
     })
     .child(
       Text::styled(label, input_level_label_style())
         .width(Dimension::Pct(100.0))
         .align(Alignment::Center),
-    )
+    );
+
+  let mut clear = Button::empty()
+    .width(36.0)
+    .height(36.0)
+    .align_items(Alignment::Center)
+    .justify(lurq::layout::layout_kind::Justify::Center)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "x",
+      size: 15.0,
+      color: if has_value || is_recording {
+        theme::palette().text_secondary
+      } else {
+        theme::palette().text_muted.with_opacity(0.45)
+      },
+    }));
+
+  if has_value || is_recording {
+    clear = clear
+      .cursor(CursorIcon::Pointer)
+      .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+      .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
+      .on_click(move |_| {
+        clear_value.set(String::new());
+        clear_recording.set(false);
+        cancel_mouse_hotkey_capture(&clear_capture, clear_global_hotkeys.as_ref());
+      });
+  }
+
+  Row::new()
+    .width(192.0)
+    .height(36.0)
+    .align_items(Alignment::Center)
+    .spacing(6.0)
+    .child(hotkey)
+    .child(clear)
     .into()
+}
+
+fn cancel_mouse_hotkey_capture(
+  capture: &Arc<Mutex<Option<GlobalMouseHotkeyCapture>>>,
+  global_hotkeys: Option<&GlobalVoiceHotkeys>,
+) {
+  *capture.lock().expect("audio hotkey capture lock poisoned") = None;
+  if let Some(global_hotkeys) = global_hotkeys {
+    global_hotkeys.cancel_mouse_capture();
+  }
+}
+
+fn take_mouse_hotkey_capture(capture: &Arc<Mutex<Option<GlobalMouseHotkeyCapture>>>) -> Option<String> {
+  let mut capture = capture.lock().expect("audio hotkey capture lock poisoned");
+  let captured = capture.as_ref().and_then(GlobalMouseHotkeyCapture::take_hotkey);
+  if captured.is_some() {
+    *capture = None;
+  }
+  captured
 }
 
 fn input_level_meter(level: f32, active: bool, label: &str) -> Element {

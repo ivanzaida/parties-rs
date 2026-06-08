@@ -28,6 +28,7 @@ use crate::{
   },
   services::{
     logger,
+    notifications::{self, NotificationAudioSettings, NotificationSound},
     video::{
       DecodedVideoFrame, DecodedVideoPixelFormat, VideoBroadcast, VideoBroadcastConfig, VideoDecodeConfig, VideoDecoder,
     },
@@ -41,6 +42,8 @@ const DEFAULT_USER_VOLUME: i32 = 100;
 const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
 const MAX_DECODE_VIDEO_BATCH: usize = 10;
 const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(33);
+#[cfg(target_os = "windows")]
+const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = false;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedServerInfo {
@@ -420,6 +423,7 @@ pub struct LobbyState {
   pub text_channels: Vec<LobbyTextChannel>,
   pub selected_text_channel_id: Option<ChannelId>,
   pub chat_messages_by_channel: HashMap<ChannelId, Vec<ProtocolChatMessage>>,
+  pub unread_text_channel_ids: HashSet<ChannelId>,
   pub chat_history_loading: HashSet<ChannelId>,
   pub chat_history_has_more: HashMap<ChannelId, bool>,
   pub users: Vec<LobbyUser>,
@@ -494,6 +498,7 @@ pub struct ServerSession {
   tofu_warning: Arc<Mutex<Option<TofuWarning>>>,
   lobby: Arc<Mutex<LobbyState>>,
   receiver_started: Arc<Mutex<bool>>,
+  receiver_stop: Arc<Mutex<Option<Arc<AtomicBool>>>>,
   local_voice_fallback: Arc<Mutex<(bool, bool)>>,
   muted_before_deafen: Arc<Mutex<Option<bool>>>,
   speaking_marks: Arc<Mutex<HashMap<UserId, u64>>>,
@@ -508,6 +513,7 @@ pub struct ServerSession {
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
+  notification_audio_settings: Arc<Mutex<NotificationAudioSettings>>,
   shutdown_requested: Arc<AtomicBool>,
   revision: Signal<u64>,
 }
@@ -519,6 +525,7 @@ impl Default for ServerSession {
       tofu_warning: Arc::new(Mutex::new(None)),
       lobby: Arc::new(Mutex::new(LobbyState::default())),
       receiver_started: Arc::new(Mutex::new(false)),
+      receiver_stop: Arc::new(Mutex::new(None)),
       local_voice_fallback: Arc::new(Mutex::new((false, false))),
       muted_before_deafen: Arc::new(Mutex::new(None)),
       speaking_marks: Arc::new(Mutex::new(HashMap::new())),
@@ -533,6 +540,7 @@ impl Default for ServerSession {
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
       stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
+      notification_audio_settings: Arc::new(Mutex::new(NotificationAudioSettings::default())),
       shutdown_requested: Arc::new(AtomicBool::new(false)),
       revision: Signal::new(0),
     }
@@ -563,6 +571,7 @@ impl ServerSession {
 
   pub fn set_connected(&self, connected: ConnectedServer) {
     self.shutdown_requested.store(false, Ordering::Relaxed);
+    self.stop_lobby_receivers();
     self.stop_voice();
     self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = Some(connected);
@@ -592,6 +601,7 @@ impl ServerSession {
 
   pub fn clear(&self) {
     self.shutdown_requested.store(false, Ordering::Relaxed);
+    self.stop_lobby_receivers();
     self.stop_voice();
     self.stop_video_broadcast();
     *self.current.lock().expect("server session lock poisoned") = None;
@@ -622,15 +632,25 @@ impl ServerSession {
 
   pub fn disconnect(&self) {
     logger::log("[session] disconnect requested by client");
+    let was_in_voice = self
+      .lobby
+      .lock()
+      .expect("server session lock poisoned")
+      .selected_channel_id
+      .is_some();
     if let Some(server) = self.server() {
       server.disconnect();
     }
     self.clear();
+    if was_in_voice {
+      self.play_voice_leave_notification();
+    }
   }
 
   pub fn disconnect_for_shutdown(&self) {
     logger::log("[session] disconnect requested for shutdown");
     self.shutdown_requested.store(true, Ordering::Relaxed);
+    self.stop_lobby_receivers();
     self.stop_voice();
     self.stop_video_broadcast();
     if let Some(server) = self.server() {
@@ -654,6 +674,17 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .as_ref()
       .map(|connected| connected.server.clone())
+  }
+
+  fn stop_lobby_receivers(&self) {
+    if let Some(stop) = self
+      .receiver_stop
+      .lock()
+      .expect("server session lock poisoned")
+      .as_ref()
+    {
+      stop.store(true, Ordering::Relaxed);
+    }
   }
 
   pub fn video_frame(&self, user_id: UserId) -> Option<ImageData> {
@@ -710,6 +741,30 @@ impl ServerSession {
     if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
       engine.set_voice_activation_threshold(value);
     }
+  }
+
+  pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
+    *self
+      .notification_audio_settings
+      .lock()
+      .expect("server session lock poisoned") = NotificationAudioSettings::from_app_settings(settings);
+  }
+
+  fn play_notification_sound(&self, sound: NotificationSound) {
+    let settings = self
+      .notification_audio_settings
+      .lock()
+      .expect("server session lock poisoned")
+      .clone();
+    notifications::play(sound, settings);
+  }
+
+  pub fn play_voice_join_notification(&self) {
+    self.play_notification_sound(NotificationSound::VoiceJoin);
+  }
+
+  pub fn play_voice_leave_notification(&self) {
+    self.play_notification_sound(NotificationSound::VoiceLeave);
   }
 
   pub fn set_push_to_talk_active(&self, active: bool) {
@@ -901,18 +956,36 @@ impl ServerSession {
     let local_user_id = self.info().map(|info| info.user_id);
     self.stop_voice();
     self.stop_video_broadcast();
+    let mut left_voice = false;
+    let mut watching_change = None;
 
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
-      if let Some(channel_id) = lobby.selected_channel_id.take()
-        && let Some(user_id) = local_user_id
-        && let Some(users) = lobby.users_by_channel.get_mut(&channel_id)
-      {
-        users.retain(|user| user.user_id != user_id);
+      if let Some(channel_id) = lobby.selected_channel_id.take() {
+        left_voice = true;
+        if let Some(user_id) = local_user_id
+          && let Some(users) = lobby.users_by_channel.get_mut(&channel_id)
+        {
+          users.retain(|user| user.user_id != user_id);
+        }
+      }
+      if let Some(user_id) = local_user_id {
+        lobby.screen_shares.retain(|share| share.sharer_user_id != user_id);
+      }
+      let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
+      if changed {
+        watching_change = Some(previous_user_id);
       }
       lobby.stream_browser_channel_id = None;
       lobby.users.clear();
       Self::sync_cached_channel_counts(&mut lobby);
+    }
+
+    if let Some(previous_user_id) = watching_change {
+      self.finish_watching_user_change(previous_user_id, None);
+    }
+    if let Some(user_id) = local_user_id {
+      self.clear_video_cache_for_user(user_id);
     }
 
     if let Some(user_id) = local_user_id {
@@ -929,12 +1002,16 @@ impl ServerSession {
     }
 
     self.bump_revision();
+    if left_voice {
+      self.play_voice_leave_notification();
+    }
   }
 
   pub fn select_text_channel(&self, channel_id: ChannelId) {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       lobby.selected_text_channel_id = Some(channel_id);
+      lobby.unread_text_channel_ids.remove(&channel_id);
       lobby.stream_browser_channel_id = None;
     }
     self.bump_revision();
@@ -990,17 +1067,26 @@ impl ServerSession {
   }
 
   pub fn set_watching_user(&self, user_id: Option<UserId>) {
-    let previous_user_id = {
+    let (previous_user_id, changed) = {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
-      let previous_user_id = lobby.watching_user_id;
-      lobby.watching_user_id = user_id;
-      previous_user_id
+      Self::set_watching_user_in_lobby(&mut lobby, user_id)
     };
-    if previous_user_id != user_id {
+    if changed {
       self.clear_stream_audio(previous_user_id);
     }
     self.retain_video_cache(user_id);
     self.bump_revision();
+  }
+
+  fn set_watching_user_in_lobby(lobby: &mut LobbyState, user_id: Option<UserId>) -> (Option<UserId>, bool) {
+    let previous_user_id = lobby.watching_user_id;
+    lobby.watching_user_id = user_id;
+    (previous_user_id, previous_user_id != user_id)
+  }
+
+  fn finish_watching_user_change(&self, previous_user_id: Option<UserId>, user_id: Option<UserId>) {
+    self.clear_stream_audio(previous_user_id);
+    self.retain_video_cache(user_id);
   }
 
   fn watching_user_id(&self) -> Option<UserId> {
@@ -1171,6 +1257,7 @@ impl ServerSession {
       voice_session.run_voice_activity_receiver(voice_server).await;
     });
     let video_stop = Arc::new(AtomicBool::new(false));
+    *self.receiver_stop.lock().expect("server session lock poisoned") = Some(video_stop.clone());
     let video_thread = {
       let video_session = self.clone();
       let video_server = server.clone();
@@ -1200,8 +1287,10 @@ impl ServerSession {
 
     voice_task.abort();
     video_stop.store(true, Ordering::Relaxed);
+    server.wake_video_datagram_reader();
     ping_task.abort();
     drop(video_thread);
+    *session.receiver_stop.lock().expect("server session lock poisoned") = None;
     *session.receiver_started.lock().expect("server session lock poisoned") = false;
     session
       .lobby
@@ -1287,16 +1376,9 @@ impl ServerSession {
         .name("parties-video-datagram-reader".to_owned())
         .spawn(move || {
           while !stop.load(Ordering::Relaxed) {
-            let packet = runtime.block_on(async {
-              tokio::time::timeout(Duration::from_millis(100), server.recv_forwarded_video_datagram())
-                .await
-                .ok()
-            });
-            let Some(packet) = packet else {
-              continue;
-            };
-            match packet {
-              Ok(packet) => queue.push(packet),
+            match runtime.block_on(server.recv_forwarded_video_datagram_until(stop.as_ref())) {
+              Ok(Some(packet)) => queue.push(packet),
+              Ok(None) => break,
               Err(ServerError::Protocol(error)) => {
                 logger::log(&format!("[video] ignored malformed video datagram: {error}"));
                 continue;
@@ -1483,7 +1565,11 @@ impl ServerSession {
 
   fn handle_video_control_packet(&self, control: VideoControl) {
     if let VideoControl::Pli { user_id } = control
-      && let Some(broadcast) = self.video_broadcast.lock().expect("video broadcast lock poisoned").as_ref()
+      && let Some(broadcast) = self
+        .video_broadcast
+        .lock()
+        .expect("video broadcast lock poisoned")
+        .as_ref()
     {
       broadcast.request_keyframe();
       logger::log(&format!("[video] local keyframe requested by viewer {user_id}"));
@@ -1630,6 +1716,10 @@ impl ServerSession {
     width: u16,
     height: u16,
   ) -> Option<Arc<lurq::app::dx12_render::Dx12Nv12Surface>> {
+    if !ENABLE_DX12_NATIVE_STREAM_DECODE {
+      return None;
+    }
+
     {
       let frames = self.video_frames.lock().expect("server session lock poisoned");
       if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
@@ -1739,11 +1829,22 @@ impl ServerSession {
     }
 
     logger::log(&format!("[network] marking lobby disconnected: {message}"));
+    self.stop_video_broadcast();
+    let mut watching_change = None;
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       lobby.receiver_running = false;
       lobby.disconnected = true;
       lobby.last_error = Some(message);
+      lobby.stream_browser_channel_id = None;
+      lobby.screen_shares.clear();
+      let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
+      if changed {
+        watching_change = Some(previous_user_id);
+      }
+    }
+    if let Some(previous_user_id) = watching_change {
+      self.finish_watching_user_change(previous_user_id, None);
     }
     self.bump_revision();
   }
@@ -1754,6 +1855,8 @@ impl ServerSession {
     let mut local_voice_update = None;
     let mut stop_local_voice = false;
     let mut clear_speaking_user = None;
+    let mut notification_sound = None;
+    let mut watching_change = None;
     let mut lobby = self.lobby.lock().expect("server session lock poisoned");
 
     match message {
@@ -1785,6 +1888,9 @@ impl ServerSession {
           .chat_messages_by_channel
           .retain(|channel_id, _| channel_ids.contains(channel_id));
         lobby
+          .unread_text_channel_ids
+          .retain(|channel_id| channel_ids.contains(channel_id));
+        lobby
           .chat_history_loading
           .retain(|channel_id| channel_ids.contains(channel_id));
         lobby
@@ -1798,10 +1904,17 @@ impl ServerSession {
         }
       }
       S2C::ChatMessage(message) => {
+        let should_notify = local_user_id != Some(message.sender_id);
+        if should_notify && lobby.selected_text_channel_id != Some(message.channel_id) {
+          lobby.unread_text_channel_ids.insert(message.channel_id);
+        }
         Self::merge_chat_messages(
           lobby.chat_messages_by_channel.entry(message.channel_id).or_default(),
           [message],
         );
+        if should_notify {
+          notification_sound = Some(NotificationSound::ChatMessage);
+        }
       }
       S2C::ChatHistoryResp(response) => {
         lobby.chat_history_loading.remove(&response.channel_id);
@@ -1833,6 +1946,10 @@ impl ServerSession {
         Self::sync_cached_channel_counts(&mut lobby);
       }
       S2C::UserJoinedChannel(joined) => {
+        let selected_channel_id = lobby.selected_channel_id;
+        let was_in_selected_channel = selected_channel_id
+          .and_then(|channel_id| lobby.users_by_channel.get(&channel_id))
+          .is_some_and(|users| users.iter().any(|user| user.user_id == joined.user_id));
         for (channel_id, users) in &mut lobby.users_by_channel {
           if *channel_id != joined.channel_id {
             users.retain(|user| user.user_id != joined.user_id);
@@ -1858,10 +1975,21 @@ impl ServerSession {
         }
         if inserted {
           Self::sync_cached_channel_counts(&mut lobby);
+          if local_user_id != Some(joined.user_id) {
+            if selected_channel_id == Some(joined.channel_id) {
+              notification_sound = Some(NotificationSound::VoiceJoin);
+            } else if was_in_selected_channel {
+              notification_sound = Some(NotificationSound::VoiceLeave);
+            }
+          }
         }
       }
       S2C::UserLeftChannel(left) => {
         let local_left = local_user_id == Some(left.user_id);
+        let was_in_selected_channel = lobby
+          .selected_channel_id
+          .and_then(|channel_id| lobby.users_by_channel.get(&channel_id))
+          .is_some_and(|users| users.iter().any(|user| user.user_id == left.user_id));
         for users in lobby.users_by_channel.values_mut() {
           users.retain(|user| user.user_id != left.user_id);
         }
@@ -1871,8 +1999,11 @@ impl ServerSession {
         clear_speaking_user = Some(left.user_id);
         lobby.screen_shares.retain(|share| share.sharer_user_id != left.user_id);
         self.clear_video_cache_for_user(left.user_id);
-        if lobby.watching_user_id == Some(left.user_id) {
-          lobby.watching_user_id = None;
+        if local_left || lobby.watching_user_id == Some(left.user_id) {
+          let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
+          if changed {
+            watching_change = Some(previous_user_id);
+          }
         }
         if local_left && lobby.selected_channel_id == Some(left.channel_id) {
           lobby.selected_channel_id = None;
@@ -1882,6 +2013,11 @@ impl ServerSession {
           Self::sync_selected_users(&mut lobby);
         }
         Self::sync_cached_channel_counts(&mut lobby);
+        if local_left && was_in_selected_channel {
+          notification_sound = Some(NotificationSound::UserKicked);
+        } else if !local_left && was_in_selected_channel {
+          notification_sound = Some(NotificationSound::VoiceLeave);
+        }
       }
       S2C::UserVoiceState(state) => {
         if local_user_id == Some(state.user_id) {
@@ -1944,10 +2080,19 @@ impl ServerSession {
           .retain(|share| share.sharer_user_id != sharer_user_id);
         self.clear_video_cache_for_user(sharer_user_id);
         if lobby.watching_user_id == Some(sharer_user_id) {
-          lobby.watching_user_id = None;
+          let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
+          if changed {
+            watching_change = Some(previous_user_id);
+          }
         }
       }
-      S2C::ScreenShareDenied { reason } | S2C::ServerError { message: reason } => {
+      S2C::ScreenShareDenied { reason } => {
+        lobby.last_error = Some(reason);
+      }
+      S2C::ServerError { message: reason } => {
+        if reason.to_ascii_lowercase().contains("kick") {
+          notification_sound = Some(NotificationSound::UserKicked);
+        }
         lobby.last_error = Some(reason);
       }
       S2C::AdminResult(result) => {
@@ -1961,6 +2106,12 @@ impl ServerSession {
     }
 
     drop(lobby);
+    if let Some(previous_user_id) = watching_change {
+      self.finish_watching_user_change(previous_user_id, None);
+    }
+    if let Some(sound) = notification_sound {
+      self.play_notification_sound(sound);
+    }
     if let Some(state) = local_voice_update {
       *self.local_voice_fallback.lock().expect("server session lock poisoned") = state;
     }

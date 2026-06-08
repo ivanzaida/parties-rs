@@ -14,8 +14,9 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 cpal = "0.18.0"
 ed25519-dalek = "2.2.0"
 getrandom = "0.4.2"
-lurq = { version = "0.10.4", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
+lurq = { version = "0.10.8", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
 log = "0.4"
+minimp3 = "0.6.1"
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
 opus = "0.3.1"
 quinn = "0.11"
@@ -27,6 +28,7 @@ sonora = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "time"] }
 rdev = "0.5.3"
 xcap = "0.9.6"
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8.7"

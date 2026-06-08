@@ -124,6 +124,7 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         .await
         .map_err(|error| error.to_string())?;
       session.select_channel(channel_id);
+      session.play_voice_join_notification();
       server
         .update_voice_state(muted, deafened)
         .await
@@ -287,6 +288,7 @@ fn rail_channels(
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
       channels: lobby.text_channels.clone(),
       selected_channel_id: lobby.selected_text_channel_id,
+      unread_channel_ids: lobby.unread_text_channel_ids.clone(),
     }))
     .child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
       channels: lobby.channels.clone(),

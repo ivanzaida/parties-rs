@@ -21,6 +21,25 @@ pub enum Permission {
   ShareWebcam = 1 << 14,
 }
 
+pub const PERMISSION_MATRIX_ROLES: [Role; 4] = [Role::Owner, Role::Admin, Role::Moderator, Role::User];
+pub const PERMISSION_MATRIX_PERMISSIONS: [Permission; 15] = [
+  Permission::JoinChannel,
+  Permission::Speak,
+  Permission::MuteOthers,
+  Permission::DeafenOthers,
+  Permission::KickFromChannel,
+  Permission::KickFromServer,
+  Permission::CreateChannel,
+  Permission::DeleteChannel,
+  Permission::ManagePermissions,
+  Permission::ManageRoles,
+  Permission::ManageServer,
+  Permission::SendText,
+  Permission::UploadFiles,
+  Permission::ShareScreen,
+  Permission::ShareWebcam,
+];
+
 pub const DEFAULT_OWNER_PERMS: u32 = 0xFFFF_FFFF;
 pub const DEFAULT_ADMIN_PERMS: u32 = 0x0000_07FF;
 pub const DEFAULT_MODERATOR_PERMS: u32 = 0x0000_001F;

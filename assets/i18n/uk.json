@@ -410,9 +410,22 @@
       },
       "menu": {
         "connect": "Підключитися",
+        "edit": "Редагувати",
         "copy_address": "Скопіювати адресу",
         "view_fingerprint": "Переглянути відбиток",
         "forget": "Забути сервер"
+      },
+      "edit": {
+        "title": "Редагувати сервер",
+        "description": "Оновіть збережену адресу, пароль або відображуване ім'я. Перевірте підключення, щоб переглянути дані сервера перед збереженням.",
+        "test": "Перевірити підключення",
+        "testing": "Перевірка...",
+        "save": "Зберегти",
+        "saving": "Збереження...",
+        "connected": "Підключення успішне",
+        "connected_body": "{{server}} · {{address}} · користувач {{user}} · {{role}}",
+        "fingerprint": "Відбиток: {{fingerprint}}",
+        "fingerprint_empty": "Відбиток не повернуто."
       },
       "confirm_forget": {
         "title": "Забути {{server}}?",
@@ -684,29 +697,54 @@
       "roles": "Roles & Permissions"
     },
     "channels": {
-      "description": "Voice channels and text channels are shown as separate server settings screens.",
+      "description": "Voice: create, rename, and delete channels. Text: create and delete channels; the protocol has no text-channel rename message.",
       "voice_title": "Voice channels",
       "text_title": "Text channels",
+      "voice_protocol": "ADMIN_CREATE_CHANNEL / ADMIN_RENAME_CHANNEL / ADMIN_DELETE_CHANNEL",
+      "text_protocol": "ADMIN_CREATE_TEXT_CHANNEL / ADMIN_DELETE_TEXT_CHANNEL — no rename",
+      "new_voice": "NEW VOICE CHANNEL",
+      "new_text": "NEW TEXT CHANNEL",
+      "voice_placeholder": "New voice",
+      "text_placeholder": "new-channel",
+      "max_users_placeholder": "8",
+      "create": "Create",
+      "save": "Save",
+      "delete": "Delete",
       "empty_voice": "No voice channels",
       "empty_text": "No text channels",
       "unlimited": "Unlimited users",
       "max_users": "{{count}} max users",
-      "connected": "{{count}} connected"
+      "connected": "{{count}} connected",
+      "id_meta": "id {{id}}",
+      "voice_meta_max": "id {{id}} · max {{count}}",
+      "voice_meta_unlimited": "id {{id}} · ∞",
+      "error": "Request failed: {{message}}",
+      "confirm_delete_warning": "This cannot be undone from the client.",
+      "confirm_delete_voice": {
+        "title": "Delete {{channel}}?",
+        "body": "This removes the voice channel for everyone on the server."
+      },
+      "confirm_delete_text": {
+        "title": "Delete #{{channel}}?",
+        "body": "This removes the text channel for everyone on the server."
+      }
     },
     "members": {
-      "description": "Online members, their roles, and where they are connected in voice.",
+      "description": "Assign one of the 4 fixed roles, kick from server, disconnect from voice, or server mute / deafen. Promotion is capped at your own role.",
       "online_title": "Online members",
       "empty": "No online members",
       "no_voice": "Not in voice",
+      "protocol_caption": "ADMIN_SET_ROLE · ADMIN_KICK_USER · ADMIN_DISCONNECT_USER · ADMIN_SET_USER_VOICE_STATE",
       "user_meta": "{{role}} · {{channels}}",
       "user_id": "id {{id}}"
     },
     "roles": {
-      "description": "The fixed server roles and their default permission bits.",
+      "description": "The 4 roles and their permission bits are fixed in permissions.rs. There is no message to create roles or edit a role's permissions — only ADMIN_SET_ROLE to assign a user. Per-channel overrides exist via set_channel_permission.",
       "allowed": "Yes",
       "denied": "No",
       "all_permissions": "All permissions",
       "default_permissions": "{{count}} default permissions",
+      "permission_header": "PERMISSION",
       "permission": {
         "$value": "Permission",
         "none": "None",

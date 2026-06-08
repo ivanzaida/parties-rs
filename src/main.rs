@@ -141,20 +141,20 @@ fn main() {
   }
 
   window.run();
-  session.disconnect();
+  session.disconnect_for_shutdown();
 }
 
 fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: ServerSession) {
   let panic_session = session.clone();
   let default_panic_hook = panic::take_hook();
   panic::set_hook(Box::new(move |info| {
-    panic_session.disconnect();
+    panic_session.disconnect_for_shutdown();
     default_panic_hook(info);
   }));
 
   tokio_runtime.spawn(async move {
     if tokio::signal::ctrl_c().await.is_ok() {
-      session.disconnect();
+      session.disconnect_for_shutdown();
       std::process::exit(0);
     }
   });
