@@ -28,7 +28,7 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
-    app_chrome::{AppChrome, modal_layer, window_affordance_layers},
+    app_chrome::{AppChrome, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, modal_layer, window_affordance_layers},
     connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
@@ -46,6 +46,7 @@ use crate::{
 };
 
 const DEVTOOLS_HOTKEY: &str = "Ctrl+Shift+F12";
+const MACOS_WINDOW_CORNER_RADIUS: f32 = 10.0;
 
 pub struct App {
   router: RouterHandle,
@@ -188,28 +189,41 @@ impl Component for App {
       }
     });
 
-    let content = Column::new()
+    let mut content = Column::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .align_items(Alignment::Stretch)
       .justify(Justify::Start)
-      .clip()
-      .child(ctx.mount::<AppChrome>(()))
-      .child(
-        Column::new()
-          .width(Dimension::Pct(100.0))
-          .flex(1.0)
-          .clip()
-          .child(lurq::components::Router::mount(ctx, self.router.clone())),
-      );
+      .clip();
+
+    if CUSTOM_WINDOW_CHROME {
+      content = content.child(ctx.mount::<AppChrome>(()));
+    }
+
+    content = content.child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .clip()
+        .child(lurq::components::Router::mount(ctx, self.router.clone())),
+    );
+
     let mut root = Stack::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
-      .border_inside(1.0, theme::PaletteColor::Border)
       .clip()
       .child(content);
+
+    let window = ctx.window();
+    if CUSTOM_MACOS_CHROME && !window.is_maximized && !window.is_full_screen {
+      root = root.rounded(MACOS_WINDOW_CORNER_RADIUS);
+    }
+
+    if CUSTOM_WINDOW_CHROME {
+      root = root.border_inside(1.0, theme::PaletteColor::Border);
+    }
 
     let settings_open = self.settings_open.clone();
     let settings_window = ctx.window();

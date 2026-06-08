@@ -14,8 +14,10 @@ use std::{
   sync::{Arc, Mutex},
 };
 
+use lurq::app::WindowCornerRadius;
 use session::ServerSession;
 use storage::{Storage, WindowState};
+use ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 900;
@@ -66,7 +68,13 @@ fn main() {
       window_state.map_or(DEFAULT_WINDOW_HEIGHT, |state| state.height),
     )
     .with_min_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
-    .with_decorations(false);
+    .with_decorations(!CUSTOM_WINDOW_CHROME)
+    .with_transparent(CUSTOM_MACOS_CHROME)
+    .with_corner_radius(if CUSTOM_WINDOW_CHROME {
+      WindowCornerRadius::Rounded
+    } else {
+      WindowCornerRadius::Default
+    });
 
   if let Some(state) = window_state {
     window = window.with_position(state.x, state.y);

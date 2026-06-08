@@ -2354,7 +2354,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.8.1"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5836b4c9d7bec849ed258a05998a707deeec808f9020b97da92df40fa024dc"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2362,6 +2364,7 @@ dependencies = [
  "image",
  "lurq_macros",
  "lyon",
+ "objc2 0.6.4",
  "parking_lot",
  "paste",
  "pollster",
@@ -2379,6 +2382,8 @@ dependencies = [
 [[package]]
 name = "lurq_macros"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8427f3290280203fbed0728d463b1c8fd980648d1e48496a411cb28c6b93439"
 dependencies = [
  "proc-macro2",
  "quote",
