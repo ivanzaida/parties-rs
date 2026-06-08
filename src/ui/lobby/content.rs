@@ -22,6 +22,7 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, UserId},
   session::{ConnectedServerInfo, LobbyChannel, LobbyState, LobbyTextChannel, ServerSession},
+  storage::Storage,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -34,6 +35,7 @@ pub(super) fn main(
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  storage: Option<Storage>,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
@@ -63,6 +65,7 @@ pub(super) fn main(
       chat_scroll_state,
       chat_bottom_anchor,
       chat_top_anchor,
+      storage,
       session,
       chat_history,
       send_chat,
@@ -249,6 +252,7 @@ fn main_body(
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  storage: Option<Storage>,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
@@ -280,6 +284,7 @@ fn main_body(
         stream,
         super::stream_browser::screen_shares_for_channel(lobby, channel.id),
         lobby.last_error.as_deref(),
+        storage,
         session,
         watch_stream,
       );

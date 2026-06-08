@@ -144,7 +144,7 @@ impl Component for LobbyScreen {
     let send_chat = send_chat_action(ctx, session.clone());
     let start_stream = start_stream_action(ctx, storage.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
-    let watch_stream = watch_stream_action(ctx, session.clone());
+    let watch_stream = watch_stream_action(ctx, storage.clone(), session.clone());
     let stop_watching = stop_watching_action(ctx, session.clone());
     let reconnect = reconnect_action(ctx, storage.clone(), session.clone());
 
@@ -189,6 +189,7 @@ impl Component for LobbyScreen {
         self.chat_scroll_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_top_anchor.clone(),
+        storage,
         session,
         &chat_history,
         &send_chat,

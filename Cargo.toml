@@ -9,6 +9,7 @@ native-video = []
 
 [dependencies]
 bip39 = "2.2.2"
+bytes = "1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 cpal = "0.18.0"
 ed25519-dalek = "2.2.0"
