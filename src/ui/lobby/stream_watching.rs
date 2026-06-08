@@ -338,7 +338,6 @@ fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storag
         }
       }),
     }))
-    .child(stage_control_icon(ctx, "maximize"))
     .into()
 }
 

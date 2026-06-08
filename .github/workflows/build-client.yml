@@ -76,11 +76,13 @@ jobs:
           - label: Windows x64
             os: windows-latest
             artifact_suffix: windows-x64
+            rust_target: x86_64-pc-windows-msvc
             binary_name: parties-rs.exe
             archive_ext: zip
-          - label: macOS
-            os: macos-latest
-            artifact_suffix: macos
+          - label: macOS arm64
+            os: macos-15
+            artifact_suffix: macos-arm64
+            rust_target: aarch64-apple-darwin
             binary_name: parties-rs
             archive_ext: tar.gz
     runs-on: ${{ matrix.os }}
@@ -88,7 +90,9 @@ jobs:
       PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
       PACKAGE_VERSION: ${{ needs.package-metadata.outputs.version }}
       ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+      RUST_TARGET: ${{ matrix.rust_target }}
       BINARY_NAME: ${{ matrix.binary_name }}
+      BINARY_PATH: target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}
       ARCHIVE_EXT: ${{ matrix.archive_ext }}
     steps:
       - name: Checkout
@@ -96,9 +100,11 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Build release client
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.rust_target }}
 
       - name: Package Windows binary
         if: runner.os == 'Windows'
@@ -107,7 +113,7 @@ jobs:
           $artifact = "$env:PACKAGE_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
           $dist = Join-Path "dist" $artifact
           New-Item -ItemType Directory -Force $dist | Out-Null
-          Copy-Item "target\release\$env:BINARY_NAME" $dist
+          Copy-Item $env:BINARY_PATH $dist
           Compress-Archive -Path "$dist\*" -DestinationPath "dist\$artifact.$env:ARCHIVE_EXT" -Force
 
       - name: Package macOS binary
@@ -118,7 +124,7 @@ jobs:
           artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dist="dist/$artifact"
           mkdir -p "$dist"
-          cp "target/release/$BINARY_NAME" "$dist/"
+          cp "$BINARY_PATH" "$dist/"
           chmod +x "$dist/$BINARY_NAME"
           tar -czf "dist/$artifact.$ARCHIVE_EXT" -C dist "$artifact"
 
