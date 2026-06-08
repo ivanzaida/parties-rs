@@ -25,6 +25,7 @@ const MIN_WINDOW_WIDTH: u32 = 768;
 const MIN_WINDOW_HEIGHT: u32 = 640;
 
 fn main() {
+  services::logger::init();
   let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()

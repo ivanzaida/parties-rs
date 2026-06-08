@@ -14,7 +14,7 @@ use crate::{
   routes::ROUTE_CHOOSE_SERVER,
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession},
-  storage::Storage,
+  storage::{AppSettings, Storage},
   theme,
   ui::loader::loader,
 };
@@ -72,6 +72,7 @@ struct StartStreamInput {
   source_id: u32,
   width: u16,
   height: u16,
+  audio_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -159,6 +160,7 @@ impl Component for LobbyScreen {
     let modal_screen_tab = self.stream_source_screen_tab.clone();
     let modal_source_index = self.stream_source_index.clone();
     let modal_audio_enabled = self.stream_audio_enabled.clone();
+    let modal_stream_codec = stream_modal_codec_label(storage.as_ref());
     ctx.modal(modal_open.clone(), move |ctx| {
       start_stream_modal(
         ctx,
@@ -166,6 +168,7 @@ impl Component for LobbyScreen {
         modal_screen_tab.clone(),
         modal_source_index.clone(),
         modal_audio_enabled.clone(),
+        &modal_stream_codec,
         modal_start_stream.clone(),
       )
     });
@@ -199,6 +202,18 @@ impl Component for LobbyScreen {
         &stop_watching,
       ))
       .into()
+  }
+}
+
+fn stream_modal_codec_label(storage: Option<&Storage>) -> String {
+  let codec = storage
+    .and_then(|storage| storage.load_settings().ok())
+    .unwrap_or_else(AppSettings::default)
+    .video_codec;
+
+  match codec.trim() {
+    "H.265" | "H.264" => codec.trim().to_owned(),
+    _ => "AV1".to_owned(),
   }
 }
 

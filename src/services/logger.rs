@@ -1,9 +1,12 @@
 use std::{
   collections::HashSet,
-  sync::{LazyLock, RwLock},
+  sync::{LazyLock, Once, RwLock},
 };
 
+use simplelog::{ConfigBuilder, LevelFilter, SimpleLogger};
+
 static SEEN_MSGS: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
+static LOGGER_INIT: Once = Once::new();
 
 #[macro_export]
 macro_rules! log_once {
@@ -29,6 +32,17 @@ pub fn log_once(msg: &str) {
   }
 }
 
+pub fn init() {
+  LOGGER_INIT.call_once(|| {
+    let config = ConfigBuilder::new()
+      .set_time_format_rfc3339()
+      .set_thread_level(LevelFilter::Off)
+      .set_target_level(LevelFilter::Off)
+      .build();
+    let _ = SimpleLogger::init(LevelFilter::Info, config);
+  });
+}
+
 pub fn log(msg: &str) {
-  println!("{msg}");
+  log::info!("{msg}");
 }

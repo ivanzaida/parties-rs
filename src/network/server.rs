@@ -34,6 +34,14 @@ pub enum ServerError {
 pub enum ReceivedAudioPacket {
   Voice(ForwardedVoicePacket),
   Stream(ForwardedStreamAudioPacket),
+  VideoControl(VideoControl),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoFrameSend {
+  Datagram,
+  StreamFallback,
+  Dropped,
 }
 
 impl fmt::Display for ServerError {
@@ -277,6 +285,7 @@ impl Server {
       match self.recv_audio().await? {
         ReceivedAudioPacket::Voice(packet) => return Ok(packet),
         ReceivedAudioPacket::Stream(_) => {}
+        ReceivedAudioPacket::VideoControl(_) => {}
       }
     }
   }
@@ -287,11 +296,11 @@ impl Server {
       match decode_datagram(data)? {
         DecodedDatagram::Voice(packet) => return Ok(ReceivedAudioPacket::Voice(packet)),
         DecodedDatagram::StreamAudio(packet) => return Ok(ReceivedAudioPacket::Stream(packet)),
+        DecodedDatagram::VideoControl(control) => return Ok(ReceivedAudioPacket::VideoControl(control)),
         DecodedDatagram::Video(packet) => {
           self.pending_video_datagrams.lock().await.push_back(packet);
           self.pending_video_notify.notify_one();
         }
-        DecodedDatagram::Ignored => {}
       }
     }
   }
@@ -351,6 +360,27 @@ impl Server {
   pub async fn send_video_frame(&self, frame: VideoFrame) -> Result<(), ServerError> {
     validate_video_codec(frame.codec)?;
     self.send_video_packet(&frame.encode_packet()).await
+  }
+
+  pub async fn send_live_video_frame(&self, frame: VideoFrame) -> Result<VideoFrameSend, ServerError> {
+    validate_video_codec(frame.codec)?;
+    let packet = frame.encode_packet();
+    match self.connection.send_datagram(packet.clone().into()) {
+      Ok(()) => Ok(VideoFrameSend::Datagram),
+      Err(quinn::SendDatagramError::TooLarge | quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled) => {
+        self.send_video_packet(&packet).await?;
+        Ok(VideoFrameSend::StreamFallback)
+      }
+      Err(error) => Err(ServerError::Datagram(error)),
+    }
+  }
+
+  pub fn send_stream_audio(&self, opus: &[u8]) -> Result<(), ServerError> {
+    let mut data = Vec::with_capacity(1 + opus.len());
+    data.push(PacketType::StreamAudio as u8);
+    data.extend_from_slice(opus);
+    self.connection.send_datagram(data.into())?;
+    Ok(())
   }
 
   pub async fn recv_video_packet(&self) -> Result<Vec<u8>, ServerError> {
@@ -590,7 +620,7 @@ enum DecodedDatagram {
   Voice(ForwardedVoicePacket),
   StreamAudio(ForwardedStreamAudioPacket),
   Video(ForwardedVideoFrame),
-  Ignored,
+  VideoControl(VideoControl),
 }
 
 fn decode_datagram(data: Bytes) -> Result<DecodedDatagram, DecodeError> {
@@ -605,7 +635,7 @@ fn decode_datagram(data: Bytes) -> Result<DecodedDatagram, DecodeError> {
     PacketType::Voice => ForwardedVoicePacket::decode_bytes(data).map(DecodedDatagram::Voice),
     PacketType::VideoFrame => ForwardedVideoFrame::decode(data.as_ref()).map(DecodedDatagram::Video),
     PacketType::StreamAudio => ForwardedStreamAudioPacket::decode_bytes(data).map(DecodedDatagram::StreamAudio),
-    PacketType::VideoControl => Ok(DecodedDatagram::Ignored),
+    PacketType::VideoControl => VideoControl::decode_datagram(data.as_ref()).map(DecodedDatagram::VideoControl),
   }
 }
 

@@ -14,13 +14,15 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 cpal = "0.18.0"
 ed25519-dalek = "2.2.0"
 getrandom = "0.4.2"
-lurq = {path = "/Users/ivan/RustroverProjects/lurq/crates/lurq", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
+lurq = { path = "../lurq/crates/lurq", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
+log = "0.4"
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
 opus = "0.3.1"
 quinn = "0.11"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 sha2 = "0.11.0"
+simplelog = "0.12"
 sonora = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "time"] }
 rdev = "0.5.3"
@@ -33,7 +35,7 @@ core-video-sys = "0.1.4"
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_System_Com"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Media_MediaFoundation", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.build-dependencies]
 cc = "1.2"

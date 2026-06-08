@@ -2,7 +2,7 @@ use std::{
   fmt,
   sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
   },
   thread::JoinHandle,
 };
@@ -31,6 +31,7 @@ pub struct VideoBroadcastConfig {
   pub codec: VideoCodecId,
   pub fps: u32,
   pub bitrate_kbps: u32,
+  pub audio_enabled: bool,
 }
 
 #[allow(dead_code)]
@@ -99,6 +100,7 @@ impl std::error::Error for VideoError {}
 #[allow(dead_code)]
 pub struct VideoBroadcast {
   stop: Arc<AtomicBool>,
+  keyframe_requests: Option<Arc<AtomicU64>>,
   threads: Vec<JoinHandle<()>>,
   backend: NativeVideoBackend,
 }
@@ -124,6 +126,12 @@ impl VideoBroadcast {
     self.backend
   }
 
+  pub fn request_keyframe(&self) {
+    if let Some(requests) = &self.keyframe_requests {
+      requests.fetch_add(1, Ordering::Relaxed);
+    }
+  }
+
   #[allow(dead_code)]
   pub(super) fn from_parts(backend: NativeVideoBackend, threads: Vec<JoinHandle<()>>) -> Self {
     Self::from_parts_with_stop(backend, Arc::new(AtomicBool::new(false)), threads)
@@ -134,7 +142,21 @@ impl VideoBroadcast {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
   ) -> Self {
-    Self { stop, threads, backend }
+    Self::from_parts_with_stop_and_keyframes(backend, stop, None, threads)
+  }
+
+  pub(super) fn from_parts_with_stop_and_keyframes(
+    backend: NativeVideoBackend,
+    stop: Arc<AtomicBool>,
+    keyframe_requests: Option<Arc<AtomicU64>>,
+    threads: Vec<JoinHandle<()>>,
+  ) -> Self {
+    Self {
+      stop,
+      keyframe_requests,
+      threads,
+      backend,
+    }
   }
 }
 
@@ -359,6 +381,7 @@ mod tests {
       codec,
       fps: 30,
       bitrate_kbps: 2500,
+      audio_enabled: true,
     }
   }
 

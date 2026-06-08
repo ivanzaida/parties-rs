@@ -77,6 +77,7 @@ pub(super) fn start_stream_modal(
   screen_tab: Signal<bool>,
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
+  stream_codec_label: &str,
   start_stream: StartStreamAction,
 ) -> Element {
   let window = ctx.window();
@@ -118,9 +119,10 @@ pub(super) fn start_stream_modal(
                 ctx,
                 screen_tab.clone(),
                 source_index.clone(),
+                stream_codec_label,
                 metrics,
               ))
-              .child(stream_modal_audio_toggle(ctx, audio_enabled)),
+              .child(stream_modal_audio_toggle(ctx, audio_enabled.clone())),
           )
           .width(Dimension::Pct(100.0))
           .height(metrics.content_scroll_height)
@@ -132,7 +134,14 @@ pub(super) fn start_stream_modal(
             style
           }),
         )
-        .child(stream_modal_actions(ctx, open, screen_tab, source_index, start_stream)),
+        .child(stream_modal_actions(
+          ctx,
+          open,
+          screen_tab,
+          source_index,
+          audio_enabled,
+          start_stream,
+        )),
     )
     .into()
 }
@@ -199,13 +208,20 @@ fn stream_modal_sources(
   ctx: &mut Ctx,
   screen_tab: Signal<bool>,
   source_index: Signal<usize>,
+  stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(12.0)
     .child(stream_modal_tabs(ctx, screen_tab.clone()))
-    .child(stream_source_grid(ctx, screen_tab, source_index, metrics))
+    .child(stream_source_grid(
+      ctx,
+      screen_tab,
+      source_index,
+      stream_codec_label,
+      metrics,
+    ))
     .into()
 }
 
@@ -274,6 +290,7 @@ fn stream_source_grid(
   ctx: &mut Ctx,
   screen_tab: Signal<bool>,
   source_index: Signal<usize>,
+  stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
   let sources = if screen_tab.get() {
@@ -296,6 +313,7 @@ fn stream_source_grid(
       row_index * metrics.source_columns,
       selected_index,
       source_index.clone(),
+      stream_codec_label,
       metrics,
     ));
   }
@@ -355,6 +373,7 @@ fn stream_source_row(
   offset: usize,
   selected_index: usize,
   source_index: Signal<usize>,
+  stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
   let mut row = Row::new().width(Dimension::Pct(100.0)).spacing(12.0);
@@ -366,6 +385,7 @@ fn stream_source_row(
       offset + column_index,
       selected_index,
       source_index.clone(),
+      stream_codec_label,
       metrics,
     ));
   }
@@ -383,6 +403,7 @@ fn stream_source_card(
   index: usize,
   selected_index: usize,
   source_index: Signal<usize>,
+  stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
   let selected = selected_index == index;
@@ -415,6 +436,7 @@ fn stream_source_card(
       stream_source_icon(source),
       selected,
       source.resolution.as_deref(),
+      stream_codec_label,
       metrics,
     ))
     .child(
@@ -468,6 +490,7 @@ fn stream_source_preview(
   icon: &'static str,
   selected: bool,
   resolution: Option<&str>,
+  stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
   let mut preview = Stack::new()
@@ -493,22 +516,32 @@ fn stream_source_preview(
         })),
     );
 
-  if let Some(resolution) = resolution.filter(|value| !value.trim().is_empty()) {
-    preview = preview.child(
-      Column::new()
-        .width(Dimension::Pct(100.0))
-        .height(metrics.source_preview_height)
-        .align_items(Alignment::End)
-        .padding_top(8.0)
-        .padding_right(8.0)
-        .child(stream_source_resolution_badge(resolution)),
-    );
-  }
+  preview = preview.child(
+    Column::new()
+      .width(Dimension::Pct(100.0))
+      .height(metrics.source_preview_height)
+      .padding_top(8.0)
+      .padding_horizontal(8.0)
+      .child(
+        Row::new()
+          .width(Dimension::Pct(100.0))
+          .align_items(Alignment::Start)
+          .justify(Justify::SpaceBetween)
+          .spacing(8.0)
+          .child(stream_source_metadata_badge(stream_codec_label))
+          .child(
+            resolution
+              .filter(|value| !value.trim().is_empty())
+              .map(stream_source_metadata_badge)
+              .unwrap_or_else(|| Row::new().into()),
+          ),
+      ),
+  );
 
   preview.into()
 }
 
-fn stream_source_resolution_badge(resolution: &str) -> Element {
+fn stream_source_metadata_badge(label: &str) -> Element {
   Row::new()
     .height(20.0)
     .align_items(Alignment::Center)
@@ -517,7 +550,7 @@ fn stream_source_resolution_badge(resolution: &str) -> Element {
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
     .border_inside(1.0, theme::PaletteColor::Border)
     .child(
-      Text::new(resolution)
+      Text::new(label)
         .variant(theme::TypographyStyle::FieldLabel)
         .color(theme::PaletteColor::TextMuted)
         .nowrap(),
@@ -599,6 +632,7 @@ fn stream_modal_actions(
   open: Signal<bool>,
   screen_tab: Signal<bool>,
   source_index: Signal<usize>,
+  audio_enabled: Signal<bool>,
   start_stream: StartStreamAction,
 ) -> Element {
   let close = open.clone();
@@ -606,6 +640,7 @@ fn stream_modal_actions(
   let pending = start_stream.state().get().is_pending();
   let start_screen_tab = screen_tab.clone();
   let start_source_index = source_index.clone();
+  let start_audio_enabled = audio_enabled.clone();
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -620,9 +655,11 @@ fn stream_modal_actions(
       let mut button = stream_modal_button(ctx, Some("monitor-up"), "lobby.stream_modal.action.start", true);
       if !pending {
         button = button.on_click(move |_| {
-          if let Some(input) =
-            selected_stream_input(start_screen_tab.get_untracked(), start_source_index.get_untracked())
-          {
+          if let Some(input) = selected_stream_input(
+            start_screen_tab.get_untracked(),
+            start_source_index.get_untracked(),
+            start_audio_enabled.get_untracked(),
+          ) {
             confirm_open.set(false);
             start_stream.run(input);
           }
@@ -633,7 +670,7 @@ fn stream_modal_actions(
     .into()
 }
 
-fn selected_stream_input(screen_tab: bool, selected_index: usize) -> Option<StartStreamInput> {
+fn selected_stream_input(screen_tab: bool, selected_index: usize, audio_enabled: bool) -> Option<StartStreamInput> {
   let sources = if screen_tab {
     list_screen_sources()
   } else {
@@ -645,6 +682,7 @@ fn selected_stream_input(screen_tab: bool, selected_index: usize) -> Option<Star
     source_id: source.id,
     width: source.width.min(u16::MAX as u32) as u16,
     height: source.height.min(u16::MAX as u32) as u16,
+    audio_enabled,
   })
 }
 
