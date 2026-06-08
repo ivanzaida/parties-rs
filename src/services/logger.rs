@@ -25,6 +25,10 @@ pub fn log_once(msg: &str) {
 
   let mut write = SEEN_MSGS.write().expect("logger lock poisoned");
   if write.insert(msg.to_owned()) {
-    println!("{msg}");
+    log(msg);
   }
+}
+
+pub fn log(msg: &str) {
+  println!("{msg}");
 }

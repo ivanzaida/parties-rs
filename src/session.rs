@@ -22,6 +22,7 @@ use crate::{
     server::{Server, ServerError},
   },
   services::{
+    logger,
     video::{VideoBroadcast, VideoBroadcastConfig},
     voice::{LocalVoiceCallback, VoiceEngine},
   },
@@ -311,6 +312,7 @@ impl ServerSession {
   }
 
   pub fn disconnect(&self) {
+    logger::log("[session] disconnect requested by client");
     if let Some(server) = self.server() {
       server.disconnect();
     }
@@ -318,6 +320,7 @@ impl ServerSession {
   }
 
   pub fn disconnect_for_shutdown(&self) {
+    logger::log("[session] disconnect requested for shutdown");
     self.stop_voice();
     self.stop_video_broadcast();
     if let Some(server) = self.server() {
@@ -711,18 +714,27 @@ impl ServerSession {
 
   pub fn start_video_broadcast(&self, config: VideoBroadcastConfig) -> Result<(), String> {
     let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
-    let broadcast = VideoBroadcast::start(server, config).map_err(|error| error.to_string())?;
+    let broadcast = VideoBroadcast::start(server, config).map_err(|error| {
+      let error = error.to_string();
+      logger::log(&format!("[video] VideoBroadcast::start failed: {error}"));
+      error
+    })?;
     let mut video_broadcast = self.video_broadcast.lock().expect("server session lock poisoned");
     video_broadcast.replace(broadcast);
+    logger::log("[video] local broadcaster stored in session");
     Ok(())
   }
 
   pub fn stop_video_broadcast(&self) {
-    self
+    let stopped = self
       .video_broadcast
       .lock()
       .expect("server session lock poisoned")
-      .take();
+      .take()
+      .is_some();
+    if stopped {
+      logger::log("[video] local broadcaster stopped");
+    }
   }
 
   fn local_voice_callback(&self) -> LocalVoiceCallback {
@@ -777,7 +789,9 @@ impl ServerSession {
           session.apply_server_message(message);
         }
         Err(error) => {
-          session.mark_lobby_error(error.to_string());
+          let error = error.to_string();
+          logger::log(&format!("[network] lobby receiver error: {error}"));
+          session.mark_lobby_error(error);
           break;
         }
       };
@@ -814,8 +828,14 @@ impl ServerSession {
             self.mark_user_speaking(packet.sender_id);
           }
         }
-        Err(ServerError::Protocol(_)) => continue,
-        Err(_) => break,
+        Err(ServerError::Protocol(error)) => {
+          logger::log(&format!("[voice] ignored malformed voice packet: {error}"));
+          continue;
+        }
+        Err(error) => {
+          logger::log(&format!("[voice] voice receiver stopped: {error}"));
+          break;
+        }
       }
     }
   }
@@ -835,6 +855,7 @@ impl ServerSession {
   }
 
   pub fn mark_lobby_error(&self, message: String) {
+    logger::log(&format!("[network] marking lobby disconnected: {message}"));
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       lobby.receiver_running = false;

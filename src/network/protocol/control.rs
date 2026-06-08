@@ -465,12 +465,6 @@ impl ScreenShareStarted {
       field: "video codec",
       value: raw_codec,
     })?;
-    if !codec.is_supported_stream_codec() {
-      return Err(DecodeError::InvalidEnumValue {
-        field: "video codec",
-        value: raw_codec,
-      });
-    }
     let width = r.read_u16()?;
     let height = r.read_u16()?;
     r.finish()?;
@@ -663,10 +657,26 @@ mod tests {
   }
 
   #[test]
-  fn screen_share_started_rejects_unknown_codec_metadata() {
+  fn screen_share_started_accepts_pending_unknown_codec_metadata() {
     let mut payload = Vec::new();
     payload.extend_from_slice(&42_u32.to_le_bytes());
     payload.push(VideoCodecId::Unknown as u8);
+    payload.extend_from_slice(&0_u16.to_le_bytes());
+    payload.extend_from_slice(&0_u16.to_le_bytes());
+
+    let started = ScreenShareStarted::decode_payload(&payload).unwrap();
+
+    assert_eq!(started.sharer_user_id, 42);
+    assert_eq!(started.metadata.codec, VideoCodecId::Unknown);
+    assert_eq!(started.metadata.width, 0);
+    assert_eq!(started.metadata.height, 0);
+  }
+
+  #[test]
+  fn screen_share_started_rejects_invalid_codec_metadata() {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&42_u32.to_le_bytes());
+    payload.push(0xff);
     payload.extend_from_slice(&0_u16.to_le_bytes());
     payload.extend_from_slice(&0_u16.to_le_bytes());
 
@@ -676,7 +686,7 @@ mod tests {
       error,
       DecodeError::InvalidEnumValue {
         field: "video codec",
-        value: VideoCodecId::Unknown as u8,
+        value: 0xff,
       }
     );
   }

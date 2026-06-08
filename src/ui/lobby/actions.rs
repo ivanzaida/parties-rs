@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
   network::protocol::VideoCodecId,
-  services::video::VideoBroadcastConfig,
+  services::{logger, video::VideoBroadcastConfig},
   session::{ConnectedServerInfo, ServerSession},
   storage::{Storage, StoredServer},
   ui::connect_server::connect_and_store,
@@ -58,7 +58,11 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
   })
 }
 
-pub(super) fn start_stream_action(ctx: &mut Ctx, storage: Option<Storage>, session: ServerSession) -> StartStreamAction {
+pub(super) fn start_stream_action(
+  ctx: &mut Ctx,
+  storage: Option<Storage>,
+  session: ServerSession,
+) -> StartStreamAction {
   ctx.future_action(move |input: StartStreamInput| {
     let storage = storage.clone();
     let session = session.clone();
@@ -74,7 +78,7 @@ pub(super) fn start_stream_action(ctx: &mut Ctx, storage: Option<Storage>, sessi
         return Err("Selected stream source has no capture dimensions.".to_owned());
       }
       let (width, height) = scaled_stream_dimensions(input.width, input.height, settings.video_scale_percent);
-      session.start_video_broadcast(VideoBroadcastConfig {
+      let config = VideoBroadcastConfig {
         source_kind: input.source_kind,
         source_id: input.source_id,
         source_width: input.width,
@@ -84,14 +88,32 @@ pub(super) fn start_stream_action(ctx: &mut Ctx, storage: Option<Storage>, sessi
         codec,
         fps: settings.video_fps.clamp(1, 120) as u32,
         bitrate_kbps: (settings.video_bitrate_mbps.max(0.1) * 1000.0).round() as u32,
-      })?;
-      server
-        .start_screen_share(codec, width, height)
-        .await
-        .map_err(|error| {
-          session.stop_video_broadcast();
-          error.to_string()
-        })?;
+      };
+      logger::log(&format!(
+        "[video] starting broadcast: source={:?}/{} source_size={}x{} output={}x{} codec={:?} fps={} bitrate={}kbps",
+        config.source_kind,
+        config.source_id,
+        config.source_width,
+        config.source_height,
+        config.output_width,
+        config.output_height,
+        config.codec,
+        config.fps,
+        config.bitrate_kbps
+      ));
+      if let Err(error) = session.start_video_broadcast(config) {
+        logger::log(&format!("[video] failed to start local broadcaster: {error}"));
+        return Err(error);
+      }
+      if let Err(error) = server.start_screen_share(codec, width, height).await {
+        let error = error.to_string();
+        logger::log(&format!("[video] server rejected screen-share start: {error}"));
+        session.stop_video_broadcast();
+        return Err(error);
+      }
+      logger::log(&format!(
+        "[video] screen-share start announced: codec={codec:?} size={width}x{height}"
+      ));
       Ok(())
     }
   })
@@ -110,16 +132,26 @@ fn scaled_stream_dimensions(width: u16, height: u16, scale_percent: i32) -> (u16
   let scale = scale_percent.clamp(10, 100) as u32;
   let scaled_width = (u32::from(width) * scale / 100).clamp(1, u32::from(u16::MAX));
   let scaled_height = (u32::from(height) * scale / 100).clamp(1, u32::from(u16::MAX));
-  (scaled_width as u16, scaled_height as u16)
+  (even_dimension(scaled_width), even_dimension(scaled_height))
+}
+
+fn even_dimension(value: u32) -> u16 {
+  (value.clamp(2, u32::from(u16::MAX)) as u16) & !1u16
 }
 
 pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopStreamAction {
   ctx.future_action(move |()| {
     let session = session.clone();
     async move {
+      logger::log("[video] stopping broadcast");
       session.stop_video_broadcast();
       let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
-      server.stop_screen_share().await.map_err(|error| error.to_string())?;
+      if let Err(error) = server.stop_screen_share().await {
+        let error = error.to_string();
+        logger::log(&format!("[video] failed to announce screen-share stop: {error}"));
+        return Err(error);
+      }
+      logger::log("[video] screen-share stop announced");
       Ok(())
     }
   })

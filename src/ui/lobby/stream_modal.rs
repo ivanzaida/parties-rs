@@ -114,7 +114,12 @@ pub(super) fn start_stream_modal(
             Column::new()
               .width(Dimension::Pct(100.0))
               .spacing(metrics.spacing)
-              .child(stream_modal_sources(ctx, screen_tab.clone(), source_index.clone(), metrics))
+              .child(stream_modal_sources(
+                ctx,
+                screen_tab.clone(),
+                source_index.clone(),
+                metrics,
+              ))
               .child(stream_modal_audio_toggle(ctx, audio_enabled)),
           )
           .width(Dimension::Pct(100.0))
@@ -615,7 +620,9 @@ fn stream_modal_actions(
       let mut button = stream_modal_button(ctx, Some("monitor-up"), "lobby.stream_modal.action.start", true);
       if !pending {
         button = button.on_click(move |_| {
-          if let Some(input) = selected_stream_input(start_screen_tab.get_untracked(), start_source_index.get_untracked()) {
+          if let Some(input) =
+            selected_stream_input(start_screen_tab.get_untracked(), start_source_index.get_untracked())
+          {
             confirm_open.set(false);
             start_stream.run(input);
           }

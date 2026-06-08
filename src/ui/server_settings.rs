@@ -14,10 +14,13 @@ use lurq::{
 
 use crate::{
   network::{
-    protocol::{PROTOCOL_VERSION, Role, UserId},
+    protocol::{PROTOCOL_VERSION, Permission, Role, UserId},
     server_query::{ServerQueryInfo, query_server},
   },
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY},
+  routes::{
+    ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS,
+    ROUTE_SERVER_SETTINGS_MEMBERS, ROUTE_SERVER_SETTINGS_ROLES,
+  },
   services::hotkeys,
   session::{ConnectedServerInfo, LobbyChannel, LobbyState, LobbyTextChannel, LobbyUser, ServerSession},
   theme,
@@ -72,14 +75,23 @@ fn server_settings_metrics(ctx: &Ctx) -> ServerSettingsMetrics {
 
 pub struct ServerSettingsScreen;
 
+#[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub enum ServerSettingsPage {
+  Server,
+  Channels,
+  Members,
+  Roles,
+}
+
 impl Component for ServerSettingsScreen {
-  type Props = ();
+  type Props = ServerSettingsPage;
 
   fn create(_ctx: &mut Ctx) -> Self {
     Self
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let page = *ctx.props::<Self::Props>();
     let Some(session) = ctx.use_context::<ServerSession>() else {
       return unavailable_screen(ctx);
     };
@@ -100,7 +112,7 @@ impl Component for ServerSettingsScreen {
 
     let server_query_info = query_state.data.flatten();
     let lobby = session.lobby();
-    server_settings_screen(ctx, &info, &lobby, server_query_info.as_ref())
+    server_settings_screen(ctx, page, &info, &lobby, server_query_info.as_ref())
   }
 }
 
@@ -131,6 +143,7 @@ fn unavailable_screen(ctx: &mut Ctx) -> Element {
 
 fn server_settings_screen(
   ctx: &mut Ctx,
+  page: ServerSettingsPage,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   server_query: Option<&ServerQueryInfo>,
@@ -142,8 +155,8 @@ fn server_settings_screen(
     .height(Dimension::Pct(100.0))
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
     .clip()
-    .child(server_settings_nav(ctx, info))
-    .child(server_settings_main(ctx, info, lobby, server_query))
+    .child(server_settings_nav(ctx, page, info))
+    .child(server_settings_main(ctx, page, info, lobby, server_query))
     .on_key_down(move |event| {
       if hotkeys::is_cancel_key(event)
         && let Some(navigator) = navigator.as_ref()
@@ -154,7 +167,7 @@ fn server_settings_screen(
     .into()
 }
 
-fn server_settings_nav(ctx: &mut Ctx, info: &ConnectedServerInfo) -> Element {
+fn server_settings_nav(ctx: &mut Ctx, page: ServerSettingsPage, info: &ConnectedServerInfo) -> Element {
   let metrics = server_settings_metrics(ctx);
   let nav_section_label = ctx.t("server_settings.nav.section").to_string();
   let server_label = ctx.t("server_settings.nav.server").to_string();
@@ -172,10 +185,34 @@ fn server_settings_nav(ctx: &mut Ctx, info: &ConnectedServerInfo) -> Element {
     .border_right(Border::inside(1.0, theme::PaletteColor::Border))
     .child(back_to_lobby(ctx, info))
     .child(nav_section(&nav_section_label))
-    .child(nav_item(ctx, "sliders-horizontal", &server_label, true))
-    .child(nav_item(ctx, "hash", &channels_label, false))
-    .child(nav_item(ctx, "users", &members_label, false))
-    .child(nav_item(ctx, "shield", &roles_label, false))
+    .child(nav_item(
+      ctx,
+      "sliders-horizontal",
+      &server_label,
+      page == ServerSettingsPage::Server,
+      ROUTE_SERVER_SETTINGS,
+    ))
+    .child(nav_item(
+      ctx,
+      "hash",
+      &channels_label,
+      page == ServerSettingsPage::Channels,
+      ROUTE_SERVER_SETTINGS_CHANNELS,
+    ))
+    .child(nav_item(
+      ctx,
+      "users",
+      &members_label,
+      page == ServerSettingsPage::Members,
+      ROUTE_SERVER_SETTINGS_MEMBERS,
+    ))
+    .child(nav_item(
+      ctx,
+      "shield",
+      &roles_label,
+      page == ServerSettingsPage::Roles,
+      ROUTE_SERVER_SETTINGS_ROLES,
+    ))
     .child(Column::new().width(Dimension::Pct(100.0)).flex(1.0))
     .child(protocol_footer(ctx))
     .into()
@@ -230,7 +267,8 @@ fn nav_section(label: &str) -> Element {
     .into()
 }
 
-fn nav_item(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool) -> Element {
+fn nav_item(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool, route: &'static str) -> Element {
+  let navigator = ctx.navigator();
   let background = if active {
     BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)
   } else {
@@ -249,7 +287,9 @@ fn nav_item(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool) -> Ele
     .padding_vertical(9.0)
     .padding_horizontal(10.0)
     .rounded(theme::RadiusSize::Lg)
+    .cursor(CursorIcon::Pointer)
     .background(background)
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon,
       size: 16.0,
@@ -266,6 +306,11 @@ fn nav_item(ctx: &mut Ctx, icon: &'static str, label: &str, active: bool) -> Ele
         .width(Dimension::Pct(100.0))
         .flex(1.0),
     )
+    .on_click(move |_| {
+      if let Some(navigator) = navigator.as_ref() {
+        navigator.push(route);
+      }
+    })
     .into()
 }
 
@@ -294,34 +339,25 @@ fn protocol_footer(ctx: &mut Ctx) -> Element {
 
 fn server_settings_main(
   ctx: &mut Ctx,
+  page: ServerSettingsPage,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   server_query: Option<&ServerQueryInfo>,
 ) -> Element {
   let metrics = server_settings_metrics(ctx);
+  let content = match page {
+    ServerSettingsPage::Server => server_page(ctx, info, lobby, server_query, &metrics),
+    ServerSettingsPage::Channels => channels_page(ctx, lobby, &metrics),
+    ServerSettingsPage::Members => members_page(ctx, lobby, &metrics),
+    ServerSettingsPage::Roles => roles_page(ctx, &metrics),
+  };
+
   ScrollVertical::new(
     Column::new()
       .width(Dimension::Pct(100.0))
       .align_items(Alignment::Center)
       .padding(metrics.main_padding)
-      .child(
-        Column::new()
-          .width(Dimension::Pct(100.0))
-          .max_width(metrics.main_max_width)
-          .spacing(24.0)
-          .child(page_header(ctx))
-          .child(server_info_card(ctx, info, metrics.card_padding))
-          .child(glance_card(
-            ctx,
-            lobby,
-            server_query,
-            metrics.card_padding,
-            metrics.stat_gap,
-          ))
-          .child(channels_card(ctx, lobby, metrics.card_padding))
-          .child(members_card(ctx, lobby, metrics.card_padding))
-          .child(roles_card(ctx, metrics.card_padding)),
-      ),
+      .child(content),
   )
   .width(Dimension::Pct(100.0))
   .height(Dimension::Pct(100.0))
@@ -336,13 +372,78 @@ fn server_settings_main(
   .into()
 }
 
-fn page_header(ctx: &mut Ctx) -> Element {
+fn server_page(
+  ctx: &mut Ctx,
+  info: &ConnectedServerInfo,
+  lobby: &LobbyState,
+  server_query: Option<&ServerQueryInfo>,
+  metrics: &ServerSettingsMetrics,
+) -> Element {
+  page_stack(ctx, metrics)
+    .child(page_header(
+      ctx,
+      &ctx.t("server_settings.title"),
+      &ctx.t("server_settings.subtitle"),
+    ))
+    .child(server_info_card(ctx, info, metrics.card_padding))
+    .child(glance_card(
+      ctx,
+      lobby,
+      server_query,
+      metrics.card_padding,
+      metrics.stat_gap,
+    ))
+    .into()
+}
+
+fn channels_page(ctx: &mut Ctx, lobby: &LobbyState, metrics: &ServerSettingsMetrics) -> Element {
+  page_stack(ctx, metrics)
+    .child(page_header(
+      ctx,
+      &ctx.t("server_settings.sections.channels"),
+      &ctx.t("server_settings.channels.description"),
+    ))
+    .child(voice_channels_card(ctx, lobby, metrics.card_padding))
+    .child(text_channels_card(ctx, lobby, metrics.card_padding))
+    .into()
+}
+
+fn members_page(ctx: &mut Ctx, lobby: &LobbyState, metrics: &ServerSettingsMetrics) -> Element {
+  page_stack(ctx, metrics)
+    .child(page_header(
+      ctx,
+      &ctx.t("server_settings.sections.members"),
+      &ctx.t("server_settings.members.description"),
+    ))
+    .child(members_card(ctx, lobby, metrics.card_padding))
+    .into()
+}
+
+fn roles_page(ctx: &mut Ctx, metrics: &ServerSettingsMetrics) -> Element {
+  page_stack(ctx, metrics)
+    .child(page_header(
+      ctx,
+      &ctx.t("server_settings.sections.roles"),
+      &ctx.t("server_settings.roles.description"),
+    ))
+    .child(permissions_matrix_card(ctx, metrics.card_padding))
+    .into()
+}
+
+fn page_stack(_ctx: &mut Ctx, metrics: &ServerSettingsMetrics) -> Column {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .max_width(metrics.main_max_width)
+    .spacing(24.0)
+}
+
+fn page_header(_ctx: &mut Ctx, title: &str, description: &str) -> Element {
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(theme::SpacingSize::Xs)
-    .child(Text::new(&ctx.t("server_settings.title")).variant(theme::TypographyStyle::Title))
+    .child(Text::new(title).variant(theme::TypographyStyle::Title))
     .child(
-      Text::new(&ctx.t("server_settings.subtitle"))
+      Text::new(description)
         .variant(theme::TypographyStyle::Description)
         .color(theme::PaletteColor::TextSecondary)
         .width(Dimension::Pct(100.0)),
@@ -402,28 +503,34 @@ fn total_users_value(server_query: Option<&ServerQueryInfo>) -> String {
   }
 }
 
-fn channels_card(ctx: &mut Ctx, lobby: &LobbyState, padding: f32) -> Element {
-  let title = ctx.t("server_settings.sections.channels").to_string();
+fn voice_channels_card(ctx: &mut Ctx, lobby: &LobbyState, padding: f32) -> Element {
   let voice_title = ctx.t("server_settings.channels.voice_title").to_string();
-  let text_title = ctx.t("server_settings.channels.text_title").to_string();
   let voice_rows = lobby
     .channels
     .iter()
     .map(|channel| voice_channel_settings_row(ctx, channel))
     .collect();
-  let text_rows = lobby
-    .text_channels
-    .iter()
-    .map(|channel| text_channel_settings_row(ctx, channel))
-    .collect();
 
-  settings_card(ctx, "hash", &title, padding)
+  settings_card(ctx, "volume-2", &voice_title, padding)
     .child(divider())
     .child(channel_group(
       &voice_title,
       &ctx.t("server_settings.channels.empty_voice"),
       voice_rows,
     ))
+    .into()
+}
+
+fn text_channels_card(ctx: &mut Ctx, lobby: &LobbyState, padding: f32) -> Element {
+  let text_title = ctx.t("server_settings.channels.text_title").to_string();
+  let text_rows = lobby
+    .text_channels
+    .iter()
+    .map(|channel| text_channel_settings_row(ctx, channel))
+    .collect();
+
+  settings_card(ctx, "hash", &text_title, padding)
+    .child(divider())
     .child(channel_group(
       &text_title,
       &ctx.t("server_settings.channels.empty_text"),
@@ -552,33 +659,112 @@ fn member_row(ctx: &mut Ctx, member: ActiveMember) -> Element {
   settings_data_row(ctx, "user", &member.user.username, &meta, Some(&id))
 }
 
-fn roles_card(ctx: &mut Ctx, padding: f32) -> Element {
+fn permissions_matrix_card(ctx: &mut Ctx, padding: f32) -> Element {
   let title = ctx.t("server_settings.sections.roles").to_string();
-  let mut card = settings_card(ctx, "shield", &title, padding).child(divider());
+  let mut card = settings_card(ctx, "shield", &title, padding)
+    .child(divider())
+    .child(permission_header_row(ctx));
 
-  for role in [Role::Owner, Role::Admin, Role::Moderator, Role::User] {
-    card = card.child(role_row(ctx, role));
+  for permission in permissions_list() {
+    card = card.child(permission_row(ctx, permission));
   }
 
   card.into()
 }
 
-fn role_row(ctx: &mut Ctx, role: Role) -> Element {
-  let permissions = role.default_permissions();
-  let role_label = ctx.t(role_label_key(role)).to_string();
-  let permission_label = if role == Role::Owner {
-    ctx.t("server_settings.roles.all_permissions").to_string()
-  } else {
-    ctx
-      .t_args(
-        "server_settings.roles.default_permissions",
-        [("count", permissions.count_ones().to_string())],
-      )
-      .to_string()
-  };
-  let mask = format!("0x{permissions:08X}");
+fn permissions_list() -> [Permission; 15] {
+  [
+    Permission::JoinChannel,
+    Permission::Speak,
+    Permission::MuteOthers,
+    Permission::DeafenOthers,
+    Permission::KickFromChannel,
+    Permission::KickFromServer,
+    Permission::CreateChannel,
+    Permission::DeleteChannel,
+    Permission::ManagePermissions,
+    Permission::ManageRoles,
+    Permission::ManageServer,
+    Permission::SendText,
+    Permission::UploadFiles,
+    Permission::ShareScreen,
+    Permission::ShareWebcam,
+  ]
+}
 
-  settings_data_row(ctx, "shield-check", &role_label, &permission_label, Some(&mask))
+fn permission_header_row(ctx: &mut Ctx) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .min_height(42.0)
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .padding_vertical(10.0)
+    .padding_horizontal(14.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .child(
+      Text::new(&ctx.t("server_settings.roles.permission"))
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
+    .child(role_header_cell(ctx, Role::Owner))
+    .child(role_header_cell(ctx, Role::Admin))
+    .child(role_header_cell(ctx, Role::Moderator))
+    .child(role_header_cell(ctx, Role::User))
+    .into()
+}
+
+fn role_header_cell(ctx: &mut Ctx, role: Role) -> Element {
+  Text::new(&ctx.t(role_label_key(role)))
+    .variant(theme::TypographyStyle::Caption)
+    .color(theme::PaletteColor::TextSecondary)
+    .width(88.0)
+    .into()
+}
+
+fn permission_row(ctx: &mut Ctx, permission: Permission) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .min_height(38.0)
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .padding_vertical(8.0)
+    .padding_horizontal(14.0)
+    .rounded(theme::RadiusSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .child(
+      Text::new(&ctx.t(permission_label_key(permission)))
+        .variant(theme::TypographyStyle::Description)
+        .color(theme::PaletteColor::TextPrimary)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
+    .child(permission_cell(ctx, Role::Owner, permission))
+    .child(permission_cell(ctx, Role::Admin, permission))
+    .child(permission_cell(ctx, Role::Moderator, permission))
+    .child(permission_cell(ctx, Role::User, permission))
+    .into()
+}
+
+fn permission_cell(ctx: &mut Ctx, role: Role, permission: Permission) -> Element {
+  let allowed = role.has_permission(permission);
+  let label = if allowed {
+    ctx.t("server_settings.roles.allowed")
+  } else {
+    ctx.t("server_settings.roles.denied")
+  };
+  Text::new(&label)
+    .variant(theme::TypographyStyle::Caption)
+    .color(if allowed {
+      theme::PaletteColor::Success
+    } else {
+      theme::PaletteColor::TextMuted
+    })
+    .width(88.0)
+    .into()
 }
 
 fn section_label(label: &str) -> Element {
@@ -784,6 +970,27 @@ fn role_label_key(role: Role) -> &'static str {
     Role::Admin => "lobby.role.admin",
     Role::Moderator => "lobby.role.moderator",
     Role::User => "lobby.role.member",
+  }
+}
+
+fn permission_label_key(permission: Permission) -> &'static str {
+  match permission {
+    Permission::None => "server_settings.roles.permission.none",
+    Permission::JoinChannel => "server_settings.roles.permission.join_channel",
+    Permission::Speak => "server_settings.roles.permission.speak",
+    Permission::MuteOthers => "server_settings.roles.permission.mute_others",
+    Permission::DeafenOthers => "server_settings.roles.permission.deafen_others",
+    Permission::KickFromChannel => "server_settings.roles.permission.kick_from_channel",
+    Permission::KickFromServer => "server_settings.roles.permission.kick_from_server",
+    Permission::CreateChannel => "server_settings.roles.permission.create_channel",
+    Permission::DeleteChannel => "server_settings.roles.permission.delete_channel",
+    Permission::ManagePermissions => "server_settings.roles.permission.manage_permissions",
+    Permission::ManageRoles => "server_settings.roles.permission.manage_roles",
+    Permission::ManageServer => "server_settings.roles.permission.manage_server",
+    Permission::SendText => "server_settings.roles.permission.send_text",
+    Permission::UploadFiles => "server_settings.roles.permission.upload_files",
+    Permission::ShareScreen => "server_settings.roles.permission.share_screen",
+    Permission::ShareWebcam => "server_settings.roles.permission.share_webcam",
   }
 }
 

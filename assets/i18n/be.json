@@ -655,7 +655,7 @@
   },
   "server_settings": {
     "title": "Server",
-    "subtitle": "Everything the server exposes today. These values are read-only here.",
+    "subtitle": "Everything the server exposes today. The protocol has no client message to change these values, so they are read-only here.",
     "protocol_supported": "Protocol v1 · supported",
     "read_only": "READ ONLY",
     "nav": {
@@ -684,6 +684,7 @@
       "roles": "Roles & Permissions"
     },
     "channels": {
+      "description": "Voice channels and text channels are shown as separate server settings screens.",
       "voice_title": "Voice channels",
       "text_title": "Text channels",
       "empty_voice": "No voice channels",
@@ -693,6 +694,7 @@
       "connected": "{{count}} connected"
     },
     "members": {
+      "description": "Online members, their roles, and where they are connected in voice.",
       "online_title": "Online members",
       "empty": "No online members",
       "no_voice": "Not in voice",
@@ -700,8 +702,30 @@
       "user_id": "id {{id}}"
     },
     "roles": {
+      "description": "The fixed server roles and their default permission bits.",
+      "allowed": "Yes",
+      "denied": "No",
       "all_permissions": "All permissions",
-      "default_permissions": "{{count}} default permissions"
+      "default_permissions": "{{count}} default permissions",
+      "permission": {
+        "$value": "Permission",
+        "none": "None",
+        "join_channel": "Join channel",
+        "speak": "Speak",
+        "mute_others": "Mute others",
+        "deafen_others": "Deafen others",
+        "kick_from_channel": "Kick from channel",
+        "kick_from_server": "Kick from server",
+        "create_channel": "Create channel",
+        "delete_channel": "Delete channel",
+        "manage_permissions": "Manage permissions",
+        "manage_roles": "Manage roles",
+        "manage_server": "Manage server",
+        "send_text": "Send text",
+        "upload_files": "Upload files",
+        "share_screen": "Share screen",
+        "share_webcam": "Share webcam"
+      }
     }
   },
   "lobby": {

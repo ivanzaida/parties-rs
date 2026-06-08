@@ -13,8 +13,8 @@ use super::protocol::{
   C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
   control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
   data::{
-    FileStreamRequest, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN, VideoControl, VideoFrame,
-    VoicePacket,
+    FileStreamRequest, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN, PacketType, VideoControl,
+    VideoFrame, VoicePacket,
   },
 };
 
@@ -259,8 +259,12 @@ impl Server {
   }
 
   pub async fn recv_voice(&self) -> Result<ForwardedVoicePacket, ServerError> {
-    let data = self.connection.read_datagram().await?;
-    Ok(ForwardedVoicePacket::decode(data.as_ref())?)
+    loop {
+      let data = self.connection.read_datagram().await?;
+      if let Some(packet) = decode_voice_datagram(data.as_ref())? {
+        return Ok(packet);
+      }
+    }
   }
 
   // -- screen share --
@@ -539,6 +543,20 @@ fn validate_video_codec(codec: VideoCodecId) -> Result<(), DecodeError> {
   }
 }
 
+fn decode_voice_datagram(data: &[u8]) -> Result<Option<ForwardedVoicePacket>, DecodeError> {
+  let Some(packet_type) = data.first().copied() else {
+    return Err(DecodeError::UnexpectedEof {
+      needed: 1,
+      remaining: 0,
+    });
+  };
+
+  match PacketType::from_u8(packet_type).ok_or(DecodeError::InvalidPacketType(packet_type))? {
+    PacketType::Voice => ForwardedVoicePacket::decode(data).map(Some),
+    PacketType::VideoFrame | PacketType::VideoControl | PacketType::StreamAudio => Ok(None),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -576,5 +594,31 @@ mod tests {
         max: MAX_VIDEO_FRAME_LEN
       }
     );
+  }
+
+  #[test]
+  fn voice_datagram_decoder_skips_stream_audio_packets() {
+    assert_eq!(
+      decode_voice_datagram(&[PacketType::StreamAudio as u8, 7, 0, 0, 0]).unwrap(),
+      None
+    );
+  }
+
+  #[test]
+  fn voice_datagram_decoder_rejects_unknown_packet_type() {
+    assert_eq!(
+      decode_voice_datagram(&[0xff]).unwrap_err(),
+      DecodeError::InvalidPacketType(0xff)
+    );
+  }
+
+  #[test]
+  fn voice_datagram_decoder_accepts_forwarded_voice_packets() {
+    let packet = [PacketType::Voice as u8, 42, 0, 0, 0, 9, 0, 1, 2, 3];
+    let decoded = decode_voice_datagram(&packet).unwrap().unwrap();
+
+    assert_eq!(decoded.sender_id, 42);
+    assert_eq!(decoded.sequence, 9);
+    assert_eq!(decoded.opus, vec![1, 2, 3]);
   }
 }

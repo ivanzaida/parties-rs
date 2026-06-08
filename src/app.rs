@@ -15,8 +15,9 @@ use lurq::{
 use crate::{
   routes::{
     ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
-    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SERVER_SETTINGS, ROUTE_SETTINGS,
-    ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS,
+    ROUTE_SERVER_SETTINGS_MEMBERS, ROUTE_SERVER_SETTINGS_ROLES, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
+    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
@@ -35,7 +36,7 @@ use crate::{
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
     lobby::LobbyScreen,
     restore_identity::RestoreIdentityScreen,
-    server_settings::ServerSettingsScreen,
+    server_settings::{ServerSettingsPage, ServerSettingsScreen},
     servers::SavedServersScreen,
     settings::{
       SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsPage, SettingsPopup,
@@ -109,7 +110,18 @@ impl Component for App {
         .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
         .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
         .route(ROUTE_LOBBY, |ctx| ctx.mount::<LobbyScreen>(()))
-        .route(ROUTE_SERVER_SETTINGS, |ctx| ctx.mount::<ServerSettingsScreen>(()))
+        .route(ROUTE_SERVER_SETTINGS, |ctx| {
+          ctx.mount::<ServerSettingsScreen>(ServerSettingsPage::Server)
+        })
+        .route(ROUTE_SERVER_SETTINGS_CHANNELS, |ctx| {
+          ctx.mount::<ServerSettingsScreen>(ServerSettingsPage::Channels)
+        })
+        .route(ROUTE_SERVER_SETTINGS_MEMBERS, |ctx| {
+          ctx.mount::<ServerSettingsScreen>(ServerSettingsPage::Members)
+        })
+        .route(ROUTE_SERVER_SETTINGS_ROLES, |ctx| {
+          ctx.mount::<ServerSettingsScreen>(ServerSettingsPage::Roles)
+        })
         .route(ROUTE_SETTINGS, |ctx| ctx.mount::<SettingsOverviewScreen>(()))
         .route(ROUTE_SETTINGS_IDENTITY, |ctx| ctx.mount::<SettingsIdentityScreen>(()))
         .route(ROUTE_SETTINGS_SERVERS, |ctx| {
