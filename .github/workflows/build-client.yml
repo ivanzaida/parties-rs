@@ -84,7 +84,7 @@ jobs:
             artifact_suffix: macos-arm64
             rust_target: aarch64-apple-darwin
             binary_name: parties-rs
-            archive_ext: tar.gz
+            archive_ext: dmg
     runs-on: ${{ matrix.os }}
     env:
       PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
@@ -137,10 +137,162 @@ jobs:
           set -euo pipefail
           artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dist="dist/$artifact"
-          mkdir -p "$dist"
-          cp "$BINARY_PATH" "$dist/"
-          chmod +x "$dist/$BINARY_NAME"
-          tar -czf "dist/$artifact.$ARCHIVE_EXT" -C dist "$artifact"
+          app="$dist/Parties.app"
+
+          rm -rf "$dist"
+          mkdir -p "$app/Contents/MacOS"
+          cp "$BINARY_PATH" "$app/Contents/MacOS/$BINARY_NAME"
+          chmod +x "$app/Contents/MacOS/$BINARY_NAME"
+
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleDisplayName</key>
+            <string>Parties</string>
+            <key>CFBundleExecutable</key>
+            <string>${BINARY_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>dev.lurq.parties-rs</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>Parties</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${PACKAGE_VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${PACKAGE_VERSION}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>NSCameraUsageDescription</key>
+            <string>Parties needs camera access to stream your webcam.</string>
+            <key>NSMicrophoneUsageDescription</key>
+            <string>Parties needs microphone access for voice chat and stream audio.</string>
+            <key>NSScreenCaptureDescription</key>
+            <string>Parties needs screen recording access to share your screen or application windows.</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Import macOS code signing certificate
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${P12_BASE64}" || -z "${P12_PASSWORD}" ]]; then
+            echo "::error::Missing MACOS_CERTIFICATE_P12 or MACOS_CERTIFICATE_PASSWORD secret."
+            exit 1
+          fi
+
+          keychain_path="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          P12_BASE64="$P12_BASE64" python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["RUNNER_TEMP"], "certificate.p12").write_bytes(base64.b64decode(os.environ["P12_BASE64"]))
+          PY
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -P "$P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Code sign macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          app="dist/$artifact/Parties.app"
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+
+          if [[ -z "$identity" ]]; then
+            echo "::error::No Developer ID Application identity found in imported keychain."
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          echo "Signing with: $identity"
+          codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/MacOS/$BINARY_NAME"
+          codesign --force --options runtime --timestamp --sign "$identity" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+      - name: Create macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          dmg_path="dist/$artifact.$ARCHIVE_EXT"
+          dmg_root="$RUNNER_TEMP/dmg-root"
+
+          rm -rf "$dmg_root" "$dmg_path"
+          mkdir -p "$dmg_root"
+          cp -R "dist/$artifact/Parties.app" "$dmg_root/"
+          ln -s /Applications "$dmg_root/Applications"
+
+          hdiutil create \
+            -volname "Parties" \
+            -srcfolder "$dmg_root" \
+            -ov \
+            -format UDZO \
+            "$dmg_path"
+
+      - name: Notarize macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.MACOS_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${APPLE_ID}" || -z "${APP_PASSWORD}" || -z "${TEAM_ID}" ]]; then
+            echo "::error::Missing MACOS_APPLE_ID, MACOS_APP_PASSWORD, or MACOS_TEAM_ID secret."
+            exit 1
+          fi
+
+          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          dmg_path="dist/$artifact.$ARCHIVE_EXT"
+
+          xcrun notarytool submit "$dmg_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APP_PASSWORD" \
+            --team-id "$TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg_path"
+          spctl --assess --type open --context context:primary-signature --verbose "$dmg_path"
+
+      - name: Clean up macOS signing keychain
+        if: runner.os == 'macOS' && always()
+        shell: bash
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
