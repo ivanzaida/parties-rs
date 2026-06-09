@@ -11,7 +11,10 @@ use lurq::{
 
 use crate::{
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    brand_logo::logo_mark,
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
 pub struct OnboardingIntroCopy<'a> {
@@ -198,7 +201,7 @@ fn onboarding_scrollbar_style() -> ScrollBarStyle {
   }
 }
 
-fn brand(ctx: &mut Ctx, app_name: &str) -> Row {
+fn brand(_ctx: &mut Ctx, app_name: &str) -> Row {
   Row::new()
     .align_items(Alignment::Center)
     .spacing(12.0)
@@ -208,13 +211,7 @@ fn brand(ctx: &mut Ctx, app_name: &str) -> Row {
         .height(32.0)
         .align_items(Alignment::Center)
         .justify(Justify::Center)
-        .rounded(8.0)
-        .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
-        .child(ctx.mount::<LucideIcon>(LucideIconProps {
-          icon: "volume-2",
-          size: 16.0,
-          color: theme::palette().text_inverse,
-        })),
+        .child(logo_mark(32.0, 8.0)),
     )
     .child(Text::new(app_name).variant(theme::TypographyStyle::Heading))
 }

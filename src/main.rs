@@ -14,7 +14,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use lurq::app::WindowCornerRadius;
+use lurq::app::{WindowCornerRadius, WindowIcon};
 use session::ServerSession;
 use storage::{Storage, WindowState};
 use ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME};
@@ -81,6 +81,7 @@ fn main() {
       window_state.map_or(DEFAULT_WINDOW_HEIGHT, |state| state.height),
     )
     .with_min_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+    .with_icon(app_window_icon())
     .with_decorations(!CUSTOM_WINDOW_CHROME)
     .with_transparent(CUSTOM_MACOS_CHROME)
     .with_corner_radius(if CUSTOM_WINDOW_CHROME {
@@ -142,6 +143,12 @@ fn main() {
 
   window.run();
   session.disconnect_for_shutdown();
+}
+
+fn app_window_icon() -> Option<WindowIcon> {
+  lurq::images::ImageData::from_bytes(ui::brand_logo::LOGO_BYTES)
+    .ok()
+    .map(|image| WindowIcon::from_image_data(&image))
 }
 
 fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: ServerSession) {

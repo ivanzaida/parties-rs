@@ -158,6 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
       PACKAGE_VERSION: ${{ needs.package-metadata.outputs.version }}
     steps:
@@ -187,10 +188,11 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${files[@]}" --clobber
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$tag" "${files[@]}" \
+              --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes "$notes"

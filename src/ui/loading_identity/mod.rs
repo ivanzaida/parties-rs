@@ -21,6 +21,7 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
+    brand_logo::logo_mark,
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
   },
@@ -216,19 +217,13 @@ impl LoadingIdentityScreen {
       )
   }
 
-  fn brand_mark(&self, ctx: &mut Ctx) -> impl Into<Element> {
+  fn brand_mark(&self, _ctx: &mut Ctx) -> impl Into<Element> {
     Column::new()
       .width(68.px())
       .height(68.px())
       .align_items(Alignment::Center)
       .justify(Justify::Center)
-      .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
-      .rounded(18.0)
-      .child(ctx.mount::<LucideIcon>(LucideIconProps {
-        icon: "volume-2",
-        size: 30.0,
-        color: theme::palette().text_inverse,
-      }))
+      .child(logo_mark(68.px(), 18.0))
   }
 
   fn progress_group(&self, theme: &Theme, progress: &StartupProgress) -> impl Into<Element> {

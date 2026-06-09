@@ -8,7 +8,10 @@ use lurq::{
 use crate::{
   session::ServerSession,
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    brand_logo::logo_mark,
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
 pub(crate) const CUSTOM_WINDOWS_CHROME: bool = cfg!(target_os = "windows");
@@ -250,13 +253,7 @@ fn window_drag_region(ctx: &mut Ctx) -> Element {
         .height(22.0)
         .align_items(Alignment::Center)
         .justify(Justify::Center)
-        .rounded(theme::RadiusSize::Md)
-        .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
-        .child(ctx.mount::<LucideIcon>(LucideIconProps {
-          icon: "volume-2",
-          size: 13.0,
-          color: theme::palette().text_inverse,
-        })),
+        .child(logo_mark(22.0, 6.0)),
     )
     .child(
       Text::new(&ctx.t("common.app_name"))

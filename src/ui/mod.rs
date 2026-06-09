@@ -1,4 +1,5 @@
 pub(crate) mod app_chrome;
+pub(crate) mod brand_logo;
 pub(crate) mod common;
 pub mod connect_server;
 pub mod identity_seed;
