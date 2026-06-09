@@ -1780,7 +1780,9 @@ impl ServerSession {
 
     let mut force_revision = false;
     #[cfg(target_os = "macos")]
-    if let Some(native_image) = frame.native_image.clone() {
+    let prefer_cpu_frame = self.info().is_some_and(|info| info.user_id == frame.sender_id) && !frame.pixels.is_empty();
+    #[cfg(target_os = "macos")]
+    if !prefer_cpu_frame && let Some(native_image) = frame.native_image.clone() {
       {
         let mut frames = self.video_frames.lock().expect("server session lock poisoned");
         frames.insert(frame.sender_id, VideoFrameImage::MacosNative(native_image));
