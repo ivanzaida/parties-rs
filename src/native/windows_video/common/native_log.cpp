@@ -6,6 +6,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dbghelp.h>
 
 extern "C" {
 using PartiesNativeLogCallback = void (*)(uint8_t level, const char* message);
@@ -17,6 +18,7 @@ std::mutex g_log_mutex;
 PartiesNativeLogCallback g_log_callback = nullptr;
 std::atomic<bool> g_seh_installed{false};
 std::atomic<bool> g_seh_logging{false};
+std::mutex g_dbghelp_mutex;
 
 const char* seh_code_name(DWORD code) {
     switch (code) {
@@ -62,26 +64,101 @@ bool seh_code_is_diagnostic(DWORD code) {
     }
 }
 
+void module_location(void* address, char* out, size_t out_len) {
+    if (!out || out_len == 0) {
+        return;
+    }
+
+    HMODULE module = nullptr;
+    char module_path[MAX_PATH] = "unknown";
+    uintptr_t module_rva = 0;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(address),
+            &module) &&
+        module) {
+        module_rva = reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module);
+        const DWORD path_len = GetModuleFileNameA(module, module_path, static_cast<DWORD>(sizeof(module_path)));
+        if (path_len == 0 || path_len >= sizeof(module_path)) {
+            std::snprintf(module_path, sizeof(module_path), "module@%p", module);
+        }
+    }
+
+    std::snprintf(out, out_len, "%s+0x%Ix", module_path, module_rva);
+}
+
+void log_seh_stack(EXCEPTION_POINTERS* info) {
+    if (!info || !info->ContextRecord) {
+        return;
+    }
+
+    CONTEXT context = *info->ContextRecord;
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+
+    HANDLE process = GetCurrentProcess();
+    HANDLE thread = GetCurrentThread();
+
+    char message[1536];
+    size_t used = 0;
+    used += std::snprintf(message + used, sizeof(message) - used, "[seh] stack:");
+
+    {
+        char location[MAX_PATH + 64];
+        module_location(reinterpret_cast<void*>(context.Rip), location, sizeof(location));
+        used += std::snprintf(
+            message + used,
+            used < sizeof(message) ? sizeof(message) - used : 0,
+            " #0=%p %s",
+            reinterpret_cast<void*>(context.Rip),
+            location);
+    }
+
+    std::lock_guard<std::mutex> lock(g_dbghelp_mutex);
+    for (int index = 1; index < 16 && used < sizeof(message); ++index) {
+        if (!StackWalk64(
+                IMAGE_FILE_MACHINE_AMD64,
+                process,
+                thread,
+                &frame,
+                &context,
+                nullptr,
+                SymFunctionTableAccess64,
+                SymGetModuleBase64,
+                nullptr)) {
+            break;
+        }
+        if (frame.AddrPC.Offset == 0) {
+            break;
+        }
+
+        char location[MAX_PATH + 64];
+        module_location(reinterpret_cast<void*>(frame.AddrPC.Offset), location, sizeof(location));
+        used += std::snprintf(
+            message + used,
+            used < sizeof(message) ? sizeof(message) - used : 0,
+            " #%d=%p %s",
+            index,
+            reinterpret_cast<void*>(frame.AddrPC.Offset),
+            location);
+    }
+
+    parties_rs::video::native_log_emit(parties_rs::video::NativeLogLevel::Error, message);
+}
+
 void log_seh_exception(const char* source, EXCEPTION_POINTERS* info) {
     if (!info || !info->ExceptionRecord) {
         return;
     }
 
     auto* record = info->ExceptionRecord;
-    HMODULE module = nullptr;
-    char module_path[MAX_PATH] = "unknown";
-    uintptr_t module_rva = 0;
-    if (GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCSTR>(record->ExceptionAddress),
-            &module) &&
-        module) {
-        module_rva = reinterpret_cast<uintptr_t>(record->ExceptionAddress) - reinterpret_cast<uintptr_t>(module);
-        const DWORD path_len = GetModuleFileNameA(module, module_path, static_cast<DWORD>(sizeof(module_path)));
-        if (path_len == 0 || path_len >= sizeof(module_path)) {
-            std::snprintf(module_path, sizeof(module_path), "module@%p", module);
-        }
-    }
+    char location[MAX_PATH + 64];
+    module_location(record->ExceptionAddress, location, sizeof(location));
     const DWORD code = record->ExceptionCode;
     const ULONG_PTR p0 = record->NumberParameters > 0 ? record->ExceptionInformation[0] : 0;
     const ULONG_PTR p1 = record->NumberParameters > 1 ? record->ExceptionInformation[1] : 0;
@@ -90,17 +167,17 @@ void log_seh_exception(const char* source, EXCEPTION_POINTERS* info) {
     std::snprintf(
         message,
         sizeof(message),
-        "[seh] %s exception: code=0x%08lx kind=%s address=%p module=%s+0x%Ix fault0=0x%Ix fault1=0x%Ix fault2=0x%Ix",
+        "[seh] %s exception: code=0x%08lx kind=%s address=%p module=%s fault0=0x%Ix fault1=0x%Ix fault2=0x%Ix",
         source ? source : "windows",
         static_cast<unsigned long>(code),
         seh_code_name(code),
         record->ExceptionAddress,
-        module_path,
-        module_rva,
+        location,
         p0,
         p1,
         p2);
     parties_rs::video::native_log_emit(parties_rs::video::NativeLogLevel::Error, message);
+    log_seh_stack(info);
 }
 
 LONG WINAPI parties_vectored_exception_handler(EXCEPTION_POINTERS* info) {
@@ -133,6 +210,7 @@ extern "C" void parties_native_seh_install() {
 
     AddVectoredExceptionHandler(1, parties_vectored_exception_handler);
     SetUnhandledExceptionFilter(parties_unhandled_exception_filter);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
     parties_rs::video::native_log_emit(parties_rs::video::NativeLogLevel::Info, "[seh] windows SEH logger installed");
 }
 

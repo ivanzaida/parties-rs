@@ -14,6 +14,7 @@ use std::{
 use ::windows::{
   Win32::{
     Foundation::{CloseHandle, HANDLE, RPC_E_CHANGED_MODE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1},
     Media::{
       Audio::{
         AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
@@ -84,6 +85,7 @@ const STREAM_AUDIO_FRAME_SAMPLES: usize = STREAM_AUDIO_FRAME_SAMPLES_PER_CHANNEL
 const STREAM_AUDIO_FRAME_DURATION_100NS: i64 = 200_000;
 const STREAM_AUDIO_BITRATE: i32 = 64_000;
 const STREAM_AUDIO_MAX_PACKET_BYTES: usize = 1_275;
+const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
 #[repr(C)]
 struct NvdecBridge {
@@ -1086,18 +1088,24 @@ struct EncodedSample {
 
 impl BroadcastEncoder {
   fn new_excluding(config: &VideoBroadcastConfig, excluded_labels: &[String]) -> Result<Self, VideoError> {
-    if !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
+    let nvidia_available = has_nvidia_adapter().unwrap_or(true);
+
+    if nvidia_available && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
       match GpuNvencStreamEncoder::new(config) {
         Ok(encoder) => return Ok(Self::GpuNvenc(encoder)),
         Err(error) => logger::log(&format!("[video/windows] GPU capture + NVENC unavailable: {error}")),
       }
+    } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
+      logger::log("[video/windows] NVIDIA adapter not detected; skipping GPU capture + NVENC");
     }
 
-    if !excluded_labels.iter().any(|label| label == "NVENC") {
+    if nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
       match NvencVideoEncoder::new(config) {
         Ok(encoder) => return Ok(Self::Nvenc(encoder)),
         Err(error) => logger::log(&format!("[video/windows] NVENC unavailable: {error}")),
       }
+    } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
+      logger::log("[video/windows] NVIDIA adapter not detected; skipping NVENC");
     }
 
     Ok(Self::Mft(MftEncoder::new_excluding(config, excluded_labels)?))
@@ -1148,6 +1156,27 @@ impl BroadcastEncoder {
       Self::Nvenc(encoder) => encoder.force_keyframe(),
       Self::Mft(_) => {}
     }
+  }
+}
+
+fn has_nvidia_adapter() -> Option<bool> {
+  let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+    return None;
+  };
+
+  let mut adapter_index = 0;
+  loop {
+    let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+      Ok(adapter) => adapter,
+      Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => return Some(false),
+      Err(_) => return None,
+    };
+    if let Ok(desc) = unsafe { adapter.GetDesc1() }
+      && desc.VendorId == NVIDIA_VENDOR_ID
+    {
+      return Some(true);
+    }
+    adapter_index += 1;
   }
 }
 
