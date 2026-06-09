@@ -95,6 +95,7 @@ jobs:
       BINARY_PATH: target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}
       ARCHIVE_EXT: ${{ matrix.archive_ext }}
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      SPARKLE_VERSION: "2.9.2"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,6 +121,30 @@ jobs:
       - name: Build release client
         run: cargo build --release --target ${{ matrix.rust_target }}
 
+      - name: Download Sparkle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sparkle_archive="$RUNNER_TEMP/Sparkle-$SPARKLE_VERSION.tar.xz"
+          sparkle_extract="$RUNNER_TEMP/sparkle"
+          mkdir -p "$sparkle_extract"
+          curl -L \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" \
+            -o "$sparkle_archive"
+          tar -xJf "$sparkle_archive" -C "$sparkle_extract"
+
+          sparkle_framework="$(find "$sparkle_extract" -maxdepth 3 -type d -name Sparkle.framework -print -quit)"
+          if [[ -z "$sparkle_framework" ]]; then
+            echo "::error::Sparkle.framework not found in Sparkle $SPARKLE_VERSION archive."
+            find "$sparkle_extract" -maxdepth 3 -print
+            exit 1
+          fi
+          sparkle_root="$(dirname "$sparkle_framework")"
+
+          echo "SPARKLE_ROOT=$sparkle_root" >> "$GITHUB_ENV"
+
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
@@ -133,16 +158,24 @@ jobs:
       - name: Package macOS binary
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
+          if [[ -z "${SPARKLE_PUBLIC_KEY}" ]]; then
+            echo "::error::Missing SPARKLE_PUBLIC_KEY secret."
+            exit 1
+          fi
+
           artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dist="dist/$artifact"
           app="$dist/Parties.app"
 
           rm -rf "$dist"
-          mkdir -p "$app/Contents/MacOS"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks"
           cp "$BINARY_PATH" "$app/Contents/MacOS/$BINARY_NAME"
           chmod +x "$app/Contents/MacOS/$BINARY_NAME"
+          cp -R "$SPARKLE_ROOT/Sparkle.framework" "$app/Contents/Frameworks/"
 
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -169,6 +202,14 @@ jobs:
             <string>${PACKAGE_VERSION}</string>
             <key>LSMinimumSystemVersion</key>
             <string>13.0</string>
+            <key>SUAllowsAutomaticUpdates</key>
+            <true/>
+            <key>SUEnableAutomaticChecks</key>
+            <true/>
+            <key>SUFeedURL</key>
+            <string>https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml</string>
+            <key>SUPublicEDKey</key>
+            <string>${SPARKLE_PUBLIC_KEY}</string>
             <key>NSCameraUsageDescription</key>
             <string>Parties needs camera access to stream your webcam.</string>
             <key>NSMicrophoneUsageDescription</key>
@@ -234,6 +275,25 @@ jobs:
           fi
 
           echo "Signing with: $identity"
+          sparkle="$app/Contents/Frameworks/Sparkle.framework"
+          sparkle_current="$(readlink "$sparkle/Versions/Current" || true)"
+          sparkle_current="${sparkle_current:-B}"
+          sparkle_version_dir="$sparkle/Versions/$sparkle_current"
+
+          if [[ -d "$sparkle_version_dir/XPCServices" ]]; then
+            find "$sparkle_version_dir/XPCServices" -name "*.xpc" -type d -print0 | while IFS= read -r -d '' xpc; do
+              codesign --force --options runtime --timestamp --sign "$identity" "$xpc"
+            done
+          fi
+          if [[ -d "$sparkle_version_dir/Updater.app" ]]; then
+            codesign --force --options runtime --timestamp --sign "$identity" "$sparkle_version_dir/Updater.app"
+          fi
+          if [[ -f "$sparkle_version_dir/Autoupdate" ]]; then
+            codesign --force --options runtime --timestamp --sign "$identity" "$sparkle_version_dir/Autoupdate"
+          fi
+          codesign --force --options runtime --timestamp --sign "$identity" "$sparkle_version_dir"
+          codesign --force --options runtime --timestamp --sign "$identity" "$sparkle"
+
           codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/MacOS/$BINARY_NAME"
           codesign --force --options runtime --timestamp --sign "$identity" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -286,6 +346,60 @@ jobs:
           xcrun stapler staple "$dmg_path"
           spctl --assess --type open --context context:primary-signature --verbose "$dmg_path"
 
+      - name: Generate Sparkle appcast
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SPARKLE_ED_PRIVATE_KEY}" ]]; then
+            echo "::error::Missing SPARKLE_ED_PRIVATE_KEY secret."
+            exit 1
+          fi
+
+          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          dmg_path="dist/$artifact.$ARCHIVE_EXT"
+          dmg_size="$(stat -f%z "$dmg_path")"
+          dmg_url="https://github.com/${{ github.repository }}/releases/download/v${PACKAGE_VERSION}/${artifact}.${ARCHIVE_EXT}"
+          sign_tool="$SPARKLE_ROOT/bin/sign_update"
+
+          if [[ ! -x "$sign_tool" ]]; then
+            echo "::error::Sparkle sign_update not found at $sign_tool"
+            exit 1
+          fi
+
+          signature="$("$sign_tool" -p "$dmg_path" --ed-key-file <(printf '%s' "$SPARKLE_ED_PRIVATE_KEY"))"
+          case "$signature" in
+            "" | *\"* | *" "* | *sparkle:*)
+              echo "::error::Sparkle sign_update returned an invalid bare EdDSA signature: $signature"
+              exit 1
+              ;;
+          esac
+
+          cat > dist/appcast.xml <<APPCAST
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Parties Updates</title>
+              <item>
+                <title>Version ${PACKAGE_VERSION}</title>
+                <pubDate>$(date -R)</pubDate>
+                <sparkle:version>${PACKAGE_VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${PACKAGE_VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="${dmg_url}"
+                  length="${dmg_size}"
+                  type="application/octet-stream"
+                  sparkle:edSignature="${signature}" />
+              </item>
+            </channel>
+          </rss>
+          APPCAST
+
+          xmllint --noout dist/appcast.xml
+
       - name: Clean up macOS signing keychain
         if: runner.os == 'macOS' && always()
         shell: bash
@@ -299,6 +413,14 @@ jobs:
         with:
           name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}
           path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
+          if-no-files-found: error
+
+      - name: Upload Sparkle appcast artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-appcast
+          path: dist/appcast.xml
           if-no-files-found: error
 
   release:
