@@ -26,9 +26,10 @@ use ::windows::{
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
       },
       MediaFoundation::{
-        IMFActivate, IMFMediaBuffer, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
-        MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType,
+        IMFActivate, IMFMediaBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform, METransformHaveOutput,
+        METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
+        MF_EVENT_FLAG_NO_WAIT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType,
         MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup,
         MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ALL,
         MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_LOCALMFT, MFT_ENUM_FLAG_SORTANDFILTER,
@@ -1068,9 +1069,12 @@ struct NvencVideoEncoder {
 struct MftEncoder {
   _mf: MediaFoundationSession,
   transform: IMFTransform,
+  event_generator: Option<IMFMediaEventGenerator>,
   output_provides_samples: bool,
   output_buffer_size: u32,
   frame_duration_100ns: i64,
+  pending_input_requests: u32,
+  pending_output_requests: u32,
   sent_first_sample: bool,
   backend_label: String,
 }
@@ -1323,15 +1327,30 @@ impl MftEncoder {
     Ok(Self {
       _mf: mf,
       transform: configured.transform,
+      event_generator: configured.event_generator,
       output_provides_samples: configured.output_provides_samples,
       output_buffer_size: configured.output_buffer_size,
       frame_duration_100ns: 10_000_000i64 / i64::from(config.fps.max(1)),
+      pending_input_requests: 0,
+      pending_output_requests: 0,
       sent_first_sample: false,
       backend_label: configured.label,
     })
   }
 
   fn encode(&mut self, nv12: &[u8], frame_number: u32, timestamp_100ns: i64) -> Result<Vec<EncodedSample>, VideoError> {
+    if self.event_generator.is_some() {
+      return self.encode_async(nv12, frame_number, timestamp_100ns);
+    }
+    self.encode_sync(nv12, frame_number, timestamp_100ns)
+  }
+
+  fn encode_sync(
+    &mut self,
+    nv12: &[u8],
+    frame_number: u32,
+    timestamp_100ns: i64,
+  ) -> Result<Vec<EncodedSample>, VideoError> {
     let input = sample_from_bytes(nv12, timestamp_100ns, self.frame_duration_100ns)?;
     unsafe {
       self
@@ -1354,6 +1373,78 @@ impl MftEncoder {
       samples.push(EncodedSample { bytes, keyframe });
     }
 
+    Ok(samples)
+  }
+
+  fn encode_async(
+    &mut self,
+    nv12: &[u8],
+    frame_number: u32,
+    timestamp_100ns: i64,
+  ) -> Result<Vec<EncodedSample>, VideoError> {
+    self.collect_async_events()?;
+    let mut samples = self.drain_async_outputs(frame_number)?;
+
+    if self.pending_input_requests > 0 {
+      let input = sample_from_bytes(nv12, timestamp_100ns, self.frame_duration_100ns)?;
+      unsafe {
+        self
+          .transform
+          .ProcessInput(0, &input, 0)
+          .map_err(|error| VideoError::new(format!("Failed to submit async encoder input frame: {error}")))?;
+      }
+      self.pending_input_requests = self.pending_input_requests.saturating_sub(1);
+    }
+
+    self.collect_async_events()?;
+    samples.extend(self.drain_async_outputs(frame_number)?);
+    Ok(samples)
+  }
+
+  fn collect_async_events(&mut self) -> Result<(), VideoError> {
+    let Some(event_generator) = &self.event_generator else {
+      return Ok(());
+    };
+
+    loop {
+      let event = match unsafe { event_generator.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+        Ok(event) => event,
+        Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
+        Err(error) => return Err(VideoError::new(format!("Failed to read async encoder event: {error}"))),
+      };
+      let status = unsafe { event.GetStatus() }
+        .map_err(|error| VideoError::new(format!("Failed to query async encoder event status: {error}")))?;
+      status
+        .ok()
+        .map_err(|error| VideoError::new(format!("Async encoder event failed: {error}")))?;
+      let event_type = unsafe { event.GetType() }
+        .map_err(|error| VideoError::new(format!("Failed to query async encoder event type: {error}")))?;
+
+      if event_type == METransformNeedInput.0 as u32 {
+        self.pending_input_requests = self.pending_input_requests.saturating_add(1);
+      } else if event_type == METransformHaveOutput.0 as u32 {
+        self.pending_output_requests = self.pending_output_requests.saturating_add(1);
+      }
+    }
+
+    Ok(())
+  }
+
+  fn drain_async_outputs(&mut self, frame_number: u32) -> Result<Vec<EncodedSample>, VideoError> {
+    let mut samples = Vec::new();
+    while self.pending_output_requests > 0 {
+      self.pending_output_requests -= 1;
+      let Some(sample) = self.process_output()? else {
+        continue;
+      };
+      let bytes = bytes_from_sample(&sample)?;
+      if bytes.is_empty() {
+        continue;
+      }
+      let keyframe = !self.sent_first_sample || frame_number == 0;
+      self.sent_first_sample = true;
+      samples.push(EncodedSample { bytes, keyframe });
+    }
     Ok(samples)
   }
 
@@ -1657,6 +1748,7 @@ impl MediaFoundationVideoDecoder {
 
 struct ConfiguredEncoderTransform {
   transform: IMFTransform,
+  event_generator: Option<IMFMediaEventGenerator>,
   output_provides_samples: bool,
   output_buffer_size: u32,
   label: String,
@@ -1793,14 +1885,31 @@ fn configure_encoder_transform(
     let output_info = transform
       .GetOutputStreamInfo(0)
       .map_err(|error| VideoError::new(format!("Failed to query encoder output stream: {error}")))?;
+    let event_generator =
+      match transform_is_async(&transform)? {
+        true => Some(transform.cast::<IMFMediaEventGenerator>().map_err(|error| {
+          VideoError::new(format!("Async encoder does not expose IMFMediaEventGenerator: {error}"))
+        })?),
+        false => None,
+      };
 
     Ok(ConfiguredEncoderTransform {
       transform,
+      event_generator,
       output_provides_samples: output_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
       output_buffer_size: output_info.cbSize.max(1024 * 1024),
       label: label.to_owned(),
     })
   }
+}
+
+fn transform_is_async(transform: &IMFTransform) -> Result<bool, VideoError> {
+  let Ok(attributes) = (unsafe { transform.GetAttributes() }) else {
+    return Ok(false);
+  };
+  unsafe { attributes.GetUINT32(&MF_TRANSFORM_ASYNC) }
+    .map(|value| value != 0)
+    .map_err(|error| VideoError::new(format!("Failed to query encoder async attribute: {error}")))
 }
 
 fn activate_decoder_transform(codec: VideoCodecId) -> Result<IMFTransform, VideoError> {
