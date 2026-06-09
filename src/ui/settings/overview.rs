@@ -276,25 +276,25 @@ impl Component for OverviewLanguageSetting {
     audio_row(
       &ctx.t("settings.overview.language.title"),
       &ctx.t("settings.overview.language.description"),
-      dropdown_menu(self.locale.clone(), language_options(), "", LANGUAGE_DROPDOWN_WIDTH),
+      dropdown_menu(self.locale.clone(), language_options(ctx), "", LANGUAGE_DROPDOWN_WIDTH),
       true,
     )
   }
 }
 
-fn language_options() -> Vec<DropdownOption> {
+fn language_options(ctx: &Ctx) -> Vec<DropdownOption> {
   vec![
     DropdownOption {
       value: "en".to_owned(),
-      label: "English".to_owned(),
+      label: ctx.t("settings.overview.language.option.en").to_string(),
     },
     DropdownOption {
       value: "uk".to_owned(),
-      label: "Українська".to_owned(),
+      label: ctx.t("settings.overview.language.option.uk").to_string(),
     },
     DropdownOption {
       value: "be".to_owned(),
-      label: "Беларуская".to_owned(),
+      label: ctx.t("settings.overview.language.option.be").to_string(),
     },
   ]
 }

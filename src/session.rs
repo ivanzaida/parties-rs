@@ -60,6 +60,7 @@ pub struct ConnectedServerInfo {
 pub struct VideoStreamError {
   pub title: String,
   pub message: String,
+  pub i18n_key: Option<&'static str>,
 }
 
 impl DevtoolsInspectable for ConnectedServerInfo {
@@ -163,8 +164,9 @@ fn unsupported_av1_decode_error(codec: crate::network::protocol::VideoCodecId, e
 
 fn unsupported_av1_stream_error() -> VideoStreamError {
   VideoStreamError {
-    title: "AV1 is not supported on this device".to_owned(),
-    message: "This stream uses AV1, but hardware AV1 decoding is unavailable here. Ask the streamer to switch to H.265 or H.264.".to_owned(),
+    title: String::new(),
+    message: String::new(),
+    i18n_key: Some("lobby.stream_error.unsupported_av1"),
   }
 }
 
@@ -1333,8 +1335,8 @@ impl ServerSession {
     }
   }
 
-  pub fn start_voice(&self, settings: AppSettings) -> Result<(), String> {
-    let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
+  pub fn start_voice(&self, settings: AppSettings, no_connected_server: &str) -> Result<(), String> {
+    let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
     let on_local_voice = self.local_voice_callback();
     let engine =
@@ -1414,9 +1416,9 @@ impl ServerSession {
     self.voice_engine.lock().expect("server session lock poisoned").take();
   }
 
-  pub fn start_video_broadcast(&self, config: VideoBroadcastConfig) -> Result<(), String> {
-    let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
-    let local_user_id = self.info().ok_or_else(|| "No connected server.".to_owned())?.user_id;
+  pub fn start_video_broadcast(&self, config: VideoBroadcastConfig, no_connected_server: &str) -> Result<(), String> {
+    let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
+    let local_user_id = self.info().ok_or_else(|| no_connected_server.to_owned())?.user_id;
     let broadcast = VideoBroadcast::start_with_loopback(server, config, Some(self.local_video_loopback(local_user_id)))
       .map_err(|error| {
         let error = error.to_string();

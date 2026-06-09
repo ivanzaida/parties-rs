@@ -23,7 +23,7 @@ use crate::{
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
-    connect_server::{ConnectOrigin, connect_and_store, resolve_address, with_default_port},
+    connect_server::{ConnectErrorCopy, ConnectOrigin, connect_and_store, resolve_address, with_default_port},
     settings::SettingsPopupHandle,
   },
 };
@@ -95,9 +95,11 @@ impl Component for SavedServersScreen {
       .use_context::<Storage>()
       .and_then(|storage| storage.load_servers().ok())
       .unwrap_or_default();
+    let connect_errors = ConnectErrorCopy::from_ctx(ctx);
     let connect = ctx.future_action(move |server: StoredServer| {
       let storage = storage.clone();
       let session = session.clone();
+      let connect_errors = connect_errors.clone();
       async move {
         let display_name = if server.display_name.trim().is_empty() {
           storage
@@ -114,12 +116,16 @@ impl Component for SavedServersScreen {
           display_name,
           storage,
           session,
+          connect_errors,
         )
         .await
       }
     });
-    let query_servers =
-      ctx.future_action(|servers: Vec<StoredServer>| async move { query_saved_servers(servers).await });
+    let query_resolve_failed = ctx.t("connect_server.error.resolve_failed").to_string();
+    let query_servers = ctx.future_action(move |servers: Vec<StoredServer>| {
+      let query_resolve_failed = query_resolve_failed.clone();
+      async move { query_saved_servers(servers, query_resolve_failed).await }
+    });
     self.sync_query_state(&servers, &query_servers);
     self.sync_connection_state(ctx, &servers, &connect);
 
@@ -350,10 +356,13 @@ impl SavedServersScreen {
   }
 }
 
-async fn query_saved_servers(servers: Vec<StoredServer>) -> Result<Vec<ServerQueryEntry>, String> {
+async fn query_saved_servers(
+  servers: Vec<StoredServer>,
+  resolve_failed: String,
+) -> Result<Vec<ServerQueryEntry>, String> {
   let mut tasks = Vec::with_capacity(servers.len());
   for server in servers {
-    tasks.push(tokio::spawn(query_saved_server(server)));
+    tasks.push(tokio::spawn(query_saved_server(server, resolve_failed.clone())));
   }
 
   let mut results = Vec::new();
@@ -363,9 +372,9 @@ async fn query_saved_servers(servers: Vec<StoredServer>) -> Result<Vec<ServerQue
   Ok(results)
 }
 
-async fn query_saved_server(server: StoredServer) -> ServerQueryEntry {
+async fn query_saved_server(server: StoredServer, resolve_failed: String) -> ServerQueryEntry {
   let address = server.address.clone();
-  let socket = match resolve_address(with_default_port(&server.address)).await {
+  let socket = match resolve_address(with_default_port(&server.address), resolve_failed).await {
     Ok(socket) => socket,
     Err(_) => {
       return ServerQueryEntry {

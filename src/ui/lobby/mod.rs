@@ -40,6 +40,7 @@ mod rail;
 mod shared;
 mod stream_browser;
 mod stream_modal;
+mod stream_shared;
 mod stream_watching;
 mod text_channels;
 mod voice_channels;

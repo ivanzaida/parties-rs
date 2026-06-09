@@ -10,7 +10,7 @@ use lurq::images::ImageData;
 use crate::services::{
   desktop_capture::{DesktopCaptureSource, DesktopCaptureSourceKind, DesktopFrame},
   logger, profiler,
-  webcam_devices::{webcam_device_id, webcam_devices},
+  webcam_devices::{webcam_device_id, webcam_devices_with_fallbacks},
 };
 
 const DEFAULT_WEBCAM_WIDTH: u32 = 1280;
@@ -205,7 +205,15 @@ pub fn list_window_sources() -> Vec<ScreenShareSource> {
 }
 
 pub fn list_webcam_sources() -> Vec<ScreenShareSource> {
-  webcam_devices()
+  list_webcam_sources_with_labels("", "", &|_| String::new())
+}
+
+pub fn list_webcam_sources_with_labels(
+  camera_description: &str,
+  default_camera_label: &str,
+  indexed_camera_label: &dyn Fn(usize) -> String,
+) -> Vec<ScreenShareSource> {
+  webcam_devices_with_fallbacks(default_camera_label, indexed_camera_label)
     .into_iter()
     .map(|device| {
       let id = webcam_device_id(&device.value);
@@ -213,7 +221,7 @@ pub fn list_webcam_sources() -> Vec<ScreenShareSource> {
         kind: ScreenShareSourceKind::Webcam,
         id,
         name: device.label,
-        description: "Camera".to_owned(),
+        description: camera_description.to_owned(),
         width: DEFAULT_WEBCAM_WIDTH,
         height: DEFAULT_WEBCAM_HEIGHT,
         resolution: source_resolution(DEFAULT_WEBCAM_WIDTH, DEFAULT_WEBCAM_HEIGHT),

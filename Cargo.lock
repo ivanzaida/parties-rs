@@ -2508,9 +2508,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.10.11"
+version = "0.10.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "136d7664474ffde726de692db12b2d8825cecaf958b144b5474fedd4c81d8fd7"
+checksum = "d60f6e95d9ee08dae6a519df42fbd5609b7774c942bb7500068d568cec10c9e4"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -3482,7 +3482,7 @@ dependencies = [
 
 [[package]]
 name = "parties-rs"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bip39",
  "bytes",

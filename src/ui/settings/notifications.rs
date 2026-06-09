@@ -482,6 +482,7 @@ fn notification_sound_action_menu(
   let choose_value = value.clone();
   let close_choose = menu_open.clone();
   let close_choose_anchor = menu_anchor.clone();
+  let mp3_filter_label = ctx.t("settings.notifications.file_filter.mp3_audio").to_string();
   let mut choose = notification_menu_item(ctx, "plus", &choose_label, false, !disabled);
   if !disabled {
     choose = choose.on_click(move |_| {
@@ -489,7 +490,7 @@ fn notification_sound_action_menu(
       let audio_dir = notifications::custom_audio_dir();
       let _ = fs::create_dir_all(&audio_dir);
       let Some(path) = rfd::FileDialog::new()
-        .add_filter("MP3 audio", &["mp3"])
+        .add_filter(&mp3_filter_label, &["mp3"])
         .set_directory(audio_dir)
         .pick_file()
       else {

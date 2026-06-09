@@ -971,7 +971,7 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
     return;
   }
   let settings = storage.load_settings().unwrap_or_default();
-  let _ = session.start_voice(settings);
+  let _ = session.start_voice(settings, "");
 }
 
 fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) -> AppSettings {

@@ -9,8 +9,40 @@ use crate::{
   services::{logger, video::VideoBroadcastConfig},
   session::{ConnectedServerInfo, ServerSession},
   storage::{AppSettings, Storage, StoredServer},
-  ui::connect_server::connect_and_store,
+  ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
+
+#[derive(Clone)]
+struct LobbyActionCopy {
+  no_connected_server: String,
+  stream_no_dimensions: String,
+  video_codec_invalid: String,
+  stream_too_small: String,
+  storage_unavailable: String,
+  saved_credentials_missing: String,
+  connect_errors: ConnectErrorCopy,
+}
+
+impl LobbyActionCopy {
+  fn from_ctx(ctx: &mut Ctx) -> Self {
+    Self {
+      no_connected_server: ctx.t("lobby.error.no_connected_server").to_string(),
+      stream_no_dimensions: ctx.t("lobby.error.stream_no_dimensions").to_string(),
+      video_codec_invalid: ctx.t("lobby.error.video_codec_invalid").to_string(),
+      stream_too_small: ctx.t("lobby.error.stream_too_small").to_string(),
+      storage_unavailable: ctx.t("lobby.error.storage_unavailable").to_string(),
+      saved_credentials_missing: ctx.t("lobby.error.saved_credentials_missing").to_string(),
+      connect_errors: ConnectErrorCopy::from_ctx(ctx),
+    }
+  }
+
+  fn stream_too_small(&self, width: u16, height: u16) -> String {
+    self
+      .stream_too_small
+      .replace("{{width}}", &width.to_string())
+      .replace("{{height}}", &height.to_string())
+  }
+}
 
 pub(super) fn receiver_action(ctx: &mut Ctx, session: ServerSession) -> ReceiverAction {
   ctx.future_action(move |()| {
@@ -23,10 +55,12 @@ pub(super) fn receiver_action(ctx: &mut Ctx, session: ServerSession) -> Receiver
 }
 
 pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> ChatHistoryAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |request: ChatHistoryRequest| {
     let session = session.clone();
+    let copy = copy.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server)?;
       if let Err(error) = server
         .request_chat_history(request.channel_id, request.before_id, 50)
         .await
@@ -40,15 +74,17 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
 }
 
 pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendChatAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |input: SendChatInput| {
     let session = session.clone();
+    let copy = copy.clone();
     async move {
       let text = input.text.trim().to_owned();
       if text.is_empty() {
         return Ok(());
       }
 
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server)?;
       server
         .send_chat_text(input.channel_id, text)
         .await
@@ -63,21 +99,24 @@ pub(super) fn start_stream_action(
   storage: Option<Storage>,
   session: ServerSession,
 ) -> StartStreamAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |input: StartStreamInput| {
     let storage = storage.clone();
     let session = session.clone();
+    let copy = copy.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server.clone())?;
       let settings = storage
         .as_ref()
         .map(|storage| storage.load_settings().map_err(|error| error.to_string()))
         .transpose()?
         .unwrap_or_default();
-      let codec = stream_codec_id(&settings.video_codec)?;
+      let codec = stream_codec_id(&settings.video_codec, &copy.video_codec_invalid)?;
       if input.width == 0 || input.height == 0 {
-        return Err("Selected stream source has no capture dimensions.".to_owned());
+        return Err(copy.stream_no_dimensions.clone());
       }
-      let (width, height) = scaled_stream_dimensions(input.width, input.height, settings.video_scale_percent)?;
+      let (width, height) =
+        scaled_stream_dimensions(input.width, input.height, settings.video_scale_percent, &copy)?;
       let config = VideoBroadcastConfig {
         source_kind: input.source_kind,
         source_id: input.source_id,
@@ -103,7 +142,7 @@ pub(super) fn start_stream_action(
         config.bitrate_kbps,
         config.audio_enabled
       ));
-      if let Err(error) = session.start_video_broadcast(config) {
+      if let Err(error) = session.start_video_broadcast(config, &copy.no_connected_server) {
         logger::log(&format!("[video] failed to start local broadcaster: {error}"));
         return Err(error);
       }
@@ -121,7 +160,7 @@ pub(super) fn start_stream_action(
   })
 }
 
-fn stream_codec_id(codec: &str) -> Result<VideoCodecId, String> {
+fn stream_codec_id(codec: &str, invalid_error: &str) -> Result<VideoCodecId, String> {
   #[cfg(target_os = "macos")]
   if codec.trim().eq_ignore_ascii_case("av1") {
     return Ok(VideoCodecId::H265);
@@ -131,24 +170,26 @@ fn stream_codec_id(codec: &str) -> Result<VideoCodecId, String> {
     "av1" => Ok(VideoCodecId::Av1),
     "h265" | "hevc" => Ok(VideoCodecId::H265),
     "h264" | "avc" => Ok(VideoCodecId::H264),
-    _ => Err("Video codec must be AV1, H.265, or H.264.".to_owned()),
+    _ => Err(invalid_error.to_owned()),
   }
 }
 
 const STREAM_DIMENSION_ALIGNMENT: u32 = 16;
 const MIN_STREAM_DIMENSION: u32 = 128;
 
-fn scaled_stream_dimensions(width: u16, height: u16, scale_percent: i32) -> Result<(u16, u16), String> {
+fn scaled_stream_dimensions(
+  width: u16,
+  height: u16,
+  scale_percent: i32,
+  copy: &LobbyActionCopy,
+) -> Result<(u16, u16), String> {
   let scale = scale_percent.clamp(10, 100) as u32;
   let scaled_width = (u32::from(width) * scale / 100).clamp(1, u32::from(u16::MAX));
   let scaled_height = (u32::from(height) * scale / 100).clamp(1, u32::from(u16::MAX));
   let width = aligned_stream_dimension(scaled_width);
   let height = aligned_stream_dimension(scaled_height);
   if u32::from(width) < MIN_STREAM_DIMENSION || u32::from(height) < MIN_STREAM_DIMENSION {
-    return Err(format!(
-      "Selected stream source is too small to stream after scaling: {}x{}.",
-      width, height
-    ));
+    return Err(copy.stream_too_small(width, height));
   }
   Ok((width, height))
 }
@@ -160,12 +201,14 @@ fn aligned_stream_dimension(value: u32) -> u16 {
 }
 
 pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopStreamAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |()| {
     let session = session.clone();
+    let copy = copy.clone();
     async move {
       logger::log("[video] stopping broadcast");
       session.stop_video_broadcast();
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server)?;
       if let Err(error) = server.stop_screen_share().await {
         let error = error.to_string();
         logger::log(&format!("[video] failed to announce screen-share stop: {error}"));
@@ -182,11 +225,13 @@ pub(super) fn watch_stream_action(
   storage: Option<Storage>,
   session: ServerSession,
 ) -> WatchStreamAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |user_id| {
     let storage = storage.clone();
     let session = session.clone();
+    let copy = copy.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server)?;
       logger::log(&format!("[video] requesting stream view for user {user_id}"));
       server
         .view_screen_share(user_id)
@@ -226,10 +271,12 @@ pub(super) fn watch_stream_action(
 }
 
 pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> StopWatchingAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |()| {
     let session = session.clone();
+    let copy = copy.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(copy.no_connected_server)?;
       logger::log("[video] unsubscribing from watched stream");
       server
         .unsubscribe_screen_share()
@@ -242,20 +289,22 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
 }
 
 pub(super) fn reconnect_action(ctx: &mut Ctx, storage: Option<Storage>, session: ServerSession) -> ReconnectAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |request: ReconnectRequest| {
     let storage = storage.clone();
     let session = session.clone();
+    let copy = copy.clone();
     async move {
       if request.delay_ms > 0 {
         tokio::time::sleep(std::time::Duration::from_millis(request.delay_ms)).await;
       }
 
-      let storage = storage.ok_or_else(|| "Local storage is unavailable.".to_owned())?;
+      let storage = storage.ok_or(copy.storage_unavailable.clone())?;
       let server = storage
         .load_server(&request.address)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Saved server credentials were not found.".to_owned())?;
-      reconnect_saved_server(server, storage, session).await
+        .ok_or(copy.saved_credentials_missing.clone())?;
+      reconnect_saved_server(server, storage, session, copy.connect_errors).await
     }
   })
 }
@@ -264,6 +313,7 @@ async fn reconnect_saved_server(
   server: StoredServer,
   storage: Storage,
   session: ServerSession,
+  errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
   let reconnect_channel_id = session.lobby().selected_channel_id;
   let reconnect_voice_state = reconnect_channel_id.and_then(|_| session.local_voice_state());
@@ -279,6 +329,7 @@ async fn reconnect_saved_server(
     display_name,
     Some(storage.clone()),
     Some(session.clone()),
+    errors,
   )
   .await?;
 
@@ -326,7 +377,7 @@ async fn rejoin_previous_voice_channel(
   }
 
   session.set_local_voice_state(muted, deafened);
-  match session.start_voice(settings) {
+  match session.start_voice(settings, "") {
     Ok(()) => logger::log("[voice] local voice capture restarted after reconnect rejoin"),
     Err(error) => logger::log(&format!(
       "[voice] local voice capture failed after reconnect rejoin: {error}"

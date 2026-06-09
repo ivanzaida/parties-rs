@@ -7,8 +7,12 @@ pub enum VoiceControlAction {
   LeaveChannel,
 }
 
-pub async fn apply_voice_control(session: ServerSession, action: VoiceControlAction) -> Result<(), String> {
-  let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+pub async fn apply_voice_control(
+  session: ServerSession,
+  action: VoiceControlAction,
+  no_connected_server: String,
+) -> Result<(), String> {
+  let server = session.server().ok_or(no_connected_server)?;
   let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
 
   match action {

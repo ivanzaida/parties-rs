@@ -985,13 +985,13 @@ fn startup_db_file_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Op
   while let Some(arg) = args.next() {
     let arg_text = arg.to_string_lossy();
 
-    for prefix in ["-db_file=", "--db_file="] {
+    for prefix in ["-db_file=", "--db_file=", "-db_path=", "--db_path="] {
       if let Some(path) = arg_text.strip_prefix(prefix).filter(|path| !path.is_empty()) {
         return Some(PathBuf::from(path));
       }
     }
 
-    if arg_text == "-db_file" || arg_text == "--db_file" {
+    if arg_text == "-db_file" || arg_text == "--db_file" || arg_text == "-db_path" || arg_text == "--db_path" {
       return args.next().map(PathBuf::from);
     }
   }
@@ -1012,6 +1012,14 @@ mod tests {
   fn startup_db_file_arg_supports_equals_form() {
     assert_eq!(
       startup_db_file_arg([std::ffi::OsString::from("-db_file=custom.db")]),
+      Some(PathBuf::from("custom.db"))
+    );
+  }
+
+  #[test]
+  fn startup_db_file_arg_supports_db_path_alias() {
+    assert_eq!(
+      startup_db_file_arg([std::ffi::OsString::from("--db_path=custom.db")]),
       Some(PathBuf::from("custom.db"))
     );
   }

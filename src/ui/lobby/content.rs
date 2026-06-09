@@ -17,6 +17,7 @@ use super::{
   layout::lobby_layout_metrics,
   shared::error_notice,
   stream_browser::stream_browser,
+  stream_shared::screen_shares_for_channel,
   stream_watching::{stream_watching, stream_watching_top_bar, watched_stream_for_channel},
 };
 use crate::{
@@ -282,7 +283,7 @@ fn main_body(
       return stream_watching(
         ctx,
         stream,
-        super::stream_browser::screen_shares_for_channel(lobby, channel.id),
+        screen_shares_for_channel(lobby, channel.id),
         lobby.last_error.as_deref(),
         storage,
         session,

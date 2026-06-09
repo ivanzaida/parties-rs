@@ -108,11 +108,13 @@ impl Component for LobbyRail {
 }
 
 fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<Storage>) -> JoinChannelAction {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |channel_id| {
     let session = session.clone();
     let storage = storage.clone();
+    let no_connected_server = no_connected_server.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server.clone())?;
       let settings = storage
         .as_ref()
         .and_then(|storage| storage.load_settings().ok())
@@ -140,7 +142,7 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         "[voice] local voice state announced after join: channel={channel_id} muted={muted} deafened={deafened}"
       ));
       session.set_local_voice_state(muted, deafened);
-      match session.start_voice(settings) {
+      match session.start_voice(settings, &no_connected_server) {
         Ok(()) => logger::log("[voice] local voice capture started after join"),
         Err(error) => logger::log(&format!("[voice] local voice capture failed after join: {error}")),
       }
@@ -150,9 +152,11 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
 }
 
 fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFuture {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |control| {
     let session = session.clone();
-    async move { apply_voice_control(session, control).await }
+    let no_connected_server = no_connected_server.clone();
+    async move { apply_voice_control(session, control, no_connected_server).await }
   })
 }
 

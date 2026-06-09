@@ -61,7 +61,9 @@ impl Component for SettingsStreamScreen {
     let scale_percent = settings.video_scale_percent.clamp(25, 100).to_string();
     let fps = settings.video_fps.clamp(15, 120).to_string();
     let bitrate_mbps = settings.video_bitrate_mbps.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-    let webcam_devices = ctx.signal(webcam_devices::webcam_devices());
+    let webcam_default_label = ctx.t("settings.video.webcam.fallback").to_string();
+    let webcam_indexed_label = ctx.t("settings.video.webcam.fallback_indexed").to_string();
+    let webcam_devices = ctx.signal(localized_webcam_devices(&webcam_default_label, &webcam_indexed_label));
 
     Self {
       webcam_device,
@@ -176,6 +178,8 @@ impl Component for WebcamSetting {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let system_default = ctx.t("settings.video.device.system").to_string();
+    let webcam_default_label = ctx.t("settings.video.webcam.fallback").to_string();
+    let webcam_indexed_label = ctx.t("settings.video.webcam.fallback_indexed").to_string();
     let devices = props.devices.get();
     let selected = self.value.get();
 
@@ -188,6 +192,8 @@ impl Component for WebcamSetting {
         props.devices,
         webcam_options(&system_default, &devices, &selected),
         &system_default,
+        &webcam_default_label,
+        &webcam_indexed_label,
       ),
       true,
     )
@@ -302,10 +308,11 @@ impl Component for VideoBitrateSetting {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
+    let bitrate_unit = ctx.t("settings.video.bitrate.unit");
     audio_row(
       &ctx.t("settings.video.bitrate"),
       &ctx.t("settings.video.bitrate.description"),
-      bitrate_slider(self.value.clone(), props.on_blur, &ctx.t("settings.video.bitrate.unit")),
+      bitrate_slider(ctx, self.value.clone(), props.on_blur, &bitrate_unit),
       true,
     )
   }
@@ -317,18 +324,28 @@ fn webcam_control(
   devices: Signal<Vec<WebcamDevice>>,
   options: Vec<DropdownOption>,
   system_default: &str,
+  webcam_default_label: &str,
+  webcam_indexed_label: &str,
 ) -> Element {
   let dropdown_width = DEVICE_DROPDOWN_WIDTH - REFRESH_BUTTON_SIZE - REFRESH_BUTTON_SPACING;
+  let webcam_default_label = webcam_default_label.to_owned();
+  let webcam_indexed_label = webcam_indexed_label.to_owned();
 
   Row::new()
     .width(DEVICE_DROPDOWN_WIDTH)
     .align_items(Alignment::Center)
     .spacing(REFRESH_BUTTON_SPACING)
     .child(refresh_button(ctx, move |_| {
-      devices.set(webcam_devices::webcam_devices());
+      devices.set(localized_webcam_devices(&webcam_default_label, &webcam_indexed_label));
     }))
     .child(dropdown_menu(selected, options, system_default, dropdown_width))
     .into()
+}
+
+fn localized_webcam_devices(default_label: &str, indexed_label: &str) -> Vec<WebcamDevice> {
+  webcam_devices::webcam_devices_with_fallbacks(default_label, &|index| {
+    indexed_label.replace("{{index}}", &(index + 1).to_string())
+  })
 }
 
 fn webcam_options(system_default: &str, devices: &[WebcamDevice], selected: &str) -> Vec<DropdownOption> {
@@ -365,9 +382,18 @@ fn codec_options() -> Vec<DropdownOption> {
 fn scale_options(ctx: &mut Ctx) -> Vec<DropdownOption> {
   [
     ("100", ctx.t("settings.video.scale.source").to_string()),
-    ("75", "75%".to_owned()),
-    ("50", "50%".to_owned()),
-    ("25", "25%".to_owned()),
+    (
+      "75",
+      ctx.t_args("common.percent", [("value", "75".to_owned())]).to_string(),
+    ),
+    (
+      "50",
+      ctx.t_args("common.percent", [("value", "50".to_owned())]).to_string(),
+    ),
+    (
+      "25",
+      ctx.t_args("common.percent", [("value", "25".to_owned())]).to_string(),
+    ),
   ]
   .into_iter()
   .map(|(value, label)| DropdownOption {
@@ -389,10 +415,13 @@ fn fps_options(ctx: &mut Ctx) -> Vec<DropdownOption> {
     .collect()
 }
 
-fn bitrate_slider(value: Signal<f32>, on_blur: VideoBitrateSaveAction, unit: &str) -> Element {
+fn bitrate_slider(ctx: &mut Ctx, value: Signal<f32>, on_blur: VideoBitrateSaveAction, unit: &str) -> Element {
   let current = value.get().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
   let fill_width = VIDEO_SLIDER_WIDTH * (current - VIDEO_BITRATE_MIN) / (VIDEO_BITRATE_MAX - VIDEO_BITRATE_MIN);
-  let value_label = format!("{} {unit}", format_bitrate_value(current));
+  let value_label = ctx.t_args(
+    "settings.video.bitrate.value",
+    [("value", format_bitrate_value(current)), ("unit", unit.to_owned())],
+  );
 
   let mut slider = app_slider::slider_f32(
     value.clone(),
