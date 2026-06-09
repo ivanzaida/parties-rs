@@ -1,6 +1,7 @@
 use std::{
   collections::{HashMap, VecDeque},
   fmt,
+  panic::{AssertUnwindSafe, catch_unwind},
   sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -20,7 +21,7 @@ use sonora::{
   config::{EchoCanceller, HighPassFilter, MaxProcessingRate, NoiseSuppression, NoiseSuppressionLevel, Pipeline},
 };
 
-use super::audio_devices;
+use super::{audio_devices, logger};
 use crate::{
   network::{
     protocol::{
@@ -403,18 +404,42 @@ fn build_input_path(
   }
 
   let input_stream = match sample_format {
-    SampleFormat::F32 => build_input_stream::<f32>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::F64 => build_input_stream::<f64>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::I8 => build_input_stream::<i8>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::I16 => build_input_stream::<i16>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::I24 => build_input_stream::<cpal::I24>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::I32 => build_input_stream::<i32>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::I64 => build_input_stream::<i64>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::U8 => build_input_stream::<u8>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::U16 => build_input_stream::<u16>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::U24 => build_input_stream::<cpal::U24>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::U32 => build_input_stream::<u32>(&device, config, frame_tx, free_frame_rx, control.clone()),
-    SampleFormat::U64 => build_input_stream::<u64>(&device, config, frame_tx, free_frame_rx, control.clone()),
+    SampleFormat::F32 => {
+      build_input_stream::<f32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::F64 => {
+      build_input_stream::<f64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I8 => {
+      build_input_stream::<i8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I16 => {
+      build_input_stream::<i16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I24 => {
+      build_input_stream::<cpal::I24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I32 => {
+      build_input_stream::<i32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I64 => {
+      build_input_stream::<i64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U8 => {
+      build_input_stream::<u8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U16 => {
+      build_input_stream::<u16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U24 => {
+      build_input_stream::<cpal::U24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U32 => {
+      build_input_stream::<u32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U64 => {
+      build_input_stream::<u64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
     _ => Err(VoiceError::new("Unsupported input sample format.")),
   }?;
 
@@ -432,6 +457,7 @@ fn build_input_stream<T>(
   frame_tx: SyncSender<Vec<f32>>,
   free_frame_rx: Receiver<Vec<f32>>,
   control: Arc<VoiceControlState>,
+  stop: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, VoiceError>
 where
   T: cpal::SizedSample,
@@ -439,10 +465,15 @@ where
 {
   let channels = usize::from(config.channels.max(1));
   let sample_rate = config.sample_rate;
-  let mut state = InputCaptureState::new(channels, sample_rate, frame_tx, free_frame_rx, control);
+  let mut state = InputCaptureState::new(channels, sample_rate, frame_tx, free_frame_rx, control, stop);
 
   device
-    .build_input_stream::<T, _, _>(config, move |data, _| state.push(data), move |_| {}, None)
+    .build_input_stream::<T, _, _>(
+      config,
+      move |data, _| state.push_catching(data),
+      move |error| logger::log(&format!("[voice] input stream error: {error}")),
+      None,
+    )
     .map_err(|error| VoiceError::new(format!("Failed to build input stream: {error}")))
 }
 
@@ -514,6 +545,8 @@ struct InputCaptureState {
   free_frame_rx: Receiver<Vec<f32>>,
   spare_frame: Option<Vec<f32>>,
   control: Arc<VoiceControlState>,
+  stop: Arc<AtomicBool>,
+  callback_failed: bool,
   processor: CaptureProcessor,
 }
 
@@ -524,6 +557,7 @@ impl InputCaptureState {
     frame_tx: SyncSender<Vec<f32>>,
     free_frame_rx: Receiver<Vec<f32>>,
     control: Arc<VoiceControlState>,
+    stop: Arc<AtomicBool>,
   ) -> Self {
     Self {
       channels,
@@ -535,7 +569,27 @@ impl InputCaptureState {
       free_frame_rx,
       spare_frame: None,
       control,
+      stop,
+      callback_failed: false,
       processor: CaptureProcessor::default(),
+    }
+  }
+
+  fn push_catching<T>(&mut self, data: &[T])
+  where
+    T: Sample,
+    f32: cpal::FromSample<T>,
+  {
+    if self.callback_failed || self.stop.load(Ordering::Relaxed) {
+      return;
+    }
+
+    if catch_unwind(AssertUnwindSafe(|| self.push(data))).is_err() {
+      self.callback_failed = true;
+      self.capture_frame.clear();
+      self.process_frame.clear();
+      self.opus_frame.clear();
+      logger::log("[voice] input capture callback panicked; disabling voice capture until restart");
     }
   }
 
@@ -544,6 +598,13 @@ impl InputCaptureState {
     T: Sample,
     f32: cpal::FromSample<T>,
   {
+    if self.stop.load(Ordering::Relaxed) {
+      self.capture_frame.clear();
+      self.process_frame.clear();
+      self.opus_frame.clear();
+      return;
+    }
+
     if !self.control.can_transmit() {
       self.capture_frame.clear();
       self.opus_frame.clear();
