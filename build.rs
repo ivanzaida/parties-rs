@@ -11,6 +11,7 @@ fn main() {
       .compile("parties_macos_stream_bridge");
 
     println!("cargo:rustc-link-lib=framework=ScreenCaptureKit");
+    println!("cargo:rustc-link-lib=framework=AVFoundation");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=VideoToolbox");
     println!("cargo:rustc-link-lib=framework=CoreMedia");

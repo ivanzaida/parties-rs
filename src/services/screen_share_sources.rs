@@ -7,11 +7,22 @@ use std::{
 
 use lurq::images::ImageData;
 
+#[cfg(target_os = "windows")]
+use nokhwa::{
+  Camera, native_api_backend,
+  pixel_format::RgbAFormat,
+  query,
+  utils::{CameraIndex, RequestedFormat, RequestedFormatType},
+};
+
 use crate::services::{
   desktop_capture::{DesktopCaptureSource, DesktopCaptureSourceKind, DesktopFrame},
   logger, profiler,
   webcam_devices::{webcam_device_id, webcam_devices},
 };
+
+#[cfg(target_os = "windows")]
+use crate::services::webcam_devices::{initialize_nokhwa, webcam_device_value};
 
 const DEFAULT_WEBCAM_WIDTH: u32 = 1280;
 const DEFAULT_WEBCAM_HEIGHT: u32 = 720;
@@ -254,11 +265,26 @@ fn capture_source_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
 }
 
 fn capture_webcam_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
-  logger::log_once(&format!(
-    "[stream/thumbnails] webcam preview is not available yet; using fallback icon for source id={}",
-    key.id
-  ));
-  ScreenSharePreview::empty()
+  #[cfg(target_os = "windows")]
+  {
+    let capture = || capture_webcam_frame(key.id);
+    return captured_preview(key, capture);
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    logger::log_once(&format!(
+      "[stream/thumbnails] native macOS webcam preview is not wired yet; using fallback icon for source id={}",
+      key.id
+    ));
+    ScreenSharePreview::empty()
+  }
+
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+  {
+    let _ = key;
+    ScreenSharePreview::empty()
+  }
 }
 
 fn capture_screen_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
@@ -269,6 +295,44 @@ fn capture_screen_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
 fn capture_window_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
   let capture = || DesktopCaptureSource::find(DesktopCaptureSourceKind::Window, key.id)?.capture_frame();
   captured_preview(key, capture)
+}
+
+#[cfg(target_os = "windows")]
+fn capture_webcam_frame(source_id: u32) -> Result<DesktopFrame, String> {
+  initialize_nokhwa();
+  let camera_index = find_webcam_camera_index(source_id)?;
+  let request = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
+  let mut camera = Camera::new(camera_index, request).map_err(|error| format!("Failed to open webcam: {error}"))?;
+  camera
+    .open_stream()
+    .map_err(|error| format!("Failed to start webcam stream: {error}"))?;
+  let frame = camera
+    .frame()
+    .map_err(|error| format!("Failed to capture webcam frame: {error}"))?;
+  let resolution = frame.resolution();
+  let image = frame
+    .decode_image::<RgbAFormat>()
+    .map_err(|error| format!("Failed to decode webcam frame: {error}"))?;
+  let _ = camera.stop_stream();
+  Ok(DesktopFrame {
+    width: resolution.width(),
+    height: resolution.height(),
+    rgba: image.into_raw(),
+  })
+}
+
+#[cfg(target_os = "windows")]
+fn find_webcam_camera_index(source_id: u32) -> Result<CameraIndex, String> {
+  let Some(api) = native_api_backend() else {
+    return Err("No native webcam backend is available.".to_owned());
+  };
+
+  query(api)
+    .map_err(|error| format!("Failed to list webcams: {error}"))?
+    .into_iter()
+    .find(|camera| webcam_device_id(&webcam_device_value(camera)) == source_id)
+    .map(|camera| camera.index().clone())
+    .ok_or_else(|| "Selected webcam is no longer available.".to_owned())
 }
 
 fn captured_preview(

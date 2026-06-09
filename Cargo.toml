@@ -13,7 +13,6 @@ getrandom = "0.4.2"
 lurq = { version = "0.10.8", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
 log = "0.4"
 minimp3 = "0.6.1"
-nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
 opus = "0.3.1"
 quinn = "0.11"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
@@ -37,6 +36,7 @@ rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"]
 cc = "1.2"
 
 [target.'cfg(windows)'.dependencies]
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_MediaFoundation", "Win32_Media_Multimedia", "Win32_Storage_Xps", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "0.62.2"
 

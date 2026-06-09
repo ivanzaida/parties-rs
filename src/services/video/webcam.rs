@@ -22,9 +22,12 @@ impl WebcamCapture {
     let request = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
     let mut camera =
       Camera::new(camera_index, request).map_err(|error| VideoError::new(format!("Failed to open webcam: {error}")))?;
-    camera
-      .open_stream()
-      .map_err(|error| VideoError::new(format!("Failed to start webcam stream: {error}")))?;
+    camera.open_stream().map_err(|error| {
+      VideoError::new(format!(
+        "Failed to start webcam stream: {}",
+        webcam_permission_hint(error)
+      ))
+    })?;
     let resolution = camera.resolution();
     logger::log(&format!(
       "[video] webcam capture ready: source={} size={}x{} fps={}",
@@ -37,15 +40,29 @@ impl WebcamCapture {
   }
 
   pub(super) fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
-    let frame = self
-      .camera
-      .frame()
-      .map_err(|error| VideoError::new(format!("Failed to capture webcam frame: {error}")))?;
+    let frame = self.camera.frame().map_err(|error| {
+      VideoError::new(format!(
+        "Failed to capture webcam frame: {}",
+        webcam_permission_hint(error)
+      ))
+    })?;
     let resolution = frame.resolution();
     let image = frame
       .decode_image::<RgbAFormat>()
       .map_err(|error| VideoError::new(format!("Failed to decode webcam frame: {error}")))?;
     normalize_rgba_frame(image.into_raw(), resolution.width(), resolution.height(), width, height)
+  }
+}
+
+fn webcam_permission_hint(error: impl std::fmt::Display) -> String {
+  let error = error.to_string();
+  #[cfg(target_os = "macos")]
+  {
+    format!("{error}. On macOS, check System Settings -> Privacy & Security -> Camera.")
+  }
+  #[cfg(not(target_os = "macos"))]
+  {
+    error
   }
 }
 

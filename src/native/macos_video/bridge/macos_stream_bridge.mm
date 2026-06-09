@@ -1,13 +1,20 @@
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreAudio/CoreAudioTypes.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <VideoToolbox/VideoToolbox.h>
 
+#include <algorithm>
 #include <atomic>
+#include <climits>
+#include <cmath>
 #include <cstdint>
+#include <cfloat>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace {
@@ -16,6 +23,8 @@ constexpr uint32_t kCodecAv1 = 1;
 constexpr uint32_t kCodecH265 = 2;
 constexpr uint32_t kCodecH264 = 3;
 constexpr int64_t kTimeScale100Ns = 10000000;
+constexpr uint32_t kStreamAudioSampleRate = 48000;
+constexpr uint32_t kStreamAudioChannels = 2;
 
 CMVideoCodecType codec_type_from_u8(uint8_t codec) {
   switch (codec) {
@@ -142,9 +151,48 @@ bool sample_to_wire(uint8_t codec, CMSampleBufferRef sample_buffer, std::vector<
 
 struct MacosStreamBridge;
 
+struct CameraDeviceInfo {
+  std::string unique_id;
+  std::string name;
+};
+
+std::vector<CameraDeviceInfo>& camera_devices() {
+  static std::vector<CameraDeviceInfo> devices;
+  return devices;
+}
+
+uint32_t fnv1a_u32(const std::string& value) {
+  uint32_t hash = 0x811C9DC5u;
+  for (uint8_t byte : value) {
+    hash = (hash ^ byte) * 0x01000193u;
+  }
+  return hash;
+}
+
+std::string& last_error() {
+  static std::string message;
+  return message;
+}
+
+void set_last_error(const std::string& message) {
+  last_error() = message;
+}
+
+std::string ns_error_string(NSError* error) {
+  if (!error) {
+    return "unknown error";
+  }
+  NSString* description = error.localizedDescription ?: error.description;
+  return std::string(description.UTF8String ?: "unknown error");
+}
+
 } // namespace
 
 @interface PartiesMacosStreamOutput : NSObject <SCStreamOutput, SCStreamDelegate>
+@property(nonatomic, assign) MacosStreamBridge* bridge;
+@end
+
+@interface PartiesMacosCameraOutput : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 @property(nonatomic, assign) MacosStreamBridge* bridge;
 @end
 
@@ -162,11 +210,18 @@ struct MacosStreamBridge {
 
   void stop() {
     SCStream* local_stream = nil;
+    AVCaptureSession* local_camera_session = nil;
     {
       std::lock_guard<std::mutex> lock(mutex);
       local_stream = stream;
       stream = nil;
       output = nil;
+      local_camera_session = camera_session;
+      camera_session = nil;
+      camera_output = nil;
+    }
+    if (local_camera_session) {
+      [local_camera_session stopRunning];
     }
     if (local_stream) {
       dispatch_semaphore_t sem = dispatch_semaphore_create(0);
@@ -177,7 +232,7 @@ struct MacosStreamBridge {
     }
   }
 
-  void handle_frame(CMSampleBufferRef sample_buffer) {
+  void handle_screen_frame(CMSampleBufferRef sample_buffer) {
     if (!sample_buffer || !CMSampleBufferDataIsReady(sample_buffer) || !encoder_ready.load(std::memory_order_relaxed)) {
       return;
     }
@@ -193,11 +248,170 @@ struct MacosStreamBridge {
       }
     }
 
-    CVImageBufferRef image_buffer = CMSampleBufferGetImageBuffer(sample_buffer);
-    if (!image_buffer) {
+    handle_pixel_buffer(CMSampleBufferGetImageBuffer(sample_buffer));
+  }
+
+  void handle_audio_frame(CMSampleBufferRef sample_buffer) {
+    if (!sample_buffer || !CMSampleBufferDataIsReady(sample_buffer) || !audio_enabled.load(std::memory_order_relaxed)) {
+      return;
+    }
+    CMFormatDescriptionRef format_description = CMSampleBufferGetFormatDescription(sample_buffer);
+    const AudioStreamBasicDescription* asbd = format_description
+      ? CMAudioFormatDescriptionGetStreamBasicDescription(format_description)
+      : nullptr;
+    if (!asbd || asbd->mSampleRate <= 0 || asbd->mChannelsPerFrame == 0) {
       return;
     }
 
+    const CMItemCount frames = CMSampleBufferGetNumSamples(sample_buffer);
+    if (frames <= 0) {
+      return;
+    }
+
+    size_t audio_buffer_list_size = 0;
+    OSStatus status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+      sample_buffer,
+      &audio_buffer_list_size,
+      nullptr,
+      0,
+      kCFAllocatorDefault,
+      kCFAllocatorDefault,
+      kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+      nullptr);
+    if (status != noErr || audio_buffer_list_size == 0) {
+      return;
+    }
+
+    std::vector<uint8_t> audio_buffer_list_storage(audio_buffer_list_size);
+    auto* audio_buffer_list = reinterpret_cast<AudioBufferList*>(audio_buffer_list_storage.data());
+    CMBlockBufferRef retained_block_buffer = nullptr;
+    status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+      sample_buffer,
+      nullptr,
+      audio_buffer_list,
+      audio_buffer_list_size,
+      kCFAllocatorDefault,
+      kCFAllocatorDefault,
+      kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+      &retained_block_buffer);
+    if (status != noErr) {
+      if (retained_block_buffer) {
+        CFRelease(retained_block_buffer);
+      }
+      return;
+    }
+
+    std::vector<float> stereo;
+    stereo.reserve(static_cast<size_t>(frames) * kStreamAudioChannels);
+    const uint32_t channels = asbd->mChannelsPerFrame;
+    const bool is_float = (asbd->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+    const bool is_signed_int = (asbd->mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0;
+    const bool is_non_interleaved = (asbd->mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+    const uint32_t bits = asbd->mBitsPerChannel;
+    const uint32_t bytes_per_sample = bits / 8;
+    if (bytes_per_sample == 0 || audio_buffer_list->mNumberBuffers == 0) {
+      if (retained_block_buffer) {
+        CFRelease(retained_block_buffer);
+      }
+      return;
+    }
+
+    auto read_sample = [&](const uint8_t* sample_ptr, float* out) -> bool {
+      if (is_float && bits == 32) {
+        std::memcpy(out, sample_ptr, sizeof(*out));
+        return true;
+      }
+      if (is_signed_int && bits == 16) {
+        int16_t sample = 0;
+        std::memcpy(&sample, sample_ptr, sizeof(sample));
+        *out = static_cast<float>(sample) / 32768.0f;
+        return true;
+      }
+      if (is_signed_int && bits == 32) {
+        int32_t sample = 0;
+        std::memcpy(&sample, sample_ptr, sizeof(sample));
+        *out = static_cast<float>(sample) / 2147483648.0f;
+        return true;
+      }
+      return false;
+    };
+
+    size_t frame_count = static_cast<size_t>(frames);
+    if (is_non_interleaved || audio_buffer_list->mNumberBuffers > 1) {
+      for (uint32_t buffer_index = 0; buffer_index < audio_buffer_list->mNumberBuffers; ++buffer_index) {
+        const AudioBuffer& buffer = audio_buffer_list->mBuffers[buffer_index];
+        frame_count = std::min(frame_count, static_cast<size_t>(buffer.mDataByteSize / bytes_per_sample));
+      }
+    } else {
+      const AudioBuffer& buffer = audio_buffer_list->mBuffers[0];
+      frame_count = std::min(
+        frame_count,
+        static_cast<size_t>(buffer.mDataByteSize / (static_cast<size_t>(channels) * bytes_per_sample)));
+    }
+
+    for (size_t frame = 0; frame < frame_count; ++frame) {
+      float left = 0.0f;
+      float right = 0.0f;
+      if (is_non_interleaved || audio_buffer_list->mNumberBuffers > 1) {
+        const AudioBuffer& left_buffer = audio_buffer_list->mBuffers[0];
+        if (!read_sample(static_cast<const uint8_t*>(left_buffer.mData) + frame * bytes_per_sample, &left)) {
+          break;
+        }
+        if (audio_buffer_list->mNumberBuffers > 1) {
+          const AudioBuffer& right_buffer = audio_buffer_list->mBuffers[1];
+          if (!read_sample(static_cast<const uint8_t*>(right_buffer.mData) + frame * bytes_per_sample, &right)) {
+            break;
+          }
+        } else {
+          right = left;
+        }
+      } else {
+        const AudioBuffer& buffer = audio_buffer_list->mBuffers[0];
+        const auto* raw = static_cast<const uint8_t*>(buffer.mData);
+        for (uint32_t channel = 0; channel < channels; ++channel) {
+          float value = 0.0f;
+          if (!read_sample(raw + (frame * channels + channel) * bytes_per_sample, &value)) {
+            break;
+          }
+          if (channel == 0) {
+            left = value;
+          } else if (channel == 1) {
+            right = value;
+          }
+        }
+        if (channels == 1) {
+          right = left;
+        }
+      }
+      stereo.push_back(left);
+      stereo.push_back(right);
+    }
+
+    if (retained_block_buffer) {
+      CFRelease(retained_block_buffer);
+    }
+    if (stereo.empty()) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    pending_audio.insert(pending_audio.end(), stereo.begin(), stereo.end());
+    constexpr size_t max_pending_samples = kStreamAudioSampleRate * kStreamAudioChannels;
+    if (pending_audio.size() > max_pending_samples) {
+      pending_audio.erase(pending_audio.begin(), pending_audio.end() - max_pending_samples);
+    }
+  }
+
+  void handle_camera_frame(CMSampleBufferRef sample_buffer) {
+    if (!sample_buffer || !CMSampleBufferDataIsReady(sample_buffer) || !encoder_ready.load(std::memory_order_relaxed)) {
+      return;
+    }
+    handle_pixel_buffer(CMSampleBufferGetImageBuffer(sample_buffer));
+  }
+
+  void handle_pixel_buffer(CVImageBufferRef image_buffer) {
+    if (!image_buffer) {
+      return;
+    }
     const uint64_t frame = frame_number.fetch_add(1, std::memory_order_relaxed);
     CMTime pts = CMTimeMake(static_cast<int64_t>(frame * frame_duration_100ns), kTimeScale100Ns);
     CMTime duration = CMTimeMake(frame_duration_100ns, kTimeScale100Ns);
@@ -239,15 +453,20 @@ struct MacosStreamBridge {
 
   std::mutex mutex;
   PartiesMacosStreamOutput* output = nil;
+  PartiesMacosCameraOutput* camera_output = nil;
   SCStream* stream = nil;
+  AVCaptureSession* camera_session = nil;
   VTCompressionSessionRef encoder = nullptr;
   std::vector<uint8_t> pending;
   std::vector<uint8_t> readable;
+  std::vector<float> pending_audio;
+  std::vector<float> readable_audio;
   bool pending_keyframe = false;
   bool readable_keyframe = false;
   std::atomic<bool> encoder_ready{false};
   std::atomic<bool> failed{false};
   std::atomic<bool> force_keyframe{true};
+  std::atomic<bool> audio_enabled{false};
   std::atomic<uint64_t> frame_number{0};
   uint8_t codec = kCodecH264;
   int64_t frame_duration_100ns = 333333;
@@ -300,7 +519,6 @@ SCContentFilter* create_filter(uint8_t source_kind, uint64_t source_id) {
 
 bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, uint8_t codec, uint32_t fps, uint32_t bitrate) {
   NSDictionary* source_attributes = @{
-    (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
     (__bridge NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
     (__bridge NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
   };
@@ -317,6 +535,7 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
     bridge,
     &session);
   if (status != noErr || !session) {
+    set_last_error("failed to create VideoToolbox encoder session: OSStatus " + std::to_string(status));
     return false;
   }
 
@@ -375,6 +594,7 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
 
   status = VTCompressionSessionPrepareToEncodeFrames(session);
   if (status != noErr) {
+    set_last_error("failed to prepare VideoToolbox encoder session: OSStatus " + std::to_string(status));
     VTCompressionSessionInvalidate(session);
     CFRelease(session);
     return false;
@@ -384,15 +604,131 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
   return true;
 }
 
+NSArray<AVCaptureDevice*>* native_camera_devices() {
+  if (@available(macOS 10.15, *)) {
+    AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
+      discoverySessionWithDeviceTypes:@[
+        AVCaptureDeviceTypeBuiltInWideAngleCamera,
+        AVCaptureDeviceTypeExternalUnknown,
+      ]
+      mediaType:AVMediaTypeVideo
+      position:AVCaptureDevicePositionUnspecified];
+    return session.devices;
+  }
+  return [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+}
+
+AVCaptureDevice* find_camera_device(uint64_t source_id) {
+  for (AVCaptureDevice* device in native_camera_devices()) {
+    std::string unique_id(device.uniqueID.UTF8String ?: "");
+    if (fnv1a_u32(unique_id) == source_id) {
+      return device;
+    }
+  }
+  return nil;
+}
+
+bool ensure_camera_authorized() {
+  AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
+  if (status == AVAuthorizationStatusAuthorized) {
+    return true;
+  }
+  if (status == AVAuthorizationStatusDenied || status == AVAuthorizationStatusRestricted) {
+    set_last_error("camera permission is denied or restricted");
+    return false;
+  }
+  if (status != AVAuthorizationStatusNotDetermined) {
+    set_last_error("camera permission is unavailable");
+    return false;
+  }
+
+  __block BOOL granted = NO;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL access_granted) {
+    granted = access_granted;
+    dispatch_semaphore_signal(sem);
+  }];
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
+  if (!granted) {
+    set_last_error("camera permission was not granted");
+  }
+  return granted;
+}
+
+bool configure_camera_format(AVCaptureDevice* device, uint16_t width, uint16_t height, uint32_t fps, uint32_t* actual_fps) {
+  NSError* error = nil;
+  if (![device lockForConfiguration:&error]) {
+    set_last_error("failed to lock camera for configuration: " + ns_error_string(error));
+    return false;
+  }
+
+  AVCaptureDeviceFormat* selected_format = nil;
+  double selected_fps = 0.0;
+  int64_t selected_score = INT64_MAX;
+  for (AVCaptureDeviceFormat* format in device.formats) {
+    CMFormatDescriptionRef description = format.formatDescription;
+    CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(description);
+    double format_fps = 0.0;
+    double fps_delta = DBL_MAX;
+    for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges) {
+      const double clamped_fps = std::min(std::max(static_cast<double>(fps), range.minFrameRate), range.maxFrameRate);
+      const double delta = std::fabs(clamped_fps - static_cast<double>(fps));
+      if (delta < fps_delta || (delta == fps_delta && clamped_fps > format_fps)) {
+        fps_delta = delta;
+        format_fps = clamped_fps;
+      }
+    }
+    if (format_fps <= 0.0 || fps_delta == DBL_MAX) {
+      continue;
+    }
+    int64_t area_delta = std::llabs(
+      static_cast<int64_t>(dimensions.width) * static_cast<int64_t>(dimensions.height) -
+      static_cast<int64_t>(width) * static_cast<int64_t>(height));
+    int64_t aspect_delta = static_cast<int64_t>(
+      std::llround(std::fabs(
+        (static_cast<double>(dimensions.width) / static_cast<double>(dimensions.height)) -
+        (static_cast<double>(width) / static_cast<double>(height))) * 1000000.0));
+    int64_t exact_bonus = dimensions.width == width && dimensions.height == height ? -1000000000000LL : 0;
+    int64_t fps_penalty = static_cast<int64_t>(std::llround(fps_delta * 1000000.0));
+    int64_t score = aspect_delta * 100000000LL + area_delta + fps_penalty * 1000000LL + exact_bonus;
+    if (!selected_format || score < selected_score) {
+      selected_format = format;
+      selected_fps = format_fps;
+      selected_score = score;
+    }
+  }
+
+  if (selected_format) {
+    device.activeFormat = selected_format;
+  } else {
+    [device unlockForConfiguration];
+    set_last_error("camera has no usable video format");
+    return false;
+  }
+  uint32_t configured_fps = static_cast<uint32_t>(std::max<int64_t>(1, std::llround(selected_fps)));
+  CMTime frame_duration = CMTimeMake(1, static_cast<int32_t>(configured_fps));
+  device.activeVideoMinFrameDuration = frame_duration;
+  device.activeVideoMaxFrameDuration = frame_duration;
+  [device unlockForConfiguration];
+  if (actual_fps) {
+    *actual_fps = configured_fps;
+  }
+  return true;
+}
+
 } // namespace
 
 @implementation PartiesMacosStreamOutput
 - (void)stream:(SCStream*)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
   (void)stream;
-  if (type != SCStreamOutputTypeScreen || !_bridge) {
+  if (!_bridge) {
     return;
   }
-  _bridge->handle_frame(sampleBuffer);
+  if (type == SCStreamOutputTypeScreen) {
+    _bridge->handle_screen_frame(sampleBuffer);
+  } else if (type == SCStreamOutputTypeAudio) {
+    _bridge->handle_audio_frame(sampleBuffer);
+  }
 }
 
 - (void)stream:(SCStream*)stream didStopWithError:(NSError*)error {
@@ -404,7 +740,52 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
 }
 @end
 
+@implementation PartiesMacosCameraOutput
+- (void)captureOutput:(AVCaptureOutput*)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection*)connection {
+  (void)output;
+  (void)connection;
+  if (!_bridge) {
+    return;
+  }
+  _bridge->handle_camera_frame(sampleBuffer);
+}
+@end
+
 extern "C" {
+
+uintptr_t parties_macos_camera_refresh() {
+  set_last_error("");
+  auto& devices = camera_devices();
+  devices.clear();
+  for (AVCaptureDevice* device in native_camera_devices()) {
+    std::string unique_id(device.uniqueID.UTF8String ?: "");
+    std::string name(device.localizedName.UTF8String ?: "");
+    if (unique_id.empty()) {
+      continue;
+    }
+    if (name.empty()) {
+      name = "Camera";
+    }
+    devices.push_back(CameraDeviceInfo{unique_id, name});
+  }
+  return devices.size();
+}
+
+const char* parties_macos_camera_unique_id(uintptr_t index) {
+  auto& devices = camera_devices();
+  if (index >= devices.size()) {
+    return nullptr;
+  }
+  return devices[index].unique_id.c_str();
+}
+
+const char* parties_macos_camera_name(uintptr_t index) {
+  auto& devices = camera_devices();
+  if (index >= devices.size()) {
+    return nullptr;
+  }
+  return devices[index].name.c_str();
+}
 
 MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
                                                uint64_t source_id,
@@ -412,15 +793,19 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
                                                uint16_t width,
                                                uint16_t height,
                                                uint32_t fps,
-                                               uint32_t bitrate) {
+                                               uint32_t bitrate,
+                                               int audio_enabled) {
   if (@available(macOS 12.3, *)) {
+    set_last_error("");
     if (source_id == 0 || width == 0 || height == 0 || fps == 0 || bitrate == 0) {
+      set_last_error("invalid screen stream configuration");
       return nullptr;
     }
 
     auto* bridge = new MacosStreamBridge();
     bridge->codec = codec;
     bridge->frame_duration_100ns = static_cast<int64_t>(kTimeScale100Ns / fps);
+    bridge->audio_enabled.store(audio_enabled != 0, std::memory_order_relaxed);
 
     if (!create_encoder(bridge, width, height, codec, fps, bitrate)) {
       delete bridge;
@@ -429,6 +814,7 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
 
     SCContentFilter* filter = create_filter(source_kind, source_id);
     if (!filter) {
+      set_last_error("screen source is no longer available");
       delete bridge;
       return nullptr;
     }
@@ -440,7 +826,12 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
     config.queueDepth = 3;
     config.pixelFormat = kCVPixelFormatType_32BGRA;
     config.showsCursor = YES;
-    config.capturesAudio = NO;
+    config.capturesAudio = audio_enabled ? YES : NO;
+    config.sampleRate = kStreamAudioSampleRate;
+    config.channelCount = kStreamAudioChannels;
+    if ([config respondsToSelector:@selector(setExcludesCurrentProcessAudio:)]) {
+      config.excludesCurrentProcessAudio = YES;
+    }
 
     PartiesMacosStreamOutput* output = [[PartiesMacosStreamOutput alloc] init];
     output.bridge = bridge;
@@ -454,7 +845,12 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
     NSError* add_error = nil;
     dispatch_queue_t queue = dispatch_queue_create("parties.macos.screen-stream", DISPATCH_QUEUE_SERIAL);
     if (![stream addStreamOutput:output type:SCStreamOutputTypeScreen sampleHandlerQueue:queue error:&add_error]) {
-      (void)add_error;
+      set_last_error("failed to add ScreenCaptureKit output: " + ns_error_string(add_error));
+      delete bridge;
+      return nullptr;
+    }
+    if (audio_enabled && ![stream addStreamOutput:output type:SCStreamOutputTypeAudio sampleHandlerQueue:queue error:&add_error]) {
+      set_last_error("failed to add ScreenCaptureKit audio output: " + ns_error_string(add_error));
       delete bridge;
       return nullptr;
     }
@@ -467,6 +863,7 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
     }];
     dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     if (!started) {
+      set_last_error("failed to start ScreenCaptureKit stream");
       delete bridge;
       return nullptr;
     }
@@ -479,7 +876,104 @@ MacosStreamBridge* parties_macos_stream_create(uint8_t source_kind,
     bridge->encoder_ready.store(true, std::memory_order_relaxed);
     return bridge;
   }
+  set_last_error("ScreenCaptureKit requires macOS 12.3 or newer");
   return nullptr;
+}
+
+MacosStreamBridge* parties_macos_camera_stream_create(uint64_t source_id,
+                                                      uint8_t codec,
+                                                      uint16_t width,
+                                                      uint16_t height,
+                                                      uint32_t fps,
+                                                      uint32_t bitrate) {
+  set_last_error("");
+  if (source_id == 0 || width == 0 || height == 0 || fps == 0 || bitrate == 0) {
+    set_last_error("invalid camera stream configuration");
+    return nullptr;
+  }
+
+  if (!ensure_camera_authorized()) {
+    return nullptr;
+  }
+
+  AVCaptureDevice* device = find_camera_device(source_id);
+  if (!device) {
+    set_last_error("selected camera is no longer available");
+    return nullptr;
+  }
+  uint32_t actual_fps = fps;
+  if (!configure_camera_format(device, width, height, fps, &actual_fps)) {
+    return nullptr;
+  }
+
+  auto* bridge = new MacosStreamBridge();
+  bridge->codec = codec;
+  bridge->frame_duration_100ns = static_cast<int64_t>(kTimeScale100Ns / actual_fps);
+
+  if (!create_encoder(bridge, width, height, codec, actual_fps, bitrate)) {
+    delete bridge;
+    return nullptr;
+  }
+
+  NSError* error = nil;
+  AVCaptureDeviceInput* input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+  if (!input || error) {
+    set_last_error("failed to create AVFoundation camera input: " + ns_error_string(error));
+    delete bridge;
+    return nullptr;
+  }
+
+  AVCaptureVideoDataOutput* video_output = [[AVCaptureVideoDataOutput alloc] init];
+  video_output.videoSettings = @{
+    (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+    (__bridge NSString*)kCVPixelBufferWidthKey: @(width),
+    (__bridge NSString*)kCVPixelBufferHeightKey: @(height),
+  };
+  video_output.alwaysDiscardsLateVideoFrames = YES;
+
+  PartiesMacosCameraOutput* output = [[PartiesMacosCameraOutput alloc] init];
+  output.bridge = bridge;
+  dispatch_queue_t queue = dispatch_queue_create("parties.macos.camera-stream", DISPATCH_QUEUE_SERIAL);
+  [video_output setSampleBufferDelegate:output queue:queue];
+
+  AVCaptureSession* session = [[AVCaptureSession alloc] init];
+  [session beginConfiguration];
+  if ([session canAddInput:input]) {
+    [session addInput:input];
+  } else {
+    set_last_error("AVFoundation session rejected camera input");
+    [session commitConfiguration];
+    delete bridge;
+    return nullptr;
+  }
+  if ([session canAddOutput:video_output]) {
+    [session addOutput:video_output];
+  } else {
+    set_last_error("AVFoundation session rejected camera video output");
+    [session commitConfiguration];
+    delete bridge;
+    return nullptr;
+  }
+  session.sessionPreset = AVCaptureSessionPresetHigh;
+  [session commitConfiguration];
+
+  {
+    std::lock_guard<std::mutex> lock(bridge->mutex);
+    bridge->camera_output = output;
+    bridge->camera_session = session;
+  }
+  bridge->encoder_ready.store(true, std::memory_order_relaxed);
+  [session startRunning];
+  if (!session.running) {
+    set_last_error("AVFoundation camera session did not start");
+    delete bridge;
+    return nullptr;
+  }
+  return bridge;
+}
+
+const char* parties_macos_stream_last_error() {
+  return last_error().c_str();
 }
 
 void parties_macos_stream_destroy(MacosStreamBridge* bridge) {
@@ -529,6 +1023,33 @@ int parties_macos_stream_encoded_keyframe(MacosStreamBridge* bridge) {
     return 0;
   }
   return bridge->readable_keyframe ? 1 : 0;
+}
+
+int parties_macos_stream_audio_poll(MacosStreamBridge* bridge) {
+  if (!bridge) {
+    return -1;
+  }
+  std::lock_guard<std::mutex> lock(bridge->mutex);
+  if (bridge->pending_audio.empty()) {
+    return 0;
+  }
+  bridge->readable_audio.swap(bridge->pending_audio);
+  bridge->pending_audio.clear();
+  return 1;
+}
+
+const float* parties_macos_stream_audio_ptr(MacosStreamBridge* bridge) {
+  if (!bridge || bridge->readable_audio.empty()) {
+    return nullptr;
+  }
+  return bridge->readable_audio.data();
+}
+
+uintptr_t parties_macos_stream_audio_len(MacosStreamBridge* bridge) {
+  if (!bridge) {
+    return 0;
+  }
+  return bridge->readable_audio.size();
 }
 
 }

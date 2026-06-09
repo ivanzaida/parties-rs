@@ -1,5 +1,5 @@
 use std::{
-  ffi::c_void,
+  ffi::{CStr, c_char, c_void},
   mem::MaybeUninit,
   ptr,
   ptr::NonNull,
@@ -39,6 +39,7 @@ use core_video_sys::pixel_buffer::{
   CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey,
   kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
+use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as OpusChannels, Encoder as OpusEncoder};
 use rav1d::{
   Dav1dResult,
   include::dav1d::{
@@ -55,7 +56,7 @@ use rav1d::{
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, webcam::WebcamCapture,
+  VideoDecodeConfig, VideoDecoder, VideoError,
 };
 use crate::{
   network::{
@@ -82,6 +83,12 @@ const SOFTWARE_AV1_THREADS: i32 = 2;
 const SOFTWARE_AV1_ENV: &str = "PARTIES_MACOS_SOFTWARE_AV1";
 const SIMULATE_UNSUPPORTED_AV1_ENV: &str = "PARTIES_SIMULATE_UNSUPPORTED_AV1";
 const ENCODE_FRAME_DURATION_100NS: i64 = 10_000_000;
+const STREAM_AUDIO_SAMPLE_RATE: u32 = 48_000;
+const STREAM_AUDIO_CHANNELS: usize = 2;
+const STREAM_AUDIO_FRAME_SAMPLES_PER_CHANNEL: usize = 960;
+const STREAM_AUDIO_FRAME_SAMPLES: usize = STREAM_AUDIO_FRAME_SAMPLES_PER_CHANNEL * STREAM_AUDIO_CHANNELS;
+const STREAM_AUDIO_BITRATE: i32 = 64_000;
+const STREAM_AUDIO_MAX_PACKET_BYTES: usize = 1_275;
 
 #[repr(C)]
 struct VTDecompressionSession(c_void);
@@ -267,9 +274,21 @@ unsafe extern "C" {
     height: u16,
     fps: u32,
     bitrate: u32,
+    audio_enabled: i32,
+  ) -> *mut MacosStreamBridge;
+
+  fn parties_macos_camera_stream_create(
+    source_id: u64,
+    codec: u8,
+    width: u16,
+    height: u16,
+    fps: u32,
+    bitrate: u32,
   ) -> *mut MacosStreamBridge;
 
   fn parties_macos_stream_destroy(bridge: *mut MacosStreamBridge);
+
+  fn parties_macos_stream_last_error() -> *const c_char;
 
   fn parties_macos_stream_force_keyframe(bridge: *mut MacosStreamBridge);
 
@@ -280,6 +299,12 @@ unsafe extern "C" {
   fn parties_macos_stream_encoded_len(bridge: *mut MacosStreamBridge) -> usize;
 
   fn parties_macos_stream_encoded_keyframe(bridge: *mut MacosStreamBridge) -> i32;
+
+  fn parties_macos_stream_audio_poll(bridge: *mut MacosStreamBridge) -> i32;
+
+  fn parties_macos_stream_audio_ptr(bridge: *mut MacosStreamBridge) -> *const f32;
+
+  fn parties_macos_stream_audio_len(bridge: *mut MacosStreamBridge) -> usize;
 
   static kCMSampleAttachmentKey_NotSync: CFStringRef;
 }
@@ -360,6 +385,15 @@ fn run_broadcast_loop(
       return run_native_broadcast_loop(server, config, runtime, stop, keyframe_requests, &mut encoder);
     }
     Err(error) => {
+      if config.source_kind == ScreenShareSourceKind::Webcam {
+        logger::log(&format!(
+          "[video/macos] native AVFoundation webcam encoder unavailable: {error}"
+        ));
+        if let Some(init_tx) = init_tx {
+          let _ = init_tx.send(Err(error.to_string()));
+        }
+        return Err(error);
+      }
       logger::log(&format!(
         "[video/macos] native ScreenCaptureKit encoder unavailable; falling back to CPU capture: {error}"
       ));
@@ -490,6 +524,11 @@ fn run_native_broadcast_loop(
   let mut logged_stream_fallback = false;
   let mut dropped_live_frames = 0u64;
   let mut handled_keyframe_requests = keyframe_requests.load(Ordering::Relaxed);
+  let mut audio_encoder = if config.audio_enabled {
+    Some(StreamAudioEncoder::new()?)
+  } else {
+    None
+  };
 
   while !stop.load(Ordering::Relaxed) {
     let requested_keyframes = keyframe_requests.load(Ordering::Relaxed);
@@ -545,11 +584,77 @@ fn run_native_broadcast_loop(
       frame_number = frame_number.wrapping_add(1);
     }
 
+    if let Some(audio_encoder) = audio_encoder.as_mut() {
+      let audio = encoder.poll_audio()?;
+      if !audio.is_empty() {
+        audio_encoder.encode_samples(&server, &audio)?;
+      }
+    }
+
     thread::sleep(poll_interval);
   }
 
   logger::log("[video/macos] native broadcast loop stopped by request");
   Ok(())
+}
+
+struct StreamAudioEncoder {
+  encoder: OpusEncoder,
+  pcm_frame: Vec<f32>,
+  opus_packet: Vec<u8>,
+  logged_first_packet: bool,
+}
+
+impl StreamAudioEncoder {
+  fn new() -> Result<Self, VideoError> {
+    let mut encoder = OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
+      .map_err(|error| VideoError::new(format!("Failed to create macOS stream audio Opus encoder: {error}")))?;
+    encoder
+      .set_bitrate(OpusBitrate::Bits(STREAM_AUDIO_BITRATE))
+      .map_err(|error| VideoError::new(format!("Failed to configure macOS stream audio Opus bitrate: {error}")))?;
+    logger::log("[audio/macos] stream audio capture enabled");
+    Ok(Self {
+      encoder,
+      pcm_frame: Vec::with_capacity(STREAM_AUDIO_FRAME_SAMPLES),
+      opus_packet: vec![0; STREAM_AUDIO_MAX_PACKET_BYTES],
+      logged_first_packet: false,
+    })
+  }
+
+  fn encode_samples(&mut self, server: &Server, samples: &[f32]) -> Result<(), VideoError> {
+    let mut cursor = 0;
+    while cursor < samples.len() {
+      let space = STREAM_AUDIO_FRAME_SAMPLES - self.pcm_frame.len();
+      let end = (cursor + space).min(samples.len());
+      self.pcm_frame.extend_from_slice(&samples[cursor..end]);
+      cursor = end;
+      self.flush_if_ready(server)?;
+    }
+    Ok(())
+  }
+
+  fn flush_if_ready(&mut self, server: &Server) -> Result<(), VideoError> {
+    if self.pcm_frame.len() < STREAM_AUDIO_FRAME_SAMPLES {
+      return Ok(());
+    }
+
+    let packet_len = self
+      .encoder
+      .encode_float(&self.pcm_frame, &mut self.opus_packet)
+      .map_err(|error| VideoError::new(format!("Failed to encode macOS stream audio packet: {error}")))?;
+    server
+      .send_stream_audio(&self.opus_packet[..packet_len])
+      .map_err(|error| VideoError::new(format!("Failed to send macOS stream audio packet: {error}")))?;
+    self.pcm_frame.clear();
+
+    if !self.logged_first_packet {
+      logger::log(&format!(
+        "[audio/macos] first stream audio packet sent: bytes={packet_len}"
+      ));
+      self.logged_first_packet = true;
+    }
+    Ok(())
+  }
 }
 
 struct MacosNativeStreamEncoder {
@@ -560,9 +665,16 @@ unsafe impl Send for MacosNativeStreamEncoder {}
 
 impl MacosNativeStreamEncoder {
   fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    if config.source_kind == ScreenShareSourceKind::Webcam {
+      return Self::new_camera(config);
+    }
+
     let source_kind = match config.source_kind {
       ScreenShareSourceKind::Screen => 0,
       ScreenShareSourceKind::Window => 1,
+      ScreenShareSourceKind::Webcam => {
+        return Err(VideoError::new("Webcam is not a ScreenCaptureKit desktop source."));
+      }
     };
     let handle = unsafe {
       parties_macos_stream_create(
@@ -573,12 +685,35 @@ impl MacosNativeStreamEncoder {
         config.output_height,
         config.fps.max(1),
         config.bitrate_kbps.saturating_mul(1000),
+        i32::from(config.audio_enabled),
       )
     };
     let handle = NonNull::new(handle).ok_or_else(|| {
+      let native_error = macos_stream_last_error();
       VideoError::new(format!(
-        "ScreenCaptureKit + VideoToolbox failed for source {:?}/{} at {}x{}.",
-        config.source_kind, config.source_id, config.output_width, config.output_height
+        "ScreenCaptureKit + VideoToolbox failed for source {:?}/{} at {}x{}: {}.",
+        config.source_kind, config.source_id, config.output_width, config.output_height, native_error
+      ))
+    })?;
+    Ok(Self { handle })
+  }
+
+  fn new_camera(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let handle = unsafe {
+      parties_macos_camera_stream_create(
+        u64::from(config.source_id),
+        config.codec as u8,
+        config.output_width,
+        config.output_height,
+        config.fps.max(1),
+        config.bitrate_kbps.saturating_mul(1000),
+      )
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      let native_error = macos_stream_last_error();
+      VideoError::new(format!(
+        "AVFoundation + VideoToolbox failed for webcam source {} at {}x{}: {}.",
+        config.source_id, config.output_width, config.output_height, native_error
       ))
     })?;
     Ok(Self { handle })
@@ -606,10 +741,42 @@ impl MacosNativeStreamEncoder {
     Ok(vec![EncodedSample { bytes, keyframe }])
   }
 
+  fn poll_audio(&mut self) -> Result<Vec<f32>, VideoError> {
+    let result = unsafe { parties_macos_stream_audio_poll(self.handle.as_ptr()) };
+    if result < 0 {
+      return Err(VideoError::new(
+        "ScreenCaptureKit failed while polling captured stream audio.",
+      ));
+    }
+    if result == 0 {
+      return Ok(Vec::new());
+    }
+
+    let len = unsafe { parties_macos_stream_audio_len(self.handle.as_ptr()) };
+    let ptr = unsafe { parties_macos_stream_audio_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() || len == 0 {
+      return Ok(Vec::new());
+    }
+    Ok(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
+  }
+
   fn force_keyframe(&mut self) {
     unsafe {
       parties_macos_stream_force_keyframe(self.handle.as_ptr());
     }
+  }
+}
+
+fn macos_stream_last_error() -> String {
+  let ptr = unsafe { parties_macos_stream_last_error() };
+  if ptr.is_null() {
+    return "unknown native error".to_owned();
+  }
+  let value = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().trim().to_owned();
+  if value.is_empty() {
+    "unknown native error".to_owned()
+  } else {
+    value
   }
 }
 
@@ -627,7 +794,6 @@ struct CaptureSource {
 
 enum CaptureSourceKind {
   Desktop(DesktopCaptureSource),
-  Webcam(WebcamCapture),
 }
 
 impl CaptureSource {
@@ -636,7 +802,11 @@ impl CaptureSource {
       ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window => {
         CaptureSourceKind::Desktop(find_desktop_source(config.source_kind, config.source_id)?)
       }
-      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(config.source_id)?),
+      ScreenShareSourceKind::Webcam => {
+        return Err(VideoError::new(
+          "Webcam capture on macOS must use native AVFoundation; no software fallback is available.",
+        ));
+      }
     };
     Ok(Self { kind })
   }
@@ -648,7 +818,6 @@ impl CaptureSource {
           "Failed to capture desktop frame: {error}. On macOS, check System Settings -> Privacy & Security -> Screen & System Audio Recording."
         ))
       })?,
-      CaptureSourceKind::Webcam(webcam) => return webcam.capture_rgba(width, height),
     };
 
     normalize_rgba_frame(frame.rgba, frame.width, frame.height, width, height)
