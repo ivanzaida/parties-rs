@@ -90,6 +90,12 @@ pub struct VoiceEngine {
   captures_voice: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VoicePacketStatus {
+  pub queued: bool,
+  pub speaking: bool,
+}
+
 impl VoiceEngine {
   pub fn start(
     server: Arc<Server>,
@@ -161,8 +167,7 @@ impl VoiceEngine {
   }
 
   pub fn set_voice_state(&self, muted: bool, deafened: bool) {
-    self.control.muted.store(muted, Ordering::Relaxed);
-    self.control.deafened.store(deafened, Ordering::Relaxed);
+    self.control.set_voice_state(muted, deafened);
     if deafened {
       self
         .mixer
@@ -204,9 +209,9 @@ impl VoiceEngine {
       .set_stream_volume(user_id, volume_percent);
   }
 
-  pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> bool {
+  pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> VoicePacketStatus {
     if self.control.deafened.load(Ordering::Relaxed) {
-      return false;
+      return VoicePacketStatus::default();
     }
 
     let mut pcm = self.take_pcm_buffer(OPUS_FRAME_SIZE * CHANNELS);
@@ -216,14 +221,14 @@ impl VoiceEngine {
         Ok(stream) => entry.insert(stream),
         Err(_) => {
           self.recycle_pcm_buffer(pcm);
-          return false;
+          return VoicePacketStatus::default();
         }
       },
     };
 
     if stream.decode_into(packet.sequence, &packet.opus, &mut pcm).is_err() {
       self.recycle_pcm_buffer(pcm);
-      return false;
+      return VoicePacketStatus::default();
     }
 
     if self.control.voice_normalization {
@@ -231,8 +236,9 @@ impl VoiceEngine {
     }
 
     let speaking = rms(&pcm) > 0.001;
+    let queued = !pcm.is_empty();
 
-    if !pcm.is_empty() {
+    if queued {
       self
         .mixer
         .lock()
@@ -240,7 +246,7 @@ impl VoiceEngine {
         .push_frame(AudioStreamId::Voice(packet.sender_id), pcm);
     }
 
-    speaking
+    VoicePacketStatus { queued, speaking }
   }
 
   pub fn push_stream_audio_packet(&mut self, packet: ForwardedStreamAudioPacket) -> bool {
@@ -360,6 +366,15 @@ impl VoiceControlState {
     self.audio_processing.as_ref()
   }
 
+  fn set_voice_state(&self, muted: bool, deafened: bool) {
+    self.muted.store(muted, Ordering::Relaxed);
+    self.deafened.store(deafened, Ordering::Relaxed);
+    if muted || deafened {
+      self.push_to_talk_active.store(false, Ordering::Relaxed);
+      self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+    }
+  }
+
   fn set_voice_activation_threshold(&self, value: i32) {
     self
       .voice_activation_threshold
@@ -367,6 +382,12 @@ impl VoiceControlState {
   }
 
   fn set_push_to_talk_active(&self, active: bool) {
+    if active && (self.muted.load(Ordering::Relaxed) || self.deafened.load(Ordering::Relaxed)) {
+      self.push_to_talk_active.store(false, Ordering::Relaxed);
+      self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+      return;
+    }
+
     self.push_to_talk_active.store(active, Ordering::Relaxed);
     let release_delay_ms = self.push_to_talk_release_delay_ms();
     let release_until_ms = if active || release_delay_ms == 0 {
@@ -905,7 +926,12 @@ where
   let mut state = OutputRenderState::new(channels, sample_rate, control, mixer);
 
   device
-    .build_output_stream::<T, _, _>(config, move |data, _| state.render(data), move |_| {}, None)
+    .build_output_stream::<T, _, _>(
+      config,
+      move |data, _| state.render(data),
+      move |error| logger::log(&format!("[voice] output stream error: {error}")),
+      None,
+    )
     .map_err(|error| VoiceError::new(format!("Failed to build output stream: {error}")))
 }
 
@@ -1481,6 +1507,48 @@ mod tests {
     control.set_push_to_talk_active(true);
     assert!(control.can_transmit());
     control.set_push_to_talk_active(false);
+    assert!(!control.can_transmit());
+  }
+
+  #[test]
+  fn push_to_talk_ignores_activation_while_muted_or_deafened() {
+    let settings = AppSettings {
+      push_to_talk: true,
+      ..AppSettings::default()
+    };
+
+    let control = VoiceControlState::new(&settings, true, false);
+    control.set_push_to_talk_active(true);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+
+    let control = VoiceControlState::new(&settings, false, true);
+    control.set_push_to_talk_active(true);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+  }
+
+  #[test]
+  fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
+    let settings = AppSettings {
+      push_to_talk: true,
+      push_to_talk_release_delay_ms: 500,
+      ..AppSettings::default()
+    };
+
+    let control = VoiceControlState::new(&settings, false, false);
+    control.set_push_to_talk_active(true);
+    assert!(control.can_transmit());
+    control.set_voice_state(true, false);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+
+    let control = VoiceControlState::new(&settings, false, false);
+    control.set_push_to_talk_active(true);
+    control.set_push_to_talk_active(false);
+    assert!(control.can_transmit());
+    control.set_voice_state(false, true);
+    control.set_voice_state(false, false);
     assert!(!control.can_transmit());
   }
 

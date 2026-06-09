@@ -543,6 +543,7 @@ pub struct ServerSession {
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
+  voice_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   stream_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
@@ -574,6 +575,7 @@ impl Default for ServerSession {
       #[cfg(target_os = "windows")]
       dx12_video_surfaces: None,
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
+      voice_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
       stream_volumes: Arc::new(Mutex::new(HashMap::new())),
@@ -668,6 +670,11 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self
+      .voice_audio_counts
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self
       .stream_audio_counts
       .lock()
       .expect("server session lock poisoned")
@@ -707,6 +714,11 @@ impl ServerSession {
     self.video_errors.lock().expect("server session lock poisoned").clear();
     self
       .video_revision_marks
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self
+      .voice_audio_counts
       .lock()
       .expect("server session lock poisoned")
       .clear();
@@ -2001,13 +2013,39 @@ impl ServerSession {
       return false;
     }
 
-    self
+    let sender_id = packet.sender_id;
+    let sequence = packet.sequence;
+    let packet_len = packet.opus.len();
+    let received_count = {
+      let mut counts = self.voice_audio_counts.lock().expect("server session lock poisoned");
+      increment_counter(&mut counts, sender_id)
+    };
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[voice] received voice #{received_count} from user {}: sequence={} bytes={}",
+        sender_id, sequence, packet_len
+      ));
+    }
+
+    let status = self
       .voice_engine
       .lock()
       .expect("server session lock poisoned")
       .as_mut()
-      .map(|engine| engine.push_packet(packet))
-      .unwrap_or(true)
+      .map(|engine| engine.push_packet(packet));
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[voice] voice audio {} for user {} speaking={}",
+        match status {
+          Some(status) if status.queued => "queued",
+          Some(_) => "dropped",
+          None => "dropped: no voice engine",
+        },
+        sender_id,
+        status.is_some_and(|status| status.speaking)
+      ));
+    }
+    status.map(|status| status.speaking).unwrap_or(true)
   }
 
   fn handle_video_control_packet(&self, control: VideoControl) {
