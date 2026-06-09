@@ -1,6 +1,6 @@
 use std::{
   collections::{HashMap, VecDeque},
-  fmt,
+  env, fmt,
   sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -20,7 +20,7 @@ use sonora::{
   config::{EchoCanceller, HighPassFilter, MaxProcessingRate, NoiseSuppression, NoiseSuppressionLevel, Pipeline},
 };
 
-use super::audio_devices;
+use super::{audio_devices, logger};
 use crate::{
   network::{
     protocol::{
@@ -49,6 +49,8 @@ const MAX_OPUS_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * INPUT_FRAME_POOL;
 const MAX_RENDER_QUEUE_SAMPLES: usize = PROCESS_FRAME_SIZE * 10;
 const STREAM_BUFFER_TARGET_MS: u32 = 20;
 const VOICE_ACTIVATION_HOLD_FRAMES: u8 = 12;
+const DEFAULT_AEC_DELAY_MS: i32 = 80;
+const AEC_DELAY_ENV: &str = "PARTIES_AEC_DELAY_MS";
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -97,7 +99,17 @@ impl VoiceEngine {
     let control = Arc::new(VoiceControlState::new(&settings, muted, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
 
-    let output_stream = build_output_stream(&settings, control.clone(), mixer.clone()).ok();
+    let output_stream = match build_output_stream(&settings, control.clone(), mixer.clone()) {
+      Ok(stream) => Some(stream),
+      Err(error) => {
+        if settings.echo_cancellation {
+          logger::log(&format!(
+            "[voice] echo cancellation enabled, but render reference output stream failed: {error}"
+          ));
+        }
+        None
+      }
+    };
     let input_result = build_input_path(server, &settings, control.clone(), stop.clone(), on_local_voice);
     let input_error = input_result.as_ref().err().map(ToString::to_string);
     let (input_stream, encoder_thread) = input_result.unwrap_or((None, None));
@@ -355,13 +367,30 @@ fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProce
     ..Default::default()
   };
 
-  Some(Arc::new(Mutex::new(
-    AudioProcessing::builder()
-      .config(config)
-      .capture_config(StreamConfig::new(SAMPLE_RATE, CHANNELS as u16))
-      .render_config(StreamConfig::new(SAMPLE_RATE, CHANNELS as u16))
-      .build(),
-  )))
+  let mut audio_processing = AudioProcessing::builder()
+    .config(config)
+    .capture_config(StreamConfig::new(SAMPLE_RATE, CHANNELS as u16))
+    .render_config(StreamConfig::new(SAMPLE_RATE, CHANNELS as u16))
+    .build();
+
+  if settings.echo_cancellation {
+    let delay_ms = aec_delay_ms();
+    let _ = audio_processing.set_stream_delay_ms(delay_ms);
+    logger::log(&format!(
+      "[voice] echo cancellation enabled: stream_delay_ms={}",
+      audio_processing.stream_delay_ms()
+    ));
+  }
+
+  Some(Arc::new(Mutex::new(audio_processing)))
+}
+
+fn aec_delay_ms() -> i32 {
+  env::var(AEC_DELAY_ENV)
+    .ok()
+    .and_then(|value| value.parse::<i32>().ok())
+    .unwrap_or(DEFAULT_AEC_DELAY_MS)
+    .clamp(0, 500)
 }
 
 fn low_latency_stream_config(supported: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
