@@ -16,10 +16,13 @@ use lurq::{
 
 use super::{
   StopWatchingAction, WatchStreamAction,
-  stream_browser::{ChannelScreenShare, screen_shares_for_channel},
+  stream_shared::{
+    ChannelScreenShare, live_badge, resolution_badge, screen_shares_for_channel, stream_avatar, stream_footer_meta,
+    stream_name, stream_speaking,
+  },
 };
 use crate::{
-  network::protocol::{ChannelId, UserId, VideoCodecId},
+  network::protocol::{ChannelId, UserId},
   session::{LobbyScreenShare, LobbyState, ServerSession},
   storage::Storage,
   theme,
@@ -102,7 +105,7 @@ pub(super) fn stream_watching(
 fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage>, session: &ServerSession) -> Element {
   let name = stream_name(ctx, stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-  let meta = stream_footer_meta(&name, stream.share);
+  let meta = stream_footer_meta(ctx, &name, stream.share);
   let speaking = stream_speaking(stream);
   let image = session.video_frame(stream.share.sharer_user_id);
   let video_error = session.video_error(stream.share.sharer_user_id);
@@ -119,7 +122,8 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
   if let Some(image) = image {
     stage = stage.background_image(image).background_contain();
   } else if let Some(error) = video_error {
-    stage = stage.child(stream_error_panel(ctx, &error.title, &error.message));
+    let (title, message) = stream_error_text(ctx, &error);
+    stage = stage.child(stream_error_panel(ctx, &title, &message));
   } else {
     stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "monitor",
@@ -153,6 +157,16 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
         ),
     )
     .into()
+}
+
+fn stream_error_text(ctx: &mut Ctx, error: &crate::session::VideoStreamError) -> (String, String) {
+  match error.i18n_key {
+    Some("lobby.stream_error.unsupported_av1") => (
+      ctx.t("lobby.stream_error.unsupported_av1.title").to_string(),
+      ctx.t("lobby.stream_error.unsupported_av1.message").to_string(),
+    ),
+    _ => (error.title.clone(), error.message.clone()),
+  }
 }
 
 fn stream_error_panel(ctx: &mut Ctx, title: &str, message: &str) -> Element {
@@ -241,7 +255,7 @@ fn switcher_card(
         .padding_vertical(8.0)
         .padding_horizontal(10.0)
         .spacing(8.0)
-        .child(avatar(&name, 22.0, speaking))
+        .child(stream_avatar(&name, 22.0, speaking))
         .child(
           Text::new(&title)
             .width(Dimension::Pct(100.0))
@@ -291,7 +305,7 @@ fn streamer_label(name: &str, title: &str, meta: &str, active: bool) -> Element 
   Row::new()
     .align_items(Alignment::Center)
     .spacing(10.0)
-    .child(avatar(name, 32.0, active))
+    .child(stream_avatar(name, 32.0, active))
     .child(
       Column::new()
         .spacing(2.0)
@@ -443,6 +457,7 @@ impl Component for StreamVolumeControl {
     let save_user_id = props.user_id;
 
     stream_volume_control(
+      ctx,
       self.value.clone(),
       Arc::new(move |volume| {
         let volume = volume.clamp(0, 100);
@@ -472,8 +487,9 @@ fn load_stream_volume(
     .clamp(0, 100)
 }
 
-fn stream_volume_control(value: Signal<i32>, on_blur: PercentSliderSaveAction) -> Element {
+fn stream_volume_control(ctx: &mut Ctx, value: Signal<i32>, on_blur: PercentSliderSaveAction) -> Element {
   percent_slider_control(
+    ctx,
     value,
     STREAM_VOLUME_CONTROL_WIDTH,
     STREAM_VOLUME_TRACK_WIDTH,
@@ -551,123 +567,4 @@ fn start_stream_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>) -> 
   button = button.on_click(move |_| open.set(true));
 
   button.into()
-}
-
-fn live_badge(ctx: &mut Ctx) -> Element {
-  Row::new()
-    .height(22.0)
-    .align_items(Alignment::Center)
-    .justify(Justify::Center)
-    .spacing(5.0)
-    .padding_horizontal(8.0)
-    .rounded(4.0)
-    .background(BackgroundColor::Palette(theme::PaletteColor::DangerMuted))
-    .child(
-      Row::new()
-        .width(6.0)
-        .height(6.0)
-        .rounded(3.0)
-        .background(BackgroundColor::Palette(theme::PaletteColor::Danger)),
-    )
-    .child(
-      Text::new(&ctx.t("lobby.stream_browser.watching.live"))
-        .variant(theme::TypographyStyle::FieldLabel)
-        .color(theme::PaletteColor::Danger),
-    )
-    .into()
-}
-
-fn resolution_badge(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
-  Row::new()
-    .width(96.0)
-    .height(20.0)
-    .align_items(Alignment::Center)
-    .justify(Justify::Center)
-    .padding_vertical(3.0)
-    .padding_horizontal(7.0)
-    .rounded(4.0)
-    .background(BackgroundColor::Color(Color::from_hex("#000000A6")))
-    .child(
-      Text::new(&stream_resolution_label(ctx, stream))
-        .variant(theme::TypographyStyle::Mono)
-        .color(theme::PaletteColor::TextSecondary)
-        .nowrap()
-        .text_overflow(TextOverflow::Elipsis),
-    )
-    .into()
-}
-
-fn avatar(name: &str, size: f32, active: bool) -> Element {
-  Row::new()
-    .width(size)
-    .height(size)
-    .align_items(Alignment::Center)
-    .justify(Justify::Center)
-    .rounded(size / 2.0)
-    .background(BackgroundColor::Color(Color::from_hex("#1B1E23")))
-    .border_inside(
-      1.5,
-      if active {
-        theme::PaletteColor::Success
-      } else {
-        theme::PaletteColor::Border
-      },
-    )
-    .child(
-      Text::new(&initials_for_user(name))
-        .variant(theme::TypographyStyle::Mono)
-        .color(theme::PaletteColor::TextMuted),
-    )
-    .into()
-}
-
-fn stream_name(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>) -> String {
-  stream
-    .user
-    .map(|user| user.username.clone())
-    .unwrap_or_else(|| fallback_user_name(ctx, stream.share.sharer_user_id))
-}
-
-fn stream_speaking(stream: &ChannelScreenShare<'_>) -> bool {
-  stream
-    .user
-    .is_some_and(|user| user.speaking && !user.muted && !user.deafened)
-}
-
-fn stream_resolution_label(ctx: &mut Ctx, stream: &LobbyScreenShare) -> String {
-  if stream.metadata.width == 0 || stream.metadata.height == 0 {
-    return ctx.t("lobby.stream_browser.watching.live").to_string();
-  }
-
-  format!("{}x{}", stream.metadata.width, stream.metadata.height)
-}
-
-fn stream_footer_meta(name: &str, stream: &LobbyScreenShare) -> String {
-  format!("{name} · {}", stream_codec_label(stream))
-}
-
-fn stream_codec_label(stream: &LobbyScreenShare) -> String {
-  match stream.metadata.codec {
-    VideoCodecId::Unknown => "Live".to_owned(),
-    VideoCodecId::Av1 => "AV1".to_owned(),
-    VideoCodecId::H265 => "H.265".to_owned(),
-    VideoCodecId::H264 => "H.264".to_owned(),
-  }
-}
-
-fn fallback_user_name(ctx: &mut Ctx, user_id: UserId) -> String {
-  ctx
-    .t_args("lobby.user.fallback", [("id", user_id.to_string())])
-    .to_string()
-}
-
-fn initials_for_user(name: &str) -> String {
-  let initials = name
-    .chars()
-    .filter(|ch| ch.is_alphanumeric())
-    .flat_map(|ch| ch.to_uppercase())
-    .take(1)
-    .collect::<String>();
-
-  if initials.is_empty() { "?".to_owned() } else { initials }
 }

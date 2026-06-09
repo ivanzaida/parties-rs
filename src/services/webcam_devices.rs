@@ -13,15 +13,21 @@ pub fn webcam_device_id(value: &str) -> u32 {
   })
 }
 
-pub fn webcam_devices() -> Vec<WebcamDevice> {
+pub fn webcam_devices_with_fallbacks(
+  default_label: &str,
+  indexed_label: &dyn Fn(usize) -> String,
+) -> Vec<WebcamDevice> {
+  #[cfg(not(target_os = "macos"))]
+  let _ = indexed_label;
+
   #[cfg(target_os = "macos")]
   {
-    return native_macos_webcam_devices();
+    return native_macos_webcam_devices(indexed_label);
   }
 
   #[cfg(target_os = "windows")]
   {
-    return windows_webcam::webcam_devices().unwrap_or_default();
+    return windows_webcam::webcam_devices(default_label).unwrap_or_default();
   }
 
   #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -68,7 +74,7 @@ pub(crate) mod windows_webcam {
     }
   }
 
-  pub(crate) fn webcam_devices() -> Result<Vec<WebcamDevice>, String> {
+  pub(crate) fn webcam_devices(default_label: &str) -> Result<Vec<WebcamDevice>, String> {
     let _mf = MediaFoundationSession::start()?;
     let activates = enumerate_video_activates()?;
     Ok(
@@ -79,7 +85,7 @@ pub(crate) mod windows_webcam {
           let label = activate_string(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
             .ok()
             .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| "Camera".to_owned());
+            .unwrap_or_else(|| default_label.to_owned());
           Some(WebcamDevice { value, label })
         })
         .collect(),
@@ -164,7 +170,7 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-fn native_macos_webcam_devices() -> Vec<WebcamDevice> {
+fn native_macos_webcam_devices(indexed_label: &dyn Fn(usize) -> String) -> Vec<WebcamDevice> {
   let count = unsafe { parties_macos_camera_refresh() };
   let mut devices = (0..count)
     .filter_map(|index| {
@@ -176,7 +182,7 @@ fn native_macos_webcam_devices() -> Vec<WebcamDevice> {
       Some(WebcamDevice {
         value,
         label: if label.trim().is_empty() {
-          format!("Camera {}", index + 1)
+          indexed_label(index)
         } else {
           label
         },

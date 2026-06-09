@@ -209,7 +209,7 @@ impl GlobalVoiceHotkeysInner {
     if let Some(action) = pending_action {
       let session = self.session.clone();
       self.tokio.spawn(async move {
-        let _ = apply_voice_control(session, action).await;
+        let _ = apply_voice_control(session, action, String::new()).await;
       });
     }
   }
@@ -279,7 +279,7 @@ impl GlobalVoiceHotkeysInner {
     if let Some(action) = pending_action {
       let session = self.session.clone();
       self.tokio.spawn(async move {
-        let _ = apply_voice_control(session, action).await;
+        let _ = apply_voice_control(session, action, String::new()).await;
       });
     }
   }
@@ -342,7 +342,7 @@ impl GlobalVoiceHotkeysInner {
         if should_run {
           let session = self.session.clone();
           self.tokio.spawn(async move {
-            let _ = apply_voice_control(session, action).await;
+            let _ = apply_voice_control(session, action, String::new()).await;
           });
         }
       }

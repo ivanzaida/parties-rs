@@ -1,6 +1,7 @@
 {
   "common": {
     "app_name": "Parties",
+    "percent": "{{value}}%",
     "action": {
       "cancel": "Скасувати"
     }
@@ -330,7 +331,31 @@
     "row": {
       "connecting": "Підключення...",
       "error": "Помилка підключення: {{error}}",
-      "error_fallback": "Сервер не прийняв підключення."
+      "error_fallback": "Сервер не прийняв підключення.",
+      "role": {
+        "admin": "Адмін",
+        "moderator": "Модератор",
+        "member": "Учасник"
+      },
+      "meta": {
+        "users_online": "{{count}} онлайн",
+        "users_online_max": "{{count}}/{{max}} онлайн",
+        "protocol": "протокол v{{version}}",
+        "password_required": "потрібен пароль",
+        "open_server": "відкритий сервер",
+        "checking_info": "перевірка інформації",
+        "no_response": "немає відповіді"
+      },
+      "live_state": {
+        "online": "Онлайн",
+        "checking": "Перевірка",
+        "no_query": "Без запиту",
+        "unknown": "Невідомо"
+      },
+      "trust": {
+        "trusted": "Довірений",
+        "new": "Новий"
+      }
     }
   },
   "connect_server": {
@@ -359,6 +384,14 @@
       "cancel": "Скасувати",
       "connect": "Підключитися",
       "connecting": "Підключення..."
+    },
+    "error": {
+      "storage_unavailable": "Локальне сховище недоступне.",
+      "identity_missing": "Локальну ідентичність не знайдено.",
+      "timeout": "Час очікування підключення минув через {{seconds}} с.",
+      "malformed_auth": "Некоректне повідомлення автентифікації",
+      "unexpected_response": "Неочікувана відповідь сервера.",
+      "resolve_failed": "Не вдалося визначити адресу сервера."
     }
   },
   "settings": {
@@ -403,7 +436,12 @@
       "language": {
         "section": "МОВА",
         "title": "Мова інтерфейсу",
-        "description": "Оберіть мову, що використовується в усьому застосунку."
+        "description": "Оберіть мову, що використовується в усьому застосунку.",
+        "option": {
+          "en": "English",
+          "uk": "Українська",
+          "be": "Беларуская"
+        }
       },
       "toggles": "ШВИДКІ ПЕРЕМИКАЧІ",
       "toggle": {
@@ -537,6 +575,9 @@
         "choose_mp3": "Обрати MP3",
         "play": "Відтворити",
         "reset": "Скинути"
+      },
+      "file_filter": {
+        "mp3_audio": "MP3-аудіо"
       },
       "sound": {
         "voice_join": {
@@ -720,7 +761,9 @@
       },
       "webcam": {
         "$value": "Вебкамера",
-        "description": "Оберіть камеру для відео."
+        "description": "Оберіть камеру для відео.",
+        "fallback": "Камера",
+        "fallback_indexed": "Камера {{index}}"
       },
       "codec": {
         "$value": "Кодек",
@@ -741,7 +784,8 @@
       "bitrate": {
         "$value": "Бітрейт",
         "description": "Встановіть цільовий бітрейт трансляції.",
-        "unit": "Мбіт/с"
+        "unit": "Мбіт/с",
+        "value": "{{value}} {{unit}}"
       }
     }
   },
@@ -834,6 +878,10 @@
     "subtitle": "Everything the server exposes today. The protocol has no client message to change these values, so they are read-only here.",
     "protocol_supported": "Protocol v1 · supported",
     "read_only": "READ ONLY",
+    "error": {
+      "no_connected_server": "Немає підключеного сервера.",
+      "channel_name_empty": "Назва каналу не може бути порожньою."
+    },
     "nav": {
       "back": "Back to {{server}}",
       "section": "SERVER",
@@ -942,6 +990,20 @@
       "settings": "Налаштування",
       "disconnect": "Відключитися"
     },
+    "stream_error": {
+      "unsupported_av1": {
+        "title": "AV1 не підтримується на цьому пристрої",
+        "message": "Цей стрим використовує AV1, але апаратне декодування AV1 тут недоступне. Попросіть стримера перейти на H.265 або H.264."
+      }
+    },
+    "error": {
+      "no_connected_server": "Немає підключеного сервера.",
+      "stream_no_dimensions": "Обране джерело стриму не має розмірів захоплення.",
+      "video_codec_invalid": "Відеокодек має бути AV1, H.265 або H.264.",
+      "stream_too_small": "Обране джерело стриму замале після масштабування: {{width}}x{{height}}.",
+      "storage_unavailable": "Локальне сховище недоступне.",
+      "saved_credentials_missing": "Збережені облікові дані сервера не знайдено."
+    },
     "disconnected": {
       "title": "Відключено від сервера",
       "description": "З’єднання з {{server}} втрачено. Перепідключіться, щоб відновити лобі й голосовий стан, або залиште цей сервер.",
@@ -1048,6 +1110,8 @@
         "browser": "Браузер — Atlas",
         "editor": "Редактор",
         "terminal": "Термінал",
+        "camera": "Камера",
+        "camera_indexed": "Камера {{index}}",
         "empty_screens": "Екрани не знайдено",
         "empty_windows": "Вікна не знайдено",
         "empty_webcams": "Вебкамери не знайдено"
@@ -1094,6 +1158,8 @@
         "live": "НАЖИВО",
         "share_screen": "Ділитися екраном",
         "screen_name": "Екран {{user}}",
+        "resolution": "{{width}}x{{height}}",
+        "footer_meta": "{{user}} · {{codec}}",
         "display": "· Дисплей 1",
         "display_plain": "Дисплей 1",
         "stop": "Зупинити перегляд"

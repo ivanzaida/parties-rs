@@ -141,7 +141,7 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
   let name = display_server_name(props);
   let letter = server_letter(&name);
   let address = props.server.address.clone();
-  let role = role_label(props.server.role);
+  let role = role_label(ctx, props.server.role);
   let connecting = props.connecting.clone();
   let failed = props.failed.clone();
   let click_address = props.server.address.clone();
@@ -186,7 +186,7 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
                 .variant(theme::TypographyStyle::Heading)
                 .color(theme::PaletteColor::TextPrimary),
             )
-            .child(role_chip(role, props.server.role)),
+            .child(role_chip(&role, props.server.role)),
         )
         .child(
           Text::new(&address)
@@ -240,7 +240,7 @@ fn live_meta_row(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Sm);
 
-  for item in live_meta_items(&props.live) {
+  for item in live_meta_items(ctx, &props.live) {
     row = row.child(meta_chip(ctx, item.icon, &item.label));
   }
 
@@ -252,41 +252,50 @@ struct LiveMetaItem {
   label: String,
 }
 
-fn live_meta_items(live: &ServerCardLiveInfo) -> Vec<LiveMetaItem> {
+fn live_meta_items(ctx: &Ctx, live: &ServerCardLiveInfo) -> Vec<LiveMetaItem> {
   match live.state {
     ServerCardLiveState::Online => {
       let mut items = Vec::new();
       if let (Some(current), Some(max)) = (live.current_users, live.max_users) {
         let label = if max == 0 {
-          format!("{current} online")
+          ctx
+            .t_args("servers.row.meta.users_online", [("count", current.to_string())])
+            .to_string()
         } else {
-          format!("{current}/{max} online")
+          ctx
+            .t_args(
+              "servers.row.meta.users_online_max",
+              [("count", current.to_string()), ("max", max.to_string())],
+            )
+            .to_string()
         };
         items.push(LiveMetaItem { icon: "users", label });
       }
       if let Some(protocol_version) = live.protocol_version {
         items.push(LiveMetaItem {
           icon: "radio",
-          label: format!("Protocol {protocol_version}"),
+          label: ctx
+            .t_args("servers.row.meta.protocol", [("version", protocol_version.to_string())])
+            .to_string(),
         });
       }
       items.push(LiveMetaItem {
         icon: if live.password_locked { "lock" } else { "unlock" },
         label: if live.password_locked {
-          "Password required".to_owned()
+          ctx.t("servers.row.meta.password_required").to_string()
         } else {
-          "Open server".to_owned()
+          ctx.t("servers.row.meta.open_server").to_string()
         },
       });
       items
     }
     ServerCardLiveState::Checking => vec![LiveMetaItem {
       icon: "radar",
-      label: "Checking server info".to_owned(),
+      label: ctx.t("servers.row.meta.checking_info").to_string(),
     }],
     ServerCardLiveState::NoResponse => vec![LiveMetaItem {
       icon: "wifi-off",
-      label: "No query response".to_owned(),
+      label: ctx.t("servers.row.meta.no_response").to_string(),
     }],
     ServerCardLiveState::Unknown => Vec::new(),
   }
@@ -315,10 +324,26 @@ fn meta_chip(ctx: &mut Ctx, icon: &'static str, label: &str) -> impl Into<Elemen
 
 fn live_state_chip(ctx: &mut Ctx, live: &ServerCardLiveInfo) -> impl Into<Element> {
   let (icon, label, color) = match live.state {
-    ServerCardLiveState::Online => ("activity", "ONLINE", theme::PaletteColor::Accent),
-    ServerCardLiveState::Checking => ("radar", "CHECKING", theme::PaletteColor::TextSecondary),
-    ServerCardLiveState::NoResponse => ("wifi-off", "NO QUERY", theme::PaletteColor::TextMuted),
-    ServerCardLiveState::Unknown => ("circle", "UNKNOWN", theme::PaletteColor::TextMuted),
+    ServerCardLiveState::Online => (
+      "activity",
+      ctx.t("servers.row.live_state.online"),
+      theme::PaletteColor::Accent,
+    ),
+    ServerCardLiveState::Checking => (
+      "radar",
+      ctx.t("servers.row.live_state.checking"),
+      theme::PaletteColor::TextSecondary,
+    ),
+    ServerCardLiveState::NoResponse => (
+      "wifi-off",
+      ctx.t("servers.row.live_state.no_query"),
+      theme::PaletteColor::TextMuted,
+    ),
+    ServerCardLiveState::Unknown => (
+      "circle",
+      ctx.t("servers.row.live_state.unknown"),
+      theme::PaletteColor::TextMuted,
+    ),
   };
 
   Row::new()
@@ -334,7 +359,7 @@ fn live_state_chip(ctx: &mut Ctx, live: &ServerCardLiveInfo) -> impl Into<Elemen
       size: 12.0,
       color: theme::palette().text_muted,
     }))
-    .child(Text::new(label).variant(theme::TypographyStyle::Caption).color(color))
+    .child(Text::new(&label).variant(theme::TypographyStyle::Caption).color(color))
 }
 
 fn retry_button(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
@@ -440,6 +465,12 @@ fn role_chip(label: &str, role: Role) -> impl Into<Element> {
 }
 
 fn trusted_chip(ctx: &mut Ctx, trusted: bool) -> impl Into<Element> {
+  let label = ctx.t(if trusted {
+    "servers.row.trust.trusted"
+  } else {
+    "servers.row.trust.new"
+  });
+
   Row::new()
     .height(22.0)
     .align_items(Alignment::Center)
@@ -454,7 +485,7 @@ fn trusted_chip(ctx: &mut Ctx, trusted: bool) -> impl Into<Element> {
       color: theme::palette().text_muted,
     }))
     .child(
-      Text::new(if trusted { "TRUSTED" } else { "NEW" })
+      Text::new(&label)
         .variant(theme::TypographyStyle::Caption)
         .color(theme::PaletteColor::TextSecondary),
     )
@@ -511,10 +542,10 @@ fn server_letter(name: &str) -> String {
     .unwrap_or_else(|| "?".to_owned())
 }
 
-fn role_label(role: Role) -> &'static str {
+fn role_label(ctx: &Ctx, role: Role) -> std::sync::Arc<str> {
   match role {
-    Role::Owner | Role::Admin => "ADMIN",
-    Role::Moderator => "MOD",
-    Role::User => "MEMBER",
+    Role::Owner | Role::Admin => ctx.t("servers.row.role.admin"),
+    Role::Moderator => ctx.t("servers.row.role.moderator"),
+    Role::User => ctx.t("servers.row.role.member"),
   }
 }

@@ -1,6 +1,7 @@
 {
   "common": {
     "app_name": "Parties",
+    "percent": "{{value}}%",
     "action": {
       "cancel": "Cancel"
     }
@@ -330,7 +331,31 @@
     "row": {
       "connecting": "Connecting...",
       "error": "Connection failed: {{error}}",
-      "error_fallback": "The server did not accept the connection."
+      "error_fallback": "The server did not accept the connection.",
+      "role": {
+        "admin": "Admin",
+        "moderator": "Moderator",
+        "member": "Member"
+      },
+      "meta": {
+        "users_online": "{{count}} online",
+        "users_online_max": "{{count}}/{{max}} online",
+        "protocol": "protocol v{{version}}",
+        "password_required": "password required",
+        "open_server": "open server",
+        "checking_info": "checking info",
+        "no_response": "no response"
+      },
+      "live_state": {
+        "online": "Online",
+        "checking": "Checking",
+        "no_query": "No query",
+        "unknown": "Unknown"
+      },
+      "trust": {
+        "trusted": "Trusted",
+        "new": "New"
+      }
     }
   },
   "connect_server": {
@@ -359,6 +384,14 @@
       "cancel": "Cancel",
       "connect": "Connect",
       "connecting": "Connecting..."
+    },
+    "error": {
+      "storage_unavailable": "Local storage is unavailable.",
+      "identity_missing": "No local identity found.",
+      "timeout": "Connection timed out after {{seconds}} seconds.",
+      "malformed_auth": "Malformed auth message",
+      "unexpected_response": "Unexpected response from server.",
+      "resolve_failed": "Could not resolve server address."
     }
   },
   "settings": {
@@ -403,7 +436,12 @@
       "language": {
         "section": "LANGUAGE",
         "title": "Display language",
-        "description": "Choose the language used across the app."
+        "description": "Choose the language used across the app.",
+        "option": {
+          "en": "English",
+          "uk": "Українська",
+          "be": "Беларуская"
+        }
       },
       "toggles": "QUICK TOGGLES",
       "toggle": {
@@ -537,6 +575,9 @@
         "choose_mp3": "Choose MP3",
         "play": "Play",
         "reset": "Reset"
+      },
+      "file_filter": {
+        "mp3_audio": "MP3 audio"
       },
       "sound": {
         "voice_join": {
@@ -720,7 +761,9 @@
       },
       "webcam": {
         "$value": "Webcam",
-        "description": "Choose the camera used for video."
+        "description": "Choose the camera used for video.",
+        "fallback": "Camera",
+        "fallback_indexed": "Camera {{index}}"
       },
       "codec": {
         "$value": "Codec",
@@ -741,7 +784,8 @@
       "bitrate": {
         "$value": "Bitrate",
         "description": "Set the target stream bitrate.",
-        "unit": "Mbps"
+        "unit": "Mbps",
+        "value": "{{value}} {{unit}}"
       }
     }
   },
@@ -834,6 +878,10 @@
     "subtitle": "Everything the server exposes today. The protocol has no client message to change these values, so they are read-only here.",
     "protocol_supported": "Protocol v1 · supported",
     "read_only": "READ ONLY",
+    "error": {
+      "no_connected_server": "No connected server.",
+      "channel_name_empty": "Channel name cannot be empty."
+    },
     "nav": {
       "back": "Back to {{server}}",
       "section": "SERVER",
@@ -942,6 +990,20 @@
       "settings": "Settings",
       "disconnect": "Disconnect"
     },
+    "stream_error": {
+      "unsupported_av1": {
+        "title": "AV1 is not supported on this device",
+        "message": "This stream uses AV1, but hardware AV1 decoding is unavailable here. Ask the streamer to switch to H.265 or H.264."
+      }
+    },
+    "error": {
+      "no_connected_server": "No connected server.",
+      "stream_no_dimensions": "Selected stream source has no capture dimensions.",
+      "video_codec_invalid": "Video codec must be AV1, H.265, or H.264.",
+      "stream_too_small": "Selected stream source is too small to stream after scaling: {{width}}x{{height}}.",
+      "storage_unavailable": "Local storage is unavailable.",
+      "saved_credentials_missing": "Saved server credentials were not found."
+    },
     "disconnected": {
       "title": "Disconnected from server",
       "description": "We lost the connection to {{server}}. Reconnect to restore the lobby and voice state, or leave this server.",
@@ -1048,6 +1110,8 @@
         "browser": "Browser — Atlas",
         "editor": "Editor",
         "terminal": "Terminal",
+        "camera": "Camera",
+        "camera_indexed": "Camera {{index}}",
         "empty_screens": "No screens found",
         "empty_windows": "No windows found",
         "empty_webcams": "No webcams found"
@@ -1094,6 +1158,8 @@
         "live": "LIVE",
         "share_screen": "Share screen",
         "screen_name": "{{user}}'s screen",
+        "resolution": "{{width}}x{{height}}",
+        "footer_meta": "{{user}} · {{codec}}",
         "display": "· Display 1",
         "display_plain": "Display 1",
         "stop": "Stop watching"

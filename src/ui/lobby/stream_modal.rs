@@ -18,7 +18,7 @@ use super::{StartStreamAction, StartStreamInput};
 use crate::{
   services::screen_share_sources::{
     ScreenSharePreview, ScreenSharePreviewKey, ScreenShareSource, ScreenShareSourceKind, list_screen_sources,
-    list_webcam_sources, list_window_sources, load_source_preview,
+    list_webcam_sources, list_webcam_sources_with_labels, list_window_sources, load_source_preview,
   },
   theme,
   ui::{
@@ -314,7 +314,7 @@ fn stream_source_grid(
   metrics: StreamModalMetrics,
 ) -> Element {
   let selected_kind = source_kind.get();
-  let sources = list_sources(selected_kind);
+  let sources = list_sources(ctx, selected_kind);
   let selected_index = source_index.get().min(sources.len().saturating_sub(1));
 
   if sources.is_empty() {
@@ -728,7 +728,7 @@ fn selected_stream_input(
   selected_index: usize,
   audio_enabled: bool,
 ) -> Option<StartStreamInput> {
-  let sources = list_sources(source_kind);
+  let sources = list_sources_for_input(source_kind);
   let source = sources.get(selected_index.min(sources.len().saturating_sub(1)))?;
   Some(StartStreamInput {
     source_kind: source.kind,
@@ -739,7 +739,21 @@ fn selected_stream_input(
   })
 }
 
-fn list_sources(source_kind: ScreenShareSourceKind) -> Vec<ScreenShareSource> {
+fn list_sources(ctx: &mut Ctx, source_kind: ScreenShareSourceKind) -> Vec<ScreenShareSource> {
+  match source_kind {
+    ScreenShareSourceKind::Screen => list_screen_sources(),
+    ScreenShareSourceKind::Window => list_window_sources(),
+    ScreenShareSourceKind::Webcam => {
+      let camera = ctx.t("lobby.stream_modal.source.camera").to_string();
+      let camera_indexed = ctx.t("lobby.stream_modal.source.camera_indexed").to_string();
+      list_webcam_sources_with_labels(&camera, &camera, &|index| {
+        camera_indexed.replace("{{index}}", &(index + 1).to_string())
+      })
+    }
+  }
+}
+
+fn list_sources_for_input(source_kind: ScreenShareSourceKind) -> Vec<ScreenShareSource> {
   match source_kind {
     ScreenShareSourceKind::Screen => list_screen_sources(),
     ScreenShareSourceKind::Window => list_window_sources(),

@@ -72,6 +72,7 @@ impl Component for PercentSlider {
     }
 
     percent_slider_control(
+      ctx,
       self.value.clone(),
       props.control_width,
       props.track_width,
@@ -83,6 +84,7 @@ impl Component for PercentSlider {
 }
 
 pub fn percent_slider_control(
+  ctx: &mut Ctx,
   value: Signal<i32>,
   control_width: f32,
   track_width: f32,
@@ -92,7 +94,7 @@ pub fn percent_slider_control(
 ) -> Element {
   let current = value.get().clamp(0, 100);
   let fill_width = track_width * current as f32 / 100.0;
-  let value_label = format!("{current}%");
+  let value_label = ctx.t_args("common.percent", [("value", current.to_string())]);
 
   let mut slider = app_slider::slider(value.clone(), track_width, 0, 100);
 

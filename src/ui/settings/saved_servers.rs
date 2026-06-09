@@ -29,7 +29,7 @@ use crate::{
       confirm_modal::{ConfirmAction, ConfirmModal, ConfirmModalProps},
       lucide_icon::{LucideIcon, LucideIconProps},
     },
-    connect_server::{ConnectOrigin, ConnectServerRouteState, test_connection},
+    connect_server::{ConnectErrorCopy, ConnectOrigin, ConnectServerRouteState, test_connection},
     settings::shell::{SettingsPage, SettingsPopupHandle, muted_notice, page_stack, screen, value_text},
   },
 };
@@ -533,10 +533,12 @@ impl Component for EditSavedServerModal {
 
 fn edit_server_test_action(ctx: &mut Ctx) -> EditServerTestAction {
   let storage = ctx.use_context::<Storage>();
+  let errors = ConnectErrorCopy::from_ctx(ctx);
   ctx.future_action(move |(address, seed, display_name): EditServerInput| {
     let storage = storage.clone();
+    let errors = errors.clone();
     async move {
-      let info = test_connection(address, seed, display_name, storage).await?;
+      let info = test_connection(address, seed, display_name, storage, errors).await?;
       Ok(info)
     }
   })
@@ -544,11 +546,13 @@ fn edit_server_test_action(ctx: &mut Ctx) -> EditServerTestAction {
 
 fn edit_server_save_action(ctx: &mut Ctx, server: StoredServer) -> EditServerSaveAction {
   let storage = ctx.use_context::<Storage>();
+  let storage_unavailable = ctx.t("connect_server.error.storage_unavailable").to_string();
   ctx.future_action(move |(address, seed, display_name): EditServerInput| {
     let storage = storage.clone();
     let server = server.clone();
+    let storage_unavailable = storage_unavailable.clone();
     async move {
-      let storage = storage.ok_or_else(|| "Local storage is unavailable.".to_owned())?;
+      let storage = storage.ok_or(storage_unavailable)?;
       let old_address = server.address.clone();
       let new_address = address.trim().to_owned();
       storage

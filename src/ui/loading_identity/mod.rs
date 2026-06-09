@@ -8,18 +8,18 @@ use lurq::{
   },
   components::{Column, Rect, Row, Text},
   core::Signal,
-  layout::{layout_kind::Justify, Alignment},
+  layout::{Alignment, layout_kind::Justify},
   node::{
-    dimension::{Dimension::Pct, IntoDimension}, BackgroundColor, CursorIcon, Element,
-    Style,
+    BackgroundColor, CursorIcon, Element, Style,
+    dimension::{Dimension::Pct, IntoDimension},
   },
 };
 
 use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
   services::{
-    startup::{load_startup_data, StartupProgress, StartupProgressLabels},
-    updater::{restart_into_update, run_startup_update_check, StartupUpdateStatus},
+    startup::{StartupProgress, StartupProgressLabels, load_startup_data},
+    updater::{StartupUpdateStatus, restart_into_update, run_startup_update_check},
   },
   storage::Storage,
   theme,
@@ -375,7 +375,6 @@ impl LoadingIdentityScreen {
             ("version", version.to_owned()),
           ],
         ))
-        .nowrap()
         .variant(theme::TypographyStyle::Mono)
         .color(PaletteColor::TextMuted),
       )

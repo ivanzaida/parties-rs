@@ -233,20 +233,24 @@ struct ChannelSettingsState {
 }
 
 fn server_admin_action(ctx: &mut Ctx, session: ServerSession) -> ServerAdminAction {
+  let no_connected_server = ctx.t("server_settings.error.no_connected_server").to_string();
+  let channel_name_empty = ctx.t("server_settings.error.channel_name_empty").to_string();
   ctx.future_action(move |request: ServerAdminRequest| {
     let session = session.clone();
+    let no_connected_server = no_connected_server.clone();
+    let channel_name_empty = channel_name_empty.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server)?;
       match request {
         ServerAdminRequest::CreateVoice { name, max_users } => {
-          let name = validated_channel_name(name)?;
+          let name = validated_channel_name(name, &channel_name_empty)?;
           server
             .create_channel(name, max_users)
             .await
             .map_err(|error| error.to_string())?;
         }
         ServerAdminRequest::RenameVoice { channel_id, name } => {
-          let name = validated_channel_name(name)?;
+          let name = validated_channel_name(name, &channel_name_empty)?;
           server
             .rename_channel(channel_id, name)
             .await
@@ -259,7 +263,7 @@ fn server_admin_action(ctx: &mut Ctx, session: ServerSession) -> ServerAdminActi
             .map_err(|error| error.to_string())?;
         }
         ServerAdminRequest::CreateText { name } => {
-          let name = validated_channel_name(name)?;
+          let name = validated_channel_name(name, &channel_name_empty)?;
           server
             .create_text_channel(name)
             .await
@@ -302,21 +306,25 @@ fn server_admin_action(ctx: &mut Ctx, session: ServerSession) -> ServerAdminActi
   })
 }
 
-fn validated_channel_name(name: String) -> Result<String, String> {
+fn validated_channel_name(name: String, empty_error: &str) -> Result<String, String> {
   let name = name.trim().to_owned();
   if name.is_empty() {
-    Err("Channel name cannot be empty.".to_owned())
+    Err(empty_error.to_owned())
   } else {
     Ok(name)
   }
 }
 
 fn server_info_query_action(ctx: &mut Ctx) -> ServerInfoQueryAction {
-  ctx.future_action(|address: String| async move {
-    let socket = resolve_address(with_default_port(&address)).await?;
-    query_server(socket, SERVER_SETTINGS_QUERY_TIMEOUT)
-      .await
-      .map_err(|error| error.to_string())
+  let resolve_failed = ctx.t("connect_server.error.resolve_failed").to_string();
+  ctx.future_action(move |address: String| {
+    let resolve_failed = resolve_failed.clone();
+    async move {
+      let socket = resolve_address(with_default_port(&address), resolve_failed).await?;
+      query_server(socket, SERVER_SETTINGS_QUERY_TIMEOUT)
+        .await
+        .map_err(|error| error.to_string())
+    }
   })
 }
 

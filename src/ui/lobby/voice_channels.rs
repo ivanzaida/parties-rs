@@ -274,10 +274,12 @@ fn close_user_context_menu(
 }
 
 fn set_role_action(ctx: &mut Ctx, session: ServerSession) -> SetRoleAction {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |(target_user_id, role)| {
     let session = session.clone();
+    let no_connected_server = no_connected_server.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server)?;
       server
         .set_role(target_user_id, role)
         .await
@@ -287,10 +289,12 @@ fn set_role_action(ctx: &mut Ctx, session: ServerSession) -> SetRoleAction {
 }
 
 fn set_user_voice_state_action(ctx: &mut Ctx, session: ServerSession) -> SetUserVoiceStateAction {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |(target_user_id, muted, deafened)| {
     let session = session.clone();
+    let no_connected_server = no_connected_server.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server)?;
       server
         .set_user_voice_state(target_user_id, muted, deafened)
         .await
@@ -300,10 +304,12 @@ fn set_user_voice_state_action(ctx: &mut Ctx, session: ServerSession) -> SetUser
 }
 
 fn disconnect_user_action(ctx: &mut Ctx, session: ServerSession) -> DisconnectUserAction {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |target_user_id| {
     let session = session.clone();
+    let no_connected_server = no_connected_server.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server)?;
       server
         .disconnect_user_from_voice(target_user_id)
         .await
@@ -313,10 +319,12 @@ fn disconnect_user_action(ctx: &mut Ctx, session: ServerSession) -> DisconnectUs
 }
 
 fn kick_user_action(ctx: &mut Ctx, session: ServerSession) -> KickUserAction {
+  let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   ctx.future_action(move |target_user_id| {
     let session = session.clone();
+    let no_connected_server = no_connected_server.clone();
     async move {
-      let server = session.server().ok_or_else(|| "No connected server.".to_owned())?;
+      let server = session.server().ok_or(no_connected_server)?;
       server
         .kick_user(target_user_id)
         .await
@@ -1050,6 +1058,7 @@ fn user_volume_control(ctx: &mut Ctx, value: Signal<i32>, on_blur: PercentSlider
         ),
     )
     .child(percent_slider_control(
+      ctx,
       value,
       USER_VOLUME_SLIDER_WIDTH,
       USER_VOLUME_TRACK_WIDTH,

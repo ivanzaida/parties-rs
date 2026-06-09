@@ -233,9 +233,11 @@ impl Component for App {
       .update_settings(settings.as_ref(), global_hotkeys_enabled, global_mouse_hotkeys_enabled);
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
+      let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
       move |action: VoiceControlAction| {
         let session = session.clone();
-        async move { apply_voice_control(session, action).await }
+        let no_connected_server = no_connected_server.clone();
+        async move { apply_voice_control(session, action, no_connected_server).await }
       }
     });
 
