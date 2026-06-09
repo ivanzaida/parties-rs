@@ -55,7 +55,7 @@ use rav1d::{
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, webcam::WebcamCapture,
+  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameLoopback, webcam::WebcamCapture,
 };
 use crate::{
   network::{
@@ -284,7 +284,11 @@ unsafe extern "C" {
   static kCMSampleAttachmentKey_NotSync: CFStringRef;
 }
 
-pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
+pub(super) fn encode(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  loopback: Option<VideoFrameLoopback>,
+) -> Result<VideoBroadcast, VideoError> {
   let runtime = tokio::runtime::Handle::try_current()
     .map_err(|_| VideoError::new("Video broadcasting must be started from the Tokio runtime."))?;
   let stop = Arc::new(AtomicBool::new(false));
@@ -302,6 +306,7 @@ pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Resul
         runtime,
         loop_stop,
         thread_keyframe_requests,
+        loopback,
         Some(init_tx),
       ) {
         thread_stop.store(true, Ordering::Relaxed);
@@ -340,6 +345,7 @@ fn run_broadcast_loop(
   runtime: tokio::runtime::Handle,
   stop: Arc<AtomicBool>,
   keyframe_requests: Arc<AtomicU64>,
+  loopback: Option<VideoFrameLoopback>,
   init_tx: Option<mpsc::Sender<Result<(), String>>>,
 ) -> Result<(), VideoError> {
   match MacosNativeStreamEncoder::new(&config) {
@@ -357,7 +363,7 @@ fn run_broadcast_loop(
       if let Some(init_tx) = init_tx {
         let _ = init_tx.send(Ok(()));
       }
-      return run_native_broadcast_loop(server, config, runtime, stop, keyframe_requests, &mut encoder);
+      return run_native_broadcast_loop(server, config, runtime, stop, keyframe_requests, loopback, &mut encoder);
     }
     Err(error) => {
       logger::log(&format!(
@@ -424,16 +430,17 @@ fn run_broadcast_loop(
     for sample in samples {
       let sample_len = sample.bytes.len();
       let sample_keyframe = sample.keyframe;
+      let frame = VideoFrame {
+        frame_number,
+        timestamp: timestamp_ms,
+        keyframe: sample_keyframe,
+        width: config.output_width,
+        height: config.output_height,
+        codec: config.codec,
+        encoded: sample.bytes,
+      };
       let send_result = runtime
-        .block_on(server.send_live_video_frame(VideoFrame {
-          frame_number,
-          timestamp: timestamp_ms,
-          keyframe: sample_keyframe,
-          width: config.output_width,
-          height: config.output_height,
-          codec: config.codec,
-          encoded: sample.bytes,
-        }))
+        .block_on(server.send_live_video_frame(frame.clone()))
         .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
@@ -444,6 +451,9 @@ fn run_broadcast_loop(
           ));
         }
         continue;
+      }
+      if let Some(loopback) = &loopback {
+        loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
         logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
@@ -480,6 +490,7 @@ fn run_native_broadcast_loop(
   runtime: tokio::runtime::Handle,
   stop: Arc<AtomicBool>,
   keyframe_requests: Arc<AtomicU64>,
+  loopback: Option<VideoFrameLoopback>,
   encoder: &mut MacosNativeStreamEncoder,
 ) -> Result<(), VideoError> {
   let frame_interval = Duration::from_nanos(1_000_000_000u64 / u64::from(config.fps.max(1)));
@@ -504,16 +515,17 @@ fn run_native_broadcast_loop(
       let sample_len = sample.bytes.len();
       let sample_keyframe = sample.keyframe;
       let timestamp_ms = started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+      let frame = VideoFrame {
+        frame_number,
+        timestamp: timestamp_ms,
+        keyframe: sample_keyframe,
+        width: config.output_width,
+        height: config.output_height,
+        codec: config.codec,
+        encoded: sample.bytes,
+      };
       let send_result = runtime
-        .block_on(server.send_live_video_frame(VideoFrame {
-          frame_number,
-          timestamp: timestamp_ms,
-          keyframe: sample_keyframe,
-          width: config.output_width,
-          height: config.output_height,
-          codec: config.codec,
-          encoded: sample.bytes,
-        }))
+        .block_on(server.send_live_video_frame(frame.clone()))
         .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
@@ -525,6 +537,9 @@ fn run_native_broadcast_loop(
         }
         frame_number = frame_number.wrapping_add(1);
         continue;
+      }
+      if let Some(loopback) = &loopback {
+        loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
         logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
@@ -636,7 +651,12 @@ impl CaptureSource {
       ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window => {
         CaptureSourceKind::Desktop(find_desktop_source(config.source_kind, config.source_id)?)
       }
-      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(config.source_id)?),
+      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(
+        config.source_id,
+        config.output_width,
+        config.output_height,
+        config.fps,
+      )?),
     };
     Ok(Self { kind })
   }

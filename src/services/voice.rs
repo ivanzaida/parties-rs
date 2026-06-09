@@ -162,7 +162,11 @@ impl VoiceEngine {
     self.control.muted.store(muted, Ordering::Relaxed);
     self.control.deafened.store(deafened, Ordering::Relaxed);
     if deafened {
-      self.mixer.lock().expect("voice mixer lock poisoned").clear();
+      self
+        .mixer
+        .lock()
+        .expect("voice mixer lock poisoned")
+        .clear_voice_audio();
     }
   }
 
@@ -222,10 +226,6 @@ impl VoiceEngine {
   }
 
   pub fn push_stream_audio_packet(&mut self, packet: ForwardedStreamAudioPacket) -> bool {
-    if self.control.deafened.load(Ordering::Relaxed) {
-      return false;
-    }
-
     let mut pcm = self.take_pcm_buffer(OPUS_FRAME_SIZE * CHANNELS);
     let stream = match self.stream_decoders.entry(packet.sender_id) {
       std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -866,10 +866,12 @@ struct OutputRenderState {
   render_processed_frame: Vec<f32>,
   source_cache: VecDeque<f32>,
   source_phase: f64,
+  last_deafened: bool,
 }
 
 impl OutputRenderState {
   fn new(channels: usize, output_rate: u32, control: Arc<VoiceControlState>, mixer: Arc<Mutex<VoiceMixer>>) -> Self {
+    let last_deafened = control.deafened.load(Ordering::Relaxed);
     Self {
       channels,
       output_rate,
@@ -882,6 +884,7 @@ impl OutputRenderState {
       render_processed_frame: Vec::with_capacity(PROCESS_FRAME_SIZE),
       source_cache: VecDeque::new(),
       source_phase: 0.0,
+      last_deafened,
     }
   }
 
@@ -889,19 +892,20 @@ impl OutputRenderState {
   where
     T: Sample + cpal::FromSample<f32>,
   {
-    if self.control.deafened.load(Ordering::Relaxed) {
+    let deafened = self.control.deafened.load(Ordering::Relaxed);
+    if deafened != self.last_deafened {
       self.source_cache.clear();
       self.render_frame.clear();
-      self.write_silence(data);
-      return;
+      self.last_deafened = deafened;
     }
+    let include_voice = !deafened;
 
     let frames = data.len() / self.channels.max(1);
     if frames == 0 {
       return;
     }
 
-    self.render_mono(frames);
+    self.render_mono(frames, include_voice);
     for (output_frame, sample) in data.chunks_mut(self.channels).zip(self.output.iter().copied()) {
       let converted = sample.to_sample::<T>();
       for channel in output_frame {
@@ -910,11 +914,11 @@ impl OutputRenderState {
     }
   }
 
-  fn render_mono(&mut self, frames: usize) {
+  fn render_mono(&mut self, frames: usize, include_voice: bool) {
     self.output.resize(frames, 0.0);
 
     if self.output_rate == SAMPLE_RATE {
-      mix_samples_nonblocking(&self.mixer, &mut self.output);
+      mix_samples_nonblocking(&self.mixer, &mut self.output, include_voice);
       self.queue_render_output();
       return;
     }
@@ -924,7 +928,7 @@ impl OutputRenderState {
     while self.source_cache.len() <= needed_index {
       let needed = needed_index + 1 - self.source_cache.len();
       self.source.resize(needed, 0.0);
-      mix_samples_nonblocking(&self.mixer, &mut self.source);
+      mix_samples_nonblocking(&self.mixer, &mut self.source, include_voice);
       self.queue_render_source();
       self.source_cache.extend(self.source.iter().copied());
     }
@@ -987,25 +991,15 @@ impl OutputRenderState {
       pop_front_samples(&mut self.render_frame, PROCESS_FRAME_SIZE);
     }
   }
-
-  fn write_silence<T>(&self, data: &mut [T])
-  where
-    T: Sample + cpal::FromSample<f32>,
-  {
-    let silence = 0.0_f32.to_sample::<T>();
-    for sample in data {
-      *sample = silence;
-    }
-  }
 }
 
-fn mix_samples_nonblocking(mixer: &Arc<Mutex<VoiceMixer>>, output: &mut [f32]) {
+fn mix_samples_nonblocking(mixer: &Arc<Mutex<VoiceMixer>>, output: &mut [f32], include_voice: bool) {
   let Ok(mut mixer) = mixer.try_lock() else {
     output.fill(0.0);
     return;
   };
 
-  mixer.mix_samples(output);
+  mixer.mix_samples(output, include_voice);
 }
 
 #[derive(Default)]
@@ -1055,10 +1049,13 @@ impl VoiceMixer {
     }
   }
 
-  fn mix_samples(&mut self, output: &mut [f32]) {
+  fn mix_samples(&mut self, output: &mut [f32], include_voice: bool) {
     output.fill(0.0);
 
     for (stream_id, stream) in &mut self.streams {
+      if !include_voice && matches!(stream_id, AudioStreamId::Voice(_)) {
+        continue;
+      }
       let volume = self.volumes.get(&stream_id.user_id()).copied().unwrap_or(1.0);
       for sample in output.iter_mut() {
         if let Some(next) = stream.next_sample() {
@@ -1081,10 +1078,17 @@ impl VoiceMixer {
     }
   }
 
-  fn clear(&mut self) {
-    let streams = std::mem::take(&mut self.streams);
-    for (_, stream) in streams {
-      self.recycle_stream(stream);
+  fn clear_voice_audio(&mut self) {
+    let stream_ids = self
+      .streams
+      .keys()
+      .copied()
+      .filter(|stream_id| matches!(stream_id, AudioStreamId::Voice(_)))
+      .collect::<Vec<_>>();
+    for stream_id in stream_ids {
+      if let Some(stream) = self.streams.remove(&stream_id) {
+        self.recycle_stream(stream);
+      }
     }
   }
 
@@ -1340,6 +1344,35 @@ mod tests {
 
     stream.frames.push_back(vec![0.25; OPUS_FRAME_SIZE]);
     assert_eq!(stream.next_sample(), Some(0.5));
+  }
+
+  #[test]
+  fn mixer_excludes_voice_but_keeps_stream_audio() {
+    let mut mixer = VoiceMixer::default();
+    mixer.push_frame(AudioStreamId::Voice(1), vec![0.8; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Voice(1), vec![0.8; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+
+    let mut output = vec![0.0; OPUS_FRAME_SIZE];
+    mixer.mix_samples(&mut output, false);
+
+    assert!(output.iter().all(|sample| (*sample - 0.25).abs() < f32::EPSILON));
+  }
+
+  #[test]
+  fn clear_voice_audio_preserves_stream_audio() {
+    let mut mixer = VoiceMixer::default();
+    mixer.push_frame(AudioStreamId::Voice(1), vec![0.8; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Voice(1), vec![0.8; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+    mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+
+    mixer.clear_voice_audio();
+    let mut output = vec![0.0; OPUS_FRAME_SIZE];
+    mixer.mix_samples(&mut output, true);
+
+    assert!(output.iter().all(|sample| (*sample - 0.25).abs() < f32::EPSILON));
   }
 
   #[test]

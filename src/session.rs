@@ -22,7 +22,7 @@ use crate::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
       },
-      data::{ForwardedStreamAudioPacket, ForwardedVideoFrame, VideoControl},
+      data::{ForwardedStreamAudioPacket, ForwardedVideoFrame, VideoControl, VideoFrame},
     },
     server::{ReceivedAudioPacket, Server, ServerError},
   },
@@ -30,7 +30,8 @@ use crate::{
     logger,
     notifications::{self, NotificationAudioSettings, NotificationSound},
     video::{
-      DecodedVideoFrame, DecodedVideoPixelFormat, VideoBroadcast, VideoBroadcastConfig, VideoDecodeConfig, VideoDecoder,
+      DecodedVideoFrame, DecodedVideoPixelFormat, VideoBroadcast, VideoBroadcastConfig, VideoDecodeConfig,
+      VideoDecoder, VideoFrameLoopback,
     },
     voice::{LocalVoiceCallback, VoiceEngine},
   },
@@ -39,11 +40,11 @@ use crate::{
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_USER_VOLUME: i32 = 100;
-const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
-const MAX_DECODE_VIDEO_BATCH: usize = 10;
-const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(33);
+const MAX_QUEUED_VIDEO_PACKETS: usize = 48;
+const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 12;
+const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 #[cfg(target_os = "windows")]
-const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = false;
+const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = true;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectedServerInfo {
@@ -263,8 +264,14 @@ impl VideoPacketQueue {
   }
 
   fn push(&self, packet: ForwardedVideoFrame) {
+    if self.closed.load(Ordering::Relaxed) {
+      return;
+    }
     {
       let mut packets = self.packets.lock().expect("video packet queue lock poisoned");
+      if self.closed.load(Ordering::Relaxed) {
+        return;
+      }
       if packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
         packets.pop_front();
         self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -528,6 +535,7 @@ pub struct ServerSession {
   pending_keepalive_ping: Arc<Mutex<Option<Instant>>>,
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
   video_broadcast: Arc<Mutex<Option<VideoBroadcast>>>,
+  video_packet_queue: Arc<Mutex<Arc<VideoPacketQueue>>>,
   video_frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
   video_errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   #[cfg(target_os = "windows")]
@@ -556,6 +564,7 @@ impl Default for ServerSession {
       pending_keepalive_ping: Arc::new(Mutex::new(None)),
       voice_engine: Arc::new(Mutex::new(None)),
       video_broadcast: Arc::new(Mutex::new(None)),
+      video_packet_queue: Arc::new(Mutex::new(Arc::new(VideoPacketQueue::new()))),
       video_frames: Arc::new(Mutex::new(HashMap::new())),
       video_errors: Arc::new(Mutex::new(HashMap::new())),
       #[cfg(target_os = "windows")]
@@ -590,6 +599,36 @@ impl ServerSession {
   #[cfg(not(target_os = "windows"))]
   fn dx12_video_surface_allocator(&self) -> Option<()> {
     None
+  }
+
+  fn reset_video_packet_queue(&self) -> Arc<VideoPacketQueue> {
+    let queue = Arc::new(VideoPacketQueue::new());
+    *self.video_packet_queue.lock().expect("server session lock poisoned") = queue.clone();
+    queue
+  }
+
+  fn current_video_packet_queue(&self) -> Arc<VideoPacketQueue> {
+    self
+      .video_packet_queue
+      .lock()
+      .expect("server session lock poisoned")
+      .clone()
+  }
+
+  fn push_local_video_frame(&self, sender_id: UserId, frame: VideoFrame) {
+    if self.watching_user_id() != Some(sender_id) {
+      return;
+    }
+    self
+      .current_video_packet_queue()
+      .push(ForwardedVideoFrame { sender_id, frame });
+  }
+
+  fn local_video_loopback(&self, sender_id: UserId) -> VideoFrameLoopback {
+    let session = self.clone();
+    Arc::new(move |frame| {
+      session.push_local_video_frame(sender_id, frame);
+    })
   }
 
   pub fn set_connected(&self, connected: ConnectedServer) {
@@ -1171,6 +1210,23 @@ impl ServerSession {
       .watching_user_id
   }
 
+  fn video_decode_config_for_share(&self, user_id: UserId) -> Option<VideoDecodeConfig> {
+    let lobby = self.lobby.lock().expect("server session lock poisoned");
+    let metadata = &lobby
+      .screen_shares
+      .iter()
+      .find(|share| share.sharer_user_id == user_id)?
+      .metadata;
+    if !metadata.codec.is_supported_stream_codec() || metadata.width == 0 || metadata.height == 0 {
+      return None;
+    }
+    Some(VideoDecodeConfig {
+      codec: metadata.codec,
+      width: metadata.width,
+      height: metadata.height,
+    })
+  }
+
   fn retain_video_cache(&self, watched_user_id: Option<UserId>) {
     let mut frames = self.video_frames.lock().expect("server session lock poisoned");
     let mut marks = self.video_revision_marks.lock().expect("server session lock poisoned");
@@ -1299,11 +1355,13 @@ impl ServerSession {
 
   pub fn start_video_broadcast(&self, config: VideoBroadcastConfig) -> Result<(), String> {
     let server = self.server().ok_or_else(|| "No connected server.".to_owned())?;
-    let broadcast = VideoBroadcast::start(server, config).map_err(|error| {
-      let error = error.to_string();
-      logger::log(&format!("[video] VideoBroadcast::start failed: {error}"));
-      error
-    })?;
+    let local_user_id = self.info().ok_or_else(|| "No connected server.".to_owned())?.user_id;
+    let broadcast = VideoBroadcast::start_with_loopback(server, config, Some(self.local_video_loopback(local_user_id)))
+      .map_err(|error| {
+        let error = error.to_string();
+        logger::log(&format!("[video] VideoBroadcast::start failed: {error}"));
+        error
+      })?;
     let mut video_broadcast = self.video_broadcast.lock().expect("server session lock poisoned");
     video_broadcast.replace(broadcast);
     logger::log("[video] local broadcaster stored in session");
@@ -1461,7 +1519,7 @@ impl ServerSession {
   fn run_video_receiver(&self, server: Arc<Server>, runtime: tokio::runtime::Handle, stop: Arc<AtomicBool>) {
     logger::log("[video] receiver thread started");
     let _dx12_video_surfaces = self.dx12_video_surface_allocator();
-    let queue = Arc::new(VideoPacketQueue::new());
+    let queue = self.reset_video_packet_queue();
     let reader_thread = {
       let server = server.clone();
       let runtime = runtime.clone();
@@ -1536,12 +1594,38 @@ impl ServerSession {
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
         if let Some(user_id) = watched_user {
           awaiting_keyframes.insert(user_id);
+          if let Some(config) = self.video_decode_config_for_share(user_id)
+            && decoders.get(&user_id).is_none_or(|decoder| decoder.config() != &config)
+          {
+            match VideoDecoder::start(config.clone()) {
+              Ok(decoder) => {
+                logger::log(&format!(
+                  "[video] decoder prewarmed for user {user_id}: codec={:?} size={}x{}",
+                  config.codec, config.width, config.height
+                ));
+                decoders.insert(user_id, decoder);
+              }
+              Err(error) => {
+                logger::log(&format!(
+                  "[video] failed to prewarm decoder for user {user_id}: {error}"
+                ));
+              }
+            }
+          }
         }
         last_watched_user = watched_user;
         logger::log(&format!("[video] watch target changed: {watched_user:?}"));
       }
 
-      if dropped_count > 0 || batch.len() > MAX_DECODE_VIDEO_BATCH {
+      if batch.len() >= LARGE_VIDEO_BATCH_LOG_THRESHOLD {
+        logger::log(&format!(
+          "[video] draining large video batch: queued={} dropped={}",
+          batch.len(),
+          dropped_count
+        ));
+      }
+
+      if dropped_count > 0 {
         let affected_users = batch
           .iter()
           .filter(|packet| Some(packet.sender_id) == watched_user)
@@ -1617,9 +1701,8 @@ impl ServerSession {
           }
 
           #[cfg(target_os = "windows")]
-          if output
-            && let Some(surface) =
-              self.dx12_video_surface_for_decode(packet.sender_id, packet.frame.width, packet.frame.height)
+          if let Some(surface) =
+            self.dx12_video_surface_for_decode(packet.sender_id, packet.frame.width, packet.frame.height)
             && let Some(decoded) = decode_video_packet_to_dx12(
               &mut decoders,
               &mut decoder_failures,

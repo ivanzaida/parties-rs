@@ -263,10 +263,9 @@ bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_1
     pic.bufferFmt = map.mappedBufferFmt;
     pic.inputTimeStamp = static_cast<uint64_t>(timestamp_100ns);
 
-    if (force_keyframe_) {
+    if (force_keyframe_.exchange(false, std::memory_order_acq_rel)) {
         pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
         pic.pictureType = NV_ENC_PIC_TYPE_IDR;
-        force_keyframe_ = false;
     }
 
     {
@@ -354,7 +353,7 @@ bool NvencEncoder::encode_registered(int slot, int64_t timestamp_100ns) {
 }
 
 void NvencEncoder::force_keyframe() {
-    force_keyframe_ = true;
+    force_keyframe_.store(true, std::memory_order_release);
 }
 
 void NvencEncoder::set_bitrate(uint32_t bitrate) {
