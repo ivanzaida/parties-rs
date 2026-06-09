@@ -20,7 +20,7 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "windows")]
 mod webcam;
 #[cfg(target_os = "windows")]
 mod windows;

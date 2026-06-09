@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+use std::ffi::CStr;
+
 #[derive(Clone, Debug, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub struct WebcamDevice {
   pub value: String,
@@ -11,12 +14,17 @@ pub fn webcam_device_id(value: &str) -> u32 {
 }
 
 pub fn webcam_devices() -> Vec<WebcamDevice> {
+  #[cfg(target_os = "macos")]
+  {
+    return native_macos_webcam_devices();
+  }
+
   #[cfg(target_os = "windows")]
   {
     return windows_webcam::webcam_devices().unwrap_or_default();
   }
 
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   {
     Vec::new()
   }
@@ -146,4 +154,52 @@ pub(crate) mod windows_webcam {
     }
     Ok(out)
   }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+  fn parties_macos_camera_refresh() -> usize;
+  fn parties_macos_camera_unique_id(index: usize) -> *const std::ffi::c_char;
+  fn parties_macos_camera_name(index: usize) -> *const std::ffi::c_char;
+}
+
+#[cfg(target_os = "macos")]
+fn native_macos_webcam_devices() -> Vec<WebcamDevice> {
+  let count = unsafe { parties_macos_camera_refresh() };
+  let mut devices = (0..count)
+    .filter_map(|index| {
+      let value = unsafe { c_string(parties_macos_camera_unique_id(index))? };
+      let label = unsafe { c_string(parties_macos_camera_name(index))? };
+      if value.trim().is_empty() {
+        return None;
+      }
+      Some(WebcamDevice {
+        value,
+        label: if label.trim().is_empty() {
+          format!("Camera {}", index + 1)
+        } else {
+          label
+        },
+      })
+    })
+    .collect::<Vec<_>>();
+
+  devices.sort_by(|left, right| {
+    left
+      .label
+      .to_lowercase()
+      .cmp(&right.label.to_lowercase())
+      .then_with(|| left.value.cmp(&right.value))
+  });
+  let mut seen_values = std::collections::HashSet::new();
+  devices.retain(|device| seen_values.insert(device.value.clone()));
+  devices
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn c_string(ptr: *const std::ffi::c_char) -> Option<String> {
+  if ptr.is_null() {
+    return None;
+  }
+  unsafe { CStr::from_ptr(ptr) }.to_str().ok().map(str::to_owned)
 }
