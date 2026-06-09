@@ -262,12 +262,12 @@ fn capture_webcam_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
 }
 
 fn capture_screen_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
-  let capture = || DesktopCaptureSource::find(DesktopCaptureSourceKind::Screen, key.id)?.capture_frame();
+  let capture = || DesktopCaptureSource::find(DesktopCaptureSourceKind::Screen, key.id)?.capture_snapshot_frame();
   captured_preview(key, capture)
 }
 
 fn capture_window_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
-  let capture = || DesktopCaptureSource::find(DesktopCaptureSourceKind::Window, key.id)?.capture_frame();
+  let capture = || DesktopCaptureSource::find(DesktopCaptureSourceKind::Window, key.id)?.capture_snapshot_frame();
   captured_preview(key, capture)
 }
 
