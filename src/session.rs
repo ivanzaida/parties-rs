@@ -697,6 +697,10 @@ impl ServerSession {
     }
   }
 
+  pub fn shutdown_requested(&self) -> bool {
+    self.shutdown_requested.load(Ordering::Relaxed)
+  }
+
   pub fn info(&self) -> Option<ConnectedServerInfo> {
     self
       .current
@@ -1335,6 +1339,10 @@ impl ServerSession {
       logger::log("[network] lobby receiver not started: no connected server");
       return;
     };
+    if self.shutdown_requested.load(Ordering::Relaxed) {
+      logger::log("[network] lobby receiver not started: shutdown is in progress");
+      return;
+    }
     if self.lobby.lock().expect("server session lock poisoned").disconnected {
       logger::log("[network] lobby receiver not started: lobby is disconnected");
       return;

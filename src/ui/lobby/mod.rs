@@ -191,7 +191,11 @@ impl Component for LobbyScreen {
       self.revision_interval.start();
     }
     let receiver = receiver_action(ctx, session.clone());
-    if !lobby.disconnected && !lobby.receiver_running && !receiver.state().get().is_pending() {
+    if !session.shutdown_requested()
+      && !lobby.disconnected
+      && !lobby.receiver_running
+      && !receiver.state().get().is_pending()
+    {
       receiver.run(());
     }
     let chat_history = chat_history_action(ctx, session.clone());
