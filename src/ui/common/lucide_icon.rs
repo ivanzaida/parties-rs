@@ -50,6 +50,7 @@ fn name_to_char(name: &str) -> char {
     "alert-circle" | "circle-alert" => '\u{e077}',
     "activity" => '\u{e038}',
     "app-window" => '\u{e426}',
+    "camera" => '\u{e064}',
     "check" => '\u{e06c}',
     "check-circle" => '\u{e07c}',
     "chevron-down" => '\u{e06d}',

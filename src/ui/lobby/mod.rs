@@ -254,6 +254,7 @@ impl Component for LobbyScreen {
         lobby: lobby.clone(),
         start_stream_modal_open: self.start_stream_modal_open.clone(),
         stop_stream: stop_stream.clone(),
+        watch_stream: watch_stream.clone(),
       }))
       .child(main(
         ctx,
