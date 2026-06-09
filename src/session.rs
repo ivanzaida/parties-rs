@@ -543,6 +543,7 @@ pub struct ServerSession {
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
+  stream_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   notification_audio_settings: Arc<Mutex<NotificationAudioSettings>>,
   shutdown_requested: Arc<AtomicBool>,
   revision: Signal<u64>,
@@ -572,6 +573,7 @@ impl Default for ServerSession {
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
       stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
+      stream_volumes: Arc::new(Mutex::new(HashMap::new())),
       notification_audio_settings: Arc::new(Mutex::new(NotificationAudioSettings::default())),
       shutdown_requested: Arc::new(AtomicBool::new(false)),
       revision: Signal::new(0),
@@ -667,6 +669,11 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self.user_volumes.lock().expect("server session lock poisoned").clear();
+    self
+      .stream_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
     self.bump_revision();
   }
 
@@ -705,6 +712,11 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self.user_volumes.lock().expect("server session lock poisoned").clear();
+    self
+      .stream_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
     self.bump_revision();
   }
 
@@ -900,6 +912,31 @@ impl ServerSession {
     }
     if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
       engine.set_user_volume(user_id, volume);
+    }
+  }
+
+  pub fn stream_volume(&self, user_id: UserId) -> i32 {
+    self
+      .stream_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .get(&user_id)
+      .copied()
+      .unwrap_or(DEFAULT_USER_VOLUME)
+  }
+
+  pub fn set_stream_volume(&self, user_id: UserId, volume: i32) {
+    let volume = volume.clamp(0, 100);
+    {
+      let mut stream_volumes = self.stream_volumes.lock().expect("server session lock poisoned");
+      if volume == DEFAULT_USER_VOLUME {
+        stream_volumes.remove(&user_id);
+      } else {
+        stream_volumes.insert(user_id, volume);
+      }
+    }
+    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
+      engine.set_stream_volume(user_id, volume);
     }
   }
 
@@ -1312,6 +1349,16 @@ impl ServerSession {
     {
       engine.set_user_volume(user_id, volume);
     }
+    for (user_id, volume) in self
+      .stream_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .iter()
+      .map(|(user_id, volume)| (*user_id, *volume))
+      .collect::<Vec<_>>()
+    {
+      engine.set_stream_volume(user_id, volume);
+    }
     let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
     *voice_engine = Some(engine);
     Ok(())
@@ -1338,6 +1385,16 @@ impl ServerSession {
       .collect::<Vec<_>>()
     {
       engine.set_user_volume(user_id, volume);
+    }
+    for (user_id, volume) in self
+      .stream_volumes
+      .lock()
+      .expect("server session lock poisoned")
+      .iter()
+      .map(|(user_id, volume)| (*user_id, *volume))
+      .collect::<Vec<_>>()
+    {
+      engine.set_stream_volume(user_id, volume);
     }
     let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
     *voice_engine = Some(engine);

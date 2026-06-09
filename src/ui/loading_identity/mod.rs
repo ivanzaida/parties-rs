@@ -8,16 +8,19 @@ use lurq::{
   },
   components::{Column, Rect, Row, Text},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify},
+  layout::{layout_kind::Justify, Alignment},
   node::{
-    BackgroundColor, CursorIcon, Element, Style,
-    dimension::{Dimension::Pct, IntoDimension},
+    dimension::{Dimension::Pct, IntoDimension}, BackgroundColor, CursorIcon, Element,
+    Style,
   },
 };
 
 use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
-  services::startup::{StartupProgress, StartupProgressLabels, load_startup_data},
+  services::{
+    startup::{load_startup_data, StartupProgress, StartupProgressLabels},
+    updater::{restart_into_update, run_startup_update_check, StartupUpdateStatus},
+  },
   storage::Storage,
   theme,
   ui::{
@@ -35,11 +38,14 @@ const PREVIEW_LOADING_ERROR: bool = false;
 pub struct LoadingIdentityScreenProps {
   pub storage: Signal<Option<Storage>>,
   pub startup_error: Option<String>,
+  pub update_status: Signal<StartupUpdateStatus>,
 }
 
 impl PartialEq for LoadingIdentityScreenProps {
   fn eq(&self, other: &Self) -> bool {
-    self.storage.id() == other.storage.id() && self.startup_error == other.startup_error
+    self.storage.id() == other.storage.id()
+      && self.startup_error == other.startup_error
+      && self.update_status.id() == other.update_status.id()
   }
 }
 
@@ -119,6 +125,13 @@ impl Component for LoadingIdentityScreen {
     let props = ctx.props::<Self::Props>().clone();
     let copy = LoadingIdentityCopy::from_ctx(ctx);
     let retry_nonce = self.retry_nonce.get();
+    let update = ctx
+      .future(retry_nonce, {
+        let update_status = props.update_status.clone();
+        move |_| run_startup_update_check(update_status.clone())
+      })
+      .state()
+      .get();
     let startup = if retry_nonce == 0 && props.startup_error.is_some() {
       None
     } else {
@@ -151,10 +164,13 @@ impl Component for LoadingIdentityScreen {
     } else {
       initial_error.or(startup_error)
     };
+    let update_status = props.update_status.get();
+    let update_blocks_startup = update.is_pending() || matches!(update_status, StartupUpdateStatus::Ready { .. });
 
     if !PREVIEW_LOADING_ERROR
       && let Some(data) = startup.as_ref().and_then(|startup| startup.data.as_ref())
       && self.minimum_visible.get()
+      && !update_blocks_startup
       && !self.navigated.get_untracked()
     {
       self.navigated.set(true);
@@ -174,7 +190,15 @@ impl Component for LoadingIdentityScreen {
     let content = if let Some(error) = error {
       self.failure_screen(ctx, &error, self.progress.clone(), &copy)
     } else {
-      self.loading_screen(ctx, &progress, &copy)
+      let displayed_progress = update_progress(ctx, &update_status, update.is_pending()).unwrap_or(progress);
+      self.loading_screen(
+        ctx,
+        &displayed_progress,
+        &copy,
+        &props.update_status,
+        &update_status,
+        update.is_pending(),
+      )
     };
 
     Column::new()
@@ -190,13 +214,26 @@ impl Component for LoadingIdentityScreen {
 }
 
 impl LoadingIdentityScreen {
-  fn loading_screen(&self, ctx: &mut Ctx, progress: &StartupProgress, copy: &LoadingIdentityCopy) -> Element {
-    Column::new()
+  fn loading_screen(
+    &self,
+    ctx: &mut Ctx,
+    progress: &StartupProgress,
+    copy: &LoadingIdentityCopy,
+    update_status_signal: &Signal<StartupUpdateStatus>,
+    update_status: &StartupUpdateStatus,
+    update_pending: bool,
+  ) -> Element {
+    let mut content = Column::new()
       .align_items(Alignment::Center)
       .spacing(28.px())
       .child(self.brand(ctx, copy))
-      .child(self.progress_group(ctx.theme(), progress))
-      .into()
+      .child(self.progress_group(ctx.theme(), progress));
+
+    if startup_update_panel_visible(update_status, update_pending) {
+      content = content.child(self.startup_update_panel(ctx, update_status_signal, update_status, update_pending));
+    }
+
+    content.into()
   }
 
   fn brand(&self, ctx: &mut Ctx, copy: &LoadingIdentityCopy) -> impl Into<Element> {
@@ -254,6 +291,217 @@ impl LoadingIdentityScreen {
 
   fn spinner(&self, _theme: &Theme) -> impl Into<Element> {
     loader(16.px())
+  }
+
+  fn startup_update_panel(
+    &self,
+    ctx: &mut Ctx,
+    update_status_signal: &Signal<StartupUpdateStatus>,
+    status: &StartupUpdateStatus,
+    update_pending: bool,
+  ) -> impl Into<Element> {
+    let version = update_version(status).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    let (title, description) = update_panel_copy(ctx, status, update_pending);
+    let ready_path = match status {
+      StartupUpdateStatus::Ready { staged_executable, .. } => Some(staged_executable.clone()),
+      _ => None,
+    };
+    let mut panel = Column::new()
+      .width(520.px())
+      .spacing(16.px())
+      .padding_vertical(18.px())
+      .padding_horizontal(18.px())
+      .rounded(8.0)
+      .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+      .border_inside(1.0, theme::PaletteColor::Border)
+      .child(self.update_panel_header(ctx, &version))
+      .child(
+        Column::new()
+          .width(Pct(100.0))
+          .spacing(6.px())
+          .child(Text::new(&title).variant(theme::TypographyStyle::Heading))
+          .child(
+            Text::new(&description)
+              .variant(theme::TypographyStyle::Link)
+              .width(Pct(100.0)),
+          ),
+      )
+      .child(self.update_steps(ctx, status, update_pending));
+
+    if let Some(staged_executable) = ready_path {
+      let update_status = update_status_signal.clone();
+      panel = panel.child(Row::new().align_items(Alignment::Center).child(
+        self.restart_update_button(ctx, status).on_click(move |_| {
+          if let Err(error) = restart_into_update(&staged_executable) {
+            update_status.set(StartupUpdateStatus::Failed(error));
+          }
+        }),
+      ));
+    }
+
+    panel
+  }
+
+  fn update_panel_header(&self, ctx: &mut Ctx, version: &str) -> impl Into<Element> {
+    Row::new()
+      .width(Pct(100.0))
+      .align_items(Alignment::Center)
+      .spacing(12.px())
+      .child(
+        Row::new()
+          .align_items(Alignment::Center)
+          .spacing(7.px())
+          .padding_vertical(5.px())
+          .padding_horizontal(9.px())
+          .rounded(5.0)
+          .background(BackgroundColor::Palette(theme::PaletteColor::InfoMuted))
+          .border_inside(1.0, BackgroundColor::Color(theme::palette().info.with_opacity(0.35)))
+          .child(ctx.mount::<LucideIcon>(LucideIconProps {
+            icon: "refresh-cw",
+            size: 13.0,
+            color: theme::palette().info,
+          }))
+          .child(
+            Text::new(&ctx.t("loading_identity.update.badge"))
+              .variant(theme::TypographyStyle::FieldLabel)
+              .color(PaletteColor::Info),
+          ),
+      )
+      .child(
+        Text::new(&ctx.t_args(
+          "loading_identity.update.version_transition",
+          [
+            ("current", env!("CARGO_PKG_VERSION").to_owned()),
+            ("version", version.to_owned()),
+          ],
+        ))
+        .nowrap()
+        .variant(theme::TypographyStyle::Mono)
+        .color(PaletteColor::TextMuted),
+      )
+  }
+
+  fn update_steps(&self, ctx: &mut Ctx, status: &StartupUpdateStatus, update_pending: bool) -> impl Into<Element> {
+    let download_description = match status {
+      StartupUpdateStatus::Downloading { downloaded, total, .. } => download_progress_label(ctx, *downloaded, *total),
+      StartupUpdateStatus::Staging { .. } | StartupUpdateStatus::Ready { .. } => {
+        ctx.t("loading_identity.update.step.download.complete")
+      }
+      _ if update_pending => ctx.t("loading_identity.update.step.download.pending"),
+      _ => ctx.t("loading_identity.update.step.waiting_release_check"),
+    };
+    let (check_state, download_state, restart_state) = update_step_states(status, update_pending);
+
+    Column::new()
+      .width(Pct(100.0))
+      .spacing(12.px())
+      .child(self.update_step(
+        ctx,
+        &ctx.t("loading_identity.update.step.found.title"),
+        &update_found_description(ctx, status, update_pending),
+        "check",
+        check_state,
+      ))
+      .child(self.update_step(
+        ctx,
+        &ctx.t("loading_identity.update.step.download.title"),
+        &download_description,
+        "refresh-cw",
+        download_state,
+      ))
+      .child(self.update_step(
+        ctx,
+        &ctx.t("loading_identity.update.step.restart.title"),
+        &ctx.t("loading_identity.update.step.restart.description"),
+        "rotate-cw",
+        restart_state,
+      ))
+  }
+
+  fn update_step(
+    &self,
+    ctx: &mut Ctx,
+    title: &str,
+    description: &str,
+    icon: &'static str,
+    state: UpdateStepState,
+  ) -> impl Into<Element> {
+    let (background, border, icon_color) = match state {
+      UpdateStepState::Done => (
+        theme::PaletteColor::SuccessMuted,
+        BackgroundColor::Color(theme::palette().success.with_opacity(0.4)),
+        theme::palette().success,
+      ),
+      UpdateStepState::Active => (
+        theme::PaletteColor::InfoMuted,
+        BackgroundColor::Color(theme::palette().info.with_opacity(0.4)),
+        theme::palette().info,
+      ),
+      UpdateStepState::Idle => (
+        theme::PaletteColor::SurfaceRaised,
+        BackgroundColor::Palette(theme::PaletteColor::Border),
+        theme::palette().text_secondary,
+      ),
+    };
+
+    Row::new()
+      .width(Pct(100.0))
+      .align_items(Alignment::Center)
+      .spacing(12.px())
+      .child(
+        Row::new()
+          .width(34.px())
+          .height(34.px())
+          .align_items(Alignment::Center)
+          .justify(Justify::Center)
+          .rounded(7.0)
+          .background(BackgroundColor::Palette(background))
+          .border_inside(1.0, border)
+          .child(ctx.mount::<LucideIcon>(LucideIconProps {
+            icon,
+            size: 16.0,
+            color: icon_color,
+          })),
+      )
+      .child(
+        Column::new()
+          .flex(1.0)
+          .spacing(3.px())
+          .child(Text::new(title).variant(theme::TypographyStyle::Button))
+          .child(
+            Text::new(description)
+              .variant(theme::TypographyStyle::Link)
+              .color(PaletteColor::TextMuted)
+              .width(Pct(100.0)),
+          ),
+      )
+  }
+
+  fn restart_update_button(&self, ctx: &mut Ctx, status: &StartupUpdateStatus) -> Row {
+    Row::new()
+      .height(34.px())
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .spacing(8.px())
+      .padding_horizontal(14.px())
+      .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
+      .border_inside(1.0, theme::PaletteColor::Accent)
+      .rounded(5.0)
+      .cursor(CursorIcon::Pointer)
+      .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentHover)))
+      .child(ctx.mount::<LucideIcon>(LucideIconProps {
+        icon: "rotate-cw",
+        size: 15.0,
+        color: theme::palette().text_inverse,
+      }))
+      .child(
+        Text::new(&ctx.t_args(
+          "loading_identity.update.action.restart_launch",
+          [("version", update_version(status).unwrap_or_default())],
+        ))
+        .variant(theme::TypographyStyle::Button)
+        .color(PaletteColor::TextInverse),
+      )
   }
 
   fn failure_screen(
@@ -449,4 +697,185 @@ fn storage_error_copy(error: &str) -> (String, String) {
     .unwrap_or(error);
 
   (code.to_owned(), detail.to_owned())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateStepState {
+  Done,
+  Active,
+  Idle,
+}
+
+fn startup_update_panel_visible(status: &StartupUpdateStatus, update_pending: bool) -> bool {
+  update_pending
+    || matches!(
+      status,
+      StartupUpdateStatus::Checking
+        | StartupUpdateStatus::Downloading { .. }
+        | StartupUpdateStatus::Staging { .. }
+        | StartupUpdateStatus::Ready { .. }
+    )
+}
+
+fn update_progress(ctx: &Ctx, status: &StartupUpdateStatus, update_pending: bool) -> Option<StartupProgress> {
+  match status {
+    StartupUpdateStatus::Idle if update_pending => Some(StartupProgress::new(
+      0.18,
+      ctx.t("loading_identity.update.progress.checking"),
+    )),
+    StartupUpdateStatus::Checking => Some(StartupProgress::new(
+      0.22,
+      ctx.t("loading_identity.update.progress.checking"),
+    )),
+    StartupUpdateStatus::Downloading { downloaded, total, .. } => {
+      let ratio = total
+        .filter(|total| *total > 0)
+        .map(|total| (*downloaded as f32 / total as f32).clamp(0.0, 1.0))
+        .unwrap_or(0.35);
+      Some(StartupProgress::new(
+        0.28 + ratio * 0.5,
+        ctx.t_args(
+          "loading_identity.update.progress.downloading",
+          [("percent", percent_value(ratio))],
+        ),
+      ))
+    }
+    StartupUpdateStatus::Staging { .. } => Some(StartupProgress::new(
+      0.9,
+      ctx.t("loading_identity.update.progress.preparing"),
+    )),
+    StartupUpdateStatus::Ready { .. } => Some(StartupProgress::new(
+      1.0,
+      ctx.t("loading_identity.update.progress.ready"),
+    )),
+    _ => None,
+  }
+}
+
+fn update_version(status: &StartupUpdateStatus) -> Option<String> {
+  match status {
+    StartupUpdateStatus::Downloading { version, .. }
+    | StartupUpdateStatus::Staging { version }
+    | StartupUpdateStatus::Ready { version, .. } => Some(version.clone()),
+    _ => None,
+  }
+}
+
+fn update_panel_copy(ctx: &Ctx, status: &StartupUpdateStatus, update_pending: bool) -> (Arc<str>, Arc<str>) {
+  match status {
+    StartupUpdateStatus::Ready { version, .. } => (
+      ctx.t_args(
+        "loading_identity.update.panel.ready.title",
+        [("version", version.clone())],
+      ),
+      ctx.t_args(
+        "loading_identity.update.panel.ready.description",
+        [("current", env!("CARGO_PKG_VERSION").to_owned())],
+      ),
+    ),
+    StartupUpdateStatus::Staging { version } => (
+      ctx.t_args(
+        "loading_identity.update.panel.staging.title",
+        [("version", version.clone())],
+      ),
+      ctx.t("loading_identity.update.panel.staging.description"),
+    ),
+    StartupUpdateStatus::Downloading { version, .. } => (
+      ctx.t_args(
+        "loading_identity.update.panel.downloading.title",
+        [("version", version.clone())],
+      ),
+      ctx.t("loading_identity.update.panel.downloading.description"),
+    ),
+    StartupUpdateStatus::Checking | StartupUpdateStatus::Idle if update_pending => (
+      ctx.t("loading_identity.update.panel.checking.title"),
+      ctx.t("loading_identity.update.panel.checking.description"),
+    ),
+    _ => (
+      ctx.t("loading_identity.update.panel.checking.title"),
+      ctx.t("loading_identity.update.panel.checking.description"),
+    ),
+  }
+}
+
+fn update_step_states(
+  status: &StartupUpdateStatus,
+  update_pending: bool,
+) -> (UpdateStepState, UpdateStepState, UpdateStepState) {
+  match status {
+    StartupUpdateStatus::Ready { .. } => (UpdateStepState::Done, UpdateStepState::Done, UpdateStepState::Active),
+    StartupUpdateStatus::Staging { .. } => (UpdateStepState::Done, UpdateStepState::Done, UpdateStepState::Active),
+    StartupUpdateStatus::Downloading { .. } => (UpdateStepState::Done, UpdateStepState::Active, UpdateStepState::Idle),
+    StartupUpdateStatus::Checking | StartupUpdateStatus::Idle if update_pending => {
+      (UpdateStepState::Active, UpdateStepState::Idle, UpdateStepState::Idle)
+    }
+    _ => (UpdateStepState::Idle, UpdateStepState::Idle, UpdateStepState::Idle),
+  }
+}
+
+fn update_found_description(ctx: &Ctx, status: &StartupUpdateStatus, update_pending: bool) -> Arc<str> {
+  match status {
+    StartupUpdateStatus::Downloading { version, total, .. } => {
+      let size = total
+        .map(|total| format_bytes(ctx, total))
+        .unwrap_or_else(|| ctx.t("loading_identity.update.size.unknown"));
+      ctx.t_args(
+        "loading_identity.update.step.found.description_with_size",
+        [("version", version.clone()), ("size", size.to_string())],
+      )
+    }
+    StartupUpdateStatus::Staging { version } | StartupUpdateStatus::Ready { version, .. } => ctx.t_args(
+      "loading_identity.update.step.found.description",
+      [("version", version.clone())],
+    ),
+    StartupUpdateStatus::Checking | StartupUpdateStatus::Idle if update_pending => {
+      ctx.t("loading_identity.update.step.found.contacting")
+    }
+    _ => ctx.t("loading_identity.update.step.waiting_release_check"),
+  }
+}
+
+fn download_progress_label(ctx: &Ctx, downloaded: u64, total: Option<u64>) -> Arc<str> {
+  if let Some(total) = total.filter(|total| *total > 0) {
+    let ratio = (downloaded as f32 / total as f32).clamp(0.0, 1.0);
+    return ctx.t_args(
+      "loading_identity.update.download_progress.with_total",
+      [
+        ("downloaded", format_bytes(ctx, downloaded).to_string()),
+        ("total", format_bytes(ctx, total).to_string()),
+        ("percent", percent_label(ratio)),
+      ],
+    );
+  }
+
+  ctx.t_args(
+    "loading_identity.update.download_progress.without_total",
+    [("downloaded", format_bytes(ctx, downloaded).to_string())],
+  )
+}
+
+fn percent_label(ratio: f32) -> String {
+  format!("{}%", percent_value(ratio))
+}
+
+fn percent_value(ratio: f32) -> String {
+  format!("{:.0}", ratio.clamp(0.0, 1.0) * 100.0)
+}
+
+fn format_bytes(ctx: &Ctx, bytes: u64) -> Arc<str> {
+  const MIB: f64 = 1024.0 * 1024.0;
+  const KIB: f64 = 1024.0;
+  if bytes >= 1024 * 1024 {
+    ctx.t_args(
+      "loading_identity.update.size.mib",
+      [("value", format!("{:.1}", bytes as f64 / MIB))],
+    )
+  } else if bytes >= 1024 {
+    ctx.t_args(
+      "loading_identity.update.size.kib",
+      [("value", format!("{:.1}", bytes as f64 / KIB))],
+    )
+  } else {
+    ctx.t_args("loading_identity.update.size.bytes", [("value", bytes.to_string())])
+  }
 }

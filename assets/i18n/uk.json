@@ -5,6 +5,16 @@
       "cancel": "Скасувати"
     }
   },
+  "app": {
+    "update_pill": {
+      "available": "Доступне оновлення",
+      "restart": "Перезапустити для оновлення",
+      "downloading_percent": "{{version}} завантажується {{percent}}%",
+      "downloading": "{{version}} завантажується",
+      "preparing": "{{version}} готується",
+      "launch": "Запустити {{version}}"
+    }
+  },
   "date": {
     "today": "Сьогодні",
     "current_year": "{{weekday}}, {{day}} {{month}}",
@@ -74,6 +84,65 @@
     "action": {
       "retry": "Повторити",
       "open_data_folder": "Відкрити теку даних"
+    },
+    "update": {
+      "badge": "ОНОВЛЕННЯ ПІД ЧАС ЗАПУСКУ",
+      "version_transition": "{{current}} -> {{version}}",
+      "progress": {
+        "checking": "Перевірка оновлень...",
+        "downloading": "Завантаження оновлення {{percent}}%...",
+        "preparing": "Підготовка оновлення...",
+        "ready": "Оновлення готове. Перезапустіть, щоб завершити."
+      },
+      "panel": {
+        "ready": {
+          "title": "Перезапустіть, щоб запустити Parties {{version}}",
+          "description": "Оновлення завантажено й підготовлено. Перезапустіть зараз, щоб замінити {{current}}; Parties відкриється автоматично."
+        },
+        "staging": {
+          "title": "Підготовка Parties {{version}}",
+          "description": "Пакет завантажено й готується до перезапуску."
+        },
+        "downloading": {
+          "title": "Parties {{version}} завантажується",
+          "description": "Оновлення завантажується автоматично перед відкриттям робочого простору."
+        },
+        "checking": {
+          "title": "Пошук новішої версії",
+          "description": "Parties перевіряє стрічку релізів перед відкриттям робочого простору."
+        }
+      },
+      "step": {
+        "waiting_release_check": "Очікування перевірки релізів",
+        "found": {
+          "title": "Оновлення знайдено",
+          "description_with_size": "Знайдено Parties {{version}}, {{size}}",
+          "description": "Знайдено Parties {{version}}",
+          "contacting": "З’єднання з релізами GitHub"
+        },
+        "download": {
+          "title": "Завантаження пакета",
+          "complete": "Завантаження завершено",
+          "pending": "Почнеться автоматично, якщо знайдено новішу версію"
+        },
+        "restart": {
+          "title": "Перезапуск у нову версію",
+          "description": "Перезапуск з’явиться після підготовки пакета"
+        }
+      },
+      "action": {
+        "restart_launch": "Перезапустити й запустити {{version}}"
+      },
+      "size": {
+        "unknown": "невідомий розмір",
+        "mib": "{{value}} МБ",
+        "kib": "{{value}} КБ",
+        "bytes": "{{value}} Б"
+      },
+      "download_progress": {
+        "with_total": "{{downloaded}} з {{total}} · {{percent}}",
+        "without_total": "{{downloaded}} завантажено"
+      }
     }
   },
   "identity": {

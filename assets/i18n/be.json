@@ -5,6 +5,16 @@
       "cancel": "Скасаваць"
     }
   },
+  "app": {
+    "update_pill": {
+      "available": "Даступнае абнаўленне",
+      "restart": "Перазапусціць для абнаўлення",
+      "downloading_percent": "{{version}} спампоўваецца {{percent}}%",
+      "downloading": "{{version}} спампоўваецца",
+      "preparing": "{{version}} рыхтуецца",
+      "launch": "Запусціць {{version}}"
+    }
+  },
   "date": {
     "today": "Сёння",
     "current_year": "{{weekday}}, {{day}} {{month}}",
@@ -74,6 +84,65 @@
     "action": {
       "retry": "Паўтарыць",
       "open_data_folder": "Адкрыць папку даных"
+    },
+    "update": {
+      "badge": "АБНАЎЛЕННЕ ПАДЧАС ЗАПУСКУ",
+      "version_transition": "{{current}} -> {{version}}",
+      "progress": {
+        "checking": "Праверка абнаўленняў...",
+        "downloading": "Спампоўванне абнаўлення {{percent}}%...",
+        "preparing": "Падрыхтоўка абнаўлення...",
+        "ready": "Абнаўленне гатова. Перазапусціце, каб завяршыць."
+      },
+      "panel": {
+        "ready": {
+          "title": "Перазапусціце, каб запусціць Parties {{version}}",
+          "description": "Абнаўленне спампавана і падрыхтавана. Перазапусціце зараз, каб замяніць {{current}}; Parties адкрыецца аўтаматычна."
+        },
+        "staging": {
+          "title": "Падрыхтоўка Parties {{version}}",
+          "description": "Пакет спампаваны і рыхтуецца да перазапуску."
+        },
+        "downloading": {
+          "title": "Parties {{version}} спампоўваецца",
+          "description": "Абнаўленне спампоўваецца аўтаматычна перад адкрыццём працоўнай прасторы."
+        },
+        "checking": {
+          "title": "Пошук навейшай версіі",
+          "description": "Parties правярае стужку рэлізаў перад адкрыццём працоўнай прасторы."
+        }
+      },
+      "step": {
+        "waiting_release_check": "Чаканне праверкі рэлізаў",
+        "found": {
+          "title": "Абнаўленне знойдзена",
+          "description_with_size": "Знойдзена Parties {{version}}, {{size}}",
+          "description": "Знойдзена Parties {{version}}",
+          "contacting": "Злучэнне з рэлізамі GitHub"
+        },
+        "download": {
+          "title": "Спампаваць пакет",
+          "complete": "Спампоўванне завершана",
+          "pending": "Пачнецца аўтаматычна, калі знойдзецца навейшая версія"
+        },
+        "restart": {
+          "title": "Перазапуск у новую версію",
+          "description": "Перазапуск з’явіцца пасля падрыхтоўкі пакета"
+        }
+      },
+      "action": {
+        "restart_launch": "Перазапусціць і запусціць {{version}}"
+      },
+      "size": {
+        "unknown": "невядомы памер",
+        "mib": "{{value}} МБ",
+        "kib": "{{value}} КБ",
+        "bytes": "{{value}} Б"
+      },
+      "download_progress": {
+        "with_total": "{{downloaded}} з {{total}} · {{percent}}",
+        "without_total": "{{downloaded}} спампавана"
+      }
     }
   },
   "identity": {

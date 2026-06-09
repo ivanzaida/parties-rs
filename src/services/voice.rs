@@ -186,6 +186,14 @@ impl VoiceEngine {
       .set_user_volume(user_id, volume_percent);
   }
 
+  pub fn set_stream_volume(&self, user_id: UserId, volume_percent: i32) {
+    self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .set_stream_volume(user_id, volume_percent);
+  }
+
   pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> bool {
     if self.control.deafened.load(Ordering::Relaxed) {
       return false;
@@ -1005,7 +1013,7 @@ fn mix_samples_nonblocking(mixer: &Arc<Mutex<VoiceMixer>>, output: &mut [f32], i
 #[derive(Default)]
 struct VoiceMixer {
   streams: HashMap<AudioStreamId, PcmStream>,
-  volumes: HashMap<UserId, f32>,
+  volumes: HashMap<AudioStreamId, f32>,
   frame_pool: Vec<Vec<f32>>,
 }
 
@@ -1015,21 +1023,21 @@ enum AudioStreamId {
   Stream(UserId),
 }
 
-impl AudioStreamId {
-  fn user_id(self) -> UserId {
-    match self {
-      Self::Voice(user_id) | Self::Stream(user_id) => user_id,
-    }
-  }
-}
-
 impl VoiceMixer {
   fn set_user_volume(&mut self, user_id: UserId, volume_percent: i32) {
+    self.set_volume_for_stream_id(AudioStreamId::Voice(user_id), volume_percent);
+  }
+
+  fn set_stream_volume(&mut self, user_id: UserId, volume_percent: i32) {
+    self.set_volume_for_stream_id(AudioStreamId::Stream(user_id), volume_percent);
+  }
+
+  fn set_volume_for_stream_id(&mut self, stream_id: AudioStreamId, volume_percent: i32) {
     let volume_percent = volume_percent.clamp(0, 100);
     if volume_percent == 100 {
-      self.volumes.remove(&user_id);
+      self.volumes.remove(&stream_id);
     } else {
-      self.volumes.insert(user_id, volume_percent as f32 / 100.0);
+      self.volumes.insert(stream_id, volume_percent as f32 / 100.0);
     }
   }
 
@@ -1056,7 +1064,7 @@ impl VoiceMixer {
       if !include_voice && matches!(stream_id, AudioStreamId::Voice(_)) {
         continue;
       }
-      let volume = self.volumes.get(&stream_id.user_id()).copied().unwrap_or(1.0);
+      let volume = self.volumes.get(stream_id).copied().unwrap_or(1.0);
       for sample in output.iter_mut() {
         if let Some(next) = stream.next_sample() {
           *sample += next * volume;

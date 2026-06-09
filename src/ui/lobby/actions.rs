@@ -5,7 +5,7 @@ use super::{
   SendChatInput, StartStreamAction, StartStreamInput, StopStreamAction, StopWatchingAction, WatchStreamAction,
 };
 use crate::{
-  network::protocol::VideoCodecId,
+  network::protocol::{ChannelId, VideoCodecId},
   services::{logger, video::VideoBroadcastConfig},
   session::{ConnectedServerInfo, ServerSession},
   storage::{AppSettings, Storage, StoredServer},
@@ -265,18 +265,71 @@ async fn reconnect_saved_server(
   storage: Storage,
   session: ServerSession,
 ) -> Result<ConnectedServerInfo, String> {
+  let reconnect_channel_id = session.lobby().selected_channel_id;
+  let reconnect_voice_state = reconnect_channel_id.and_then(|_| session.local_voice_state());
   let display_name = if server.display_name.trim().is_empty() {
     storage.load_settings().map_err(|error| error.to_string())?.display_name
   } else {
     server.display_name.clone()
   };
 
-  connect_and_store(
+  let info = connect_and_store(
     server.address,
     server.server_password,
     display_name,
-    Some(storage),
-    Some(session),
+    Some(storage.clone()),
+    Some(session.clone()),
   )
-  .await
+  .await?;
+
+  if let Some(channel_id) = reconnect_channel_id {
+    rejoin_previous_voice_channel(&session, &storage, channel_id, reconnect_voice_state).await;
+  }
+
+  Ok(info)
+}
+
+async fn rejoin_previous_voice_channel(
+  session: &ServerSession,
+  storage: &Storage,
+  channel_id: ChannelId,
+  voice_state: Option<(bool, bool)>,
+) {
+  let Some(server) = session.server() else {
+    logger::log(&format!(
+      "[lobby] skipped voice rejoin after reconnect: channel={channel_id} reason=no connected server"
+    ));
+    return;
+  };
+  let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
+  let (mut muted, deafened) = voice_state.unwrap_or((settings.start_muted_when_joining, false));
+  if deafened {
+    muted = true;
+  }
+
+  logger::log(&format!(
+    "[lobby] rejoining previous voice channel after reconnect: channel={channel_id} muted={muted} deafened={deafened}"
+  ));
+  if let Err(error) = server.join_channel(channel_id).await {
+    logger::log(&format!(
+      "[lobby] previous voice channel rejoin failed: channel={channel_id} error={error}"
+    ));
+    return;
+  }
+
+  session.select_channel(channel_id);
+  if let Err(error) = server.update_voice_state(muted, deafened).await {
+    logger::log(&format!(
+      "[voice] failed to announce local state after reconnect rejoin: channel={channel_id} error={error}"
+    ));
+    return;
+  }
+
+  session.set_local_voice_state(muted, deafened);
+  match session.start_voice(settings) {
+    Ok(()) => logger::log("[voice] local voice capture restarted after reconnect rejoin"),
+    Err(error) => logger::log(&format!(
+      "[voice] local voice capture failed after reconnect rejoin: {error}"
+    )),
+  }
 }

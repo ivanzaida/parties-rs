@@ -1,9 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+  collections::HashMap,
+  sync::{Arc, Mutex},
+  time::Duration,
+};
 
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::Ctx,
+    ctx::{Ctx, Interval},
     events::MouseButton,
   },
   components::{Column, Row, Stack, Text},
@@ -326,7 +330,7 @@ fn channel_group(
   channel: &LobbyChannel,
   selected_channel_id: Option<ChannelId>,
   join_channel: Option<&JoinChannelAction>,
-  users: Vec<LobbyUser>,
+  mut users: Vec<LobbyUser>,
   streaming_user_ids: Vec<UserId>,
   session: Option<ServerSession>,
   context_user_id: Signal<Option<UserId>>,
@@ -334,6 +338,15 @@ fn channel_group(
   context_menu_anchor: Signal<Option<(f32, f32)>>,
   role_menu_user_id: Signal<Option<UserId>>,
 ) -> Element {
+  users.sort_by(|left, right| {
+    left
+      .username
+      .to_lowercase()
+      .cmp(&right.username.to_lowercase())
+      .then_with(|| left.username.cmp(&right.username))
+      .then_with(|| left.user_id.cmp(&right.user_id))
+  });
+
   let user_rows = ctx.for_each(
     users,
     |user| user.user_id,
@@ -879,6 +892,9 @@ struct UserVolumeControl {
   user_id: Signal<UserId>,
   server_id: Signal<Option<String>>,
   value: Signal<i32>,
+  apply_session: Arc<Mutex<Option<ServerSession>>>,
+  last_applied_volume: Arc<Mutex<i32>>,
+  apply_interval: Interval,
 }
 
 impl Component for UserVolumeControl {
@@ -903,11 +919,40 @@ impl Component for UserVolumeControl {
     let user_id = ctx.signal(props.user_id);
     let server_id = ctx.signal(initial_server_id);
     let value = ctx.signal(initial);
+    let apply_session = Arc::new(Mutex::new(props.session.clone()));
+    let last_applied_volume = Arc::new(Mutex::new(initial));
+    let apply_interval = {
+      let apply_session = apply_session.clone();
+      let user_id = user_id.clone();
+      let value = value.clone();
+      let last_applied_volume = last_applied_volume.clone();
+      let interval = ctx.create_interval(Duration::from_millis(16), move || {
+        let volume = value.get_untracked().clamp(0, 100);
+        let mut last_applied_volume = last_applied_volume
+          .lock()
+          .expect("user volume last-applied lock poisoned");
+        if *last_applied_volume != volume {
+          if let Some(session) = apply_session
+            .lock()
+            .expect("user volume session lock poisoned")
+            .as_ref()
+          {
+            session.set_user_volume(user_id.get_untracked(), volume);
+          }
+          *last_applied_volume = volume;
+        }
+      });
+      interval.start();
+      interval
+    };
 
     Self {
       user_id,
       server_id,
       value,
+      apply_session,
+      last_applied_volume,
+      apply_interval,
     }
   }
 
@@ -918,6 +963,8 @@ impl Component for UserVolumeControl {
       .session
       .as_ref()
       .and_then(|session| session.info().map(|info| info.address));
+
+    *self.apply_session.lock().expect("user volume session lock poisoned") = props.session.clone();
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let value = load_user_volume(
@@ -932,6 +979,10 @@ impl Component for UserVolumeControl {
       if let Some(session) = props.session.as_ref() {
         session.set_user_volume(props.user_id, value);
       }
+      *self
+        .last_applied_volume
+        .lock()
+        .expect("user volume last-applied lock poisoned") = value;
     }
 
     let save_storage = storage.clone();
@@ -951,6 +1002,10 @@ impl Component for UserVolumeControl {
         }
       }),
     )
+  }
+
+  fn on_unmounted(&self) {
+    self.apply_interval.stop();
   }
 }
 

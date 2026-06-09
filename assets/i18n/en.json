@@ -5,6 +5,16 @@
       "cancel": "Cancel"
     }
   },
+  "app": {
+    "update_pill": {
+      "available": "Update available",
+      "restart": "Restart update",
+      "downloading_percent": "{{version}} downloading {{percent}}%",
+      "downloading": "{{version}} downloading",
+      "preparing": "{{version}} preparing",
+      "launch": "Launch {{version}}"
+    }
+  },
   "date": {
     "today": "Today",
     "current_year": "{{weekday}}, {{month}} {{day}}",
@@ -74,6 +84,65 @@
     "action": {
       "retry": "Retry",
       "open_data_folder": "Open data folder"
+    },
+    "update": {
+      "badge": "STARTUP UPDATE",
+      "version_transition": "{{current}} -> {{version}}",
+      "progress": {
+        "checking": "Checking for updates...",
+        "downloading": "Downloading update {{percent}}%...",
+        "preparing": "Preparing update...",
+        "ready": "Update ready. Restart to finish."
+      },
+      "panel": {
+        "ready": {
+          "title": "Restart to run Parties {{version}}",
+          "description": "The update has been downloaded and staged. Restart now to replace {{current}}; Parties will reopen automatically."
+        },
+        "staging": {
+          "title": "Preparing Parties {{version}}",
+          "description": "The package has downloaded and is being staged for restart."
+        },
+        "downloading": {
+          "title": "Parties {{version}} is downloading",
+          "description": "The update downloads automatically before the workspace opens."
+        },
+        "checking": {
+          "title": "Looking for a newer version",
+          "description": "Parties checks the release feed before opening your workspace."
+        }
+      },
+      "step": {
+        "waiting_release_check": "Waiting for release check",
+        "found": {
+          "title": "Update found",
+          "description_with_size": "Parties {{version}} found, {{size}}",
+          "description": "Parties {{version}} found",
+          "contacting": "Contacting GitHub releases"
+        },
+        "download": {
+          "title": "Download package",
+          "complete": "Download complete",
+          "pending": "Starts automatically when a newer version is found"
+        },
+        "restart": {
+          "title": "Restart into new version",
+          "description": "Restart appears after the package is staged"
+        }
+      },
+      "action": {
+        "restart_launch": "Restart and launch {{version}}"
+      },
+      "size": {
+        "unknown": "unknown size",
+        "mib": "{{value}} MB",
+        "kib": "{{value}} KB",
+        "bytes": "{{value}} B"
+      },
+      "download_progress": {
+        "with_total": "{{downloaded}} of {{total}} · {{percent}}",
+        "without_total": "{{downloaded}} downloaded"
+      }
     }
   },
   "identity": {

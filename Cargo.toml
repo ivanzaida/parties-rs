@@ -1,6 +1,6 @@
 [package]
 name = "parties-rs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 
 [dependencies]
@@ -10,13 +10,15 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 cpal = "0.18.0"
 ed25519-dalek = "2.2.0"
 getrandom = "0.4.2"
-lurq = { version = "0.10.8", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
+lurq = { version = "0.10.11", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
 log = "0.4"
 minimp3 = "0.6.1"
 opus = "0.3.1"
 quinn = "0.11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = "1"
 serde_json = "1"
 sha2 = "0.11.0"
 simplelog = "0.12"
@@ -25,6 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "time"
 rdev = "0.5.3"
 rfd = "0.15.4"
 xcap = "0.9.6"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -32,6 +35,8 @@ core-foundation-sys = "0.8.7"
 core-media-sys = "0.1.2"
 core-video-sys = "0.1.4"
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
+flate2 = "1"
+tar = "0.4"
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1.2"

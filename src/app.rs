@@ -1,14 +1,20 @@
-use std::time::Duration;
+use std::{
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::Duration,
+};
 
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
     ctx::Ctx,
   },
-  components::{Column, Stack},
+  components::{Column, Row, Stack, Text},
   core::Signal,
   layout::{Alignment, layout_kind::Justify},
-  node::{BackgroundColor, Element, dimension::Dimension},
+  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
   router::{RouterHandle, Routes},
 };
 
@@ -22,13 +28,17 @@ use crate::{
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
     hotkeys,
+    updater::{StartupUpdateStatus, restart_into_update, run_startup_update_check},
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
   storage::Storage,
   theme,
   ui::{
-    app_chrome::{AppChrome, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, modal_layer, window_affordance_layers},
+    app_chrome::{
+      AppChrome, CHROME_HEIGHT, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, modal_layer, window_affordance_layers,
+    },
+    common::lucide_icon::{LucideIcon, LucideIconProps},
     connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
@@ -47,6 +57,10 @@ use crate::{
 
 const DEVTOOLS_HOTKEY: &str = "Ctrl+Shift+F12";
 const MACOS_WINDOW_CORNER_RADIUS: f32 = 10.0;
+const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const UPDATE_PILL_MARGIN: f32 = 16.0;
+const UPDATE_PILL_TOP_GAP: f32 = 12.0;
+const UPDATE_PILL_HEIGHT: f32 = 40.0;
 
 pub struct App {
   router: RouterHandle,
@@ -56,6 +70,7 @@ pub struct App {
   settings_page: Signal<SettingsPage>,
   window_affordances_open: Signal<bool>,
   active_toggle_hotkeys: Signal<Vec<String>>,
+  update_status: Signal<StartupUpdateStatus>,
   global_hotkeys: GlobalVoiceHotkeys,
 }
 
@@ -94,14 +109,17 @@ impl Component for App {
     ctx.watch(&storage, move |storage| {
       apply_storage_locale(storage, &i18n);
     });
+    let update_status = ctx.signal(StartupUpdateStatus::Idle);
     let loading_storage = storage.clone();
     let startup_error = props.startup_error.clone();
+    let loading_update_status = update_status.clone();
     let router = ctx.router(
       Routes::new()
         .route(ROUTE_LOADING, move |ctx| {
           ctx.mount::<LoadingIdentityScreen>(LoadingIdentityScreenProps {
             storage: loading_storage.clone(),
             startup_error: startup_error.clone(),
+            update_status: loading_update_status.clone(),
           })
         })
         .route(ROUTE_IDENTITY_SETUP, |ctx| ctx.mount::<IdentitySetupScreen>(()))
@@ -143,6 +161,29 @@ impl Component for App {
       poll_global_hotkeys.poll_events();
     });
     interval.start();
+    let update_poll_in_flight = Arc::new(AtomicBool::new(false));
+    let update_poll_status = update_status.clone();
+    let update_poll_tokio = props.tokio.clone();
+    let update_poll_gate = update_poll_in_flight.clone();
+    let update_interval = ctx.create_interval(UPDATE_POLL_INTERVAL, move || {
+      if update_poll_gate.swap(true, Ordering::AcqRel) {
+        return;
+      }
+
+      let status = update_poll_status.get_untracked();
+      if update_status_blocks_poll(&status) {
+        update_poll_gate.store(false, Ordering::Release);
+        return;
+      }
+
+      let status = update_poll_status.clone();
+      let gate = update_poll_gate.clone();
+      update_poll_tokio.spawn(async move {
+        let _ = run_startup_update_check(status).await;
+        gate.store(false, Ordering::Release);
+      });
+    });
+    update_interval.start();
     Self {
       router,
       session,
@@ -151,6 +192,7 @@ impl Component for App {
       settings_page: ctx.signal(SettingsPage::Overview),
       window_affordances_open: ctx.signal(true),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
+      update_status,
       global_hotkeys,
     }
   }
@@ -233,6 +275,11 @@ impl Component for App {
       root = root.border_inside(1.0, theme::PaletteColor::Border);
     }
 
+    let update_status = self.update_status.get();
+    if let Some(pill) = self.global_update_pill(ctx, &update_status) {
+      root = root.child(pill);
+    }
+
     let settings_open = self.settings_open.clone();
     let settings_window = ctx.window();
     ctx.modal(settings_open, move |ctx| {
@@ -299,11 +346,171 @@ impl Component for App {
   }
 }
 
+impl App {
+  fn global_update_pill(&self, ctx: &mut Ctx, status: &StartupUpdateStatus) -> Option<Element> {
+    let width = match status {
+      StartupUpdateStatus::Downloading { .. } => 216.0,
+      StartupUpdateStatus::Staging { .. } => 204.0,
+      StartupUpdateStatus::Ready { .. } => 224.0,
+      _ => return None,
+    };
+    let window = ctx.window();
+    let x = (window.logical_width() - width - UPDATE_PILL_MARGIN).max(UPDATE_PILL_MARGIN);
+    let y = if CUSTOM_WINDOW_CHROME {
+      CHROME_HEIGHT + UPDATE_PILL_TOP_GAP
+    } else {
+      UPDATE_PILL_TOP_GAP
+    };
+    let title = update_pill_title(ctx, status);
+    let detail = update_pill_detail(ctx, status);
+
+    let mut pill = Row::new()
+      .absolute(x, y, width, UPDATE_PILL_HEIGHT)
+      .align_items(Alignment::Center)
+      .spacing(9.0)
+      .padding_horizontal(12.0)
+      .rounded(8.0)
+      .background(BackgroundColor::Palette(update_pill_background(status)))
+      .border_inside(1.0, BackgroundColor::Color(update_pill_border_color(status)))
+      .child(
+        Row::new()
+          .width(24.0)
+          .height(24.0)
+          .align_items(Alignment::Center)
+          .justify(Justify::Center)
+          .rounded(12.0)
+          .background(BackgroundColor::Color(update_pill_icon_background(status)))
+          .child(ctx.mount::<LucideIcon>(LucideIconProps {
+            icon: update_pill_icon(status),
+            size: 14.0,
+            color: update_pill_icon_color(status),
+          })),
+      )
+      .child(
+        Column::new()
+          .flex(1.0)
+          .spacing(1.0)
+          .child(
+            Text::new(&title)
+              .variant(theme::TypographyStyle::Caption)
+              .color(update_pill_text_color(status))
+              .nowrap(),
+          )
+          .child(
+            Text::new(&detail)
+              .variant(theme::TypographyStyle::Label)
+              .color(theme::PaletteColor::TextMuted)
+              .nowrap(),
+          ),
+      );
+
+    if let StartupUpdateStatus::Ready { staged_executable, .. } = status {
+      let staged_executable = staged_executable.clone();
+      let update_status = self.update_status.clone();
+      pill = pill
+        .cursor(CursorIcon::Pointer)
+        .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+        .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
+        .on_click(move |_| {
+          if let Err(error) = restart_into_update(&staged_executable) {
+            update_status.set(StartupUpdateStatus::Failed(error));
+          }
+        });
+    }
+
+    Some(pill.into())
+  }
+}
+
 fn apply_storage_locale(storage: &Option<Storage>, i18n: &lurq::app::i18n::I18n) {
   if let Some(storage) = storage
     && let Ok(settings) = storage.load_settings()
   {
     i18n.set_locale(settings.locale.clone());
+  }
+}
+
+fn update_status_blocks_poll(status: &StartupUpdateStatus) -> bool {
+  matches!(
+    status,
+    StartupUpdateStatus::Checking
+      | StartupUpdateStatus::Downloading { .. }
+      | StartupUpdateStatus::Staging { .. }
+      | StartupUpdateStatus::Ready { .. }
+  )
+}
+
+fn update_pill_title(ctx: &Ctx, status: &StartupUpdateStatus) -> Arc<str> {
+  match status {
+    StartupUpdateStatus::Downloading { .. } | StartupUpdateStatus::Staging { .. } => ctx.t("app.update_pill.available"),
+    StartupUpdateStatus::Ready { .. } => ctx.t("app.update_pill.restart"),
+    _ => Arc::from(""),
+  }
+}
+
+fn update_pill_detail(ctx: &Ctx, status: &StartupUpdateStatus) -> Arc<str> {
+  match status {
+    StartupUpdateStatus::Downloading {
+      version,
+      downloaded,
+      total,
+    } => {
+      if let Some(total) = total.filter(|total| *total > 0) {
+        let percent = ((*downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
+        ctx.t_args(
+          "app.update_pill.downloading_percent",
+          [("version", version.clone()), ("percent", format!("{percent:.0}"))],
+        )
+      } else {
+        ctx.t_args("app.update_pill.downloading", [("version", version.clone())])
+      }
+    }
+    StartupUpdateStatus::Staging { version } => ctx.t_args("app.update_pill.preparing", [("version", version.clone())]),
+    StartupUpdateStatus::Ready { version, .. } => ctx.t_args("app.update_pill.launch", [("version", version.clone())]),
+    _ => Arc::from(""),
+  }
+}
+
+fn update_pill_icon(status: &StartupUpdateStatus) -> &'static str {
+  match status {
+    StartupUpdateStatus::Ready { .. } => "rotate-cw",
+    StartupUpdateStatus::Staging { .. } => "loader",
+    _ => "refresh-cw",
+  }
+}
+
+fn update_pill_background(status: &StartupUpdateStatus) -> theme::PaletteColor {
+  match status {
+    StartupUpdateStatus::Ready { .. } => theme::PaletteColor::SuccessMuted,
+    _ => theme::PaletteColor::InfoMuted,
+  }
+}
+
+fn update_pill_border_color(status: &StartupUpdateStatus) -> Color {
+  match status {
+    StartupUpdateStatus::Ready { .. } => theme::palette().success.with_opacity(0.5),
+    _ => theme::palette().info.with_opacity(0.5),
+  }
+}
+
+fn update_pill_icon_background(status: &StartupUpdateStatus) -> Color {
+  match status {
+    StartupUpdateStatus::Ready { .. } => theme::palette().success.with_opacity(0.16),
+    _ => theme::palette().info.with_opacity(0.16),
+  }
+}
+
+fn update_pill_icon_color(status: &StartupUpdateStatus) -> Color {
+  match status {
+    StartupUpdateStatus::Ready { .. } => theme::palette().success,
+    _ => theme::palette().info,
+  }
+}
+
+fn update_pill_text_color(status: &StartupUpdateStatus) -> theme::PaletteColor {
+  match status {
+    StartupUpdateStatus::Ready { .. } => theme::PaletteColor::Success,
+    _ => theme::PaletteColor::Info,
   }
 }
 

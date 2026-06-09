@@ -1,7 +1,13 @@
-use std::sync::Arc;
+use std::{
+  sync::{Arc, Mutex},
+  time::Duration,
+};
 
 use lurq::{
-  app::ctx::Ctx,
+  app::{
+    component::{Component, ComponentInfo, DevtoolsInspectable},
+    ctx::{Ctx, Interval},
+  },
   components::{Column, Row, Stack, Text, TextOverflow},
   core::Signal,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
@@ -19,7 +25,7 @@ use crate::{
   theme,
   ui::common::{
     lucide_icon::{LucideIcon, LucideIconProps},
-    percent_slider::{PercentSlider, PercentSliderProps},
+    percent_slider::{PercentSliderSaveAction, percent_slider_control},
   },
 };
 
@@ -304,18 +310,7 @@ fn streamer_label(name: &str, title: &str, meta: &str, active: bool) -> Element 
 }
 
 fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storage>, user_id: UserId) -> Element {
-  let server_id = session.info().map(|info| info.address);
-  let volume = storage
-    .as_ref()
-    .zip(server_id.as_deref())
-    .and_then(|(storage, server_id)| storage.load_volume_override(server_id, user_id).ok().flatten())
-    .unwrap_or_else(|| session.user_volume(user_id))
-    .clamp(0, 100);
-  session.set_user_volume(user_id, volume);
-
-  let save_session = session.clone();
-  let save_storage = storage.clone();
-  let save_server_id = server_id.clone();
+  let key = format!("stream-volume-{user_id}");
 
   Row::new()
     .align_items(Alignment::Center)
@@ -324,21 +319,168 @@ fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storag
     .rounded(10.0)
     .background(BackgroundColor::Color(Color::from_hex("#000000A6")))
     .child(stage_control_icon(ctx, "volume-2"))
-    .child(ctx.mount::<PercentSlider>(PercentSliderProps {
-      initial_value: volume,
-      control_width: STREAM_VOLUME_CONTROL_WIDTH,
-      track_width: STREAM_VOLUME_TRACK_WIDTH,
-      value_width: STREAM_VOLUME_VALUE_WIDTH,
-      value_spacing: STREAM_VOLUME_VALUE_SPACING,
-      on_blur: Arc::new(move |volume| {
+    .child(ctx.mount_keyed::<StreamVolumeControl>(
+      &key,
+      StreamVolumeControlProps {
+        user_id,
+        session: session.clone(),
+        storage,
+      },
+    ))
+    .into()
+}
+
+#[derive(Clone)]
+struct StreamVolumeControlProps {
+  user_id: UserId,
+  session: ServerSession,
+  storage: Option<Storage>,
+}
+
+impl PartialEq for StreamVolumeControlProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.user_id == other.user_id
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && self.storage.is_some() == other.storage.is_some()
+  }
+}
+
+impl DevtoolsInspectable for StreamVolumeControlProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "user_id",
+      std::any::type_name::<UserId>(),
+      self.user_id.to_string(),
+    ));
+  }
+}
+
+struct StreamVolumeControl {
+  user_id: Signal<UserId>,
+  server_id: Signal<Option<String>>,
+  value: Signal<i32>,
+  apply_session: Arc<Mutex<ServerSession>>,
+  last_applied_volume: Arc<Mutex<i32>>,
+  apply_interval: Interval,
+}
+
+impl Component for StreamVolumeControl {
+  type Props = StreamVolumeControlProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let server_id = props.session.info().map(|info| info.address);
+    let initial = load_stream_volume(
+      props.storage.as_ref(),
+      &props.session,
+      server_id.as_deref(),
+      props.user_id,
+    );
+    props.session.set_stream_volume(props.user_id, initial);
+    let user_id = ctx.signal(props.user_id);
+    let server_id = ctx.signal(server_id);
+    let value = ctx.signal(initial);
+    let apply_session = Arc::new(Mutex::new(props.session));
+    let last_applied_volume = Arc::new(Mutex::new(initial));
+    let apply_interval = {
+      let apply_session = apply_session.clone();
+      let user_id = user_id.clone();
+      let value = value.clone();
+      let last_applied_volume = last_applied_volume.clone();
+      let interval = ctx.create_interval(Duration::from_millis(16), move || {
+        let volume = value.get_untracked().clamp(0, 100);
+        let mut last_applied_volume = last_applied_volume
+          .lock()
+          .expect("stream volume last-applied lock poisoned");
+        if *last_applied_volume != volume {
+          apply_session
+            .lock()
+            .expect("stream volume session lock poisoned")
+            .set_stream_volume(user_id.get_untracked(), volume);
+          *last_applied_volume = volume;
+        }
+      });
+      interval.start();
+      interval
+    };
+
+    Self {
+      user_id,
+      server_id,
+      value,
+      apply_session,
+      last_applied_volume,
+      apply_interval,
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let server_id = props.session.info().map(|info| info.address);
+
+    *self.apply_session.lock().expect("stream volume session lock poisoned") = props.session.clone();
+
+    if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
+      let value = load_stream_volume(
+        props.storage.as_ref(),
+        &props.session,
+        server_id.as_deref(),
+        props.user_id,
+      );
+      self.user_id.set(props.user_id);
+      self.server_id.set(server_id.clone());
+      self.value.set(value);
+      props.session.set_stream_volume(props.user_id, value);
+      *self
+        .last_applied_volume
+        .lock()
+        .expect("stream volume last-applied lock poisoned") = value;
+    }
+
+    let save_session = props.session.clone();
+    let save_storage = props.storage.clone();
+    let save_server_id = server_id.clone();
+    let save_user_id = props.user_id;
+
+    stream_volume_control(
+      self.value.clone(),
+      Arc::new(move |volume| {
         let volume = volume.clamp(0, 100);
-        save_session.set_user_volume(user_id, volume);
+        save_session.set_stream_volume(save_user_id, volume);
         if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
-          let _ = storage.save_volume_override(server_id, user_id, volume);
+          let _ = storage.save_stream_volume_override(server_id, save_user_id, volume);
         }
       }),
-    }))
-    .into()
+    )
+  }
+
+  fn on_unmounted(&self) {
+    self.apply_interval.stop();
+  }
+}
+
+fn load_stream_volume(
+  storage: Option<&Storage>,
+  session: &ServerSession,
+  server_id: Option<&str>,
+  user_id: UserId,
+) -> i32 {
+  storage
+    .zip(server_id)
+    .and_then(|(storage, server_id)| storage.load_stream_volume_override(server_id, user_id).ok().flatten())
+    .unwrap_or_else(|| session.stream_volume(user_id))
+    .clamp(0, 100)
+}
+
+fn stream_volume_control(value: Signal<i32>, on_blur: PercentSliderSaveAction) -> Element {
+  percent_slider_control(
+    value,
+    STREAM_VOLUME_CONTROL_WIDTH,
+    STREAM_VOLUME_TRACK_WIDTH,
+    STREAM_VOLUME_VALUE_WIDTH,
+    STREAM_VOLUME_VALUE_SPACING,
+    on_blur,
+  )
 }
 
 fn stage_control_icon(ctx: &mut Ctx, icon: &'static str) -> Element {

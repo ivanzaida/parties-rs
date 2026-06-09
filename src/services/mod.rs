@@ -7,6 +7,7 @@ pub mod notifications;
 pub(crate) mod profiler;
 pub mod screen_share_sources;
 pub mod startup;
+pub mod updater;
 pub mod video;
 pub mod voice;
 pub mod voice_controls;

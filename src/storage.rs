@@ -3,7 +3,7 @@ use std::{
   env,
   error::Error,
   fmt, fs,
-  path::PathBuf,
+  path::{Path, PathBuf},
   process::Command,
   time::{SystemTime, UNIX_EPOCH},
 };
@@ -184,6 +184,12 @@ pub struct WindowState {
   pub y: i32,
   pub width: u32,
   pub height: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoredUpdateState {
+  pub last_checked_at: i64,
+  pub last_seen_version: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -436,6 +442,33 @@ impl Storage {
     Ok(state)
   }
 
+  pub fn save_update_state(&self, state: &StoredUpdateState) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute(
+      "INSERT OR REPLACE INTO app_update_state (id, last_checked_at, last_seen_version) VALUES (1, ?1, ?2)",
+      params![state.last_checked_at, &state.last_seen_version],
+    )?;
+    Ok(())
+  }
+
+  pub fn load_update_state(&self) -> Result<StoredUpdateState, StorageError> {
+    let conn = self.connection()?;
+    let state = conn
+      .query_row(
+        "SELECT last_checked_at, last_seen_version FROM app_update_state WHERE id = 1",
+        [],
+        |row| {
+          Ok(StoredUpdateState {
+            last_checked_at: row.get(0)?,
+            last_seen_version: row.get(1)?,
+          })
+        },
+      )
+      .optional()?;
+
+    Ok(state.unwrap_or_default())
+  }
+
   pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
     let conn = self.connection()?;
     let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -528,6 +561,10 @@ impl Storage {
   pub fn delete_server(&self, address: &str) -> Result<(), StorageError> {
     let conn = self.connection()?;
     conn.execute("DELETE FROM volume_overrides WHERE server_id = ?1", params![address])?;
+    conn.execute(
+      "DELETE FROM stream_volume_overrides WHERE server_id = ?1",
+      params![address],
+    )?;
     conn.execute("DELETE FROM servers WHERE address = ?1", params![address])?;
     Ok(())
   }
@@ -563,24 +600,49 @@ impl Storage {
   }
 
   pub fn save_volume_override(&self, server_id: &str, user_id: UserId, volume: i32) -> Result<(), StorageError> {
+    self.save_volume_override_in_table("volume_overrides", server_id, user_id, volume)
+  }
+
+  pub fn load_stream_volume_override(&self, server_id: &str, user_id: UserId) -> Result<Option<i32>, StorageError> {
+    let conn = self.connection()?;
+    let volume = conn
+      .query_row(
+        "SELECT volume FROM stream_volume_overrides WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id as i64],
+        |row| row.get::<_, i32>(0),
+      )
+      .optional()?
+      .map(|volume| volume.clamp(0, 100));
+    Ok(volume)
+  }
+
+  pub fn save_stream_volume_override(&self, server_id: &str, user_id: UserId, volume: i32) -> Result<(), StorageError> {
+    self.save_volume_override_in_table("stream_volume_overrides", server_id, user_id, volume)
+  }
+
+  fn save_volume_override_in_table(
+    &self,
+    table: &str,
+    server_id: &str,
+    user_id: UserId,
+    volume: i32,
+  ) -> Result<(), StorageError> {
     let conn = self.connection()?;
     let volume = volume.clamp(0, 100);
     if volume == 100 {
-      conn.execute(
-        "DELETE FROM volume_overrides WHERE server_id = ?1 AND user_id = ?2",
-        params![server_id, user_id as i64],
-      )?;
+      let sql = format!("DELETE FROM {table} WHERE server_id = ?1 AND user_id = ?2");
+      conn.execute(&sql, params![server_id, user_id as i64])?;
       return Ok(());
     }
 
-    conn.execute(
+    let sql = format!(
       r#"
-      INSERT INTO volume_overrides (server_id, user_id, volume)
+      INSERT INTO {table} (server_id, user_id, volume)
       VALUES (?1, ?2, ?3)
       ON CONFLICT(server_id, user_id) DO UPDATE SET volume = excluded.volume
-      "#,
-      params![server_id, user_id as i64, volume],
-    )?;
+      "#
+    );
+    conn.execute(&sql, params![server_id, user_id as i64, volume])?;
     Ok(())
   }
 
@@ -648,7 +710,20 @@ impl Storage {
         height INTEGER NOT NULL DEFAULT 900
       );
 
+      CREATE TABLE IF NOT EXISTS app_update_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_checked_at INTEGER NOT NULL DEFAULT 0,
+        last_seen_version TEXT NOT NULL DEFAULT ''
+      );
+
       CREATE TABLE IF NOT EXISTS volume_overrides (
+        server_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        volume INTEGER NOT NULL,
+        PRIMARY KEY (server_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS stream_volume_overrides (
         server_id TEXT NOT NULL,
         user_id INTEGER NOT NULL,
         volume INTEGER NOT NULL,
@@ -824,6 +899,18 @@ impl Storage {
         [],
       )?;
     }
+    if !column_exists(&conn, "app_update_state", "last_checked_at")? {
+      conn.execute(
+        "ALTER TABLE app_update_state ADD COLUMN last_checked_at INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_update_state", "last_seen_version")? {
+      conn.execute(
+        "ALTER TABLE app_update_state ADD COLUMN last_seen_version TEXT NOT NULL DEFAULT ''",
+        [],
+      )?;
+    }
     Ok(())
   }
 }
@@ -882,33 +969,14 @@ fn default_db_path() -> PathBuf {
     return path;
   }
 
-  if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-    return PathBuf::from(local_app_data).join("Parties").join("parties.db");
-  }
+  env::current_exe()
+    .ok()
+    .and_then(db_path_next_to_executable)
+    .unwrap_or_else(|| PathBuf::from("parties.db"))
+}
 
-  if cfg!(target_os = "macos")
-    && let Some(home) = env::var_os("HOME")
-  {
-    return PathBuf::from(home)
-      .join("Library")
-      .join("Application Support")
-      .join("Parties")
-      .join("parties.db");
-  }
-
-  if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME") {
-    return PathBuf::from(xdg_data_home).join("parties").join("parties.db");
-  }
-
-  if let Some(home) = env::var_os("HOME") {
-    return PathBuf::from(home)
-      .join(".local")
-      .join("share")
-      .join("parties")
-      .join("parties.db");
-  }
-
-  PathBuf::from("parties.db")
+fn db_path_next_to_executable(executable: impl AsRef<Path>) -> Option<PathBuf> {
+  executable.as_ref().parent().map(|parent| parent.join("parties.db"))
 }
 
 fn startup_db_file_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {
@@ -956,6 +1024,15 @@ mod tests {
         std::ffi::OsString::from("custom.db")
       ]),
       Some(PathBuf::from("custom.db"))
+    );
+  }
+
+  #[test]
+  fn default_db_path_uses_executable_directory() {
+    let executable = PathBuf::from("Apps").join("Parties").join("parties-rs.exe");
+    assert_eq!(
+      db_path_next_to_executable(&executable),
+      Some(PathBuf::from("Apps").join("Parties").join("parties.db"))
     );
   }
 
@@ -1071,6 +1148,26 @@ mod tests {
   }
 
   #[test]
+  fn update_state_round_trips() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-update-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+
+    assert_eq!(storage.load_update_state().unwrap(), StoredUpdateState::default());
+
+    let state = StoredUpdateState {
+      last_checked_at: 1_777_777,
+      last_seen_version: "0.1.9".to_owned(),
+    };
+    storage.save_update_state(&state).unwrap();
+    assert_eq!(storage.load_update_state().unwrap(), state);
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
   fn volume_overrides_round_trip() {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let path = env::temp_dir().join(format!("parties-rs-storage-volume-{nonce}.db"));
@@ -1089,6 +1186,13 @@ mod tests {
     storage.save_volume_override("server-a", 7, 100).unwrap();
     assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
     assert_eq!(storage.load_volume_override("server-a", 9).unwrap(), Some(75));
+
+    assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), None);
+    storage.save_stream_volume_override("server-a", 7, 33).unwrap();
+    assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), Some(33));
+    assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
+    storage.save_stream_volume_override("server-a", 7, 100).unwrap();
+    assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), None);
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));
