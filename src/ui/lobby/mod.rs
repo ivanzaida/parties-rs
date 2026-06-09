@@ -1,5 +1,16 @@
+use std::{
+  sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+  },
+  time::Duration,
+};
+
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::Component,
+    ctx::{Ctx, Interval},
+  },
   components::{Column, Row, Text},
   core::Signal,
   layout::{
@@ -53,6 +64,7 @@ type ReconnectAction = lurq::app::ctx::FutureAction<ReconnectRequest, ConnectedS
 
 const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
 const AUTO_RECONNECT_RETRY_DELAY_MS: u64 = 1_500;
+const LOBBY_REVISION_WAKE_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy)]
 struct ChatHistoryRequest {
@@ -91,12 +103,35 @@ pub struct LobbyScreen {
   stream_source_index: Signal<usize>,
   stream_audio_enabled: Signal<bool>,
   reconnect_attempt: Signal<u32>,
+  revision_wake: Signal<u64>,
+  revision_source: Arc<Mutex<Option<Signal<u64>>>>,
+  revision_seen: Arc<AtomicU64>,
+  revision_interval: Interval,
 }
 
 impl Component for LobbyScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let revision_wake = ctx.signal(0_u64);
+    let revision_source = Arc::new(Mutex::new(None::<Signal<u64>>));
+    let revision_seen = Arc::new(AtomicU64::new(0));
+    let interval_wake = revision_wake.clone();
+    let interval_source = revision_source.clone();
+    let interval_seen = revision_seen.clone();
+    let revision_interval = ctx.create_interval(LOBBY_REVISION_WAKE_INTERVAL, move || {
+      let current = interval_source
+        .lock()
+        .expect("lobby revision source lock poisoned")
+        .as_ref()
+        .map(Signal::get_untracked)
+        .unwrap_or(0);
+      let previous = interval_seen.swap(current, Ordering::Relaxed);
+      if current != previous {
+        interval_wake.set(current);
+      }
+    });
+
     Self {
       message_input: ctx.signal(String::new()),
       chat_scroll_state: ScrollState::new(),
@@ -107,24 +142,54 @@ impl Component for LobbyScreen {
       stream_source_index: ctx.signal(0),
       stream_audio_enabled: ctx.signal(true),
       reconnect_attempt: ctx.signal(0),
+      revision_wake,
+      revision_source,
+      revision_seen,
+      revision_interval,
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let _revision_wake = self.revision_wake.get();
     let Some(session) = ctx.use_context::<ServerSession>() else {
+      self.revision_interval.stop();
+      *self
+        .revision_source
+        .lock()
+        .expect("lobby revision source lock poisoned") = None;
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
 
-    let _revision = session.revision().get();
+    let revision = session.revision();
+    let current_revision = revision.get();
+    self.revision_seen.store(current_revision, Ordering::Relaxed);
+    *self
+      .revision_source
+      .lock()
+      .expect("lobby revision source lock poisoned") = Some(revision);
+    if !self.revision_interval.is_active() {
+      self.revision_interval.start();
+    }
+
     let Some(info) = session.info() else {
+      self.revision_interval.stop();
+      *self
+        .revision_source
+        .lock()
+        .expect("lobby revision source lock poisoned") = None;
       if let Some(navigator) = ctx.navigator() {
         navigator.replace(ROUTE_CHOOSE_SERVER);
       }
       return empty_lobby(ctx);
     };
 
-    let lobby = session.lobby();
+    let mut lobby = session.lobby();
+    if lobby.disconnected {
+      self.revision_interval.stop();
+    } else if !self.revision_interval.is_active() {
+      self.revision_interval.start();
+    }
     let receiver = receiver_action(ctx, session.clone());
     if !lobby.disconnected && !lobby.receiver_running && !receiver.state().get().is_pending() {
       receiver.run(());
@@ -137,6 +202,7 @@ impl Component for LobbyScreen {
         .is_none_or(Vec::is_empty)
       && session.begin_chat_history_request(channel_id)
     {
+      lobby.chat_history_loading.insert(channel_id);
       chat_history.run(ChatHistoryRequest {
         channel_id,
         before_id: 0,

@@ -20,7 +20,10 @@ use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
   session::{ConnectedServerInfo, LobbyState, LobbyTextChannel, ServerSession},
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+    loader::loader,
+  },
 };
 
 pub(super) fn text_channel_detail(
@@ -44,6 +47,9 @@ pub(super) fn text_channel_detail(
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
   let newest_message_from_local = messages.last().is_some_and(|message| message.sender_id == info.user_id);
+  let initial_history_loading = messages.is_empty()
+    && lobby.chat_history_loading.contains(&channel.id)
+    && lobby.chat_history_has_more.get(&channel.id).copied().unwrap_or(true);
   let can_page = oldest_message_id != 0
     && lobby.chat_history_has_more.get(&channel.id).copied().unwrap_or(true)
     && !lobby.chat_history_loading.contains(&channel.id);
@@ -70,7 +76,16 @@ pub(super) fn text_channel_detail(
     .padding_vertical(theme::SpacingSize::Xl)
     .padding_horizontal(24.0);
 
-  if messages.is_empty() {
+  if initial_history_loading {
+    messages_column = messages_column.child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .child(loader(18.0)),
+    );
+  } else if messages.is_empty() {
     messages_column = messages_column.child(
       Column::new()
         .width(Dimension::Pct(100.0))

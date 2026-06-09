@@ -18,6 +18,7 @@ opus = "0.3.1"
 quinn = "0.11"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json = "1"
 sha2 = "0.11.0"
 simplelog = "0.12"
 sonora = "0.1.0"
@@ -38,3 +39,9 @@ windows-core = "0.62.2"
 
 [target.'cfg(windows)'.build-dependencies]
 cc = "1.2"
+winresource = "0.1.31"
+
+[package.metadata.bundle]
+name = "Parties"
+identifier = "rs.parties.app"
+icon = ["assets/icons/parties_icon.icns"]

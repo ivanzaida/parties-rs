@@ -27,8 +27,8 @@ use crate::{
   },
 };
 
-const MINIMUM_LOADING_VISIBLE: Duration = Duration::from_millis(3000);
-const PREVIEW_RETRY_LOADING_DURATION: Duration = Duration::from_millis(1600);
+const MINIMUM_LOADING_VISIBLE: Duration = Duration::from_millis(0);
+const PREVIEW_RETRY_LOADING_DURATION: Duration = Duration::from_millis(0);
 const PREVIEW_LOADING_ERROR: bool = false;
 
 #[derive(Clone, lurq::DevtoolsInspectable)]

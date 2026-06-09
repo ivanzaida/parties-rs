@@ -593,6 +593,14 @@ impl ServerSession {
   }
 
   pub fn set_connected(&self, connected: ConnectedServer) {
+    logger::log(&format!(
+      "[session] connected: server='{}' address={} local_user={} display='{}' role={:?}",
+      connected.info.server_name,
+      connected.info.address,
+      connected.info.user_id,
+      connected.info.display_name,
+      connected.info.role
+    ));
     self.shutdown_requested.store(false, Ordering::Relaxed);
     self.stop_lobby_receivers();
     self.stop_voice();
@@ -624,6 +632,12 @@ impl ServerSession {
   }
 
   pub fn clear(&self) {
+    if let Some(info) = self.info() {
+      logger::log(&format!(
+        "[session] clearing connected session: server='{}' address={} local_user={}",
+        info.server_name, info.address, info.user_id
+      ));
+    }
     self.shutdown_requested.store(false, Ordering::Relaxed);
     self.stop_lobby_receivers();
     self.stop_voice();
@@ -975,6 +989,7 @@ impl ServerSession {
   pub fn select_channel(&self, channel_id: ChannelId) {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      let previous = lobby.selected_channel_id;
       lobby.selected_channel_id = Some(channel_id);
       lobby.selected_text_channel_id = None;
       lobby.stream_browser_channel_id = None;
@@ -982,6 +997,10 @@ impl ServerSession {
         channel.key_received = false;
       }
       Self::sync_selected_users(&mut lobby);
+      logger::log(&format!(
+        "[lobby] selected voice channel: previous={previous:?} current={channel_id} users={}",
+        lobby.users.len()
+      ));
     }
     self.bump_revision();
   }
@@ -997,6 +1016,9 @@ impl ServerSession {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
       if let Some(channel_id) = lobby.selected_channel_id.take() {
         left_voice = true;
+        logger::log(&format!(
+          "[lobby] leaving voice channel locally: channel={channel_id} local_user={local_user_id:?}"
+        ));
         if let Some(user_id) = local_user_id
           && let Some(users) = lobby.users_by_channel.get_mut(&channel_id)
         {
@@ -1044,9 +1066,13 @@ impl ServerSession {
   pub fn select_text_channel(&self, channel_id: ChannelId) {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      let previous = lobby.selected_text_channel_id;
       lobby.selected_text_channel_id = Some(channel_id);
       lobby.unread_text_channel_ids.remove(&channel_id);
       lobby.stream_browser_channel_id = None;
+      logger::log(&format!(
+        "[lobby] selected text channel: previous={previous:?} current={channel_id}"
+      ));
     }
     self.bump_revision();
   }
@@ -1058,6 +1084,7 @@ impl ServerSession {
       {
         lobby.selected_text_channel_id = None;
         lobby.stream_browser_channel_id = Some(channel_id);
+        logger::log(&format!("[video] stream browser opened: channel={channel_id}"));
       }
     }
     self.bump_revision();
@@ -1066,6 +1093,12 @@ impl ServerSession {
   pub fn close_stream_browser(&self) {
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if lobby.stream_browser_channel_id.is_some() {
+        logger::log(&format!(
+          "[video] stream browser closed: previous={:?}",
+          lobby.stream_browser_channel_id
+        ));
+      }
       lobby.stream_browser_channel_id = None;
     }
     self.bump_revision();
@@ -1106,6 +1139,9 @@ impl ServerSession {
       Self::set_watching_user_in_lobby(&mut lobby, user_id)
     };
     if changed {
+      logger::log(&format!(
+        "[video] watched stream changed: previous={previous_user_id:?} current={user_id:?}"
+      ));
       self.clear_stream_audio(previous_user_id);
     }
     self.retain_video_cache(user_id);
@@ -1296,15 +1332,18 @@ impl ServerSession {
 
   pub async fn run_lobby_receiver(&self) {
     let Some(server) = self.server() else {
+      logger::log("[network] lobby receiver not started: no connected server");
       return;
     };
     if self.lobby.lock().expect("server session lock poisoned").disconnected {
+      logger::log("[network] lobby receiver not started: lobby is disconnected");
       return;
     }
 
     {
       let mut started = self.receiver_started.lock().expect("server session lock poisoned");
       if *started {
+        logger::log("[network] lobby receiver already running");
         return;
       }
       *started = true;
@@ -1314,6 +1353,7 @@ impl ServerSession {
       lobby.receiver_running = true;
       lobby.last_error = None;
     }
+    logger::log("[network] lobby receiver started");
     self.bump_revision();
 
     let session = self.clone();
@@ -1368,6 +1408,7 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .receiver_running = false;
+    logger::log("[network] lobby receiver stopped");
     session.bump_revision();
   }
 
@@ -1976,6 +2017,11 @@ impl ServerSession {
 
     match message {
       S2C::ChannelList(list) => {
+        logger::log(&format!(
+          "[lobby] received voice channel list: channels={} selected={:?}",
+          list.channels.len(),
+          lobby.selected_channel_id
+        ));
         let selected = lobby.selected_channel_id;
         lobby.channels = list.channels.into_iter().map(LobbyChannel::from).collect();
         lobby.channels.sort_by_key(|channel| channel.sort_order);
@@ -1995,6 +2041,11 @@ impl ServerSession {
         }
       }
       S2C::ChatChannelList { channels } => {
+        logger::log(&format!(
+          "[lobby] received text channel list: channels={} selected={:?}",
+          channels.len(),
+          lobby.selected_text_channel_id
+        ));
         let selected = lobby.selected_text_channel_id;
         lobby.text_channels = channels.into_iter().map(LobbyTextChannel::from).collect();
         lobby.text_channels.sort_by_key(|channel| channel.sort_order);
@@ -2020,6 +2071,10 @@ impl ServerSession {
       }
       S2C::ChatMessage(message) => {
         let should_notify = local_user_id != Some(message.sender_id);
+        logger::log(&format!(
+          "[chat] received message: id={} channel={} sender={} local={} notify={}",
+          message.id, message.channel_id, message.sender_id, !should_notify, should_notify
+        ));
         if should_notify && lobby.selected_text_channel_id != Some(message.channel_id) {
           lobby.unread_text_channel_ids.insert(message.channel_id);
         }
@@ -2032,6 +2087,12 @@ impl ServerSession {
         }
       }
       S2C::ChatHistoryResp(response) => {
+        logger::log(&format!(
+          "[chat] received history: channel={} messages={} has_more={}",
+          response.channel_id,
+          response.messages.len(),
+          response.has_more
+        ));
         lobby.chat_history_loading.remove(&response.channel_id);
         lobby
           .chat_history_has_more
@@ -2042,11 +2103,18 @@ impl ServerSession {
         );
       }
       S2C::ChatMessageDeleted { message_id, channel_id } => {
+        logger::log(&format!("[chat] message deleted: id={message_id} channel={channel_id}"));
         if let Some(messages) = lobby.chat_messages_by_channel.get_mut(&channel_id) {
           messages.retain(|message| message.id != message_id);
         }
       }
       S2C::ChannelUserList(list) => {
+        logger::log(&format!(
+          "[lobby] received channel user list: channel={} users={} selected={:?}",
+          list.channel_id,
+          list.users.len(),
+          lobby.selected_channel_id
+        ));
         let mut users = list.users.into_iter().map(LobbyUser::from).collect::<Vec<_>>();
         Self::apply_local_voice_state(&mut users, local_user_id, local_voice_state);
         for user in &users {
@@ -2061,22 +2129,26 @@ impl ServerSession {
         Self::sync_cached_channel_counts(&mut lobby);
       }
       S2C::UserJoinedChannel(joined) => {
+        let joined_user_id = joined.user_id;
+        let joined_username = joined.username.clone();
+        let joined_channel_id = joined.channel_id;
+        let joined_role = joined.role;
         let selected_channel_id = lobby.selected_channel_id;
         let was_in_selected_channel = selected_channel_id
           .and_then(|channel_id| lobby.users_by_channel.get(&channel_id))
-          .is_some_and(|users| users.iter().any(|user| user.user_id == joined.user_id));
+          .is_some_and(|users| users.iter().any(|user| user.user_id == joined_user_id));
         for (channel_id, users) in &mut lobby.users_by_channel {
-          if *channel_id != joined.channel_id {
-            users.retain(|user| user.user_id != joined.user_id);
+          if *channel_id != joined_channel_id {
+            users.retain(|user| user.user_id != joined_user_id);
           }
         }
-        let users = lobby.users_by_channel.entry(joined.channel_id).or_default();
-        let inserted = if users.iter().any(|user| user.user_id == joined.user_id) {
+        let users = lobby.users_by_channel.entry(joined_channel_id).or_default();
+        let inserted = if users.iter().any(|user| user.user_id == joined_user_id) {
           false
         } else {
-          let local = local_user_id == Some(joined.user_id);
+          let local = local_user_id == Some(joined_user_id);
           users.push(LobbyUser {
-            user_id: joined.user_id,
+            user_id: joined_user_id,
             username: joined.username,
             role: joined.role,
             muted: local && local_voice_state.0,
@@ -2085,13 +2157,23 @@ impl ServerSession {
           });
           true
         };
-        if lobby.selected_channel_id == Some(joined.channel_id) {
+        if lobby.selected_channel_id == Some(joined_channel_id) {
           Self::sync_selected_users(&mut lobby);
         }
+        logger::log(&format!(
+          "[lobby] user joined voice channel: user={} name='{}' channel={} role={:?} local={} inserted={} selected={:?}",
+          joined_user_id,
+          joined_username,
+          joined_channel_id,
+          joined_role,
+          local_user_id == Some(joined_user_id),
+          inserted,
+          selected_channel_id
+        ));
         if inserted {
           Self::sync_cached_channel_counts(&mut lobby);
-          if local_user_id != Some(joined.user_id) {
-            if selected_channel_id == Some(joined.channel_id) {
+          if local_user_id != Some(joined_user_id) {
+            if selected_channel_id == Some(joined_channel_id) {
               notification_sound = Some(NotificationSound::VoiceJoin);
             } else if was_in_selected_channel {
               notification_sound = Some(NotificationSound::VoiceLeave);
@@ -2108,6 +2190,10 @@ impl ServerSession {
         for users in lobby.users_by_channel.values_mut() {
           users.retain(|user| user.user_id != left.user_id);
         }
+        logger::log(&format!(
+          "[lobby] user left voice channel: user={} channel={} local={} was_selected_channel={}",
+          left.user_id, left.channel_id, local_left, was_in_selected_channel
+        ));
         if local_left {
           stop_local_voice = true;
         }
@@ -2135,6 +2221,13 @@ impl ServerSession {
         }
       }
       S2C::UserVoiceState(state) => {
+        logger::log(&format!(
+          "[voice] user state changed: user={} muted={} deafened={} local={}",
+          state.user_id,
+          state.muted,
+          state.deafened,
+          local_user_id == Some(state.user_id)
+        ));
         if local_user_id == Some(state.user_id) {
           local_voice_update = Some((state.muted, state.deafened));
         }
@@ -2147,6 +2240,12 @@ impl ServerSession {
         Self::sync_selected_users(&mut lobby);
       }
       S2C::UserRoleChanged(changed) => {
+        logger::log(&format!(
+          "[lobby] user role changed: user={} role={:?} local={}",
+          changed.user_id,
+          changed.role,
+          local_user_id == Some(changed.user_id)
+        ));
         for users in lobby.users_by_channel.values_mut() {
           if let Some(user) = users.iter_mut().find(|user| user.user_id == changed.user_id) {
             user.role = changed.role;
@@ -2171,11 +2270,24 @@ impl ServerSession {
         }
       }
       S2C::ChannelKey(key) => {
+        logger::log(&format!(
+          "[lobby] received channel key: channel={} bytes={}",
+          key.channel_id,
+          key.key.len()
+        ));
         if let Some(channel) = lobby.channels.iter_mut().find(|channel| channel.id == key.channel_id) {
           channel.key_received = true;
         }
       }
       S2C::ScreenShareStarted(started) => {
+        logger::log(&format!(
+          "[video] screen share started: user={} codec={:?} size={}x{} local={}",
+          started.sharer_user_id,
+          started.metadata.codec,
+          started.metadata.width,
+          started.metadata.height,
+          local_user_id == Some(started.sharer_user_id)
+        ));
         if let Some(existing) = lobby
           .screen_shares
           .iter_mut()
@@ -2190,6 +2302,12 @@ impl ServerSession {
         }
       }
       S2C::ScreenShareStopped { sharer_user_id } => {
+        logger::log(&format!(
+          "[video] screen share stopped: user={} local={} watched={}",
+          sharer_user_id,
+          local_user_id == Some(sharer_user_id),
+          lobby.watching_user_id == Some(sharer_user_id)
+        ));
         lobby
           .screen_shares
           .retain(|share| share.sharer_user_id != sharer_user_id);
@@ -2202,15 +2320,21 @@ impl ServerSession {
         }
       }
       S2C::ScreenShareDenied { reason } => {
+        logger::log(&format!("[video] screen share denied: {reason}"));
         lobby.last_error = Some(reason);
       }
       S2C::ServerError { message: reason } => {
+        logger::log(&format!("[network] server error: {reason}"));
         if reason.to_ascii_lowercase().contains("kick") {
           notification_sound = Some(NotificationSound::UserKicked);
         }
         lobby.last_error = Some(reason);
       }
       S2C::AdminResult(result) => {
+        logger::log(&format!(
+          "[admin] result: success={} message='{}'",
+          result.success, result.message
+        ));
         lobby.last_error = if result.success { None } else { Some(result.message) };
       }
       S2C::AuthResponse(_)

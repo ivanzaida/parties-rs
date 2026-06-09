@@ -47,5 +47,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/cuviddec.h");
     println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvcuvid.h");
     println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvEncodeAPI.h");
+    println!("cargo:rerun-if-changed=assets/icons/parties_icon.ico");
+
+    let mut resource = winresource::WindowsResource::new();
+    resource.set_icon("assets/icons/parties_icon.ico");
+    resource.compile().expect("failed to compile Windows app resources");
   }
 }

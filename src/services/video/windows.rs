@@ -58,7 +58,7 @@ use crate::{
     protocol::{VideoCodecId, VideoFrame},
     server::{Server, VideoFrameSend},
   },
-  services::{logger, screen_share_sources::ScreenShareSourceKind},
+  services::{logger, profiler, screen_share_sources::ScreenShareSourceKind},
 };
 
 #[allow(dead_code)]
@@ -281,7 +281,10 @@ fn run_broadcast_loop(
       let source = source
         .as_mut()
         .ok_or_else(|| VideoError::new("CPU capture source is not initialized."))?;
-      let rgba = source.capture_rgba(config.output_width, config.output_height)?;
+      let rgba = {
+        let _span = profiler::span("video.capture.rgba");
+        source.capture_rgba(config.output_width, config.output_height)?
+      };
       encoder.encode(&rgba, frame_number, timestamp_100ns, &config)
     };
     let samples = match samples {
@@ -325,17 +328,20 @@ fn run_broadcast_loop(
       } else {
         None
       };
-      let send_result = runtime
-        .block_on(server.send_live_video_frame(VideoFrame {
-          frame_number,
-          timestamp: timestamp_ms,
-          keyframe: sample_keyframe,
-          width: config.output_width,
-          height: config.output_height,
-          codec: config.codec,
-          encoded: sample.bytes,
-        }))
-        .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
+      let send_result = {
+        let _span = profiler::span("video.network.send_live_frame");
+        runtime
+          .block_on(server.send_live_video_frame(VideoFrame {
+            frame_number,
+            timestamp: timestamp_ms,
+            keyframe: sample_keyframe,
+            width: config.output_width,
+            height: config.output_height,
+            codec: config.codec,
+            encoded: sample.bytes,
+          }))
+          .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?
+      };
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
@@ -897,10 +903,20 @@ impl BroadcastEncoder {
     config: &VideoBroadcastConfig,
   ) -> Result<Vec<EncodedSample>, VideoError> {
     match self {
-      Self::GpuNvenc(encoder) => encoder.poll(frame_number),
-      Self::Nvenc(encoder) => encoder.encode(rgba, frame_number, timestamp_100ns),
+      Self::GpuNvenc(encoder) => {
+        let _span = profiler::span("video.encode.gpu_nvenc");
+        encoder.poll(frame_number)
+      }
+      Self::Nvenc(encoder) => {
+        let _span = profiler::span("video.encode.nvenc");
+        encoder.encode(rgba, frame_number, timestamp_100ns)
+      }
       Self::Mft(encoder) => {
-        let nv12 = rgba_to_nv12(rgba, config.output_width, config.output_height)?;
+        let nv12 = {
+          let _span = profiler::span("video.convert.rgba_to_nv12");
+          rgba_to_nv12(rgba, config.output_width, config.output_height)?
+        };
+        let _span = profiler::span("video.encode.mft");
         encoder.encode(&nv12, frame_number, timestamp_100ns)
       }
     }
@@ -921,16 +937,19 @@ impl GpuNvencStreamEncoder {
       ScreenShareSourceKind::Screen => 0,
       ScreenShareSourceKind::Window => 1,
     };
-    let handle = unsafe {
-      parties_gpu_stream_create(
-        source_kind,
-        config.source_id as usize,
-        config.codec as u8,
-        config.output_width,
-        config.output_height,
-        config.fps.max(1),
-        config.bitrate_kbps.saturating_mul(1000),
-      )
+    let handle = {
+      let _span = profiler::span("video.ffi.gpu_stream_create");
+      unsafe {
+        parties_gpu_stream_create(
+          source_kind,
+          config.source_id as usize,
+          config.codec as u8,
+          config.output_width,
+          config.output_height,
+          config.fps.max(1),
+          config.bitrate_kbps.saturating_mul(1000),
+        )
+      }
     };
     let handle = NonNull::new(handle).ok_or_else(|| {
       VideoError::new(format!(
@@ -945,7 +964,10 @@ impl GpuNvencStreamEncoder {
   }
 
   fn poll(&mut self, _frame_number: u32) -> Result<Vec<EncodedSample>, VideoError> {
-    let result = unsafe { parties_gpu_stream_poll(self.handle.as_ptr()) };
+    let result = {
+      let _span = profiler::span("video.ffi.gpu_stream_poll");
+      unsafe { parties_gpu_stream_poll(self.handle.as_ptr()) }
+    };
     if result < 0 {
       return Err(VideoError::new(
         "GPU capture + NVENC failed while polling encoded frames.",
@@ -955,6 +977,7 @@ impl GpuNvencStreamEncoder {
       return Ok(Vec::new());
     }
 
+    let _span = profiler::span("video.ffi.gpu_stream_read_encoded");
     let len = unsafe { parties_gpu_stream_encoded_len(self.handle.as_ptr()) };
     let ptr = unsafe { parties_gpu_stream_encoded_ptr(self.handle.as_ptr()) };
     if ptr.is_null() || len == 0 {
@@ -983,14 +1006,17 @@ impl Drop for GpuNvencStreamEncoder {
 
 impl NvencVideoEncoder {
   fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
-    let handle = unsafe {
-      parties_nvenc_create(
-        config.codec as u8,
-        config.output_width,
-        config.output_height,
-        config.fps.max(1),
-        config.bitrate_kbps.saturating_mul(1000),
-      )
+    let handle = {
+      let _span = profiler::span("video.ffi.nvenc_create");
+      unsafe {
+        parties_nvenc_create(
+          config.codec as u8,
+          config.output_width,
+          config.output_height,
+          config.fps.max(1),
+          config.bitrate_kbps.saturating_mul(1000),
+        )
+      }
     };
     let handle = NonNull::new(handle).ok_or_else(|| {
       VideoError::new(format!(
@@ -1012,7 +1038,10 @@ impl NvencVideoEncoder {
     _frame_number: u32,
     timestamp_100ns: i64,
   ) -> Result<Vec<EncodedSample>, VideoError> {
-    let result = unsafe { parties_nvenc_encode_rgba(self.handle.as_ptr(), rgba.as_ptr(), rgba.len(), timestamp_100ns) };
+    let result = {
+      let _span = profiler::span("video.ffi.nvenc_encode_rgba");
+      unsafe { parties_nvenc_encode_rgba(self.handle.as_ptr(), rgba.as_ptr(), rgba.len(), timestamp_100ns) }
+    };
     if result < 0 {
       return Err(VideoError::new("NVENC failed to encode frame."));
     }
@@ -1020,6 +1049,7 @@ impl NvencVideoEncoder {
       return Ok(Vec::new());
     }
 
+    let _span = profiler::span("video.ffi.nvenc_read_encoded");
     let len = unsafe { parties_nvenc_encoded_len(self.handle.as_ptr()) };
     let ptr = unsafe { parties_nvenc_encoded_ptr(self.handle.as_ptr()) };
     if ptr.is_null() || len == 0 {
@@ -1170,7 +1200,10 @@ impl NativeVideoDecoder {
 
 impl NvdecVideoDecoder {
   fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
-    let handle = unsafe { parties_nvdec_create(config.codec as u8, config.width, config.height) };
+    let handle = {
+      let _span = profiler::span("video.ffi.nvdec_create");
+      unsafe { parties_nvdec_create(config.codec as u8, config.width, config.height) }
+    };
     let handle = NonNull::new(handle).ok_or_else(|| {
       VideoError::new(format!(
         "No NVIDIA NVDEC decoder is available for {}.",
@@ -1201,15 +1234,18 @@ impl NvdecVideoDecoder {
     } else {
       (ptr::null_mut(), 0)
     };
-    let status = unsafe {
-      parties_nvdec_decode(
-        self.handle.as_ptr(),
-        frame.encoded.as_ptr(),
-        frame.encoded.len(),
-        i64::from(frame.frame_number),
-        nv12_ptr,
-        nv12_len,
-      )
+    let status = {
+      let _span = profiler::span("video.ffi.nvdec_decode");
+      unsafe {
+        parties_nvdec_decode(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          nv12_ptr,
+          nv12_len,
+        )
+      }
     };
 
     if status < 0 {
@@ -1239,19 +1275,22 @@ impl NvdecVideoDecoder {
     frame: &VideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
   ) -> Result<bool, VideoError> {
-    let status = unsafe {
-      parties_nvdec_decode_to_d3d12(
-        self.handle.as_ptr(),
-        frame.encoded.as_ptr(),
-        frame.encoded.len(),
-        i64::from(frame.frame_number),
-        surface.y_shared_handle_raw() as usize,
-        surface.y_allocation_size(),
-        surface.uv_shared_handle_raw() as usize,
-        surface.uv_allocation_size(),
-        frame.width,
-        frame.height,
-      )
+    let status = {
+      let _span = profiler::span("video.ffi.nvdec_decode_to_d3d12");
+      unsafe {
+        parties_nvdec_decode_to_d3d12(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          surface.y_shared_handle_raw() as usize,
+          surface.y_allocation_size(),
+          surface.uv_shared_handle_raw() as usize,
+          surface.uv_allocation_size(),
+          frame.width,
+          frame.height,
+        )
+      }
     };
 
     if status < 0 {
