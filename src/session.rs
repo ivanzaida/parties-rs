@@ -858,6 +858,10 @@ impl ServerSession {
     self.play_notification_sound(NotificationSound::VoiceLeave);
   }
 
+  pub fn play_local_voice_state_change_notification(&self) {
+    self.play_notification_sound(NotificationSound::ModerationAction);
+  }
+
   pub fn set_push_to_talk_active(&self, active: bool) {
     if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
       engine.set_push_to_talk_active(active);
@@ -2099,7 +2103,12 @@ impl ServerSession {
   }
 
   fn apply_server_message(&self, message: S2C) {
-    let local_user_id = self.info().map(|info| info.user_id);
+    let local_info = self.info();
+    let local_user_id = local_info.as_ref().map(|info| info.user_id);
+    let local_display_name = local_info
+      .as_ref()
+      .map(|info| info.display_name.trim().to_owned())
+      .unwrap_or_default();
     let local_voice_state = *self.local_voice_fallback.lock().expect("server session lock poisoned");
     let mut local_voice_update = None;
     let mut stop_local_voice = false;
@@ -2164,6 +2173,8 @@ impl ServerSession {
       }
       S2C::ChatMessage(message) => {
         let should_notify = local_user_id != Some(message.sender_id);
+        let message_mentions_local_user =
+          should_notify && message_mentions_display_name(&message.text, &local_display_name);
         logger::log(&format!(
           "[chat] received message: id={} channel={} sender={} local={} notify={}",
           message.id, message.channel_id, message.sender_id, !should_notify, should_notify
@@ -2176,7 +2187,11 @@ impl ServerSession {
           [message],
         );
         if should_notify {
-          notification_sound = Some(NotificationSound::ChatMessage);
+          notification_sound = Some(if message_mentions_local_user {
+            NotificationSound::Mention
+          } else {
+            NotificationSound::ChatMessage
+          });
         }
       }
       S2C::ChatHistoryResp(response) => {
@@ -2314,6 +2329,8 @@ impl ServerSession {
         }
       }
       S2C::UserVoiceState(state) => {
+        let local_state_changed_externally =
+          local_user_id == Some(state.user_id) && local_voice_state != (state.muted, state.deafened);
         logger::log(&format!(
           "[voice] user state changed: user={} muted={} deafened={} local={}",
           state.user_id,
@@ -2323,6 +2340,9 @@ impl ServerSession {
         ));
         if local_user_id == Some(state.user_id) {
           local_voice_update = Some((state.muted, state.deafened));
+          if local_state_changed_externally {
+            notification_sound = Some(NotificationSound::ModerationAction);
+          }
         }
         for users in lobby.users_by_channel.values_mut() {
           if let Some(user) = users.iter_mut().find(|user| user.user_id == state.user_id) {
@@ -2373,6 +2393,8 @@ impl ServerSession {
         }
       }
       S2C::ScreenShareStarted(started) => {
+        let should_notify_stream_started = local_user_id != Some(started.sharer_user_id)
+          && user_in_selected_voice_channel(&lobby, started.sharer_user_id);
         logger::log(&format!(
           "[video] screen share started: user={} codec={:?} size={}x{} local={}",
           started.sharer_user_id,
@@ -2393,28 +2415,36 @@ impl ServerSession {
             metadata: started.metadata,
           });
         }
+        if should_notify_stream_started {
+          notification_sound = Some(NotificationSound::StreamStarted);
+        }
       }
       S2C::ScreenShareStopped { sharer_user_id } => {
+        let was_watching_stopped_stream = lobby.watching_user_id == Some(sharer_user_id);
         logger::log(&format!(
           "[video] screen share stopped: user={} local={} watched={}",
           sharer_user_id,
           local_user_id == Some(sharer_user_id),
-          lobby.watching_user_id == Some(sharer_user_id)
+          was_watching_stopped_stream
         ));
         lobby
           .screen_shares
           .retain(|share| share.sharer_user_id != sharer_user_id);
         self.clear_video_cache_for_user(sharer_user_id);
-        if lobby.watching_user_id == Some(sharer_user_id) {
+        if was_watching_stopped_stream {
           let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
           if changed {
             watching_change = Some(previous_user_id);
+          }
+          if local_user_id != Some(sharer_user_id) {
+            notification_sound = Some(NotificationSound::StreamEnded);
           }
         }
       }
       S2C::ScreenShareDenied { reason } => {
         logger::log(&format!("[video] screen share denied: {reason}"));
         lobby.last_error = Some(reason);
+        notification_sound = Some(NotificationSound::ModerationAction);
       }
       S2C::ServerError { message: reason } => {
         logger::log(&format!("[network] server error: {reason}"));
@@ -2511,9 +2541,56 @@ impl ServerSession {
   }
 }
 
+fn user_in_selected_voice_channel(lobby: &LobbyState, user_id: UserId) -> bool {
+  lobby
+    .selected_channel_id
+    .and_then(|channel_id| lobby.users_by_channel.get(&channel_id))
+    .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
+}
+
+fn message_mentions_display_name(text: &str, display_name: &str) -> bool {
+  let display_name = display_name.trim();
+  if display_name.is_empty() {
+    return false;
+  }
+
+  let text = text.to_ascii_lowercase();
+  let display_name = display_name.to_ascii_lowercase();
+  if text.contains(&format!("@{display_name}")) {
+    return true;
+  }
+  if display_name.contains(char::is_whitespace) {
+    return text.contains(&display_name);
+  }
+
+  text
+    .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+    .any(|token| token == display_name)
+}
+
 fn decoded_pixel_format_to_lurq(format: DecodedVideoPixelFormat) -> lurq::images::ImagePixelFormat {
   match format {
     DecodedVideoPixelFormat::Rgba8 => lurq::images::ImagePixelFormat::Rgba8,
     DecodedVideoPixelFormat::Nv12 => lurq::images::ImagePixelFormat::Nv12,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::message_mentions_display_name;
+
+  #[test]
+  fn mention_detection_matches_at_display_name() {
+    assert!(message_mentions_display_name("hey @Lurk", "lurk"));
+  }
+
+  #[test]
+  fn mention_detection_matches_display_name_token() {
+    assert!(message_mentions_display_name("thanks Lurk!", "lurk"));
+  }
+
+  #[test]
+  fn mention_detection_does_not_match_partial_words() {
+    assert!(!message_mentions_display_name("the lurking issue", "lurk"));
   }
 }

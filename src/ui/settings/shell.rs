@@ -12,7 +12,7 @@ use lurq::{
 use crate::{
   routes::{
     ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
-    ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   session::ServerSession,
   theme,
@@ -112,6 +112,7 @@ pub enum SettingsPage {
   Identity,
   Servers,
   Audio,
+  Notifications,
   Stream,
 }
 
@@ -300,6 +301,14 @@ fn nav(ctx: &mut Ctx, page: SettingsPage) -> Element {
       "sliders-horizontal",
       &ctx.t("settings.nav.audio"),
       ROUTE_SETTINGS_AUDIO,
+    ))
+    .child(nav_item(
+      ctx,
+      SettingsPage::Notifications,
+      page,
+      "volume-2",
+      &ctx.t("settings.nav.notifications"),
+      ROUTE_SETTINGS_NOTIFICATIONS,
     ))
     .child(nav_item(
       ctx,

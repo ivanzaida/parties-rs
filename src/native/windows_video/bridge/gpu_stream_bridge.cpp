@@ -30,6 +30,11 @@ struct InputViewCacheEntry {
     ComPtr<ID3D11VideoProcessorInputView> view;
 };
 
+struct RegisteredInputCacheEntry {
+    ID3D11Texture2D* texture = nullptr;
+    int slot = -1;
+};
+
 struct GpuStreamBridge {
     ~GpuStreamBridge() {
         capture.shutdown();
@@ -48,6 +53,7 @@ struct GpuStreamBridge {
     ComPtr<ID3D11Texture2D> scaled_texture;
     NvencEncoder encoder;
     std::vector<InputViewCacheEntry> input_view_cache;
+    std::vector<RegisteredInputCacheEntry> registered_input_cache;
     std::mutex mutex;
     std::vector<uint8_t> pending;
     std::vector<uint8_t> readable;
@@ -77,6 +83,7 @@ void clear_scaler(GpuStreamBridge& bridge) {
     bridge.scaled_input_slot = -1;
     bridge.scale_required = false;
     bridge.input_view_cache.clear();
+    bridge.registered_input_cache.clear();
     bridge.scaled_output_view.Reset();
     bridge.scaled_texture.Reset();
     bridge.video_processor.Reset();
@@ -173,6 +180,26 @@ bool register_scaled_input(GpuStreamBridge& bridge) {
     }
     bridge.scaled_input_slot = bridge.encoder.register_input(bridge.scaled_texture.Get());
     return bridge.scaled_input_slot >= 0;
+}
+
+int registered_input_slot_for_frame(GpuStreamBridge& bridge, ID3D11Texture2D* texture) {
+    if (!texture || bridge.scale_required) {
+        return -1;
+    }
+
+    for (const auto& entry : bridge.registered_input_cache) {
+        if (entry.texture == texture) {
+            return entry.slot;
+        }
+    }
+
+    int slot = bridge.encoder.register_input(texture);
+    if (slot < 0) {
+        return -1;
+    }
+
+    bridge.registered_input_cache.push_back({texture, slot});
+    return slot;
 }
 
 ID3D11VideoProcessorInputView* input_view_for_frame(GpuStreamBridge& bridge, ID3D11Texture2D* texture) {
@@ -521,7 +548,12 @@ GpuStreamBridge* parties_gpu_stream_create(
         if (ptr->scale_required && ptr->scaled_input_slot >= 0) {
             ptr->encoder.encode_registered(ptr->scaled_input_slot, timestamp);
         } else {
-            ptr->encoder.encode(encoder_texture, timestamp);
+            int slot = registered_input_slot_for_frame(*ptr, encoder_texture);
+            if (slot >= 0) {
+                ptr->encoder.encode_registered(slot, timestamp);
+            } else {
+                ptr->encoder.encode(encoder_texture, timestamp);
+            }
         }
     };
 

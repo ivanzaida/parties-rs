@@ -40,5 +40,6 @@ pub async fn apply_voice_control(session: ServerSession, action: VoiceControlAct
     .await
     .map_err(|error| error.to_string())?;
   session.set_local_voice_state(muted, deafened);
+  session.play_local_voice_state_change_notification();
   Ok(())
 }

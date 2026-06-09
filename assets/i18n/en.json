@@ -304,6 +304,7 @@
       "identity": "Identity",
       "servers": "Saved servers",
       "audio": "Audio",
+      "notifications": "Notifications",
       "video": "Video"
     },
     "overview": {
@@ -447,6 +448,70 @@
     "not_wired": {
       "title": "Not yet wired"
     },
+    "notifications": {
+      "title": "Notifications",
+      "description": "Choose how app notification sounds are played.",
+      "section": {
+        "playback": "PLAYBACK",
+        "sounds": "SOUNDS"
+      },
+      "volume": {
+        "$value": "Notification volume",
+        "description": "Set the volume for app notification sounds."
+      },
+      "default": "Default",
+      "custom": "Custom",
+      "custom_file": "{{file}}",
+      "custom_missing": "Custom file missing",
+      "action": {
+        "choose": "Choose MP3",
+        "choose_mp3": "Choose MP3",
+        "play": "Play",
+        "reset": "Reset"
+      },
+      "sound": {
+        "voice_join": {
+          "$value": "Voice join",
+          "description": "Sound when someone joins your voice channel."
+        },
+        "voice_leave": {
+          "$value": "Voice leave",
+          "description": "Sound when someone leaves your voice channel."
+        },
+        "chat_message": {
+          "$value": "Message",
+          "description": "Sound for regular chat messages."
+        },
+        "mention": {
+          "$value": "Mention",
+          "description": "Sound for messages that mention you."
+        },
+        "direct_message": {
+          "$value": "Direct message",
+          "description": "Sound for direct messages."
+        },
+        "user_kicked": {
+          "$value": "User kicked",
+          "description": "Sound when a user is kicked."
+        },
+        "stream_started": {
+          "$value": "Stream started",
+          "description": "Sound when someone in your voice channel starts streaming."
+        },
+        "stream_ended": {
+          "$value": "Stream ended",
+          "description": "Sound when the stream you watch ends."
+        },
+        "connection_lost": {
+          "$value": "Connection lost",
+          "description": "Sound when the server connection drops."
+        },
+        "moderation": {
+          "$value": "Moderation",
+          "description": "Sound for denied actions or voice state changes."
+        }
+      }
+    },
     "audio": {
       "title": "Audio",
       "description": "Choose which local devices Parties should use for voice input and playback.",
@@ -494,6 +559,35 @@
       "notification_volume": {
         "$value": "Notification volume",
         "description": "Set the volume for app notification sounds."
+      },
+      "notification_sound": {
+        "default": "Default",
+        "chat_message": {
+          "$value": "Message sound",
+          "description": "Sound for regular chat messages."
+        },
+        "mention": {
+          "$value": "Mention sound",
+          "description": "Sound for messages that mention you."
+        },
+        "stream_started": {
+          "$value": "Stream started",
+          "description": "Sound when someone in your voice channel starts streaming."
+        },
+        "stream_ended": {
+          "$value": "Stream ended",
+          "description": "Sound when the stream you watch ends."
+        },
+        "moderation": {
+          "$value": "Moderation sound",
+          "description": "Sound for denied actions or voice state changes."
+        },
+        "choice": {
+          "join_channel": "Join channel",
+          "leave_channel": "Leave channel",
+          "new_message": "New message",
+          "user_kicked": "User kicked"
+        }
       },
       "processing": "PROCESSING",
       "noise_cancellation": {

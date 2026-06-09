@@ -65,6 +65,7 @@ pub struct AppSettings {
   pub audio_input_device: String,
   pub audio_output_device: String,
   pub notification_volume: i32,
+  pub notification_sound_overrides: String,
   pub noise_cancellation: bool,
   pub voice_normalization: bool,
   pub voice_normalization_target_level: i32,
@@ -92,6 +93,7 @@ impl Default for AppSettings {
       audio_input_device: String::new(),
       audio_output_device: String::new(),
       notification_volume: 100,
+      notification_sound_overrides: String::new(),
       noise_cancellation: true,
       voice_normalization: true,
       voice_normalization_target_level: 100,
@@ -290,6 +292,7 @@ impl Storage {
         audio_input_device,
         audio_output_device,
         notification_volume,
+        notification_sound_overrides,
         noise_cancellation,
         voice_normalization,
         voice_normalization_target_level,
@@ -307,7 +310,7 @@ impl Storage {
         video_bitrate_mbps,
         locale
       )
-      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
@@ -316,6 +319,7 @@ impl Storage {
         &settings.audio_input_device,
         &settings.audio_output_device,
         settings.notification_volume,
+        &settings.notification_sound_overrides,
         bool_to_int(settings.noise_cancellation),
         bool_to_int(settings.voice_normalization),
         settings.voice_normalization_target_level,
@@ -348,6 +352,7 @@ impl Storage {
         audio_input_device,
         audio_output_device,
         notification_volume,
+        notification_sound_overrides,
         noise_cancellation,
         voice_normalization,
         voice_normalization_target_level,
@@ -381,22 +386,23 @@ impl Storage {
       audio_input_device: row.get(3)?,
       audio_output_device: row.get(4)?,
       notification_volume: row.get(5)?,
-      noise_cancellation: int_to_bool(row.get(6)?),
-      voice_normalization: int_to_bool(row.get(7)?),
-      voice_normalization_target_level: row.get(8)?,
-      echo_cancellation: int_to_bool(row.get(9)?),
-      voice_activation: int_to_bool(row.get(10)?),
-      voice_activation_threshold: row.get(11)?,
-      push_to_talk: int_to_bool(row.get(12)?),
-      hotkey_push_to_talk: row.get(13)?,
-      hotkey_toggle_mute: row.get(14)?,
-      hotkey_toggle_deafen: row.get(15)?,
-      video_webcam_device: row.get(16)?,
-      video_codec: row.get(17)?,
-      video_scale_percent: row.get(18)?,
-      video_fps: row.get(19)?,
-      video_bitrate_mbps: row.get(20)?,
-      locale: row.get(21)?,
+      notification_sound_overrides: row.get(6)?,
+      noise_cancellation: int_to_bool(row.get(7)?),
+      voice_normalization: int_to_bool(row.get(8)?),
+      voice_normalization_target_level: row.get(9)?,
+      echo_cancellation: int_to_bool(row.get(10)?),
+      voice_activation: int_to_bool(row.get(11)?),
+      voice_activation_threshold: row.get(12)?,
+      push_to_talk: int_to_bool(row.get(13)?),
+      hotkey_push_to_talk: row.get(14)?,
+      hotkey_toggle_mute: row.get(15)?,
+      hotkey_toggle_deafen: row.get(16)?,
+      video_webcam_device: row.get(17)?,
+      video_codec: row.get(18)?,
+      video_scale_percent: row.get(19)?,
+      video_fps: row.get(20)?,
+      video_bitrate_mbps: row.get(21)?,
+      locale: row.get(22)?,
     })
   }
 
@@ -615,6 +621,7 @@ impl Storage {
         audio_input_device TEXT NOT NULL DEFAULT '',
         audio_output_device TEXT NOT NULL DEFAULT '',
         notification_volume INTEGER NOT NULL DEFAULT 100,
+        notification_sound_overrides TEXT NOT NULL DEFAULT '',
         noise_cancellation INTEGER NOT NULL DEFAULT 1,
         voice_normalization INTEGER NOT NULL DEFAULT 1,
         voice_normalization_target_level INTEGER NOT NULL DEFAULT 100,
@@ -700,6 +707,12 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "notification_volume")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN notification_volume INTEGER NOT NULL DEFAULT 100",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "notification_sound_overrides")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN notification_sound_overrides TEXT NOT NULL DEFAULT ''",
         [],
       )?;
     }
@@ -1009,6 +1022,7 @@ mod tests {
       audio_input_device: "Microphone".to_owned(),
       audio_output_device: "Speakers".to_owned(),
       notification_volume: 72,
+      notification_sound_overrides: r#"{"chat_message":"user_kicked"}"#.to_owned(),
       noise_cancellation: false,
       voice_normalization: true,
       voice_normalization_target_level: 84,

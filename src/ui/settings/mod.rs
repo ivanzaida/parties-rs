@@ -1,5 +1,6 @@
 mod audio;
 mod identity;
+mod notifications;
 mod overview;
 mod refresh_button;
 mod saved_servers;
@@ -13,6 +14,7 @@ use lurq::{
   app::{component::Component, ctx::Ctx},
   node::Element,
 };
+pub use notifications::SettingsNotificationsScreen;
 pub use overview::SettingsOverviewScreen;
 pub use saved_servers::SettingsSavedServersScreen;
 pub use shell::{SettingsPage, SettingsPopupHandle};
@@ -37,6 +39,7 @@ impl Component for SettingsPopup {
       SettingsPage::Identity => ctx.mount::<SettingsIdentityScreen>(()),
       SettingsPage::Servers => ctx.mount::<SettingsSavedServersScreen>(()),
       SettingsPage::Audio => ctx.mount::<SettingsAudioScreen>(()),
+      SettingsPage::Notifications => ctx.mount::<SettingsNotificationsScreen>(()),
       SettingsPage::Stream => ctx.mount::<SettingsStreamScreen>(()),
     }
   }

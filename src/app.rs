@@ -17,7 +17,7 @@ use crate::{
     ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
     ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS,
     ROUTE_SERVER_SETTINGS_MEMBERS, ROUTE_SERVER_SETTINGS_ROLES, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
-    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
@@ -39,8 +39,8 @@ use crate::{
     server_settings::{ServerSettingsPage, ServerSettingsScreen},
     servers::SavedServersScreen,
     settings::{
-      SettingsAudioScreen, SettingsIdentityScreen, SettingsOverviewScreen, SettingsPage, SettingsPopup,
-      SettingsPopupHandle, SettingsSavedServersScreen, SettingsStreamScreen,
+      SettingsAudioScreen, SettingsIdentityScreen, SettingsNotificationsScreen, SettingsOverviewScreen, SettingsPage,
+      SettingsPopup, SettingsPopupHandle, SettingsSavedServersScreen, SettingsStreamScreen,
     },
   },
 };
@@ -129,6 +129,9 @@ impl Component for App {
           ctx.mount::<SettingsSavedServersScreen>(())
         })
         .route(ROUTE_SETTINGS_AUDIO, |ctx| ctx.mount::<SettingsAudioScreen>(()))
+        .route(ROUTE_SETTINGS_NOTIFICATIONS, |ctx| {
+          ctx.mount::<SettingsNotificationsScreen>(())
+        })
         .route(ROUTE_SETTINGS_STREAM, |ctx| ctx.mount::<SettingsStreamScreen>(()))
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );

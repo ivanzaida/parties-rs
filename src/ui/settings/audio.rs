@@ -65,7 +65,6 @@ pub struct SettingsAudioScreen {
   input_level: Signal<f32>,
   input_level_meter_active: Signal<bool>,
   input_level_meter: Arc<Mutex<Option<audio_devices::InputLevelMeter>>>,
-  notification_volume: i32,
   noise_cancellation: bool,
   voice_normalization: bool,
   voice_normalization_target_level: i32,
@@ -92,7 +91,6 @@ impl Component for SettingsAudioScreen {
     let output_device = ctx.signal(settings.audio_output_device);
     let input_level = ctx.signal(0.0_f32);
     let input_level_meter_active = ctx.signal(false);
-    let notification_volume = settings.notification_volume.clamp(0, 100);
     let noise_cancellation = settings.noise_cancellation;
     let voice_normalization = settings.voice_normalization;
     let voice_normalization_target_level = settings.voice_normalization_target_level.clamp(0, 100);
@@ -136,7 +134,6 @@ impl Component for SettingsAudioScreen {
       input_level,
       input_level_meter_active,
       input_level_meter,
-      notification_volume,
       noise_cancellation,
       voice_normalization,
       voice_normalization_target_level,
@@ -192,16 +189,6 @@ impl Component for SettingsAudioScreen {
                   kind: AudioDeviceKind::Output,
                   selected: self.output_device.clone(),
                   devices: self.output_devices.clone(),
-                }))
-                .child(ctx.mount::<AudioPercentSliderSetting>(AudioPercentSliderSettingProps {
-                  title_key: "settings.audio.notification_volume",
-                  description_key: "settings.audio.notification_volume.description",
-                  initial_value: self.notification_volume,
-                  on_blur: audio_slider_save_action(
-                    storage.clone(),
-                    session.clone(),
-                    AudioSliderSetting::NotificationVolume,
-                  ),
                 })),
             )
             .child(
@@ -845,7 +832,6 @@ pub(super) fn audio_scrollbar_style() -> ScrollBarStyle {
 
 #[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
 enum AudioSliderSetting {
-  NotificationVolume,
   VoiceNormalizationTargetLevel,
   VoiceActivationThreshold,
 }
@@ -969,12 +955,7 @@ fn audio_slider_save_action(
 ) -> AudioSliderSaveAction {
   Arc::new(move |value| {
     if let Some(storage) = storage.as_ref() {
-      let settings = save_slider_setting(storage, setting, value);
-      if matches!(setting, AudioSliderSetting::NotificationVolume)
-        && let Some(session) = session.as_ref()
-      {
-        session.set_notification_audio_settings(&settings);
-      }
+      let _ = save_slider_setting(storage, setting, value);
       if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
         restart_voice_for_audio_setting(storage, session.as_ref());
       }
@@ -998,7 +979,6 @@ fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i3
   let value = value.clamp(0, 100);
 
   match setting {
-    AudioSliderSetting::NotificationVolume => settings.notification_volume = value,
     AudioSliderSetting::VoiceNormalizationTargetLevel => settings.voice_normalization_target_level = value,
     AudioSliderSetting::VoiceActivationThreshold => {
       settings.voice_activation_threshold = value;

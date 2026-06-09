@@ -38,7 +38,7 @@ pub fn log_once(msg: &str) {
 pub fn init() {
   LOGGER_INIT.call_once(|| {
     let config = logger_config();
-    if let Some(path) = startup_log_file_arg(env::args_os().skip(1)) {
+    if let Some(path) = startup_log_file_arg(env::args_os().skip(1)).or_else(default_log_file_path) {
       match open_log_file(&path) {
         Ok(file) => {
           if WriteLogger::init(LevelFilter::Info, config.clone(), file).is_ok() {
@@ -73,6 +73,16 @@ fn open_log_file(path: &Path) -> std::io::Result<std::fs::File> {
   }
 
   OpenOptions::new().create(true).append(true).open(path)
+}
+
+#[cfg(not(debug_assertions))]
+fn default_log_file_path() -> Option<PathBuf> {
+  Some(PathBuf::from(format!("parties_rs_{}.log", std::process::id())))
+}
+
+#[cfg(debug_assertions)]
+fn default_log_file_path() -> Option<PathBuf> {
+  None
 }
 
 fn startup_log_file_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {

@@ -14,4 +14,5 @@ pub const ROUTE_SETTINGS: &str = "/settings";
 pub const ROUTE_SETTINGS_IDENTITY: &str = "/settings/identity";
 pub const ROUTE_SETTINGS_SERVERS: &str = "/settings/servers";
 pub const ROUTE_SETTINGS_AUDIO: &str = "/settings/audio";
+pub const ROUTE_SETTINGS_NOTIFICATIONS: &str = "/settings/notifications";
 pub const ROUTE_SETTINGS_STREAM: &str = "/settings/stream";

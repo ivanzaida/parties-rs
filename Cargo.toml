@@ -23,6 +23,7 @@ simplelog = "0.12"
 sonora = "0.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "sync", "time"] }
 rdev = "0.5.3"
+rfd = "0.15.4"
 xcap = "0.9.6"
 
 

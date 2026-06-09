@@ -1,4 +1,10 @@
-use std::{io::Cursor, thread, time::Duration};
+use std::{
+  env, fs,
+  io::Cursor,
+  path::{Path, PathBuf},
+  thread,
+  time::Duration,
+};
 
 use cpal::{
   FromSample, Sample, SampleFormat,
@@ -13,19 +19,271 @@ const LEAVE_CHANNEL_MP3: &[u8] = include_bytes!("../../assets/audio/leave_channe
 const NEW_MESSAGE_MP3: &[u8] = include_bytes!("../../assets/audio/new_message.mp3");
 const USER_KICKED_MP3: &[u8] = include_bytes!("../../assets/audio/user_kicked.mp3");
 const PLAYBACK_TAIL_MS: u64 = 80;
+pub const SOUND_CHOICE_DEFAULT: &str = "";
+pub const SOUND_CHOICE_JOIN_CHANNEL: &str = "join_channel";
+pub const SOUND_CHOICE_LEAVE_CHANNEL: &str = "leave_channel";
+pub const SOUND_CHOICE_NEW_MESSAGE: &str = "new_message";
+pub const SOUND_CHOICE_USER_KICKED: &str = "user_kicked";
+pub const SOUND_CHOICE_CUSTOM: &str = "custom";
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationSound {
   VoiceJoin,
   VoiceLeave,
   ChatMessage,
+  Mention,
+  DirectMessage,
   UserKicked,
+  StreamStarted,
+  StreamEnded,
+  ConnectionLost,
+  ModerationAction,
+}
+
+#[allow(dead_code)]
+impl NotificationSound {
+  pub const ALL: [Self; 10] = [
+    Self::VoiceJoin,
+    Self::VoiceLeave,
+    Self::ChatMessage,
+    Self::Mention,
+    Self::DirectMessage,
+    Self::UserKicked,
+    Self::StreamStarted,
+    Self::StreamEnded,
+    Self::ConnectionLost,
+    Self::ModerationAction,
+  ];
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotificationSoundAsset {
+  pub sound: NotificationSound,
+  pub file_name: &'static str,
+  pub bytes: &'static [u8],
+}
+
+#[allow(dead_code)]
+pub fn join_channel_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::VoiceJoin)
+}
+
+#[allow(dead_code)]
+pub fn leave_channel_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::VoiceLeave)
+}
+
+#[allow(dead_code)]
+pub fn new_message_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::ChatMessage)
+}
+
+#[allow(dead_code)]
+pub fn mention_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::Mention)
+}
+
+#[allow(dead_code)]
+pub fn direct_message_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::DirectMessage)
+}
+
+#[allow(dead_code)]
+pub fn user_kicked_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::UserKicked)
+}
+
+#[allow(dead_code)]
+pub fn stream_started_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::StreamStarted)
+}
+
+#[allow(dead_code)]
+pub fn stream_ended_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::StreamEnded)
+}
+
+#[allow(dead_code)]
+pub fn connection_lost_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::ConnectionLost)
+}
+
+#[allow(dead_code)]
+pub fn moderation_action_sound() -> NotificationSoundAsset {
+  resolve_sound(NotificationSound::ModerationAction)
+}
+
+pub fn resolve_sound(sound: NotificationSound) -> NotificationSoundAsset {
+  match sound {
+    NotificationSound::VoiceJoin => NotificationSoundAsset {
+      sound,
+      file_name: "join_channel.mp3",
+      bytes: JOIN_CHANNEL_MP3,
+    },
+    NotificationSound::VoiceLeave => NotificationSoundAsset {
+      sound,
+      file_name: "leave_channel.mp3",
+      bytes: LEAVE_CHANNEL_MP3,
+    },
+    NotificationSound::ChatMessage => NotificationSoundAsset {
+      sound,
+      file_name: "new_message.mp3",
+      bytes: NEW_MESSAGE_MP3,
+    },
+    NotificationSound::Mention => NotificationSoundAsset {
+      sound,
+      file_name: "new_message.mp3",
+      bytes: NEW_MESSAGE_MP3,
+    },
+    NotificationSound::DirectMessage => NotificationSoundAsset {
+      sound,
+      file_name: "new_message.mp3",
+      bytes: NEW_MESSAGE_MP3,
+    },
+    NotificationSound::UserKicked => NotificationSoundAsset {
+      sound,
+      file_name: "user_kicked.mp3",
+      bytes: USER_KICKED_MP3,
+    },
+    NotificationSound::StreamStarted => NotificationSoundAsset {
+      sound,
+      file_name: "join_channel.mp3",
+      bytes: JOIN_CHANNEL_MP3,
+    },
+    NotificationSound::StreamEnded => NotificationSoundAsset {
+      sound,
+      file_name: "leave_channel.mp3",
+      bytes: LEAVE_CHANNEL_MP3,
+    },
+    NotificationSound::ConnectionLost => NotificationSoundAsset {
+      sound,
+      file_name: "user_kicked.mp3",
+      bytes: USER_KICKED_MP3,
+    },
+    NotificationSound::ModerationAction => NotificationSoundAsset {
+      sound,
+      file_name: "user_kicked.mp3",
+      bytes: USER_KICKED_MP3,
+    },
+  }
+}
+
+pub fn notification_sound_key(sound: NotificationSound) -> &'static str {
+  match sound {
+    NotificationSound::VoiceJoin => "voice_join",
+    NotificationSound::VoiceLeave => "voice_leave",
+    NotificationSound::ChatMessage => "chat_message",
+    NotificationSound::Mention => "mention",
+    NotificationSound::DirectMessage => "direct_message",
+    NotificationSound::UserKicked => "user_kicked",
+    NotificationSound::StreamStarted => "stream_started",
+    NotificationSound::StreamEnded => "stream_ended",
+    NotificationSound::ConnectionLost => "connection_lost",
+    NotificationSound::ModerationAction => "moderation_action",
+  }
+}
+
+pub fn notification_sound_file_name(sound: NotificationSound) -> &'static str {
+  match sound {
+    NotificationSound::VoiceJoin => "join_channel.mp3",
+    NotificationSound::VoiceLeave => "leave_channel.mp3",
+    NotificationSound::ChatMessage => "new_message.mp3",
+    NotificationSound::Mention => "mention.mp3",
+    NotificationSound::DirectMessage => "direct_message.mp3",
+    NotificationSound::UserKicked => "user_kicked.mp3",
+    NotificationSound::StreamStarted => "stream_started.mp3",
+    NotificationSound::StreamEnded => "stream_ended.mp3",
+    NotificationSound::ConnectionLost => "connection_lost.mp3",
+    NotificationSound::ModerationAction => "moderation_action.mp3",
+  }
+}
+
+pub fn custom_audio_dir() -> PathBuf {
+  env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("audio")
+}
+
+pub fn custom_sound_path(sound: NotificationSound) -> PathBuf {
+  custom_audio_dir().join(notification_sound_file_name(sound))
+}
+
+pub fn custom_sound_exists(sound: NotificationSound) -> bool {
+  custom_sound_path(sound).is_file()
+}
+
+pub fn install_custom_sound(sound: NotificationSound, source: &Path) -> Result<PathBuf, String> {
+  if source
+    .extension()
+    .and_then(|extension| extension.to_str())
+    .is_none_or(|extension| !extension.eq_ignore_ascii_case("mp3"))
+  {
+    return Err("Selected notification sound must be an MP3 file.".to_owned());
+  }
+
+  let target = custom_sound_path(sound);
+  let Some(parent) = target.parent() else {
+    return Err("Could not resolve notification audio directory.".to_owned());
+  };
+  fs::create_dir_all(parent).map_err(|error| format!("Failed to create notification audio directory: {error}"))?;
+
+  let same_file = source
+    .canonicalize()
+    .ok()
+    .zip(target.canonicalize().ok())
+    .is_some_and(|(source, target)| source == target);
+  if !same_file {
+    fs::copy(source, &target).map_err(|error| format!("Failed to copy notification sound: {error}"))?;
+  }
+
+  Ok(target)
+}
+
+pub fn resolve_sound_with_overrides(sound: NotificationSound, overrides: &str) -> NotificationSoundAsset {
+  let choice = notification_sound_override(overrides, sound);
+  resolve_sound_choice(sound, choice.as_deref().unwrap_or(SOUND_CHOICE_DEFAULT))
+}
+
+pub fn resolve_sound_choice(sound: NotificationSound, choice: &str) -> NotificationSoundAsset {
+  match choice.trim() {
+    SOUND_CHOICE_JOIN_CHANNEL => NotificationSoundAsset {
+      sound,
+      file_name: "join_channel.mp3",
+      bytes: JOIN_CHANNEL_MP3,
+    },
+    SOUND_CHOICE_LEAVE_CHANNEL => NotificationSoundAsset {
+      sound,
+      file_name: "leave_channel.mp3",
+      bytes: LEAVE_CHANNEL_MP3,
+    },
+    SOUND_CHOICE_NEW_MESSAGE => NotificationSoundAsset {
+      sound,
+      file_name: "new_message.mp3",
+      bytes: NEW_MESSAGE_MP3,
+    },
+    SOUND_CHOICE_USER_KICKED => NotificationSoundAsset {
+      sound,
+      file_name: "user_kicked.mp3",
+      bytes: USER_KICKED_MP3,
+    },
+    _ => resolve_sound(sound),
+  }
+}
+
+pub fn notification_sound_override(overrides: &str, sound: NotificationSound) -> Option<String> {
+  let value = serde_json::from_str::<serde_json::Value>(overrides).ok()?;
+  value
+    .get(notification_sound_key(sound))
+    .and_then(serde_json::Value::as_str)
+    .map(str::trim)
+    .filter(|choice| !choice.is_empty())
+    .map(str::to_owned)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NotificationAudioSettings {
   pub output_device: String,
   pub volume: i32,
+  pub sound_overrides: String,
 }
 
 impl NotificationAudioSettings {
@@ -33,6 +291,7 @@ impl NotificationAudioSettings {
     Self {
       output_device: settings.audio_output_device.clone(),
       volume: settings.notification_volume,
+      sound_overrides: settings.notification_sound_overrides.clone(),
     }
   }
 }
@@ -52,7 +311,7 @@ pub fn play(sound: NotificationSound, settings: NotificationAudioSettings) {
 }
 
 fn play_blocking(sound: NotificationSound, settings: NotificationAudioSettings) -> Result<(), String> {
-  let decoded = decode_notification_sound(sound)?;
+  let decoded = decode_notification_sound(sound, &settings.sound_overrides)?;
   let Some(device) = audio_devices::output_device(&settings.output_device) else {
     return Err("No output device available.".to_owned());
   };
@@ -124,15 +383,24 @@ impl DecodedNotificationSound {
   }
 }
 
-fn decode_notification_sound(sound: NotificationSound) -> Result<DecodedNotificationSound, String> {
-  let bytes = match sound {
-    NotificationSound::VoiceJoin => JOIN_CHANNEL_MP3,
-    NotificationSound::VoiceLeave => LEAVE_CHANNEL_MP3,
-    NotificationSound::ChatMessage => NEW_MESSAGE_MP3,
-    NotificationSound::UserKicked => USER_KICKED_MP3,
-  };
-
-  decode_mp3(bytes)
+fn decode_notification_sound(sound: NotificationSound, overrides: &str) -> Result<DecodedNotificationSound, String> {
+  if notification_sound_override(overrides, sound).as_deref() == Some(SOUND_CHOICE_CUSTOM) {
+    let path = custom_sound_path(sound);
+    match fs::read(&path) {
+      Ok(bytes) => match decode_mp3(&bytes) {
+        Ok(decoded) => return Ok(decoded),
+        Err(error) => super::logger::log(&format!(
+          "[audio] custom notification sound invalid: path={} error={error}",
+          path.display()
+        )),
+      },
+      Err(error) => super::logger::log(&format!(
+        "[audio] custom notification sound unavailable: path={} error={error}",
+        path.display()
+      )),
+    }
+  }
+  decode_mp3(resolve_sound_with_overrides(sound, overrides).bytes)
 }
 
 fn decode_mp3(bytes: &[u8]) -> Result<DecodedNotificationSound, String> {
@@ -264,5 +532,55 @@ impl NotificationRenderState {
 
   fn advance_source_position(&mut self) {
     self.source_position += f64::from(self.sound.sample_rate) / f64::from(self.output_rate);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn named_sound_helpers_resolve_bundled_files() {
+    assert_eq!(join_channel_sound().file_name, "join_channel.mp3");
+    assert_eq!(leave_channel_sound().file_name, "leave_channel.mp3");
+    assert_eq!(new_message_sound().file_name, "new_message.mp3");
+    assert_eq!(user_kicked_sound().file_name, "user_kicked.mp3");
+  }
+
+  #[test]
+  fn planned_sound_helpers_use_existing_fallbacks() {
+    assert_eq!(mention_sound().file_name, "new_message.mp3");
+    assert_eq!(direct_message_sound().file_name, "new_message.mp3");
+    assert_eq!(stream_started_sound().file_name, "join_channel.mp3");
+    assert_eq!(stream_ended_sound().file_name, "leave_channel.mp3");
+    assert_eq!(connection_lost_sound().file_name, "user_kicked.mp3");
+    assert_eq!(moderation_action_sound().file_name, "user_kicked.mp3");
+  }
+
+  #[test]
+  fn every_notification_sound_resolves_to_audio_bytes() {
+    for sound in NotificationSound::ALL {
+      let asset = resolve_sound(sound);
+      assert_eq!(asset.sound, sound);
+      assert!(!asset.file_name.is_empty());
+      assert!(!asset.bytes.is_empty());
+    }
+  }
+
+  #[test]
+  fn sound_overrides_resolve_selected_bundled_asset() {
+    let overrides = r#"{"chat_message":"user_kicked"}"#;
+    let asset = resolve_sound_with_overrides(NotificationSound::ChatMessage, overrides);
+
+    assert_eq!(asset.sound, NotificationSound::ChatMessage);
+    assert_eq!(asset.file_name, "user_kicked.mp3");
+  }
+
+  #[test]
+  fn empty_sound_override_uses_default_asset() {
+    let overrides = r#"{"chat_message":""}"#;
+    let asset = resolve_sound_with_overrides(NotificationSound::ChatMessage, overrides);
+
+    assert_eq!(asset.file_name, "new_message.mp3");
   }
 }
