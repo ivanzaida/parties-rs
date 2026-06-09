@@ -1,9 +1,9 @@
 use lurq::{
   components::Row,
-  node::{Element, dimension::Dimension},
+  images::ImageData,
+  node::{dimension::Dimension, Element},
 };
 
-pub(crate) const LOGO_RESOURCE: &str = "icons/parties_logo.png";
 pub(crate) const LOGO_BYTES: &[u8] = include_bytes!("../../assets/icons/parties_logo.png");
 
 pub(crate) fn logo_mark(size: impl Into<Dimension>, radius: f32) -> impl Into<Element> {
@@ -14,6 +14,6 @@ pub(crate) fn logo_mark(size: impl Into<Dimension>, radius: f32) -> impl Into<El
     .height(size)
     .rounded(radius)
     .clip()
-    .background_image(LOGO_RESOURCE)
+    .background_image(ImageData::from_bytes(LOGO_BYTES).unwrap())
     .background_cover()
 }
