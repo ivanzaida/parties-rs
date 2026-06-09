@@ -93,6 +93,9 @@ struct VTCompressionSession(c_void);
 type VTCompressionSessionRef = *mut VTCompressionSession;
 type VTEncodeInfoFlags = u32;
 
+#[repr(C)]
+struct MacosStreamBridge(c_void);
+
 type VTDecompressionOutputCallback = extern "C" fn(
   decompression_output_ref_con: *mut c_void,
   source_frame_ref_con: *mut c_void,
@@ -253,6 +256,28 @@ unsafe extern "C" {
 
   fn VTCompressionSessionInvalidate(session: VTCompressionSessionRef);
 
+  fn parties_macos_stream_create(
+    source_kind: u8,
+    source_id: u64,
+    codec: u8,
+    width: u16,
+    height: u16,
+    fps: u32,
+    bitrate: u32,
+  ) -> *mut MacosStreamBridge;
+
+  fn parties_macos_stream_destroy(bridge: *mut MacosStreamBridge);
+
+  fn parties_macos_stream_force_keyframe(bridge: *mut MacosStreamBridge);
+
+  fn parties_macos_stream_poll(bridge: *mut MacosStreamBridge) -> i32;
+
+  fn parties_macos_stream_encoded_ptr(bridge: *mut MacosStreamBridge) -> *const u8;
+
+  fn parties_macos_stream_encoded_len(bridge: *mut MacosStreamBridge) -> usize;
+
+  fn parties_macos_stream_encoded_keyframe(bridge: *mut MacosStreamBridge) -> i32;
+
   static kCMSampleAttachmentKey_NotSync: CFStringRef;
 }
 
@@ -314,6 +339,30 @@ fn run_broadcast_loop(
   keyframe_requests: Arc<AtomicU64>,
   init_tx: Option<mpsc::Sender<Result<(), String>>>,
 ) -> Result<(), VideoError> {
+  match MacosNativeStreamEncoder::new(&config) {
+    Ok(mut encoder) => {
+      logger::log(&format!(
+        "[video/macos] native ScreenCaptureKit encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
+        config.codec,
+        config.source_width,
+        config.source_height,
+        config.output_width,
+        config.output_height,
+        config.fps,
+        config.bitrate_kbps
+      ));
+      if let Some(init_tx) = init_tx {
+        let _ = init_tx.send(Ok(()));
+      }
+      return run_native_broadcast_loop(server, config, runtime, stop, keyframe_requests, &mut encoder);
+    }
+    Err(error) => {
+      logger::log(&format!(
+        "[video/macos] native ScreenCaptureKit encoder unavailable; falling back to CPU capture: {error}"
+      ));
+    }
+  }
+
   logger::log("[video/macos] creating VideoToolbox encoder");
   let mut encoder = match VTEncoder::new(&config) {
     Ok(encoder) => encoder,
@@ -422,6 +471,153 @@ fn run_broadcast_loop(
   Ok(())
 }
 
+fn run_native_broadcast_loop(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  runtime: tokio::runtime::Handle,
+  stop: Arc<AtomicBool>,
+  keyframe_requests: Arc<AtomicU64>,
+  encoder: &mut MacosNativeStreamEncoder,
+) -> Result<(), VideoError> {
+  let frame_interval = Duration::from_nanos(1_000_000_000u64 / u64::from(config.fps.max(1)));
+  let poll_interval = frame_interval.min(Duration::from_millis(5));
+  let started_at = Instant::now();
+  let mut frame_number = 0u32;
+  let mut logged_first_frame = false;
+  let mut logged_stream_fallback = false;
+  let mut dropped_live_frames = 0u64;
+  let mut handled_keyframe_requests = keyframe_requests.load(Ordering::Relaxed);
+
+  while !stop.load(Ordering::Relaxed) {
+    let requested_keyframes = keyframe_requests.load(Ordering::Relaxed);
+    if requested_keyframes != handled_keyframe_requests {
+      handled_keyframe_requests = requested_keyframes;
+      encoder.force_keyframe();
+      logger::log("[video/macos] keyframe requested by PLI");
+    }
+
+    let samples = encoder.poll()?;
+    for sample in samples {
+      let sample_len = sample.bytes.len();
+      let sample_keyframe = sample.keyframe;
+      let timestamp_ms = started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+      let send_result = runtime
+        .block_on(server.send_live_video_frame(VideoFrame {
+          frame_number,
+          timestamp: timestamp_ms,
+          keyframe: sample_keyframe,
+          width: config.output_width,
+          height: config.output_height,
+          codec: config.codec,
+          encoded: sample.bytes,
+        }))
+        .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
+      if send_result == VideoFrameSend::Dropped {
+        dropped_live_frames += 1;
+        if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
+          logger::log(&format!(
+            "[video/macos] dropped live video frame before network queue: frame={} total_dropped={}",
+            frame_number, dropped_live_frames
+          ));
+        }
+        frame_number = frame_number.wrapping_add(1);
+        continue;
+      }
+      if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
+        logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
+        logged_stream_fallback = true;
+      }
+      if !logged_first_frame {
+        logger::log(&format!(
+          "[video/macos] first native encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
+          frame_number, sample_len, sample_keyframe, send_result
+        ));
+        logged_first_frame = true;
+      } else if frame_number > 0 && frame_number % 120 == 0 {
+        logger::log(&format!(
+          "[video/macos] native encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
+          frame_number, sample_len, sample_keyframe, send_result
+        ));
+      }
+      frame_number = frame_number.wrapping_add(1);
+    }
+
+    thread::sleep(poll_interval);
+  }
+
+  logger::log("[video/macos] native broadcast loop stopped by request");
+  Ok(())
+}
+
+struct MacosNativeStreamEncoder {
+  handle: NonNull<MacosStreamBridge>,
+}
+
+unsafe impl Send for MacosNativeStreamEncoder {}
+
+impl MacosNativeStreamEncoder {
+  fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let source_kind = match config.source_kind {
+      ScreenShareSourceKind::Screen => 0,
+      ScreenShareSourceKind::Window => 1,
+    };
+    let handle = unsafe {
+      parties_macos_stream_create(
+        source_kind,
+        u64::from(config.source_id),
+        config.codec as u8,
+        config.output_width,
+        config.output_height,
+        config.fps.max(1),
+        config.bitrate_kbps.saturating_mul(1000),
+      )
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "ScreenCaptureKit + VideoToolbox failed for source {:?}/{} at {}x{}.",
+        config.source_kind, config.source_id, config.output_width, config.output_height
+      ))
+    })?;
+    Ok(Self { handle })
+  }
+
+  fn poll(&mut self) -> Result<Vec<EncodedSample>, VideoError> {
+    let result = unsafe { parties_macos_stream_poll(self.handle.as_ptr()) };
+    if result < 0 {
+      return Err(VideoError::new(
+        "ScreenCaptureKit + VideoToolbox failed while polling encoded frames.",
+      ));
+    }
+    if result == 0 {
+      return Ok(Vec::new());
+    }
+
+    let len = unsafe { parties_macos_stream_encoded_len(self.handle.as_ptr()) };
+    let ptr = unsafe { parties_macos_stream_encoded_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() || len == 0 {
+      return Ok(Vec::new());
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) }.to_vec();
+    let keyframe = unsafe { parties_macos_stream_encoded_keyframe(self.handle.as_ptr()) != 0 };
+    Ok(vec![EncodedSample { bytes, keyframe }])
+  }
+
+  fn force_keyframe(&mut self) {
+    unsafe {
+      parties_macos_stream_force_keyframe(self.handle.as_ptr());
+    }
+  }
+}
+
+impl Drop for MacosNativeStreamEncoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_macos_stream_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
 struct CaptureSource {
   kind: CaptureSourceKind,
 }
@@ -442,12 +638,16 @@ impl CaptureSource {
 
   fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
     let image = match &self.kind {
-      CaptureSourceKind::Screen(monitor) => monitor
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture monitor frame: {error}")))?,
-      CaptureSourceKind::Window(window) => window
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture window frame: {error}")))?,
+      CaptureSourceKind::Screen(monitor) => monitor.capture_image().map_err(|error| {
+        VideoError::new(format!(
+          "Failed to capture monitor frame: {error}. On macOS, check System Settings -> Privacy & Security -> Screen & System Audio Recording."
+        ))
+      })?,
+      CaptureSourceKind::Window(window) => window.capture_image().map_err(|error| {
+        VideoError::new(format!(
+          "Failed to capture window frame: {error}. On macOS, check System Settings -> Privacy & Security -> Screen & System Audio Recording."
+        ))
+      })?,
     };
 
     let frame_width = image.width();
@@ -460,7 +660,9 @@ fn find_monitor(source_id: u32) -> Result<Monitor, VideoError> {
   Monitor::all()
     .map_err(|error| VideoError::new(format!("Failed to list monitors: {error}")))?
     .into_iter()
-    .find(|monitor| monitor.id().ok() == Some(source_id))
+    .enumerate()
+    .find(|(index, monitor)| monitor.id().ok().unwrap_or(*index as u32) == source_id)
+    .map(|(_, monitor)| monitor)
     .ok_or_else(|| VideoError::new("Selected monitor is no longer available."))
 }
 
@@ -1113,8 +1315,10 @@ unsafe impl Send for VTSession {}
 
 struct DecodedCallbackFrame {
   status: OSStatus,
-  native_image: Option<lurq::images::ImageData>,
+  pixel_buffer: CVPixelBufferRef,
 }
+
+unsafe impl Send for DecodedCallbackFrame {}
 
 pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
   let (output_tx, output_rx) = mpsc::channel();
@@ -1194,7 +1398,13 @@ impl NativeVideoDecoder {
     };
     let sample_data = access_units.sample_data(frame.codec)?;
     let sample = SampleBuffer::new(&sample_data, session.format_description, frame.timestamp)?;
-    while self.output_rx.try_recv().is_ok() {}
+    while let Ok(stale) = self.output_rx.try_recv() {
+      if !stale.pixel_buffer.is_null() {
+        unsafe {
+          CFRelease(stale.pixel_buffer.cast());
+        }
+      }
+    }
 
     let mut info_flags = 0;
     let status =
@@ -1207,9 +1417,14 @@ impl NativeVideoDecoder {
       )));
     }
 
-    let mut latest = None;
+    let mut latest: CVPixelBufferRef = ptr::null_mut();
     while let Ok(decoded) = self.output_rx.try_recv() {
       if decoded.status != NO_ERR {
+        if !decoded.pixel_buffer.is_null() {
+          unsafe {
+            CFRelease(decoded.pixel_buffer.cast());
+          }
+        }
         return Err(VideoError::new(format!(
           "VideoToolbox output callback failed for {} frame {}: OSStatus {}.",
           codec_label(frame.codec),
@@ -1217,23 +1432,47 @@ impl NativeVideoDecoder {
           decoded.status
         )));
       }
-      latest = decoded.native_image;
+      if !latest.is_null() {
+        unsafe {
+          CFRelease(latest.cast());
+        }
+      }
+      latest = decoded.pixel_buffer;
     }
 
     if !output {
+      if !latest.is_null() {
+        unsafe {
+          CFRelease(latest.cast());
+        }
+      }
       return Ok(None);
     }
 
-    match latest {
-      Some(native_image) => {
-        let _ = output_buffer;
-        Ok(Some(NativeDecodedVideoFrame {
-          format: DecodedVideoPixelFormat::Nv12,
-          pixels: Vec::new(),
-          native_image: Some(native_image),
-        }))
+    if !latest.is_null() {
+      let native_image = native_image_from_pixel_buffer(latest).ok();
+      let pixels = copy_nv12_pixel_buffer(latest).unwrap_or_default();
+      unsafe {
+        CFRelease(latest.cast());
       }
-      None => Ok(None),
+      match native_image {
+        Some(native_image) => {
+          let _ = output_buffer;
+          Ok(Some(NativeDecodedVideoFrame {
+            format: DecodedVideoPixelFormat::Nv12,
+            pixels,
+            native_image: Some(native_image),
+          }))
+        }
+        None if !pixels.is_empty() => Ok(Some(NativeDecodedVideoFrame {
+          format: DecodedVideoPixelFormat::Nv12,
+          pixels,
+          native_image: None,
+        })),
+        None => Ok(None),
+      }
+    } else {
+      Ok(None)
     }
   }
 
@@ -1448,12 +1687,15 @@ extern "C" fn decompression_output_callback(
   _presentation_duration: CMTime,
 ) {
   let sender = unsafe { &*(decompression_output_ref_con.cast::<mpsc::Sender<DecodedCallbackFrame>>()) };
-  let native_image = if status == NO_ERR && !image_buffer.is_null() {
-    native_image_from_pixel_buffer(image_buffer).ok()
+  let pixel_buffer = if status == NO_ERR && !image_buffer.is_null() {
+    unsafe {
+      CFRetain(image_buffer.cast());
+    }
+    image_buffer
   } else {
-    None
+    ptr::null_mut()
   };
-  let _ = sender.send(DecodedCallbackFrame { status, native_image });
+  let _ = sender.send(DecodedCallbackFrame { status, pixel_buffer });
 }
 
 fn create_format_description(
@@ -2414,6 +2656,78 @@ fn native_image_from_pixel_buffer(pixel_buffer: CVPixelBufferRef) -> Result<lurq
 
   let pixel_buffer = unsafe { lurq::images::MacosCvPixelBuffer::retain(pixel_buffer) };
   Ok(lurq::images::NativeImageData::from_macos_cv_pixel_buffer_nv12(width, height, pixel_buffer).image_data())
+}
+
+fn copy_nv12_pixel_buffer(pixel_buffer: CVPixelBufferRef) -> Result<Vec<u8>, VideoError> {
+  let pixel_format = unsafe { CVPixelBufferGetPixelFormatType(pixel_buffer) };
+  if pixel_format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
+    return Err(VideoError::new(format!(
+      "Unsupported decoded pixel format for CPU fallback: 0x{pixel_format:08x}."
+    )));
+  }
+
+  let width = unsafe { CVPixelBufferGetWidth(pixel_buffer) };
+  let height = unsafe { CVPixelBufferGetHeight(pixel_buffer) };
+  if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+    return Err(VideoError::new(format!(
+      "Decoded pixel buffer has invalid NV12 dimensions {width}x{height}."
+    )));
+  }
+
+  let lock_status = unsafe { CVPixelBufferLockBaseAddress(pixel_buffer, 1) };
+  if lock_status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "Failed to lock decoded pixel buffer for CPU fallback: OSStatus {lock_status}."
+    )));
+  }
+
+  let result = copy_locked_nv12_pixel_buffer(pixel_buffer, width, height);
+  let unlock_status = unsafe { CVPixelBufferUnlockBaseAddress(pixel_buffer, 1) };
+  if unlock_status != NO_ERR {
+    return Err(VideoError::new(format!(
+      "Failed to unlock decoded pixel buffer for CPU fallback: OSStatus {unlock_status}."
+    )));
+  }
+  result
+}
+
+fn copy_locked_nv12_pixel_buffer(
+  pixel_buffer: CVPixelBufferRef,
+  width: usize,
+  height: usize,
+) -> Result<Vec<u8>, VideoError> {
+  let y_base = unsafe { CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) };
+  let uv_base = unsafe { CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) };
+  if y_base.is_null() || uv_base.is_null() {
+    return Err(VideoError::new("Decoded pixel buffer does not expose NV12 planes."));
+  }
+
+  let y_stride = unsafe { CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0) };
+  let uv_stride = unsafe { CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1) };
+  let y_height = unsafe { CVPixelBufferGetHeight(pixel_buffer) };
+  let uv_height = height / 2;
+  if y_stride < width || uv_stride < width || y_height < height {
+    return Err(VideoError::new("Decoded pixel buffer has invalid NV12 plane strides."));
+  }
+
+  let mut out = vec![0u8; width * height + width * uv_height];
+  let y_src = unsafe { slice::from_raw_parts(y_base.cast::<u8>(), y_stride * y_height) };
+  let uv_src = unsafe { slice::from_raw_parts(uv_base.cast::<u8>(), uv_stride * uv_height) };
+
+  for row in 0..height {
+    let src = row * y_stride;
+    let dst = row * width;
+    out[dst..dst + width].copy_from_slice(&y_src[src..src + width]);
+  }
+
+  let uv_dst_offset = width * height;
+  for row in 0..uv_height {
+    let src = row * uv_stride;
+    let dst = uv_dst_offset + row * width;
+    out[dst..dst + width].copy_from_slice(&uv_src[src..src + width]);
+  }
+
+  Ok(out)
 }
 
 fn picture_to_nv12(picture: &Dav1dPicture, output_buffer: Option<Vec<u8>>) -> Result<Vec<u8>, VideoError> {

@@ -1,10 +1,22 @@
 fn main() {
   #[cfg(target_os = "macos")]
   {
+    cc::Build::new()
+      .cpp(true)
+      .std("c++17")
+      .flag_if_supported("-fobjc-arc")
+      .flag_if_supported("-fblocks")
+      .file("src/native/macos_video/bridge/macos_stream_bridge.mm")
+      .warnings(false)
+      .compile("parties_macos_stream_bridge");
+
+    println!("cargo:rustc-link-lib=framework=ScreenCaptureKit");
+    println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=VideoToolbox");
     println!("cargo:rustc-link-lib=framework=CoreMedia");
     println!("cargo:rustc-link-lib=framework=CoreVideo");
     println!("cargo:rustc-link-lib=framework=CoreFoundation");
+    println!("cargo:rerun-if-changed=src/native/macos_video/bridge/macos_stream_bridge.mm");
   }
 
   #[cfg(target_os = "windows")]
