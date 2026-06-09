@@ -73,6 +73,7 @@ pub struct AppSettings {
   pub voice_activation: bool,
   pub voice_activation_threshold: i32,
   pub push_to_talk: bool,
+  pub push_to_talk_release_delay_ms: i32,
   pub hotkey_push_to_talk: String,
   pub hotkey_toggle_mute: String,
   pub hotkey_toggle_deafen: String,
@@ -101,6 +102,7 @@ impl Default for AppSettings {
       voice_activation: true,
       voice_activation_threshold: 27,
       push_to_talk: false,
+      push_to_talk_release_delay_ms: 0,
       hotkey_push_to_talk: String::new(),
       hotkey_toggle_mute: String::new(),
       hotkey_toggle_deafen: String::new(),
@@ -306,6 +308,7 @@ impl Storage {
         voice_activation,
         voice_activation_threshold,
         push_to_talk,
+        push_to_talk_release_delay_ms,
         hotkey_push_to_talk,
         hotkey_toggle_mute,
         hotkey_toggle_deafen,
@@ -316,7 +319,7 @@ impl Storage {
         video_bitrate_mbps,
         locale
       )
-      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
@@ -333,6 +336,7 @@ impl Storage {
         bool_to_int(settings.voice_activation),
         settings.voice_activation_threshold,
         bool_to_int(settings.push_to_talk),
+        settings.push_to_talk_release_delay_ms.clamp(0, 2000),
         &settings.hotkey_push_to_talk,
         &settings.hotkey_toggle_mute,
         &settings.hotkey_toggle_deafen,
@@ -366,6 +370,7 @@ impl Storage {
         voice_activation,
         voice_activation_threshold,
         push_to_talk,
+        push_to_talk_release_delay_ms,
         hotkey_push_to_talk,
         hotkey_toggle_mute,
         hotkey_toggle_deafen,
@@ -400,15 +405,16 @@ impl Storage {
       voice_activation: int_to_bool(row.get(11)?),
       voice_activation_threshold: row.get(12)?,
       push_to_talk: int_to_bool(row.get(13)?),
-      hotkey_push_to_talk: row.get(14)?,
-      hotkey_toggle_mute: row.get(15)?,
-      hotkey_toggle_deafen: row.get(16)?,
-      video_webcam_device: row.get(17)?,
-      video_codec: row.get(18)?,
-      video_scale_percent: row.get(19)?,
-      video_fps: row.get(20)?,
-      video_bitrate_mbps: row.get(21)?,
-      locale: row.get(22)?,
+      push_to_talk_release_delay_ms: row.get::<_, i32>(14)?.clamp(0, 2000),
+      hotkey_push_to_talk: row.get(15)?,
+      hotkey_toggle_mute: row.get(16)?,
+      hotkey_toggle_deafen: row.get(17)?,
+      video_webcam_device: row.get(18)?,
+      video_codec: row.get(19)?,
+      video_scale_percent: row.get(20)?,
+      video_fps: row.get(21)?,
+      video_bitrate_mbps: row.get(22)?,
+      locale: row.get(23)?,
     })
   }
 
@@ -691,6 +697,7 @@ impl Storage {
         voice_activation INTEGER NOT NULL DEFAULT 1,
         voice_activation_threshold INTEGER NOT NULL DEFAULT 27,
         push_to_talk INTEGER NOT NULL DEFAULT 0,
+        push_to_talk_release_delay_ms INTEGER NOT NULL DEFAULT 0,
         hotkey_push_to_talk TEXT NOT NULL DEFAULT '',
         hotkey_toggle_mute TEXT NOT NULL DEFAULT '',
         hotkey_toggle_deafen TEXT NOT NULL DEFAULT '',
@@ -830,6 +837,12 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "push_to_talk")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN push_to_talk INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "push_to_talk_release_delay_ms")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN push_to_talk_release_delay_ms INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
     }
@@ -1115,6 +1128,7 @@ mod tests {
       voice_activation: false,
       voice_activation_threshold: 31,
       push_to_talk: true,
+      push_to_talk_release_delay_ms: 600,
       hotkey_push_to_talk: "Ctrl+P".to_owned(),
       hotkey_toggle_mute: "Ctrl+M".to_owned(),
       hotkey_toggle_deafen: "Ctrl+D".to_owned(),

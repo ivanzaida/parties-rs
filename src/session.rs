@@ -854,6 +854,12 @@ impl ServerSession {
     }
   }
 
+  pub fn set_push_to_talk_release_delay_ms(&self, value: i32) {
+    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
+      engine.set_push_to_talk_release_delay_ms(value);
+    }
+  }
+
   pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
     *self
       .notification_audio_settings
@@ -883,9 +889,15 @@ impl ServerSession {
   }
 
   pub fn set_push_to_talk_active(&self, active: bool) {
-    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
-      engine.set_push_to_talk_active(active);
-    }
+    let release_delay_ms = {
+      let voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+      if let Some(engine) = voice_engine.as_ref() {
+        engine.set_push_to_talk_active(active);
+        engine.push_to_talk_release_delay_ms()
+      } else {
+        0
+      }
+    };
 
     let Some(user_id) = self.info().map(|info| info.user_id) else {
       return;
@@ -893,7 +905,7 @@ impl ServerSession {
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
     if active && !muted && !deafened {
       self.set_user_speaking(user_id, true);
-    } else if !active {
+    } else if !active && release_delay_ms == 0 {
       self.clear_user_speaking(user_id);
     }
   }

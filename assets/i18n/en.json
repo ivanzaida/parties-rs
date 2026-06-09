@@ -731,6 +731,10 @@
         "$value": "Push to talk",
         "description": "Transmit only while the push-to-talk key is held."
       },
+      "push_to_talk_release_delay": {
+        "$value": "Release delay",
+        "description": "Keep transmitting briefly after the push-to-talk key is released."
+      },
       "hotkeys": "HOTKEYS",
       "hotkey": {
         "toggle_mute": {
