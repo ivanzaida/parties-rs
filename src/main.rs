@@ -10,6 +10,8 @@ mod session;
 mod storage;
 mod theme;
 mod ui;
+#[cfg(target_os = "windows")]
+mod windows_diagnostics;
 
 #[cfg(target_os = "windows")]
 use std::ffi::{CStr, c_char};
@@ -176,15 +178,14 @@ fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: S
 #[cfg(target_os = "windows")]
 unsafe extern "C" {
   fn parties_native_log_set_callback(callback: Option<extern "C" fn(level: u8, message: *const c_char)>);
-  fn parties_native_seh_install();
 }
 
 #[cfg(target_os = "windows")]
 fn install_windows_native_diagnostics() {
   unsafe {
     parties_native_log_set_callback(Some(windows_native_log_callback));
-    parties_native_seh_install();
   }
+  windows_diagnostics::install();
 }
 
 #[cfg(target_os = "windows")]
