@@ -9,7 +9,10 @@ use std::{
 
 use crate::{
   network::{
-    protocol::{VideoCodecId, data::ForwardedVideoFrame},
+    protocol::{
+      VideoCodecId,
+      data::{ForwardedVideoFrame, VideoFrame},
+    },
     server::Server,
   },
   services::screen_share_sources::ScreenShareSourceKind,
@@ -37,6 +40,8 @@ pub struct VideoBroadcastConfig {
   pub bitrate_kbps: u32,
   pub audio_enabled: bool,
 }
+
+pub type VideoFrameLoopback = Arc<dyn Fn(VideoFrame) + Send + Sync + 'static>;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -121,9 +126,18 @@ pub struct VideoDecoder {
 }
 
 impl VideoBroadcast {
+  #[allow(dead_code)]
   pub fn start(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<Self, VideoError> {
+    Self::start_with_loopback(server, config, None)
+  }
+
+  pub fn start_with_loopback(
+    server: Arc<Server>,
+    config: VideoBroadcastConfig,
+    loopback: Option<VideoFrameLoopback>,
+  ) -> Result<Self, VideoError> {
     validate_config(&config)?;
-    start_native_backend(server, config)
+    start_native_backend(server, config, loopback)
   }
 
   #[allow(dead_code)]
@@ -309,17 +323,29 @@ fn validate_decode_config(config: &VideoDecodeConfig) -> Result<(), VideoError> 
 }
 
 #[cfg(target_os = "windows")]
-fn start_native_backend(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
-  windows::encode(server, config)
+fn start_native_backend(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  loopback: Option<VideoFrameLoopback>,
+) -> Result<VideoBroadcast, VideoError> {
+  windows::encode(server, config, loopback)
 }
 
 #[cfg(target_os = "macos")]
-fn start_native_backend(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
-  macos::encode(server, config)
+fn start_native_backend(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  loopback: Option<VideoFrameLoopback>,
+) -> Result<VideoBroadcast, VideoError> {
+  macos::encode(server, config, loopback)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn start_native_backend(_server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
+fn start_native_backend(
+  _server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  _loopback: Option<VideoFrameLoopback>,
+) -> Result<VideoBroadcast, VideoError> {
   let _ = (&config.source_kind, config.source_id);
   Err(VideoError::new(
     "Native video backend is not implemented for this platform yet.",

@@ -1,12 +1,6 @@
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
 
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
-
-#[cfg(target_os = "windows")]
-use nokhwa::{native_api_backend, query, utils::CameraInfo};
-
 #[derive(Clone, Debug, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub struct WebcamDevice {
   pub value: String,
@@ -27,7 +21,7 @@ pub fn webcam_devices() -> Vec<WebcamDevice> {
 
   #[cfg(target_os = "windows")]
   {
-    return nokhwa_webcam_devices();
+    return windows_webcam::webcam_devices().unwrap_or_default();
   }
 
   #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -37,66 +31,130 @@ pub fn webcam_devices() -> Vec<WebcamDevice> {
 }
 
 #[cfg(target_os = "windows")]
-fn nokhwa_webcam_devices() -> Vec<WebcamDevice> {
-  initialize_nokhwa();
+pub(crate) mod windows_webcam {
+  use std::{ffi::c_void, ptr};
 
-  let Some(api) = native_api_backend() else {
-    return Vec::new();
+  use windows::{
+    Win32::{
+      Media::MediaFoundation::{
+        IMFActivate, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        MF_VERSION, MFCreateAttributes, MFEnumDeviceSources, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup,
+      },
+      System::Com::CoTaskMemFree,
+    },
+    core::PWSTR,
   };
 
-  let mut devices = query(api)
-    .unwrap_or_default()
-    .into_iter()
-    .enumerate()
-    .filter_map(|(ordinal, camera)| webcam_device(camera, ordinal))
-    .collect::<Vec<_>>();
+  use super::{WebcamDevice, webcam_device_id};
 
-  devices.sort_by(|left, right| {
-    left
-      .label
-      .to_lowercase()
-      .cmp(&right.label.to_lowercase())
-      .then_with(|| left.value.cmp(&right.value))
-  });
+  pub(crate) struct MediaFoundationSession;
 
-  let mut seen_values = HashSet::new();
-  devices.retain(|device| seen_values.insert(device.value.clone()));
-  devices
-}
-
-#[cfg(target_os = "windows")]
-fn webcam_device(camera: CameraInfo, ordinal: usize) -> Option<WebcamDevice> {
-  let label = clean_device_string(&camera.human_name())
-    .or_else(|| clean_device_string(camera.description()))
-    .unwrap_or_else(|| format!("Camera {}", ordinal + 1));
-  let value = webcam_device_value(&camera);
-
-  if value.trim().is_empty() {
-    return None;
+  impl MediaFoundationSession {
+    pub(crate) fn start() -> Result<Self, String> {
+      unsafe {
+        MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)
+          .map_err(|error| format!("Failed to start Media Foundation: {error}"))?;
+      }
+      Ok(Self)
+    }
   }
 
-  Some(WebcamDevice { value, label })
+  impl Drop for MediaFoundationSession {
+    fn drop(&mut self) {
+      unsafe {
+        let _ = MFShutdown();
+      }
+    }
+  }
+
+  pub(crate) fn webcam_devices() -> Result<Vec<WebcamDevice>, String> {
+    let _mf = MediaFoundationSession::start()?;
+    let activates = enumerate_video_activates()?;
+    Ok(
+      activates
+        .iter()
+        .filter_map(|activate| {
+          let value = activate_string(activate, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK).ok()?;
+          let label = activate_string(activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+            .ok()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| "Camera".to_owned());
+          Some(WebcamDevice { value, label })
+        })
+        .collect(),
+    )
+  }
+
+  pub(crate) fn find_activate_by_id(source_id: u32) -> Result<(MediaFoundationSession, IMFActivate, String), String> {
+    let mf = MediaFoundationSession::start()?;
+    let activates = enumerate_video_activates()?;
+    for activate in activates {
+      let value = activate_string(&activate, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK)?;
+      if webcam_device_id(&value) == source_id {
+        return Ok((mf, activate, value));
+      }
+    }
+    Err("Selected webcam is no longer available.".to_owned())
+  }
+
+  pub(crate) fn activate_string(activate: &IMFActivate, key: &windows::core::GUID) -> Result<String, String> {
+    let mut value = PWSTR::null();
+    let mut len = 0u32;
+    unsafe {
+      activate
+        .GetAllocatedString(key, &mut value, &mut len)
+        .map_err(|error| format!("Failed to read webcam attribute: {error}"))?;
+    }
+    if value.is_null() {
+      return Ok(String::new());
+    }
+
+    let string = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(value.as_ptr(), len as usize)) };
+    unsafe {
+      CoTaskMemFree(Some(value.as_ptr().cast::<c_void>()));
+    }
+    Ok(string)
+  }
+
+  fn enumerate_video_activates() -> Result<Vec<IMFActivate>, String> {
+    let attributes = unsafe {
+      let mut attributes = None;
+      MFCreateAttributes(&mut attributes, 1)
+        .map_err(|error| format!("Failed to create webcam source attributes: {error}"))?;
+      attributes.ok_or_else(|| "Media Foundation returned null webcam source attributes".to_owned())?
+    };
+    unsafe {
+      attributes
+        .SetGUID(
+          &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+          &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+        )
+        .map_err(|error| format!("Failed to configure webcam source attributes: {error}"))?;
+    }
+
+    let mut activates: *mut Option<IMFActivate> = ptr::null_mut();
+    let mut count = 0u32;
+    unsafe {
+      MFEnumDeviceSources(&attributes, &mut activates, &mut count)
+        .map_err(|error| format!("Failed to enumerate webcams: {error}"))?;
+    }
+    if activates.is_null() || count == 0 {
+      return Ok(Vec::new());
+    }
+
+    let mut out = Vec::with_capacity(count as usize);
+    unsafe {
+      for index in 0..count as usize {
+        if let Some(activate) = ptr::read(activates.add(index)) {
+          out.push(activate);
+        }
+      }
+      CoTaskMemFree(Some(activates.cast::<c_void>()));
+    }
+    Ok(out)
+  }
 }
-
-#[cfg(target_os = "windows")]
-pub(crate) fn webcam_device_value(camera: &CameraInfo) -> String {
-  clean_device_string(&camera.misc()).unwrap_or_else(|| camera.index().as_string())
-}
-
-#[cfg(target_os = "windows")]
-fn clean_device_string(value: &str) -> Option<String> {
-  let value = value
-    .chars()
-    .filter(|character| !character.is_control())
-    .collect::<String>()
-    .trim()
-    .to_owned();
-
-  if value.is_empty() { None } else { Some(value) }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn initialize_nokhwa() {}
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -125,6 +183,7 @@ fn native_macos_webcam_devices() -> Vec<WebcamDevice> {
       })
     })
     .collect::<Vec<_>>();
+
   devices.sort_by(|left, right| {
     left
       .label
@@ -132,7 +191,6 @@ fn native_macos_webcam_devices() -> Vec<WebcamDevice> {
       .cmp(&right.label.to_lowercase())
       .then_with(|| left.value.cmp(&right.value))
   });
-
   let mut seen_values = std::collections::HashSet::new();
   devices.retain(|device| seen_values.insert(device.value.clone()));
   devices

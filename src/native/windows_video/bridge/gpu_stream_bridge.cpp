@@ -7,6 +7,9 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <condition_variable>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -240,9 +243,177 @@ ID3D11Texture2D* scale_frame(GpuStreamBridge& bridge, ID3D11Texture2D* texture) 
     return bridge.scaled_texture.Get();
 }
 
+bool copy_texture_to_rgba(ScreenCapture& capture, ID3D11Texture2D* texture, uint32_t width, uint32_t height, std::vector<uint8_t>& rgba) {
+    if (!texture || width == 0 || height == 0) {
+        return false;
+    }
+
+    ID3D11Device* device = capture.device();
+    ID3D11DeviceContext* context = capture.context();
+    if (!device || !context) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+
+    ComPtr<ID3D11Texture2D> staging;
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &staging);
+    if (FAILED(hr) || !staging) {
+        native_log_error("WGC snapshot staging texture failed: {:#010x}", static_cast<unsigned>(hr));
+        return false;
+    }
+
+    context->CopyResource(staging.Get(), texture);
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    hr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(hr)) {
+        native_log_error("WGC snapshot map failed: {:#010x}", static_cast<unsigned>(hr));
+        return false;
+    }
+
+    rgba.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    const auto* source = static_cast<const uint8_t*>(mapped.pData);
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* source_row = source + static_cast<size_t>(mapped.RowPitch) * y;
+        uint8_t* target_row = rgba.data() + static_cast<size_t>(width) * y * 4;
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint8_t* bgra = source_row + static_cast<size_t>(x) * 4;
+            uint8_t* out = target_row + static_cast<size_t>(x) * 4;
+            out[0] = bgra[2];
+            out[1] = bgra[1];
+            out[2] = bgra[0];
+            out[3] = bgra[3];
+        }
+    }
+
+    context->Unmap(staging.Get(), 0);
+    return true;
+}
+
 } // namespace
 
 extern "C" {
+
+uint8_t* parties_wgc_snapshot_capture(
+    uint8_t source_kind,
+    uintptr_t source_handle,
+    uint32_t timeout_ms,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uintptr_t* out_len) {
+    if (!source_handle || !out_width || !out_height || !out_len) {
+        native_log_error("WGC snapshot rejected invalid arguments");
+        return nullptr;
+    }
+
+    *out_width = 0;
+    *out_height = 0;
+    *out_len = 0;
+
+    bool apartment_initialized = false;
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        apartment_initialized = true;
+    } catch (...) {
+        // The worker may already be in a compatible apartment.
+    }
+
+    ScreenCapture capture;
+    if (!capture.init()) {
+        native_log_error("WGC snapshot capture init failed");
+        if (apartment_initialized) {
+            winrt::uninit_apartment();
+        }
+        return nullptr;
+    }
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<uint8_t> rgba;
+    uint32_t frame_width = 0;
+    uint32_t frame_height = 0;
+    bool completed = false;
+    bool failed = false;
+
+    capture.on_frame = [&](ID3D11Texture2D* texture, uint32_t width, uint32_t height) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (completed) {
+            return;
+        }
+        if (copy_texture_to_rgba(capture, texture, width, height, rgba)) {
+            frame_width = width;
+            frame_height = height;
+        } else {
+            failed = true;
+        }
+        completed = true;
+        cv.notify_one();
+    };
+
+    capture.on_closed = [&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        failed = true;
+        completed = true;
+        cv.notify_one();
+    };
+
+    CaptureTarget target{};
+    target.type = source_kind == 0 ? CaptureTarget::Type::Monitor : CaptureTarget::Type::Window;
+    target.handle = reinterpret_cast<void*>(source_handle);
+    if (!capture.start(target, 30)) {
+        native_log_error("WGC snapshot capture start failed");
+        capture.shutdown();
+        if (apartment_initialized) {
+            winrt::uninit_apartment();
+        }
+        return nullptr;
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        const auto timeout = std::chrono::milliseconds(timeout_ms ? timeout_ms : 1000);
+        cv.wait_for(lock, timeout, [&] { return completed; });
+    }
+
+    capture.shutdown();
+
+    if (apartment_initialized) {
+        winrt::uninit_apartment();
+    }
+
+    if (!completed || failed || rgba.empty() || frame_width == 0 || frame_height == 0) {
+        native_log_error("WGC snapshot failed or timed out");
+        return nullptr;
+    }
+
+    uint8_t* bytes = static_cast<uint8_t*>(std::malloc(rgba.size()));
+    if (!bytes) {
+        native_log_error("WGC snapshot allocation failed");
+        return nullptr;
+    }
+    std::memcpy(bytes, rgba.data(), rgba.size());
+    *out_width = frame_width;
+    *out_height = frame_height;
+    *out_len = static_cast<uintptr_t>(rgba.size());
+    return bytes;
+}
+
+void parties_wgc_snapshot_free(uint8_t* bytes) {
+    std::free(bytes);
+}
 
 GpuStreamBridge* parties_gpu_stream_create(
     uint8_t source_kind,

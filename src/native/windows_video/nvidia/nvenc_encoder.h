@@ -4,6 +4,7 @@
 #include "nvEncodeAPI.h"
 
 #include <d3d11.h>
+#include <atomic>
 #include <wrl/client.h>
 
 namespace parties_rs::video::nvidia {
@@ -53,7 +54,7 @@ private:
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
     bool initialized_ = false;
-    bool force_keyframe_ = false;
+    std::atomic<bool> force_keyframe_{false};
 };
 
 } // namespace parties_rs::video::nvidia

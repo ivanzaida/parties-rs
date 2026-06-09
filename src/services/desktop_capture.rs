@@ -18,6 +18,19 @@ use xcap::{Monitor, Window};
 
 static WINDOW_CACHE: OnceLock<Mutex<HashMap<u32, Window>>> = OnceLock::new();
 
+#[cfg(target_os = "windows")]
+unsafe extern "C" {
+  fn parties_wgc_snapshot_capture(
+    source_kind: u8,
+    source_handle: usize,
+    timeout_ms: u32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_len: *mut usize,
+  ) -> *mut u8;
+  fn parties_wgc_snapshot_free(bytes: *mut u8);
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum DesktopCaptureSourceKind {
   Screen,
@@ -108,6 +121,51 @@ impl DesktopCaptureSource {
       rgba: image.into_raw(),
     })
   }
+
+  pub fn capture_snapshot_frame(&self) -> Result<DesktopFrame, String> {
+    #[cfg(target_os = "windows")]
+    if let Ok(frame) = capture_wgc_snapshot_frame(self.kind, self.id) {
+      return Ok(frame);
+    }
+
+    self.capture_frame()
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn capture_wgc_snapshot_frame(kind: DesktopCaptureSourceKind, id: u32) -> Result<DesktopFrame, String> {
+  let source_kind = match kind {
+    DesktopCaptureSourceKind::Screen => 0,
+    DesktopCaptureSourceKind::Window => 1,
+  };
+  let mut width = 0u32;
+  let mut height = 0u32;
+  let mut len = 0usize;
+  let bytes =
+    unsafe { parties_wgc_snapshot_capture(source_kind, id as usize, 1000, &mut width, &mut height, &mut len) };
+  if bytes.is_null() {
+    return Err("WGC snapshot returned null".to_owned());
+  }
+
+  let expected_len = (width as usize)
+    .checked_mul(height as usize)
+    .and_then(|pixels| pixels.checked_mul(4))
+    .ok_or_else(|| "WGC snapshot dimensions are too large".to_owned())?;
+  if width == 0 || height == 0 || len != expected_len {
+    unsafe {
+      parties_wgc_snapshot_free(bytes);
+    }
+    return Err(format!(
+      "WGC snapshot returned invalid frame: {}x{} len={} expected={}",
+      width, height, len, expected_len
+    ));
+  }
+
+  let rgba = unsafe { std::slice::from_raw_parts(bytes, len).to_vec() };
+  unsafe {
+    parties_wgc_snapshot_free(bytes);
+  }
+  Ok(DesktopFrame { rgba, width, height })
 }
 
 #[cfg(target_os = "windows")]

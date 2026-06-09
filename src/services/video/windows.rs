@@ -52,7 +52,7 @@ use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as O
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, webcam::WebcamCapture,
+  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameLoopback, webcam::WebcamCapture,
 };
 use crate::{
   network::{
@@ -171,7 +171,11 @@ extern "C" fn native_log_callback(level: u8, message: *const c_char) {
   logger::log(&format!("[native/windows/{level}] {message}"));
 }
 
-pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
+pub(super) fn encode(
+  server: Arc<Server>,
+  config: VideoBroadcastConfig,
+  loopback: Option<VideoFrameLoopback>,
+) -> Result<VideoBroadcast, VideoError> {
   install_native_logger();
   let runtime = tokio::runtime::Handle::try_current()
     .map_err(|_| VideoError::new("Video broadcasting must be started from the Tokio runtime."))?;
@@ -193,6 +197,7 @@ pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Resul
         runtime,
         loop_stop,
         thread_keyframe_requests,
+        loopback,
         Some(ready_tx),
       ) {
         thread_stop.store(true, Ordering::Relaxed);
@@ -305,11 +310,30 @@ fn run_broadcast_loop(
   runtime: tokio::runtime::Handle,
   stop: Arc<AtomicBool>,
   keyframe_requests: Arc<AtomicU64>,
+  loopback: Option<VideoFrameLoopback>,
   ready: Option<mpsc::SyncSender<Result<(), String>>>,
 ) -> Result<(), VideoError> {
   logger::log("[video/windows] creating native encoder");
+  let mut config = config;
   let mut failed_encoder_labels = Vec::new();
   let setup = (|| -> Result<(BroadcastEncoder, Option<CaptureSource>), VideoError> {
+    if matches!(config.source_kind, ScreenShareSourceKind::Webcam) {
+      logger::log("[video/windows] opening CPU capture source");
+      let source = CaptureSource::open(&config)?;
+      if let Some(capture_fps) = source.capture_fps() {
+        if capture_fps != config.fps {
+          logger::log(&format!(
+            "[video/windows] webcam fps adjusted to selected capture mode: requested={} selected={}",
+            config.fps, capture_fps
+          ));
+          config.fps = capture_fps;
+        }
+      }
+      let encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
+      log_encoder_ready(&encoder, &config);
+      return Ok((encoder, Some(source)));
+    }
+
     let encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
     log_encoder_ready(&encoder, &config);
     let source = if encoder.owns_capture() {
@@ -405,18 +429,19 @@ fn run_broadcast_loop(
       } else {
         None
       };
+      let frame = VideoFrame {
+        frame_number,
+        timestamp: timestamp_ms,
+        keyframe: sample_keyframe,
+        width: config.output_width,
+        height: config.output_height,
+        codec: config.codec,
+        encoded: sample.bytes,
+      };
       let send_result = {
         let _span = profiler::span("video.network.send_live_frame");
         runtime
-          .block_on(server.send_live_video_frame(VideoFrame {
-            frame_number,
-            timestamp: timestamp_ms,
-            keyframe: sample_keyframe,
-            width: config.output_width,
-            height: config.output_height,
-            codec: config.codec,
-            encoded: sample.bytes,
-          }))
+          .block_on(server.send_live_video_frame(frame.clone()))
           .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?
       };
       if send_result == VideoFrameSend::Dropped {
@@ -428,6 +453,9 @@ fn run_broadcast_loop(
           ));
         }
         continue;
+      }
+      if let Some(loopback) = &loopback {
+        loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
         logger::log("[video/windows] live video datagrams unavailable or too large; using reliable stream fallback");
@@ -943,9 +971,21 @@ impl CaptureSource {
       ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window => {
         CaptureSourceKind::Desktop(find_desktop_source(config.source_kind, config.source_id)?)
       }
-      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(config.source_id)?),
+      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(
+        config.source_id,
+        config.output_width,
+        config.output_height,
+        config.fps,
+      )?),
     };
     Ok(Self { kind })
+  }
+
+  fn capture_fps(&self) -> Option<u32> {
+    match &self.kind {
+      CaptureSourceKind::Webcam(webcam) => Some(webcam.fps()).filter(|fps| *fps > 0),
+      CaptureSourceKind::Desktop(_) => None,
+    }
   }
 
   fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
@@ -1219,9 +1259,13 @@ impl NvencVideoEncoder {
     _frame_number: u32,
     timestamp_100ns: i64,
   ) -> Result<Vec<EncodedSample>, VideoError> {
+    let bgra = {
+      let _span = profiler::span("video.convert.rgba_to_bgra");
+      rgba_to_bgra(rgba)?
+    };
     let result = {
       let _span = profiler::span("video.ffi.nvenc_encode_rgba");
-      unsafe { parties_nvenc_encode_rgba(self.handle.as_ptr(), rgba.as_ptr(), rgba.len(), timestamp_100ns) }
+      unsafe { parties_nvenc_encode_rgba(self.handle.as_ptr(), bgra.as_ptr(), bgra.len(), timestamp_100ns) }
     };
     if result < 0 {
       return Err(VideoError::new("NVENC failed to encode frame."));
@@ -1993,6 +2037,21 @@ fn rgba_to_nv12(rgba: &[u8], width: u16, height: u16) -> Result<Vec<u8>, VideoEr
   Ok(out)
 }
 
+fn rgba_to_bgra(rgba: &[u8]) -> Result<Vec<u8>, VideoError> {
+  if rgba.len() % 4 != 0 {
+    return Err(VideoError::new("RGBA buffer length is not pixel aligned."));
+  }
+
+  let mut bgra = Vec::with_capacity(rgba.len());
+  for pixel in rgba.chunks_exact(4) {
+    bgra.push(pixel[2]);
+    bgra.push(pixel[1]);
+    bgra.push(pixel[0]);
+    bgra.push(pixel[3]);
+  }
+  Ok(bgra)
+}
+
 fn nv12_len(width: u16, height: u16) -> Result<usize, VideoError> {
   let width = usize::from(width);
   let height = usize::from(height);
@@ -2161,6 +2220,14 @@ mod tests {
     let error = rgba_to_nv12(&rgba, 3, 2).unwrap_err();
 
     assert_eq!(error.to_string(), "NV12 conversion requires non-zero even dimensions.");
+  }
+
+  #[test]
+  fn rgba_to_bgra_swaps_red_and_blue() {
+    let rgba = vec![10, 20, 30, 255, 40, 50, 60, 128];
+    let bgra = rgba_to_bgra(&rgba).unwrap();
+
+    assert_eq!(bgra, vec![30, 20, 10, 255, 60, 50, 40, 128]);
   }
 
   #[test]
