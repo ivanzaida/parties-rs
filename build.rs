@@ -13,6 +13,7 @@ fn main() {
       .cpp(true)
       .std("c++17")
       .flag_if_supported("/EHsc")
+      .file("src/native/windows_video/common/native_log.cpp")
       .file("src/native/windows_video/bridge/gpu_stream_bridge.cpp")
       .file("src/native/windows_video/bridge/nvdec_bridge.cpp")
       .file("src/native/windows_video/bridge/nvenc_bridge.cpp")
@@ -34,6 +35,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/native/windows_video/bridge/gpu_stream_bridge.cpp");
     println!("cargo:rerun-if-changed=src/native/windows_video/bridge/nvdec_bridge.cpp");
     println!("cargo:rerun-if-changed=src/native/windows_video/bridge/nvenc_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/common/native_log.cpp");
     println!("cargo:rerun-if-changed=src/native/windows_video/common/video_types.h");
     println!("cargo:rerun-if-changed=src/native/windows_video/capture/windows_screen_capture.cpp");
     println!("cargo:rerun-if-changed=src/native/windows_video/capture/windows_screen_capture.h");

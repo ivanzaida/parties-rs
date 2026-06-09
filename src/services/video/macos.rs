@@ -52,18 +52,21 @@ use rav1d::{
     dav1d_picture_unref, dav1d_send_data,
   },
 };
-use xcap::{Monitor, Window};
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError,
+  VideoDecodeConfig, VideoDecoder, VideoError, webcam::WebcamCapture,
 };
 use crate::{
   network::{
     protocol::{VideoCodecId, data::VideoFrame},
     server::{Server, VideoFrameSend},
   },
-  services::{logger, screen_share_sources::ScreenShareSourceKind},
+  services::{
+    desktop_capture::{DesktopCaptureSource, DesktopCaptureSourceKind},
+    logger,
+    screen_share_sources::ScreenShareSourceKind,
+  },
 };
 
 #[allow(dead_code)]
@@ -427,49 +430,44 @@ struct CaptureSource {
 }
 
 enum CaptureSourceKind {
-  Screen(Monitor),
-  Window(Window),
+  Desktop(DesktopCaptureSource),
+  Webcam(WebcamCapture),
 }
 
 impl CaptureSource {
   fn open(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
     let kind = match config.source_kind {
-      ScreenShareSourceKind::Screen => CaptureSourceKind::Screen(find_monitor(config.source_id)?),
-      ScreenShareSourceKind::Window => CaptureSourceKind::Window(find_window(config.source_id)?),
+      ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window => {
+        CaptureSourceKind::Desktop(find_desktop_source(config.source_kind, config.source_id)?)
+      }
+      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(config.source_id)?),
     };
     Ok(Self { kind })
   }
 
   fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
-    let image = match &self.kind {
-      CaptureSourceKind::Screen(monitor) => monitor
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture monitor frame: {error}")))?,
-      CaptureSourceKind::Window(window) => window
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture window frame: {error}")))?,
+    let frame = match &mut self.kind {
+      CaptureSourceKind::Desktop(source) => source
+        .capture_frame()
+        .map_err(|error| VideoError::new(format!("Failed to capture desktop frame: {error}")))?,
+      CaptureSourceKind::Webcam(webcam) => return webcam.capture_rgba(width, height),
     };
 
-    let frame_width = image.width();
-    let frame_height = image.height();
-    normalize_rgba_frame(image.into_raw(), frame_width, frame_height, width, height)
+    normalize_rgba_frame(frame.rgba, frame.width, frame.height, width, height)
   }
 }
 
-fn find_monitor(source_id: u32) -> Result<Monitor, VideoError> {
-  Monitor::all()
-    .map_err(|error| VideoError::new(format!("Failed to list monitors: {error}")))?
-    .into_iter()
-    .find(|monitor| monitor.id().ok() == Some(source_id))
-    .ok_or_else(|| VideoError::new("Selected monitor is no longer available."))
+fn find_desktop_source(kind: ScreenShareSourceKind, source_id: u32) -> Result<DesktopCaptureSource, VideoError> {
+  DesktopCaptureSource::find(desktop_capture_source_kind(kind)?, source_id)
+    .map_err(|error| VideoError::new(format!("Selected desktop source is no longer available: {error}")))
 }
 
-fn find_window(source_id: u32) -> Result<Window, VideoError> {
-  Window::all()
-    .map_err(|error| VideoError::new(format!("Failed to list windows: {error}")))?
-    .into_iter()
-    .find(|window| window.id().ok() == Some(source_id))
-    .ok_or_else(|| VideoError::new("Selected window is no longer available."))
+fn desktop_capture_source_kind(kind: ScreenShareSourceKind) -> Result<DesktopCaptureSourceKind, VideoError> {
+  match kind {
+    ScreenShareSourceKind::Screen => Ok(DesktopCaptureSourceKind::Screen),
+    ScreenShareSourceKind::Window => Ok(DesktopCaptureSourceKind::Window),
+    ScreenShareSourceKind::Webcam => Err(VideoError::new("Webcam is not a desktop capture source.")),
+  }
 }
 
 struct VTEncoder {

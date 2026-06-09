@@ -77,7 +77,7 @@ pub(super) fn start_stream_action(
       if input.width == 0 || input.height == 0 {
         return Err("Selected stream source has no capture dimensions.".to_owned());
       }
-      let (width, height) = scaled_stream_dimensions(input.width, input.height, settings.video_scale_percent);
+      let (width, height) = scaled_stream_dimensions(input.width, input.height, settings.video_scale_percent)?;
       let config = VideoBroadcastConfig {
         source_kind: input.source_kind,
         source_id: input.source_id,
@@ -135,15 +135,28 @@ fn stream_codec_id(codec: &str) -> Result<VideoCodecId, String> {
   }
 }
 
-fn scaled_stream_dimensions(width: u16, height: u16, scale_percent: i32) -> (u16, u16) {
+const STREAM_DIMENSION_ALIGNMENT: u32 = 16;
+const MIN_STREAM_DIMENSION: u32 = 128;
+
+fn scaled_stream_dimensions(width: u16, height: u16, scale_percent: i32) -> Result<(u16, u16), String> {
   let scale = scale_percent.clamp(10, 100) as u32;
   let scaled_width = (u32::from(width) * scale / 100).clamp(1, u32::from(u16::MAX));
   let scaled_height = (u32::from(height) * scale / 100).clamp(1, u32::from(u16::MAX));
-  (even_dimension(scaled_width), even_dimension(scaled_height))
+  let width = aligned_stream_dimension(scaled_width);
+  let height = aligned_stream_dimension(scaled_height);
+  if u32::from(width) < MIN_STREAM_DIMENSION || u32::from(height) < MIN_STREAM_DIMENSION {
+    return Err(format!(
+      "Selected stream source is too small to stream after scaling: {}x{}.",
+      width, height
+    ));
+  }
+  Ok((width, height))
 }
 
-fn even_dimension(value: u32) -> u16 {
-  (value.clamp(2, u32::from(u16::MAX)) as u16) & !1u16
+fn aligned_stream_dimension(value: u32) -> u16 {
+  let max_aligned = u32::from(u16::MAX) / STREAM_DIMENSION_ALIGNMENT * STREAM_DIMENSION_ALIGNMENT;
+  let value = value.clamp(STREAM_DIMENSION_ALIGNMENT, max_aligned);
+  (value / STREAM_DIMENSION_ALIGNMENT * STREAM_DIMENSION_ALIGNMENT) as u16
 }
 
 pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopStreamAction {

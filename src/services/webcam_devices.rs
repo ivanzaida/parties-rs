@@ -8,6 +8,12 @@ pub struct WebcamDevice {
   pub label: String,
 }
 
+pub fn webcam_device_id(value: &str) -> u32 {
+  value.as_bytes().iter().fold(0x811C_9DC5_u32, |hash, byte| {
+    (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+  })
+}
+
 pub fn webcam_devices() -> Vec<WebcamDevice> {
   initialize_nokhwa();
 
@@ -39,13 +45,17 @@ fn webcam_device(camera: CameraInfo, ordinal: usize) -> Option<WebcamDevice> {
   let label = clean_device_string(&camera.human_name())
     .or_else(|| clean_device_string(camera.description()))
     .unwrap_or_else(|| format!("Camera {}", ordinal + 1));
-  let value = clean_device_string(&camera.misc()).unwrap_or_else(|| camera.index().as_string());
+  let value = webcam_device_value(&camera);
 
   if value.trim().is_empty() {
     return None;
   }
 
   Some(WebcamDevice { value, label })
+}
+
+pub(crate) fn webcam_device_value(camera: &CameraInfo) -> String {
+  clean_device_string(&camera.misc()).unwrap_or_else(|| camera.index().as_string())
 }
 
 fn clean_device_string(value: &str) -> Option<String> {
@@ -59,7 +69,7 @@ fn clean_device_string(value: &str) -> Option<String> {
   if value.is_empty() { None } else { Some(value) }
 }
 
-fn initialize_nokhwa() {
+pub(crate) fn initialize_nokhwa() {
   #[cfg(target_os = "macos")]
   nokhwa::nokhwa_initialize(|_| {});
 }

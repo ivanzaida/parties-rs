@@ -17,8 +17,12 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod webcam;
 #[cfg(target_os = "windows")]
 mod windows;
+
+const VIDEO_OUTPUT_DIMENSION_ALIGNMENT: u16 = 16;
 
 #[derive(Clone, Debug)]
 pub struct VideoBroadcastConfig {
@@ -270,6 +274,14 @@ fn validate_config(config: &VideoBroadcastConfig) -> Result<(), VideoError> {
 
   if config.source_width == 0 || config.source_height == 0 || config.output_width == 0 || config.output_height == 0 {
     return Err(VideoError::new("Selected stream source has no capture dimensions."));
+  }
+
+  if config.output_width % VIDEO_OUTPUT_DIMENSION_ALIGNMENT != 0
+    || config.output_height % VIDEO_OUTPUT_DIMENSION_ALIGNMENT != 0
+  {
+    return Err(VideoError::new(
+      "Video output dimensions must be aligned to 16-pixel codec blocks.",
+    ));
   }
 
   if config.fps == 0 {

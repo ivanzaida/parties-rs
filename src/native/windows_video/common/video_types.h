@@ -3,6 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <sstream>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 struct ID3D11Texture2D;
 
@@ -36,17 +41,80 @@ enum class VideoBackend : uint8_t {
 
 constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;
 
-template <typename... Args>
-inline void native_log_debug(const char*, Args&&...) {}
+enum class NativeLogLevel : uint8_t {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+};
+
+void native_log_emit(NativeLogLevel level, const char* message);
+
+inline void native_log_format_into(std::vector<std::string>&) {}
+
+template <typename T, typename... Rest>
+inline void native_log_format_into(std::vector<std::string>& out, T&& value, Rest&&... rest) {
+    std::ostringstream stream;
+    using Value = std::decay_t<T>;
+    if constexpr (std::is_same_v<Value, uint8_t> || std::is_same_v<Value, int8_t>) {
+        stream << static_cast<int>(value);
+    } else {
+        stream << std::forward<T>(value);
+    }
+    out.push_back(stream.str());
+    native_log_format_into(out, std::forward<Rest>(rest)...);
+}
+
+inline std::string native_log_format(const char* format) {
+    return format ? std::string(format) : std::string();
+}
 
 template <typename... Args>
-inline void native_log_info(const char*, Args&&...) {}
+inline std::string native_log_format(const char* format, Args&&... args) {
+    std::vector<std::string> values;
+    values.reserve(sizeof...(Args));
+    native_log_format_into(values, std::forward<Args>(args)...);
+
+    std::string message;
+    const std::string pattern = format ? std::string(format) : std::string();
+    size_t value_index = 0;
+    for (size_t index = 0; index < pattern.size(); ++index) {
+        if (pattern[index] == '{') {
+            const size_t end = pattern.find('}', index + 1);
+            if (end != std::string::npos && value_index < values.size()) {
+                message += values[value_index++];
+                index = end;
+                continue;
+            }
+        }
+        message += pattern[index];
+    }
+    return message;
+}
 
 template <typename... Args>
-inline void native_log_warn(const char*, Args&&...) {}
+inline void native_log_debug(const char* format, Args&&... args) {
+    const std::string message = native_log_format(format, std::forward<Args>(args)...);
+    native_log_emit(NativeLogLevel::Debug, message.c_str());
+}
 
 template <typename... Args>
-inline void native_log_error(const char*, Args&&...) {}
+inline void native_log_info(const char* format, Args&&... args) {
+    const std::string message = native_log_format(format, std::forward<Args>(args)...);
+    native_log_emit(NativeLogLevel::Info, message.c_str());
+}
+
+template <typename... Args>
+inline void native_log_warn(const char* format, Args&&... args) {
+    const std::string message = native_log_format(format, std::forward<Args>(args)...);
+    native_log_emit(NativeLogLevel::Warn, message.c_str());
+}
+
+template <typename... Args>
+inline void native_log_error(const char* format, Args&&... args) {
+    const std::string message = native_log_format(format, std::forward<Args>(args)...);
+    native_log_emit(NativeLogLevel::Error, message.c_str());
+}
 
 struct EncoderInfo {
     VideoBackend backend;

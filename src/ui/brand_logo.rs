@@ -1,7 +1,7 @@
 use lurq::{
   components::Row,
   images::ImageData,
-  node::{dimension::Dimension, Element},
+  node::{Element, dimension::Dimension},
 };
 
 pub(crate) const LOGO_BYTES: &[u8] = include_bytes!("../../assets/icons/parties_logo.png");

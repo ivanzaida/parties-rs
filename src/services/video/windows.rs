@@ -1,10 +1,11 @@
 use std::{
-  ffi::c_void,
+  ffi::{CStr, c_char, c_void},
   mem::ManuallyDrop,
   ptr::{self, NonNull},
   sync::{
-    Arc,
+    Arc, Once,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
   },
   thread,
   time::{Duration, Instant},
@@ -20,8 +21,9 @@ use ::windows::{
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
         IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-        IAudioClient, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-        WAVEFORMATEX,
+        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
+        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
       },
       MediaFoundation::{
         IMFActivate, IMFMediaBuffer, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
@@ -38,7 +40,7 @@ use ::windows::{
     },
     System::{
       Com::{
-        COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
         StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
       },
       Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
@@ -47,18 +49,23 @@ use ::windows::{
   core::{Error as WindowsError, GUID, IUnknown, Interface, PCWSTR},
 };
 use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as OpusChannels, Encoder as OpusEncoder};
-use xcap::{Monitor, Window};
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError,
+  VideoDecodeConfig, VideoDecoder, VideoError, webcam::WebcamCapture,
 };
 use crate::{
   network::{
     protocol::{VideoCodecId, VideoFrame},
     server::{Server, VideoFrameSend},
   },
-  services::{logger, profiler, screen_share_sources::ScreenShareSourceKind},
+  services::{
+    desktop_capture::{
+      DesktopCaptureSource, DesktopCaptureSourceKind, find_window_process_id as find_desktop_window_process_id,
+    },
+    logger, profiler,
+    screen_share_sources::ScreenShareSourceKind,
+  },
 };
 
 #[allow(dead_code)]
@@ -93,6 +100,7 @@ struct GpuStreamBridge {
 }
 
 unsafe extern "C" {
+  fn parties_native_log_set_callback(callback: Option<extern "C" fn(level: u8, message: *const c_char)>);
   fn parties_nvdec_create(codec: u8, width: u16, height: u16) -> *mut NvdecBridge;
   fn parties_nvdec_destroy(bridge: *mut NvdecBridge);
   fn parties_nvdec_decode(
@@ -139,20 +147,54 @@ unsafe extern "C" {
   fn parties_gpu_stream_encoded_keyframe(bridge: *mut GpuStreamBridge) -> i32;
 }
 
+static NATIVE_LOGGER_INIT: Once = Once::new();
+
+fn install_native_logger() {
+  NATIVE_LOGGER_INIT.call_once(|| unsafe {
+    parties_native_log_set_callback(Some(native_log_callback));
+  });
+}
+
+extern "C" fn native_log_callback(level: u8, message: *const c_char) {
+  if message.is_null() {
+    return;
+  }
+
+  let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+  let level = match level {
+    0 => "debug",
+    1 => "info",
+    2 => "warn",
+    3 => "error",
+    _ => "unknown",
+  };
+  logger::log(&format!("[native/windows/{level}] {message}"));
+}
+
 pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Result<VideoBroadcast, VideoError> {
+  install_native_logger();
   let runtime = tokio::runtime::Handle::try_current()
     .map_err(|_| VideoError::new("Video broadcasting must be started from the Tokio runtime."))?;
   let audio_enabled = config.audio_enabled;
+  let stream_audio_target = stream_audio_capture_target(&config);
   let stop = Arc::new(AtomicBool::new(false));
   let keyframe_requests = Arc::new(AtomicU64::new(0));
   let thread_stop = Arc::clone(&stop);
   let thread_keyframe_requests = Arc::clone(&keyframe_requests);
   let video_server = Arc::clone(&server);
+  let (ready_tx, ready_rx) = mpsc::sync_channel(1);
   let thread = thread::Builder::new()
     .name("parties-video-windows-encode".to_owned())
     .spawn(move || {
       let loop_stop = Arc::clone(&thread_stop);
-      if let Err(error) = run_broadcast_loop(video_server, config, runtime, loop_stop, thread_keyframe_requests) {
+      if let Err(error) = run_broadcast_loop(
+        video_server,
+        config,
+        runtime,
+        loop_stop,
+        thread_keyframe_requests,
+        Some(ready_tx),
+      ) {
         thread_stop.store(true, Ordering::Relaxed);
         logger::log(&format!("[video/windows] broadcast loop stopped with error: {error}"));
       }
@@ -160,8 +202,24 @@ pub(super) fn encode(server: Arc<Server>, config: VideoBroadcastConfig) -> Resul
     .map_err(|error| VideoError::new(format!("Failed to start video broadcast thread: {error}")))?;
   let mut threads = Vec::with_capacity(if audio_enabled { 2 } else { 1 });
 
+  match ready_rx.recv() {
+    Ok(Ok(())) => {}
+    Ok(Err(error)) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      return Err(VideoError::new(error));
+    }
+    Err(_) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      return Err(VideoError::new(
+        "Video broadcast thread exited before native encoder became ready.",
+      ));
+    }
+  }
+
   if audio_enabled {
-    let audio_thread = match spawn_stream_audio_thread(server, Arc::clone(&stop)) {
+    let audio_thread = match spawn_stream_audio_thread(server, Arc::clone(&stop), stream_audio_target) {
       Ok(thread) => thread,
       Err(error) => {
         stop.store(true, Ordering::Relaxed);
@@ -200,6 +258,7 @@ pub(super) struct MediaFoundationVideoDecoder {
 }
 
 pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
+  install_native_logger();
   match NvdecVideoDecoder::new(&config) {
     Ok(decoder) => {
       logger::log(&format!(
@@ -246,16 +305,34 @@ fn run_broadcast_loop(
   runtime: tokio::runtime::Handle,
   stop: Arc<AtomicBool>,
   keyframe_requests: Arc<AtomicU64>,
+  ready: Option<mpsc::SyncSender<Result<(), String>>>,
 ) -> Result<(), VideoError> {
   logger::log("[video/windows] creating native encoder");
   let mut failed_encoder_labels = Vec::new();
-  let mut encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
-  log_encoder_ready(&encoder, &config);
-  let mut source = if encoder.owns_capture() {
-    None
-  } else {
-    logger::log("[video/windows] opening CPU capture source");
-    Some(CaptureSource::open(&config)?)
+  let setup = (|| -> Result<(BroadcastEncoder, Option<CaptureSource>), VideoError> {
+    let encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
+    log_encoder_ready(&encoder, &config);
+    let source = if encoder.owns_capture() {
+      None
+    } else {
+      logger::log("[video/windows] opening CPU capture source");
+      Some(CaptureSource::open(&config)?)
+    };
+    Ok((encoder, source))
+  })();
+  let (mut encoder, mut source) = match setup {
+    Ok(setup) => {
+      if let Some(ready) = ready {
+        let _ = ready.send(Ok(()));
+      }
+      setup
+    }
+    Err(error) => {
+      if let Some(ready) = ready {
+        let _ = ready.send(Err(error.to_string()));
+      }
+      return Err(error);
+    }
   };
   let frame_interval = Duration::from_nanos(1_000_000_000u64 / u64::from(config.fps.max(1)));
   let started_at = Instant::now();
@@ -426,11 +503,62 @@ fn bitstream_probe(bytes: &[u8]) -> String {
   )
 }
 
-fn spawn_stream_audio_thread(server: Arc<Server>, stop: Arc<AtomicBool>) -> Result<thread::JoinHandle<()>, VideoError> {
+#[derive(Clone, Copy, Debug)]
+enum StreamAudioCaptureTarget {
+  DefaultOutput,
+  ExcludeProcess(u32),
+  IncludeProcess(u32),
+}
+
+impl StreamAudioCaptureTarget {
+  fn label(self) -> String {
+    match self {
+      Self::DefaultOutput => "default output loopback".to_owned(),
+      Self::ExcludeProcess(process_id) => format!("process loopback excluding pid {process_id}"),
+      Self::IncludeProcess(process_id) => format!("process loopback including pid {process_id}"),
+    }
+  }
+}
+
+fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCaptureTarget {
+  match config.source_kind {
+    ScreenShareSourceKind::Window => match find_window_process_id(config.source_id) {
+      Ok(process_id) => {
+        logger::log(&format!(
+          "[audio/windows] selected window audio target: window={} pid={process_id}",
+          config.source_id
+        ));
+        StreamAudioCaptureTarget::IncludeProcess(process_id)
+      }
+      Err(error) => {
+        logger::log(&format!(
+          "[audio/windows] could not resolve selected window pid; using default output loopback: window={} error={error}",
+          config.source_id
+        ));
+        StreamAudioCaptureTarget::DefaultOutput
+      }
+    },
+    ScreenShareSourceKind::Screen | ScreenShareSourceKind::Webcam => {
+      let process_id = unsafe { GetCurrentProcessId() };
+      StreamAudioCaptureTarget::ExcludeProcess(process_id)
+    }
+  }
+}
+
+fn find_window_process_id(source_id: u32) -> Result<u32, VideoError> {
+  find_desktop_window_process_id(source_id)
+    .map_err(|error| VideoError::new(format!("Selected window process is no longer available: {error}")))
+}
+
+fn spawn_stream_audio_thread(
+  server: Arc<Server>,
+  stop: Arc<AtomicBool>,
+  target: StreamAudioCaptureTarget,
+) -> Result<thread::JoinHandle<()>, VideoError> {
   thread::Builder::new()
     .name("parties-stream-audio-windows".to_owned())
     .spawn(move || {
-      if let Err(error) = run_stream_audio_loop(server, stop) {
+      if let Err(error) = run_stream_audio_loop(server, stop, target) {
         logger::log(&format!(
           "[audio/windows] stream audio capture stopped with error: {error}"
         ));
@@ -439,10 +567,14 @@ fn spawn_stream_audio_thread(server: Arc<Server>, stop: Arc<AtomicBool>) -> Resu
     .map_err(|error| VideoError::new(format!("Failed to start stream audio capture thread: {error}")))
 }
 
-fn run_stream_audio_loop(server: Arc<Server>, stop: Arc<AtomicBool>) -> Result<(), VideoError> {
-  logger::log("[audio/windows] opening process loopback capture excluding Parties");
+fn run_stream_audio_loop(
+  server: Arc<Server>,
+  stop: Arc<AtomicBool>,
+  target: StreamAudioCaptureTarget,
+) -> Result<(), VideoError> {
+  logger::log(&format!("[audio/windows] opening {}", target.label()));
   let _com = ComSession::start("stream audio")?;
-  let capture = WasapiLoopbackCapture::open()?;
+  let capture = WasapiLoopbackCapture::open(target)?;
   let mut encoder = OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
     .map_err(|error| VideoError::new(format!("Failed to create stream audio Opus encoder: {error}")))?;
   encoder
@@ -609,8 +741,8 @@ struct WasapiLoopbackCapture {
 }
 
 impl WasapiLoopbackCapture {
-  fn open() -> Result<Self, VideoError> {
-    let audio_client = activate_parties_excluded_loopback_client()?;
+  fn open(target: StreamAudioCaptureTarget) -> Result<Self, VideoError> {
+    let audio_client = activate_loopback_client(target)?;
     let format = stream_audio_wave_format();
     let event = unsafe {
       CreateEventW(None, false, false, PCWSTR::null())
@@ -652,14 +784,63 @@ impl WasapiLoopbackCapture {
   }
 }
 
-fn activate_parties_excluded_loopback_client() -> Result<IAudioClient, VideoError> {
-  let process_id = unsafe { GetCurrentProcessId() };
+fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioClient, VideoError> {
+  let process_loopback = match target {
+    StreamAudioCaptureTarget::DefaultOutput => None,
+    StreamAudioCaptureTarget::ExcludeProcess(process_id) => {
+      Some((process_id, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, "exclude"))
+    }
+    StreamAudioCaptureTarget::IncludeProcess(process_id) => {
+      Some((process_id, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, "include"))
+    }
+  };
+
+  let Some((process_id, mode, mode_label)) = process_loopback else {
+    return activate_default_render_loopback_client();
+  };
+
+  match activate_process_loopback_client(process_id, mode) {
+    Ok(audio_client) => {
+      logger::log(&format!(
+        "[audio/windows] process loopback capture activated: mode={mode_label} pid={process_id}"
+      ));
+      Ok(audio_client)
+    }
+    Err(error) => {
+      logger::log(&format!(
+        "[audio/windows] process loopback unavailable; falling back to default output loopback: mode={mode_label} pid={process_id} error={error}"
+      ));
+      activate_default_render_loopback_client()
+    }
+  }
+}
+
+fn activate_default_render_loopback_client() -> Result<IAudioClient, VideoError> {
+  let enumerator: IMMDeviceEnumerator = unsafe {
+    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+      .map_err(|error| VideoError::new(format!("Failed to create audio endpoint enumerator: {error}")))?
+  };
+  let device = unsafe {
+    enumerator
+      .GetDefaultAudioEndpoint(eRender, eConsole)
+      .map_err(|error| VideoError::new(format!("Failed to get default render endpoint: {error}")))?
+  };
+  let audio_client = unsafe {
+    device
+      .Activate::<IAudioClient>(CLSCTX_ALL, None)
+      .map_err(|error| VideoError::new(format!("Failed to activate default output loopback capture: {error}")))?
+  };
+  logger::log("[audio/windows] default output loopback capture activated");
+  Ok(audio_client)
+}
+
+fn activate_process_loopback_client(process_id: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClient, VideoError> {
   let activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
     ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
     Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
       ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
         TargetProcessId: process_id,
-        ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        ProcessLoopbackMode: mode,
       },
     },
   };
@@ -752,49 +933,44 @@ struct CaptureSource {
 }
 
 enum CaptureSourceKind {
-  Screen(Monitor),
-  Window(Window),
+  Desktop(DesktopCaptureSource),
+  Webcam(WebcamCapture),
 }
 
 impl CaptureSource {
   fn open(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
     let kind = match config.source_kind {
-      ScreenShareSourceKind::Screen => CaptureSourceKind::Screen(find_monitor(config.source_id)?),
-      ScreenShareSourceKind::Window => CaptureSourceKind::Window(find_window(config.source_id)?),
+      ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window => {
+        CaptureSourceKind::Desktop(find_desktop_source(config.source_kind, config.source_id)?)
+      }
+      ScreenShareSourceKind::Webcam => CaptureSourceKind::Webcam(WebcamCapture::open(config.source_id)?),
     };
     Ok(Self { kind })
   }
 
   fn capture_rgba(&mut self, width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
-    let image = match &self.kind {
-      CaptureSourceKind::Screen(monitor) => monitor
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture monitor frame: {error}")))?,
-      CaptureSourceKind::Window(window) => window
-        .capture_image()
-        .map_err(|error| VideoError::new(format!("Failed to capture window frame: {error}")))?,
+    let frame = match &mut self.kind {
+      CaptureSourceKind::Desktop(source) => source
+        .capture_frame()
+        .map_err(|error| VideoError::new(format!("Failed to capture desktop frame: {error}")))?,
+      CaptureSourceKind::Webcam(webcam) => return webcam.capture_rgba(width, height),
     };
 
-    let frame_width = image.width();
-    let frame_height = image.height();
-    normalize_rgba_frame(image.into_raw(), frame_width, frame_height, width, height)
+    normalize_rgba_frame(frame.rgba, frame.width, frame.height, width, height)
   }
 }
 
-fn find_monitor(source_id: u32) -> Result<Monitor, VideoError> {
-  Monitor::all()
-    .map_err(|error| VideoError::new(format!("Failed to list monitors: {error}")))?
-    .into_iter()
-    .find(|monitor| monitor.id().ok() == Some(source_id))
-    .ok_or_else(|| VideoError::new("Selected monitor is no longer available."))
+fn find_desktop_source(kind: ScreenShareSourceKind, source_id: u32) -> Result<DesktopCaptureSource, VideoError> {
+  DesktopCaptureSource::find(desktop_capture_source_kind(kind)?, source_id)
+    .map_err(|error| VideoError::new(format!("Selected desktop source is no longer available: {error}")))
 }
 
-fn find_window(source_id: u32) -> Result<Window, VideoError> {
-  Window::all()
-    .map_err(|error| VideoError::new(format!("Failed to list windows: {error}")))?
-    .into_iter()
-    .find(|window| window.id().ok() == Some(source_id))
-    .ok_or_else(|| VideoError::new("Selected window is no longer available."))
+fn desktop_capture_source_kind(kind: ScreenShareSourceKind) -> Result<DesktopCaptureSourceKind, VideoError> {
+  match kind {
+    ScreenShareSourceKind::Screen => Ok(DesktopCaptureSourceKind::Screen),
+    ScreenShareSourceKind::Window => Ok(DesktopCaptureSourceKind::Window),
+    ScreenShareSourceKind::Webcam => Err(VideoError::new("Webcam is not a desktop capture source.")),
+  }
 }
 
 fn normalize_rgba_frame(
@@ -936,6 +1112,11 @@ impl GpuNvencStreamEncoder {
     let source_kind = match config.source_kind {
       ScreenShareSourceKind::Screen => 0,
       ScreenShareSourceKind::Window => 1,
+      ScreenShareSourceKind::Webcam => {
+        return Err(VideoError::new(
+          "GPU capture + NVENC is only available for screen and window sources.",
+        ));
+      }
     };
     let handle = {
       let _span = profiler::span("video.ffi.gpu_stream_create");

@@ -1,3 +1,4 @@
+#include "common/video_types.h"
 #include "nvidia/nvenc_encoder.h"
 
 #include <d3d11.h>
@@ -12,6 +13,8 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 using parties_rs::video::VideoCodecId;
+using parties_rs::video::native_log_error;
+using parties_rs::video::native_log_info;
 using parties_rs::video::nvidia::NvencEncoder;
 
 struct NvencBridge {
@@ -88,20 +91,26 @@ bool create_texture(NvencBridge& bridge, uint16_t width, uint16_t height) {
 extern "C" {
 
 NvencBridge* parties_nvenc_create(uint8_t codec, uint16_t width, uint16_t height, uint32_t fps, uint32_t bitrate) {
+    native_log_info("NVENC bridge create requested: codec={} size={}x{} fps={} bitrate={}", codec, width, height, fps, bitrate);
     if (width == 0 || height == 0 || fps == 0 || bitrate == 0) {
+        native_log_error("NVENC bridge create rejected invalid arguments");
         return nullptr;
     }
 
     auto bridge = std::make_unique<NvencBridge>();
     if (!create_device(*bridge) || !create_texture(*bridge, width, height)) {
+        native_log_error("NVENC bridge failed to create D3D11 device or texture");
         return nullptr;
     }
 
     const VideoCodecId requested_codec = codec_from_u8(codec);
     if (!bridge->encoder.init(bridge->device.Get(), width, height, fps, bitrate, requested_codec)) {
+        native_log_error("NVENC bridge encoder init failed");
         return nullptr;
     }
     if (bridge->encoder.info().codec != requested_codec) {
+        native_log_error("NVENC bridge selected unexpected codec: requested={} actual={}",
+            static_cast<int>(requested_codec), static_cast<int>(bridge->encoder.info().codec));
         return nullptr;
     }
     bridge->encoder.force_keyframe();
@@ -111,6 +120,7 @@ NvencBridge* parties_nvenc_create(uint8_t codec, uint16_t width, uint16_t height
         ptr->keyframe = keyframe;
     };
 
+    native_log_info("NVENC bridge ready: codec={} size={}x{} fps={} bitrate={}", codec, width, height, fps, bitrate);
     return bridge.release();
 }
 
@@ -126,6 +136,7 @@ void parties_nvenc_force_keyframe(NvencBridge* bridge) {
 
 int parties_nvenc_encode_rgba(NvencBridge* bridge, const uint8_t* rgba, uintptr_t rgba_len, int64_t timestamp) {
     if (!bridge || !rgba || rgba_len == 0 || !bridge->context || !bridge->texture) {
+        native_log_error("NVENC bridge encode rejected invalid input");
         return -1;
     }
 
@@ -133,6 +144,7 @@ int parties_nvenc_encode_rgba(NvencBridge* bridge, const uint8_t* rgba, uintptr_
     bridge->texture->GetDesc(&desc);
     const uintptr_t required = static_cast<uintptr_t>(desc.Width) * desc.Height * 4;
     if (rgba_len < required) {
+        native_log_error("NVENC bridge encode RGBA buffer too small: len={} required={}", rgba_len, required);
         return -1;
     }
 
@@ -140,6 +152,7 @@ int parties_nvenc_encode_rgba(NvencBridge* bridge, const uint8_t* rgba, uintptr_
     bridge->keyframe = false;
     bridge->context->UpdateSubresource(bridge->texture.Get(), 0, nullptr, rgba, desc.Width * 4, 0);
     if (!bridge->encoder.encode(bridge->texture.Get(), timestamp)) {
+        native_log_error("NVENC bridge encoder rejected frame");
         return -1;
     }
     return bridge->encoded.empty() ? 0 : 1;

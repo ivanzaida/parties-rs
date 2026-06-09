@@ -875,7 +875,8 @@
       "subtitle": "Choose a screen or window to share",
       "tab": {
         "screen": "Screen",
-        "window": "Window"
+        "window": "Window",
+        "webcam": "Webcam"
       },
       "source": {
         "entire_screen": "Entire screen",
@@ -885,7 +886,8 @@
         "editor": "Editor",
         "terminal": "Terminal",
         "empty_screens": "No screens found",
-        "empty_windows": "No windows found"
+        "empty_windows": "No windows found",
+        "empty_webcams": "No webcams found"
       },
       "audio": {
         "title": "Share system audio",

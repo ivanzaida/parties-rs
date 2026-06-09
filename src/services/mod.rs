@@ -1,4 +1,5 @@
 pub mod audio_devices;
+pub mod desktop_capture;
 pub mod global_hotkeys;
 pub mod hotkeys;
 pub(crate) mod logger;

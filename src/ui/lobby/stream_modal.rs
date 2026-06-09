@@ -17,12 +17,14 @@ use lurq::{
 use super::{StartStreamAction, StartStreamInput};
 use crate::{
   services::screen_share_sources::{
-    ScreenShareSource, ScreenShareSourceKind, list_screen_sources, list_window_sources,
+    ScreenSharePreview, ScreenSharePreviewKey, ScreenShareSource, ScreenShareSourceKind, list_screen_sources,
+    list_webcam_sources, list_window_sources, load_source_preview,
   },
   theme,
   ui::{
     app_chrome::{CHROME_HEIGHT, RESIZE_HANDLE_SIZE, content_height},
     common::lucide_icon::{LucideIcon, LucideIconProps},
+    loader::loader,
   },
 };
 
@@ -74,7 +76,7 @@ fn stream_modal_metrics(ctx: &Ctx) -> StreamModalMetrics {
 pub(super) fn start_stream_modal(
   ctx: &mut Ctx,
   open: Signal<bool>,
-  screen_tab: Signal<bool>,
+  source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
   stream_codec_label: &str,
@@ -117,7 +119,7 @@ pub(super) fn start_stream_modal(
               .spacing(metrics.spacing)
               .child(stream_modal_sources(
                 ctx,
-                screen_tab.clone(),
+                source_kind.clone(),
                 source_index.clone(),
                 stream_codec_label,
                 metrics,
@@ -137,7 +139,7 @@ pub(super) fn start_stream_modal(
         .child(stream_modal_actions(
           ctx,
           open,
-          screen_tab,
+          source_kind,
           source_index,
           audio_enabled,
           start_stream,
@@ -206,7 +208,7 @@ fn stream_modal_header(ctx: &mut Ctx, open: Signal<bool>) -> Element {
 
 fn stream_modal_sources(
   ctx: &mut Ctx,
-  screen_tab: Signal<bool>,
+  source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   stream_codec_label: &str,
   metrics: StreamModalMetrics,
@@ -214,10 +216,10 @@ fn stream_modal_sources(
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(12.0)
-    .child(stream_modal_tabs(ctx, screen_tab.clone()))
+    .child(stream_modal_tabs(ctx, source_kind.clone(), source_index.clone()))
     .child(stream_source_grid(
       ctx,
-      screen_tab,
+      source_kind,
       source_index,
       stream_codec_label,
       metrics,
@@ -225,8 +227,12 @@ fn stream_modal_sources(
     .into()
 }
 
-fn stream_modal_tabs(ctx: &mut Ctx, screen_tab: Signal<bool>) -> Element {
-  let screen_active = screen_tab.get();
+fn stream_modal_tabs(
+  ctx: &mut Ctx,
+  source_kind: Signal<ScreenShareSourceKind>,
+  source_index: Signal<usize>,
+) -> Element {
+  let active_kind = source_kind.get();
   Row::new()
     .width(Dimension::Pct(100.0))
     .spacing(3.0)
@@ -236,16 +242,26 @@ fn stream_modal_tabs(ctx: &mut Ctx, screen_tab: Signal<bool>) -> Element {
     .child(stream_modal_tab(
       ctx,
       "lobby.stream_modal.tab.screen",
-      screen_active,
-      screen_tab.clone(),
-      true,
+      active_kind == ScreenShareSourceKind::Screen,
+      source_kind.clone(),
+      source_index.clone(),
+      ScreenShareSourceKind::Screen,
     ))
     .child(stream_modal_tab(
       ctx,
       "lobby.stream_modal.tab.window",
-      !screen_active,
-      screen_tab,
-      false,
+      active_kind == ScreenShareSourceKind::Window,
+      source_kind.clone(),
+      source_index.clone(),
+      ScreenShareSourceKind::Window,
+    ))
+    .child(stream_modal_tab(
+      ctx,
+      "lobby.stream_modal.tab.webcam",
+      active_kind == ScreenShareSourceKind::Webcam,
+      source_kind,
+      source_index,
+      ScreenShareSourceKind::Webcam,
     ))
     .into()
 }
@@ -254,8 +270,9 @@ fn stream_modal_tab(
   ctx: &mut Ctx,
   label_key: &'static str,
   active: bool,
-  screen_tab: Signal<bool>,
-  value: bool,
+  source_kind: Signal<ScreenShareSourceKind>,
+  source_index: Signal<usize>,
+  value: ScreenShareSourceKind,
 ) -> Element {
   Row::new()
     .height(32.0)
@@ -270,7 +287,10 @@ fn stream_modal_tab(
       BackgroundColor::Color(Color::from_hex("#00000000"))
     })
     .cursor(CursorIcon::Pointer)
-    .on_click(move |_| screen_tab.set(value))
+    .on_click(move |_| {
+      source_kind.set(value);
+      source_index.set(0);
+    })
     .child(Text::styled(
       &ctx.t(label_key),
       stream_modal_text_style(
@@ -288,20 +308,17 @@ fn stream_modal_tab(
 
 fn stream_source_grid(
   ctx: &mut Ctx,
-  screen_tab: Signal<bool>,
+  source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
-  let sources = if screen_tab.get() {
-    list_screen_sources()
-  } else {
-    list_window_sources()
-  };
+  let selected_kind = source_kind.get();
+  let sources = list_sources(selected_kind);
   let selected_index = source_index.get().min(sources.len().saturating_sub(1));
 
   if sources.is_empty() {
-    return stream_source_empty_state(ctx, screen_tab.get(), metrics);
+    return stream_source_empty_state(ctx, selected_kind, metrics);
   }
 
   let mut grid = Column::new().width(Dimension::Pct(100.0)).spacing(12.0);
@@ -331,7 +348,11 @@ fn stream_source_grid(
     .into()
 }
 
-fn stream_source_empty_state(ctx: &mut Ctx, screen_tab: bool, metrics: StreamModalMetrics) -> Element {
+fn stream_source_empty_state(
+  ctx: &mut Ctx,
+  source_kind: ScreenShareSourceKind,
+  metrics: StreamModalMetrics,
+) -> Element {
   Row::new()
     .width(Dimension::Pct(100.0))
     .height(metrics.source_grid_height)
@@ -341,10 +362,10 @@ fn stream_source_empty_state(ctx: &mut Ctx, screen_tab: bool, metrics: StreamMod
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
     .border_inside(1.0, theme::PaletteColor::Border)
     .child(
-      Text::new(&ctx.t(if screen_tab {
-        "lobby.stream_modal.source.empty_screens"
-      } else {
-        "lobby.stream_modal.source.empty_windows"
+      Text::new(&ctx.t(match source_kind {
+        ScreenShareSourceKind::Screen => "lobby.stream_modal.source.empty_screens",
+        ScreenShareSourceKind::Window => "lobby.stream_modal.source.empty_windows",
+        ScreenShareSourceKind::Webcam => "lobby.stream_modal.source.empty_webcams",
       }))
       .variant(theme::TypographyStyle::Caption)
       .color(theme::PaletteColor::TextMuted),
@@ -408,6 +429,12 @@ fn stream_source_card(
 ) -> Element {
   let selected = selected_index == index;
   let select = source_index.clone();
+  let preview_key = ScreenSharePreviewKey {
+    kind: source.kind,
+    id: source.id,
+    width: source.width,
+    height: source.height,
+  };
   Column::new()
     .width(Dimension::Pct(100.0))
     .flex(1.0)
@@ -435,6 +462,7 @@ fn stream_source_card(
       ctx,
       stream_source_icon(source),
       selected,
+      preview_key,
       source.resolution.as_deref(),
       stream_codec_label,
       metrics,
@@ -482,6 +510,7 @@ fn stream_source_icon(source: &ScreenShareSource) -> &'static str {
   match &source.kind {
     ScreenShareSourceKind::Screen => "monitor",
     ScreenShareSourceKind::Window => "app-window",
+    ScreenShareSourceKind::Webcam => "camera",
   }
 }
 
@@ -489,17 +518,40 @@ fn stream_source_preview(
   ctx: &mut Ctx,
   icon: &'static str,
   selected: bool,
+  preview_key: ScreenSharePreviewKey,
   resolution: Option<&str>,
   stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
+  let preview_state = ctx
+    .future(preview_key, |key| async move {
+      Ok::<ScreenSharePreview, String>(load_source_preview(key).await)
+    })
+    .state()
+    .get();
+  let loading = preview_state.is_idle() || preview_state.is_pending();
+  let preview_image = preview_state.data.as_ref().and_then(|preview| preview.image.clone());
+
   let mut preview = Stack::new()
     .width(Dimension::Pct(100.0))
     .height(metrics.source_preview_height)
     .rounded(theme::RadiusSize::Lg)
     .clip()
-    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .child(
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised));
+
+  if let Some(image) = preview_image {
+    preview = preview.background_image(image).background_contain();
+  } else if loading {
+    preview = preview.child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .height(metrics.source_preview_height)
+        .align_items(Alignment::Center)
+        .justify(Justify::Center)
+        .child(loader(22.0)),
+    );
+  } else {
+    preview = preview.child(
       Column::new()
         .width(Dimension::Pct(100.0))
         .height(metrics.source_preview_height)
@@ -515,6 +567,7 @@ fn stream_source_preview(
           },
         })),
     );
+  }
 
   preview = preview.child(
     Column::new()
@@ -630,7 +683,7 @@ fn stream_modal_audio_toggle(ctx: &mut Ctx, audio_enabled: Signal<bool>) -> Elem
 fn stream_modal_actions(
   ctx: &mut Ctx,
   open: Signal<bool>,
-  screen_tab: Signal<bool>,
+  source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
   start_stream: StartStreamAction,
@@ -638,7 +691,7 @@ fn stream_modal_actions(
   let close = open.clone();
   let confirm_open = open.clone();
   let pending = start_stream.state().get().is_pending();
-  let start_screen_tab = screen_tab.clone();
+  let start_source_kind = source_kind.clone();
   let start_source_index = source_index.clone();
   let start_audio_enabled = audio_enabled.clone();
   Row::new()
@@ -656,7 +709,7 @@ fn stream_modal_actions(
       if !pending {
         button = button.on_click(move |_| {
           if let Some(input) = selected_stream_input(
-            start_screen_tab.get_untracked(),
+            start_source_kind.get_untracked(),
             start_source_index.get_untracked(),
             start_audio_enabled.get_untracked(),
           ) {
@@ -670,20 +723,28 @@ fn stream_modal_actions(
     .into()
 }
 
-fn selected_stream_input(screen_tab: bool, selected_index: usize, audio_enabled: bool) -> Option<StartStreamInput> {
-  let sources = if screen_tab {
-    list_screen_sources()
-  } else {
-    list_window_sources()
-  };
+fn selected_stream_input(
+  source_kind: ScreenShareSourceKind,
+  selected_index: usize,
+  audio_enabled: bool,
+) -> Option<StartStreamInput> {
+  let sources = list_sources(source_kind);
   let source = sources.get(selected_index.min(sources.len().saturating_sub(1)))?;
   Some(StartStreamInput {
-    source_kind: source.kind.clone(),
+    source_kind: source.kind,
     source_id: source.id,
     width: source.width.min(u16::MAX as u32) as u16,
     height: source.height.min(u16::MAX as u32) as u16,
     audio_enabled,
   })
+}
+
+fn list_sources(source_kind: ScreenShareSourceKind) -> Vec<ScreenShareSource> {
+  match source_kind {
+    ScreenShareSourceKind::Screen => list_screen_sources(),
+    ScreenShareSourceKind::Window => list_window_sources(),
+    ScreenShareSourceKind::Webcam => list_webcam_sources(),
+  }
 }
 
 fn stream_modal_button(ctx: &mut Ctx, icon: Option<&'static str>, label_key: &'static str, primary: bool) -> Row {

@@ -1,4 +1,5 @@
 #include "capture/windows_screen_capture.h"
+#include "common/video_types.h"
 #include "nvidia/nvenc_encoder.h"
 
 #include <d3d11.h>
@@ -15,6 +16,9 @@ namespace {
 using parties_rs::video::VideoCodecId;
 using parties_rs::video::CaptureTarget;
 using parties_rs::video::ScreenCapture;
+using parties_rs::video::native_log_error;
+using parties_rs::video::native_log_info;
+using parties_rs::video::native_log_warn;
 using parties_rs::video::nvidia::NvencEncoder;
 using Microsoft::WRL::ComPtr;
 
@@ -50,6 +54,8 @@ struct GpuStreamBridge {
     bool apartment_initialized = false;
     bool scale_required = false;
     int scaled_input_slot = -1;
+    uint32_t source_width = 0;
+    uint32_t source_height = 0;
     int64_t frame_duration_100ns = 333333;
     uint64_t frame_number = 0;
 };
@@ -63,8 +69,21 @@ VideoCodecId codec_from_u8(uint8_t codec) {
     }
 }
 
-bool create_scaler(GpuStreamBridge& bridge, uint32_t source_width, uint32_t source_height,
-                   uint32_t output_width, uint32_t output_height, uint32_t fps) {
+void clear_scaler(GpuStreamBridge& bridge) {
+    bridge.encoder.unregister_inputs();
+    bridge.scaled_input_slot = -1;
+    bridge.scale_required = false;
+    bridge.input_view_cache.clear();
+    bridge.scaled_output_view.Reset();
+    bridge.scaled_texture.Reset();
+    bridge.video_processor.Reset();
+    bridge.video_enumerator.Reset();
+}
+
+bool configure_scaler(GpuStreamBridge& bridge, uint32_t source_width, uint32_t source_height,
+                      uint32_t output_width, uint32_t output_height, uint32_t fps) {
+    clear_scaler(bridge);
+
     if (source_width == output_width && source_height == output_height) {
         return true;
     }
@@ -143,6 +162,14 @@ bool create_scaler(GpuStreamBridge& bridge, uint32_t source_width, uint32_t sour
     bridge.video_context->VideoProcessorSetOutputTargetRect(bridge.video_processor.Get(), TRUE, &output_rect);
     bridge.scale_required = true;
     return true;
+}
+
+bool register_scaled_input(GpuStreamBridge& bridge) {
+    if (!bridge.scale_required) {
+        return true;
+    }
+    bridge.scaled_input_slot = bridge.encoder.register_input(bridge.scaled_texture.Get());
+    return bridge.scaled_input_slot >= 0;
 }
 
 ID3D11VideoProcessorInputView* input_view_for_frame(GpuStreamBridge& bridge, ID3D11Texture2D* texture) {
@@ -225,7 +252,10 @@ GpuStreamBridge* parties_gpu_stream_create(
     uint16_t height,
     uint32_t fps,
     uint32_t bitrate) {
+    native_log_info("GPU stream create requested: source_kind={} source_handle={} codec={} output={}x{} fps={} bitrate={}",
+        source_kind, source_handle, codec, width, height, fps, bitrate);
     if (!source_handle || width == 0 || height == 0 || fps == 0 || bitrate == 0) {
+        native_log_error("GPU stream create rejected invalid arguments");
         return nullptr;
     }
 
@@ -238,6 +268,7 @@ GpuStreamBridge* parties_gpu_stream_create(
     }
 
     if (!bridge->capture.init()) {
+        native_log_error("GPU stream capture init failed");
         return nullptr;
     }
     bridge->frame_duration_100ns = static_cast<int64_t>(10'000'000ull / fps);
@@ -246,34 +277,42 @@ GpuStreamBridge* parties_gpu_stream_create(
     target.type = source_kind == 0 ? CaptureTarget::Type::Monitor : CaptureTarget::Type::Window;
     target.handle = reinterpret_cast<void*>(source_handle);
     if (!bridge->capture.start(target, fps)) {
+        native_log_error("GPU stream capture start failed");
         bridge->capture.shutdown();
         return nullptr;
     }
 
-    const uint32_t source_width = bridge->capture.width();
-    const uint32_t source_height = bridge->capture.height();
-    if (source_width == 0 || source_height == 0) {
+    bridge->source_width = bridge->capture.width();
+    bridge->source_height = bridge->capture.height();
+    if (bridge->source_width == 0 || bridge->source_height == 0) {
+        native_log_error("GPU stream capture returned invalid source size: {}x{}", bridge->source_width, bridge->source_height);
         bridge->capture.shutdown();
         return nullptr;
     }
 
     const VideoCodecId requested_codec = codec_from_u8(codec);
     if (!bridge->encoder.init(bridge->capture.device(), width, height, fps, bitrate, requested_codec)) {
+        native_log_error("GPU stream encoder init failed");
         bridge->capture.shutdown();
         return nullptr;
     }
     if (bridge->encoder.info().codec != requested_codec) {
+        native_log_error("GPU stream encoder selected unexpected codec: requested={} actual={}",
+            static_cast<int>(requested_codec), static_cast<int>(bridge->encoder.info().codec));
         bridge->capture.shutdown();
         return nullptr;
     }
     bridge->encoder.force_keyframe();
 
-    if (!create_scaler(*bridge, source_width, source_height, width, height, fps)) {
+    if (!configure_scaler(*bridge, bridge->source_width, bridge->source_height, width, height, fps)) {
+        native_log_error("GPU stream scaler init failed: source={}x{} output={}x{}", bridge->source_width, bridge->source_height, width, height);
         bridge->capture.shutdown();
         return nullptr;
     }
-    if (bridge->scale_required) {
-        bridge->scaled_input_slot = bridge->encoder.register_input(bridge->scaled_texture.Get());
+    if (!register_scaled_input(*bridge)) {
+        native_log_error("GPU stream scaled input registration failed");
+        bridge->capture.shutdown();
+        return nullptr;
     }
 
     bridge->encoder.on_encoded = [ptr = bridge.get()](const uint8_t* data, size_t len, bool keyframe) {
@@ -282,8 +321,28 @@ GpuStreamBridge* parties_gpu_stream_create(
         ptr->pending_keyframe = keyframe;
     };
 
-    bridge->capture.on_frame = [ptr = bridge.get()](ID3D11Texture2D* texture, uint32_t, uint32_t) {
+    bridge->capture.on_frame = [ptr = bridge.get(), width, height, fps](ID3D11Texture2D* texture, uint32_t frame_width, uint32_t frame_height) {
         const int64_t timestamp = static_cast<int64_t>(ptr->frame_number++ * ptr->frame_duration_100ns);
+        if (frame_width == 0 || frame_height == 0) {
+            native_log_warn("GPU stream skipped zero-sized frame: {}x{}", frame_width, frame_height);
+            return;
+        }
+        if (frame_width != ptr->source_width || frame_height != ptr->source_height) {
+            native_log_info("GPU stream source resized: {}x{} -> {}x{}",
+                ptr->source_width, ptr->source_height, frame_width, frame_height);
+            if (!configure_scaler(*ptr, frame_width, frame_height, width, height, fps)) {
+                native_log_error("GPU stream scaler reconfigure failed: source={}x{} output={}x{}",
+                    frame_width, frame_height, width, height);
+                return;
+            }
+            ptr->source_width = frame_width;
+            ptr->source_height = frame_height;
+            if (!register_scaled_input(*ptr)) {
+                native_log_error("GPU stream scaled input re-registration failed");
+                return;
+            }
+            ptr->encoder.force_keyframe();
+        }
         ID3D11Texture2D* encoder_texture = scale_frame(*ptr, texture);
         if (!encoder_texture) {
             return;
@@ -296,6 +355,7 @@ GpuStreamBridge* parties_gpu_stream_create(
     };
 
     bridge->encoder_ready = true;
+    native_log_info("GPU stream ready: source={}x{} output={}x{} scale_required={}", bridge->source_width, bridge->source_height, width, height, bridge->scale_required);
     return bridge.release();
 }
 

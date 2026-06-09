@@ -1,3 +1,4 @@
+#include "common/video_types.h"
 #include "nvidia/nvdec_decoder.h"
 
 #include <cstdint>
@@ -8,6 +9,8 @@ namespace {
 
 using parties_rs::video::VideoCodecId;
 using parties_rs::video::DecodedFrame;
+using parties_rs::video::native_log_error;
+using parties_rs::video::native_log_info;
 using parties_rs::video::nvidia::NvdecDecoder;
 
 struct NvdecBridge {
@@ -134,13 +137,16 @@ void set_output_enabled(NvdecBridge* bridge, bool enabled) {
 extern "C" {
 
 NvdecBridge* parties_nvdec_create(uint8_t codec, uint16_t width, uint16_t height) {
+    native_log_info("NVDEC bridge create requested: codec={} size={}x{}", codec, width, height);
     auto bridge = std::make_unique<NvdecBridge>();
     bridge->decoder.on_decoded = [ptr = bridge.get()](const DecodedFrame& frame) { on_decoded(ptr, frame); };
 
     if (!bridge->decoder.init(codec_from_u8(codec), width, height)) {
+        native_log_error("NVDEC bridge decoder init failed");
         return nullptr;
     }
 
+    native_log_info("NVDEC bridge ready: codec={} size={}x{}", codec, width, height);
     return bridge.release();
 }
 
@@ -156,6 +162,7 @@ int parties_nvdec_decode(
     uint8_t* nv12,
     uintptr_t nv12_len) {
     if (!bridge || !data || len == 0) {
+        native_log_error("NVDEC bridge decode rejected invalid input");
         return -1;
     }
 
@@ -170,6 +177,7 @@ int parties_nvdec_decode(
     bridge->nv12 = nullptr;
     bridge->nv12_len = 0;
     if (!ok) {
+        native_log_error("NVDEC bridge decoder rejected frame");
         return -1;
     }
     return bridge->decoded ? 1 : 0;
@@ -187,6 +195,7 @@ int parties_nvdec_decode_to_d3d12(
     uint16_t width,
     uint16_t height) {
     if (!bridge || !data || len == 0 || !y_handle || !uv_handle || width == 0 || height == 0) {
+        native_log_error("NVDEC bridge D3D12 decode rejected invalid input");
         return -1;
     }
 
@@ -202,6 +211,7 @@ int parties_nvdec_decode_to_d3d12(
             uv_size,
             width,
             height)) {
+        native_log_error("NVDEC bridge failed to set D3D12 output textures");
         bridge->d3d12_output = false;
         bridge->decoder.clear_output_d3d12_textures();
         return -1;
@@ -211,6 +221,7 @@ int parties_nvdec_decode_to_d3d12(
     bridge->decoder.clear_output_d3d12_textures();
     bridge->d3d12_output = false;
     if (!ok) {
+        native_log_error("NVDEC bridge decoder rejected D3D12 frame");
         return -1;
     }
     return bridge->decoded ? 1 : 0;
