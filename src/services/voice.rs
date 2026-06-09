@@ -3,12 +3,12 @@ use std::{
   env, fmt,
   panic::{AssertUnwindSafe, catch_unwind},
   sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    Arc, LazyLock, Mutex,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     mpsc::{self, Receiver, SyncSender, TrySendError},
   },
   thread::{self, JoinHandle},
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use cpal::{
@@ -52,6 +52,8 @@ const STREAM_BUFFER_TARGET_MS: u32 = 20;
 const VOICE_ACTIVATION_HOLD_FRAMES: u8 = 12;
 const DEFAULT_AEC_DELAY_MS: i32 = 80;
 const AEC_DELAY_ENV: &str = "PARTIES_AEC_DELAY_MS";
+const MAX_PUSH_TO_TALK_RELEASE_DELAY_MS: i32 = 2_000;
+static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -86,6 +88,12 @@ pub struct VoiceEngine {
   decoders: HashMap<UserId, DecodeStream>,
   stream_decoders: HashMap<UserId, DecodeStream>,
   captures_voice: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VoicePacketStatus {
+  pub queued: bool,
+  pub speaking: bool,
 }
 
 impl VoiceEngine {
@@ -159,8 +167,7 @@ impl VoiceEngine {
   }
 
   pub fn set_voice_state(&self, muted: bool, deafened: bool) {
-    self.control.muted.store(muted, Ordering::Relaxed);
-    self.control.deafened.store(deafened, Ordering::Relaxed);
+    self.control.set_voice_state(muted, deafened);
     if deafened {
       self
         .mixer
@@ -176,6 +183,14 @@ impl VoiceEngine {
 
   pub fn set_push_to_talk_active(&self, active: bool) {
     self.control.set_push_to_talk_active(active);
+  }
+
+  pub fn push_to_talk_release_delay_ms(&self) -> u64 {
+    self.control.push_to_talk_release_delay_ms()
+  }
+
+  pub fn set_push_to_talk_release_delay_ms(&self, value: i32) {
+    self.control.set_push_to_talk_release_delay_ms(value);
   }
 
   pub fn set_user_volume(&self, user_id: UserId, volume_percent: i32) {
@@ -194,9 +209,9 @@ impl VoiceEngine {
       .set_stream_volume(user_id, volume_percent);
   }
 
-  pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> bool {
+  pub fn push_packet(&mut self, packet: ForwardedVoicePacket) -> VoicePacketStatus {
     if self.control.deafened.load(Ordering::Relaxed) {
-      return false;
+      return VoicePacketStatus::default();
     }
 
     let mut pcm = self.take_pcm_buffer(OPUS_FRAME_SIZE * CHANNELS);
@@ -206,14 +221,14 @@ impl VoiceEngine {
         Ok(stream) => entry.insert(stream),
         Err(_) => {
           self.recycle_pcm_buffer(pcm);
-          return false;
+          return VoicePacketStatus::default();
         }
       },
     };
 
     if stream.decode_into(packet.sequence, &packet.opus, &mut pcm).is_err() {
       self.recycle_pcm_buffer(pcm);
-      return false;
+      return VoicePacketStatus::default();
     }
 
     if self.control.voice_normalization {
@@ -221,8 +236,9 @@ impl VoiceEngine {
     }
 
     let speaking = rms(&pcm) > 0.001;
+    let queued = !pcm.is_empty();
 
-    if !pcm.is_empty() {
+    if queued {
       self
         .mixer
         .lock()
@@ -230,7 +246,7 @@ impl VoiceEngine {
         .push_frame(AudioStreamId::Voice(packet.sender_id), pcm);
     }
 
-    speaking
+    VoicePacketStatus { queued, speaking }
   }
 
   pub fn push_stream_audio_packet(&mut self, packet: ForwardedStreamAudioPacket) -> bool {
@@ -314,7 +330,9 @@ struct VoiceControlState {
   voice_normalization_target: f32,
   voice_activation_threshold: AtomicU32,
   push_to_talk: bool,
+  push_to_talk_release_delay_ms: AtomicU64,
   push_to_talk_active: AtomicBool,
+  push_to_talk_release_until_ms: AtomicU64,
   audio_processing: Option<Arc<Mutex<AudioProcessing>>>,
 }
 
@@ -327,7 +345,11 @@ impl VoiceControlState {
       voice_normalization_target: normalize_target(settings.voice_normalization_target_level),
       voice_activation_threshold: AtomicU32::new(activation_threshold(settings.voice_activation_threshold).to_bits()),
       push_to_talk: settings.push_to_talk,
+      push_to_talk_release_delay_ms: AtomicU64::new(push_to_talk_release_delay_ms(
+        settings.push_to_talk_release_delay_ms,
+      )),
       push_to_talk_active: AtomicBool::new(false),
+      push_to_talk_release_until_ms: AtomicU64::new(0),
       audio_processing: build_audio_processing(settings),
     }
   }
@@ -335,11 +357,22 @@ impl VoiceControlState {
   fn can_transmit(&self) -> bool {
     !self.muted.load(Ordering::Relaxed)
       && !self.deafened.load(Ordering::Relaxed)
-      && (!self.push_to_talk || self.push_to_talk_active.load(Ordering::Relaxed))
+      && (!self.push_to_talk
+        || self.push_to_talk_active.load(Ordering::Relaxed)
+        || self.push_to_talk_release_until_ms.load(Ordering::Relaxed) > monotonic_millis())
   }
 
   fn audio_processing(&self) -> Option<&Arc<Mutex<AudioProcessing>>> {
     self.audio_processing.as_ref()
+  }
+
+  fn set_voice_state(&self, muted: bool, deafened: bool) {
+    self.muted.store(muted, Ordering::Relaxed);
+    self.deafened.store(deafened, Ordering::Relaxed);
+    if muted || deafened {
+      self.push_to_talk_active.store(false, Ordering::Relaxed);
+      self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+    }
   }
 
   fn set_voice_activation_threshold(&self, value: i32) {
@@ -349,7 +382,34 @@ impl VoiceControlState {
   }
 
   fn set_push_to_talk_active(&self, active: bool) {
+    if active && (self.muted.load(Ordering::Relaxed) || self.deafened.load(Ordering::Relaxed)) {
+      self.push_to_talk_active.store(false, Ordering::Relaxed);
+      self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+      return;
+    }
+
     self.push_to_talk_active.store(active, Ordering::Relaxed);
+    let release_delay_ms = self.push_to_talk_release_delay_ms();
+    let release_until_ms = if active || release_delay_ms == 0 {
+      0
+    } else {
+      monotonic_millis().saturating_add(release_delay_ms)
+    };
+    self
+      .push_to_talk_release_until_ms
+      .store(release_until_ms, Ordering::Relaxed);
+  }
+
+  fn set_push_to_talk_release_delay_ms(&self, value: i32) {
+    let value = push_to_talk_release_delay_ms(value);
+    self.push_to_talk_release_delay_ms.store(value, Ordering::Relaxed);
+    if value == 0 && !self.push_to_talk_active.load(Ordering::Relaxed) {
+      self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+    }
+  }
+
+  fn push_to_talk_release_delay_ms(&self) -> u64 {
+    self.push_to_talk_release_delay_ms.load(Ordering::Relaxed)
   }
 
   fn voice_activation_threshold(&self) -> f32 {
@@ -400,6 +460,14 @@ fn aec_delay_ms() -> i32 {
     .and_then(|value| value.parse::<i32>().ok())
     .unwrap_or(DEFAULT_AEC_DELAY_MS)
     .clamp(0, 500)
+}
+
+fn push_to_talk_release_delay_ms(value: i32) -> u64 {
+  value.clamp(0, MAX_PUSH_TO_TALK_RELEASE_DELAY_MS) as u64
+}
+
+fn monotonic_millis() -> u64 {
+  VOICE_CLOCK_START.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn low_latency_stream_config(supported: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
@@ -858,7 +926,12 @@ where
   let mut state = OutputRenderState::new(channels, sample_rate, control, mixer);
 
   device
-    .build_output_stream::<T, _, _>(config, move |data, _| state.render(data), move |_| {}, None)
+    .build_output_stream::<T, _, _>(
+      config,
+      move |data, _| state.render(data),
+      move |error| logger::log(&format!("[voice] output stream error: {error}")),
+      None,
+    )
     .map_err(|error| VoiceError::new(format!("Failed to build output stream: {error}")))
 }
 
@@ -1407,6 +1480,76 @@ mod tests {
       assert!(gate.should_transmit_level(true, 0.1, 0.5));
     }
     assert!(!gate.should_transmit_level(true, 0.1, 0.5));
+  }
+
+  #[test]
+  fn push_to_talk_release_delay_keeps_transmit_open_until_deadline() {
+    let mut settings = AppSettings {
+      push_to_talk: true,
+      push_to_talk_release_delay_ms: 500,
+      ..AppSettings::default()
+    };
+    let control = VoiceControlState::new(&settings, false, false);
+
+    assert!(!control.can_transmit());
+    control.set_push_to_talk_active(true);
+    assert!(control.can_transmit());
+    control.set_push_to_talk_active(false);
+    assert!(control.can_transmit());
+
+    control
+      .push_to_talk_release_until_ms
+      .store(monotonic_millis().saturating_sub(1), Ordering::Relaxed);
+    assert!(!control.can_transmit());
+
+    settings.push_to_talk_release_delay_ms = 0;
+    let control = VoiceControlState::new(&settings, false, false);
+    control.set_push_to_talk_active(true);
+    assert!(control.can_transmit());
+    control.set_push_to_talk_active(false);
+    assert!(!control.can_transmit());
+  }
+
+  #[test]
+  fn push_to_talk_ignores_activation_while_muted_or_deafened() {
+    let settings = AppSettings {
+      push_to_talk: true,
+      ..AppSettings::default()
+    };
+
+    let control = VoiceControlState::new(&settings, true, false);
+    control.set_push_to_talk_active(true);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+
+    let control = VoiceControlState::new(&settings, false, true);
+    control.set_push_to_talk_active(true);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+  }
+
+  #[test]
+  fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
+    let settings = AppSettings {
+      push_to_talk: true,
+      push_to_talk_release_delay_ms: 500,
+      ..AppSettings::default()
+    };
+
+    let control = VoiceControlState::new(&settings, false, false);
+    control.set_push_to_talk_active(true);
+    assert!(control.can_transmit());
+    control.set_voice_state(true, false);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
+
+    let control = VoiceControlState::new(&settings, false, false);
+    control.set_push_to_talk_active(true);
+    control.set_push_to_talk_active(false);
+    assert!(control.can_transmit());
+    control.set_voice_state(false, true);
+    control.set_voice_state(false, false);
+    assert!(!control.can_transmit());
   }
 
   #[test]

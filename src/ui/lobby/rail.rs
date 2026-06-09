@@ -9,7 +9,7 @@ use lurq::{
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
-use super::StopStreamAction;
+use super::{StopStreamAction, WatchStreamAction};
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
@@ -39,6 +39,7 @@ pub(super) struct LobbyRailProps {
   pub lobby: LobbyState,
   pub start_stream_modal_open: Signal<bool>,
   pub stop_stream: StopStreamAction,
+  pub watch_stream: WatchStreamAction,
 }
 
 impl PartialEq for LobbyRailProps {
@@ -101,6 +102,7 @@ impl Component for LobbyRail {
       &props.lobby,
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
+      &props.watch_stream,
       join_channel.as_ref(),
       voice_control.as_ref(),
     )
@@ -166,6 +168,7 @@ fn rail(
   lobby: &LobbyState,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
   join_channel: Option<&JoinChannelAction>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
@@ -181,7 +184,7 @@ fn rail(
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
         .child(rail_header(ctx, info, lobby))
-        .child(rail_channels(ctx, info, lobby, join_channel))
+        .child(rail_channels(ctx, info, lobby, join_channel, watch_stream))
         .child(rail_bottom(
           ctx,
           info,
@@ -294,6 +297,7 @@ fn rail_channels(
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   join_channel: Option<&JoinChannelAction>,
+  watch_stream: &WatchStreamAction,
 ) -> Element {
   let metrics = lobby_layout_metrics(ctx);
   Column::new()
@@ -316,6 +320,7 @@ fn rail_channels(
       local_user_id: info.user_id,
       local_role: info.role,
       join_channel: join_channel.cloned(),
+      watch_stream: Some(watch_stream.clone()),
     }))
     .into()
 }

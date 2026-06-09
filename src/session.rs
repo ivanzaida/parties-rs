@@ -543,10 +543,12 @@ pub struct ServerSession {
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
   video_revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
+  voice_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   stream_audio_counts: Arc<Mutex<HashMap<UserId, u64>>>,
   user_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   stream_volumes: Arc<Mutex<HashMap<UserId, i32>>>,
   notification_audio_settings: Arc<Mutex<NotificationAudioSettings>>,
+  pending_reconnect_watch_user_id: Arc<Mutex<Option<UserId>>>,
   shutdown_requested: Arc<AtomicBool>,
   revision: Signal<u64>,
 }
@@ -573,10 +575,12 @@ impl Default for ServerSession {
       #[cfg(target_os = "windows")]
       dx12_video_surfaces: None,
       video_revision_marks: Arc::new(Mutex::new(HashMap::new())),
+      voice_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       stream_audio_counts: Arc::new(Mutex::new(HashMap::new())),
       user_volumes: Arc::new(Mutex::new(HashMap::new())),
       stream_volumes: Arc::new(Mutex::new(HashMap::new())),
       notification_audio_settings: Arc::new(Mutex::new(NotificationAudioSettings::default())),
+      pending_reconnect_watch_user_id: Arc::new(Mutex::new(None)),
       shutdown_requested: Arc::new(AtomicBool::new(false)),
       revision: Signal::new(0),
     }
@@ -666,6 +670,11 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self
+      .voice_audio_counts
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self
       .stream_audio_counts
       .lock()
       .expect("server session lock poisoned")
@@ -709,6 +718,11 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .clear();
     self
+      .voice_audio_counts
+      .lock()
+      .expect("server session lock poisoned")
+      .clear();
+    self
       .stream_audio_counts
       .lock()
       .expect("server session lock poisoned")
@@ -719,6 +733,10 @@ impl ServerSession {
       .lock()
       .expect("server session lock poisoned")
       .clear();
+    *self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned") = None;
     self.bump_revision();
   }
 
@@ -848,6 +866,12 @@ impl ServerSession {
     }
   }
 
+  pub fn set_push_to_talk_release_delay_ms(&self, value: i32) {
+    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
+      engine.set_push_to_talk_release_delay_ms(value);
+    }
+  }
+
   pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
     *self
       .notification_audio_settings
@@ -877,9 +901,15 @@ impl ServerSession {
   }
 
   pub fn set_push_to_talk_active(&self, active: bool) {
-    if let Some(engine) = self.voice_engine.lock().expect("server session lock poisoned").as_ref() {
-      engine.set_push_to_talk_active(active);
-    }
+    let release_delay_ms = {
+      let voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+      if let Some(engine) = voice_engine.as_ref() {
+        engine.set_push_to_talk_active(active);
+        engine.push_to_talk_release_delay_ms()
+      } else {
+        0
+      }
+    };
 
     let Some(user_id) = self.info().map(|info| info.user_id) else {
       return;
@@ -887,7 +917,7 @@ impl ServerSession {
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
     if active && !muted && !deafened {
       self.set_user_speaking(user_id, true);
-    } else if !active {
+    } else if !active && release_delay_ms == 0 {
       self.clear_user_speaking(user_id);
     }
   }
@@ -1220,9 +1250,22 @@ impl ServerSession {
   }
 
   pub fn set_watching_user(&self, user_id: Option<UserId>) {
-    let (previous_user_id, changed) = {
+    *self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned") = None;
+    let (previous_user_id, changed, view_changed) = {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
-      Self::set_watching_user_in_lobby(&mut lobby, user_id)
+      let previous_text_channel_id = lobby.selected_text_channel_id;
+      if user_id.is_some() {
+        lobby.selected_text_channel_id = None;
+      }
+      let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, user_id);
+      (
+        previous_user_id,
+        changed,
+        previous_text_channel_id != lobby.selected_text_channel_id,
+      )
     };
     if changed {
       logger::log(&format!(
@@ -1231,7 +1274,129 @@ impl ServerSession {
       self.clear_stream_audio(previous_user_id);
     }
     self.retain_video_cache(user_id);
-    self.bump_revision();
+    if changed || view_changed {
+      self.bump_revision();
+    }
+  }
+
+  pub fn has_pending_reconnect_watch(&self) -> bool {
+    self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned")
+      .is_some()
+  }
+
+  pub async fn restore_pending_reconnect_watch(&self, settings: AppSettings, timeout: Duration) {
+    let Some(user_id) = self.pending_reconnect_watch_user_id() else {
+      return;
+    };
+
+    logger::log(&format!(
+      "[video] waiting to restore watched stream after reconnect: user={user_id}"
+    ));
+    let started_at = Instant::now();
+    loop {
+      if !self.pending_reconnect_watch_matches(user_id) {
+        return;
+      }
+
+      if self.reconnect_watch_target_available(user_id) {
+        if !self.take_pending_reconnect_watch_if_matches(user_id) {
+          return;
+        }
+        if let Err(error) = self.request_reconnect_stream_view(user_id).await {
+          logger::log(&format!(
+            "[video] failed to restore watched stream after reconnect: user={user_id} error={error}"
+          ));
+          return;
+        }
+
+        self.set_watching_user(Some(user_id));
+        if let Err(error) = self.ensure_stream_audio_playback(settings) {
+          logger::log(&format!(
+            "[audio] stream playback unavailable after reconnect restore: {error}"
+          ));
+        }
+        logger::log(&format!(
+          "[video] restored watched stream after reconnect: user={user_id}"
+        ));
+        return;
+      }
+
+      if started_at.elapsed() >= timeout {
+        if self.take_pending_reconnect_watch_if_matches(user_id) {
+          logger::log(&format!(
+            "[video] skipped watched stream restore after reconnect: user={user_id} reason=stream not advertised"
+          ));
+        }
+        return;
+      }
+
+      tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+  }
+
+  fn pending_reconnect_watch_user_id(&self) -> Option<UserId> {
+    *self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned")
+  }
+
+  fn pending_reconnect_watch_matches(&self, user_id: UserId) -> bool {
+    self.pending_reconnect_watch_user_id() == Some(user_id)
+  }
+
+  fn take_pending_reconnect_watch_if_matches(&self, user_id: UserId) -> bool {
+    let mut pending = self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned");
+    if *pending == Some(user_id) {
+      *pending = None;
+      true
+    } else {
+      false
+    }
+  }
+
+  fn reconnect_watch_target_available(&self, user_id: UserId) -> bool {
+    let lobby = self.lobby.lock().expect("server session lock poisoned");
+    lobby.screen_shares.iter().any(|share| share.sharer_user_id == user_id)
+      && user_in_selected_voice_channel(&lobby, user_id)
+  }
+
+  async fn request_reconnect_stream_view(&self, user_id: UserId) -> Result<(), String> {
+    let Some(server) = self.server() else {
+      return Err("no connected server".to_owned());
+    };
+    logger::log(&format!(
+      "[video] requesting reconnect stream restore for user {user_id}"
+    ));
+    server
+      .view_screen_share(user_id)
+      .await
+      .map_err(|error| error.to_string())?;
+    match server.request_keyframe_stream(user_id).await {
+      Ok(()) => {
+        logger::log(&format!(
+          "[video] keyframe requested on restored stream for user {user_id}"
+        ));
+      }
+      Err(stream_error) => {
+        logger::log(&format!(
+          "[video] restored stream keyframe request failed for user {user_id}: {stream_error}; trying datagram"
+        ));
+        if let Err(datagram_error) = server.request_keyframe(user_id) {
+          return Err(datagram_error.to_string());
+        }
+        logger::log(&format!(
+          "[video] restored stream keyframe requested by datagram for user {user_id}"
+        ));
+      }
+    }
+    Ok(())
   }
 
   fn set_watching_user_in_lobby(lobby: &mut LobbyState, user_id: Option<UserId>) -> (Option<UserId>, bool) {
@@ -1848,13 +2013,39 @@ impl ServerSession {
       return false;
     }
 
-    self
+    let sender_id = packet.sender_id;
+    let sequence = packet.sequence;
+    let packet_len = packet.opus.len();
+    let received_count = {
+      let mut counts = self.voice_audio_counts.lock().expect("server session lock poisoned");
+      increment_counter(&mut counts, sender_id)
+    };
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[voice] received voice #{received_count} from user {}: sequence={} bytes={}",
+        sender_id, sequence, packet_len
+      ));
+    }
+
+    let status = self
       .voice_engine
       .lock()
       .expect("server session lock poisoned")
       .as_mut()
-      .map(|engine| engine.push_packet(packet))
-      .unwrap_or(true)
+      .map(|engine| engine.push_packet(packet));
+    if should_log_audio_count(received_count) {
+      logger::log(&format!(
+        "[voice] voice audio {} for user {} speaking={}",
+        match status {
+          Some(status) if status.queued => "queued",
+          Some(_) => "dropped",
+          None => "dropped: no voice engine",
+        },
+        sender_id,
+        status.is_some_and(|status| status.speaking)
+      ));
+    }
+    status.map(|status| status.speaking).unwrap_or(true)
   }
 
   fn handle_video_control_packet(&self, control: VideoControl) {
@@ -2143,8 +2334,10 @@ impl ServerSession {
     logger::log(&format!("[network] marking lobby disconnected: {message}"));
     self.stop_video_broadcast();
     let mut watching_change = None;
+    let reconnect_watch_user_id;
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      reconnect_watch_user_id = lobby.watching_user_id;
       lobby.receiver_running = false;
       lobby.disconnected = true;
       lobby.last_error = Some(message);
@@ -2154,6 +2347,15 @@ impl ServerSession {
       if changed {
         watching_change = Some(previous_user_id);
       }
+    }
+    *self
+      .pending_reconnect_watch_user_id
+      .lock()
+      .expect("server session lock poisoned") = reconnect_watch_user_id;
+    if let Some(user_id) = reconnect_watch_user_id {
+      logger::log(&format!(
+        "[video] saved watched stream target for reconnect: user={user_id}"
+      ));
     }
     if let Some(previous_user_id) = watching_change {
       self.finish_watching_user_change(previous_user_id, None);

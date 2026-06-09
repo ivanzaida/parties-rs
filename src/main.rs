@@ -11,6 +11,8 @@ mod storage;
 mod theme;
 mod ui;
 
+#[cfg(target_os = "windows")]
+use std::ffi::{CStr, c_char};
 use std::{
   panic,
   sync::{Arc, Mutex},
@@ -29,6 +31,8 @@ const MIN_WINDOW_HEIGHT: u32 = 640;
 fn main() {
   services::logger::init();
   services::updater::start_platform_updater();
+  #[cfg(target_os = "windows")]
+  install_windows_native_diagnostics();
   let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
     .enable_all()
     .build()
@@ -168,6 +172,37 @@ fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: S
       std::process::exit(0);
     }
   });
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "C" {
+  fn parties_native_log_set_callback(callback: Option<extern "C" fn(level: u8, message: *const c_char)>);
+  fn parties_native_seh_install();
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_native_diagnostics() {
+  unsafe {
+    parties_native_log_set_callback(Some(windows_native_log_callback));
+    parties_native_seh_install();
+  }
+}
+
+#[cfg(target_os = "windows")]
+extern "C" fn windows_native_log_callback(level: u8, message: *const c_char) {
+  if message.is_null() {
+    return;
+  }
+
+  let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+  let level = match level {
+    0 => "debug",
+    1 => "info",
+    2 => "warn",
+    3 => "error",
+    _ => "unknown",
+  };
+  services::logger::log(&format!("[native/windows/{level}] {message}"));
 }
 
 fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<String>) {

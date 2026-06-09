@@ -120,19 +120,21 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encode_config_.rcParams.multiPass = NV_ENC_MULTI_PASS_DISABLED;
     encode_config_.rcParams.enableMinQP = 0;
     encode_config_.rcParams.enableMaxQP = 0;
-    encode_config_.gopLength = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
+    encode_config_.gopLength = NVENC_INFINITE_GOPLENGTH;
     encode_config_.frameIntervalP = 1;
 
-    // Output sequence headers with every keyframe so decoders can join mid-stream
+    // Keyframes are requested explicitly on stream start, viewer catch-up, and
+    // source resize. Avoid periodic IDRs, because large keyframe packets make
+    // the viewer rebuild the image during an otherwise healthy stream.
     if (codec_ == VideoCodecId::AV1) {
         encode_config_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
-        encode_config_.encodeCodecConfig.av1Config.idrPeriod = encode_config_.gopLength;
+        encode_config_.encodeCodecConfig.av1Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
     } else if (codec_ == VideoCodecId::H265) {
         encode_config_.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
-        encode_config_.encodeCodecConfig.hevcConfig.idrPeriod = encode_config_.gopLength;
+        encode_config_.encodeCodecConfig.hevcConfig.idrPeriod = NVENC_INFINITE_GOPLENGTH;
     } else {
         encode_config_.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
-        encode_config_.encodeCodecConfig.h264Config.idrPeriod = encode_config_.gopLength;
+        encode_config_.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
     }
 
     std::memset(&init_params_, 0, sizeof(init_params_));

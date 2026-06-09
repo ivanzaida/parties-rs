@@ -16,9 +16,12 @@ use lurq::{
 
 use super::{StartStreamAction, StartStreamInput};
 use crate::{
-  services::screen_share_sources::{
-    ScreenSharePreview, ScreenSharePreviewKey, ScreenShareSource, ScreenShareSourceKind, list_screen_sources,
-    list_webcam_sources, list_webcam_sources_with_labels, list_window_sources, load_source_preview,
+  services::{
+    hotkeys,
+    screen_share_sources::{
+      ScreenSharePreview, ScreenSharePreviewKey, ScreenShareSource, ScreenShareSourceKind, list_screen_sources,
+      list_webcam_sources, list_webcam_sources_with_labels, list_window_sources, load_source_preview,
+    },
   },
   theme,
   ui::{
@@ -93,6 +96,7 @@ pub(super) fn start_stream_modal(
   let layer_width = (window_width - resize_gutter * 2.0).max(0.0);
   let layer_height = (modal_height - resize_gutter).max(0.0);
   let metrics = stream_modal_metrics(ctx);
+  let close_on_escape = open.clone();
 
   Column::new()
     .width(layer_width)
@@ -145,6 +149,11 @@ pub(super) fn start_stream_modal(
           start_stream,
         )),
     )
+    .on_key_down(move |event| {
+      if hotkeys::is_cancel_key(event) {
+        close_on_escape.set(false);
+      }
+    })
     .into()
 }
 

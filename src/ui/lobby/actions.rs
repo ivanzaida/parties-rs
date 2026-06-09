@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use lurq::app::ctx::Ctx;
 
 use super::{
@@ -11,6 +13,8 @@ use crate::{
   storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
+
+const RECONNECT_STREAM_RESTORE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 struct LobbyActionCopy {
@@ -335,6 +339,15 @@ async fn reconnect_saved_server(
 
   if let Some(channel_id) = reconnect_channel_id {
     rejoin_previous_voice_channel(&session, &storage, channel_id, reconnect_voice_state).await;
+  }
+  if session.has_pending_reconnect_watch() {
+    let restore_session = session.clone();
+    let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
+    tokio::spawn(async move {
+      restore_session
+        .restore_pending_reconnect_watch(settings, RECONNECT_STREAM_RESTORE_TIMEOUT)
+        .await;
+    });
   }
 
   Ok(info)

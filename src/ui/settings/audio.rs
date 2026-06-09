@@ -36,6 +36,7 @@ use crate::{
       dropdown_menu::{DropdownOption, dropdown_menu},
       lucide_icon::{LucideIcon, LucideIconProps},
       percent_slider::{PercentSlider, PercentSliderProps, PercentSliderSaveAction},
+      slider as app_slider,
     },
     settings::{
       refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
@@ -58,6 +59,8 @@ const THRESHOLD_CONTROL_WIDTH: f32 = AUDIO_CONTROL_WIDTH;
 const THRESHOLD_CONTROL_HEIGHT: f32 = 22.0;
 const THRESHOLD_TRACK_HEIGHT: f32 = 14.0;
 const THRESHOLD_MARKER_WIDTH: f32 = 6.0;
+const PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS: i32 = 20;
+const PUSH_TO_TALK_RELEASE_DELAY_STEP_MS: i32 = 100;
 
 pub struct SettingsAudioScreen {
   input_device: Signal<String>,
@@ -71,6 +74,7 @@ pub struct SettingsAudioScreen {
   echo_cancellation: bool,
   voice_activation_threshold: i32,
   push_to_talk: bool,
+  push_to_talk_release_delay_ms: i32,
   hotkey_push_to_talk: String,
   hotkey_toggle_mute: String,
   hotkey_toggle_deafen: String,
@@ -97,6 +101,7 @@ impl Component for SettingsAudioScreen {
     let echo_cancellation = settings.echo_cancellation;
     let voice_activation_threshold = settings.voice_activation_threshold.clamp(0, 100);
     let push_to_talk = settings.push_to_talk;
+    let push_to_talk_release_delay_ms = settings.push_to_talk_release_delay_ms.clamp(0, 2000);
     let hotkey_push_to_talk = settings.hotkey_push_to_talk;
     let hotkey_toggle_mute = settings.hotkey_toggle_mute;
     let hotkey_toggle_deafen = settings.hotkey_toggle_deafen;
@@ -140,6 +145,7 @@ impl Component for SettingsAudioScreen {
       echo_cancellation,
       voice_activation_threshold,
       push_to_talk,
+      push_to_talk_release_delay_ms,
       hotkey_push_to_talk,
       hotkey_toggle_mute,
       hotkey_toggle_deafen,
@@ -245,6 +251,16 @@ impl Component for SettingsAudioScreen {
                   description_key: "settings.audio.push_to_talk.description",
                   initial_enabled: self.push_to_talk,
                   setting: AudioBoolSetting::PushToTalk,
+                }))
+                .child(ctx.mount::<AudioDelaySliderSetting>(AudioDelaySliderSettingProps {
+                  title_key: "settings.audio.push_to_talk_release_delay",
+                  description_key: "settings.audio.push_to_talk_release_delay.description",
+                  initial_value: delay_ms_to_tenths(self.push_to_talk_release_delay_ms),
+                  on_blur: audio_slider_save_action(
+                    storage.clone(),
+                    session.clone(),
+                    AudioSliderSetting::PushToTalkReleaseDelay,
+                  ),
                 })),
             )
             .child(
@@ -574,6 +590,73 @@ impl Component for AudioPercentSliderSetting {
 }
 
 #[derive(Clone)]
+struct AudioDelaySliderSettingProps {
+  title_key: &'static str,
+  description_key: &'static str,
+  initial_value: i32,
+  on_blur: AudioSliderSaveAction,
+}
+
+impl PartialEq for AudioDelaySliderSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title_key == other.title_key
+      && self.description_key == other.description_key
+      && self.initial_value == other.initial_value
+  }
+}
+
+impl DevtoolsInspectable for AudioDelaySliderSettingProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "title_key",
+      std::any::type_name::<&'static str>(),
+      self.title_key.to_owned(),
+    ));
+    buffer.push(ComponentInfo::with_value(
+      "initial_value",
+      std::any::type_name::<i32>(),
+      self.initial_value.to_string(),
+    ));
+  }
+}
+
+struct AudioDelaySliderSetting {
+  initial_value: Signal<i32>,
+  value: Signal<i32>,
+}
+
+impl Component for AudioDelaySliderSetting {
+  type Props = AudioDelaySliderSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let initial_value = ctx
+      .props::<Self::Props>()
+      .initial_value
+      .clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS);
+    Self {
+      initial_value: ctx.signal(initial_value),
+      value: ctx.signal(initial_value),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let initial_value = props.initial_value.clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS);
+    if self.initial_value.get_untracked() != initial_value {
+      self.initial_value.set(initial_value);
+      self.value.set(initial_value);
+    }
+
+    audio_row(
+      &ctx.t(props.title_key),
+      &ctx.t(props.description_key),
+      delay_slider_control(self.value.clone(), props.on_blur),
+      true,
+    )
+  }
+}
+
+#[derive(Clone)]
 struct AudioThresholdSettingProps {
   initial_value: i32,
   input_level: Signal<f32>,
@@ -834,6 +917,39 @@ pub(super) fn audio_scrollbar_style() -> ScrollBarStyle {
 enum AudioSliderSetting {
   VoiceNormalizationTargetLevel,
   VoiceActivationThreshold,
+  PushToTalkReleaseDelay,
+}
+
+fn delay_slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
+  let current = value.get().clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS);
+  let fill_width = AUDIO_SLIDER_WIDTH * current as f32 / PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS as f32;
+  let label = format!("{:.1}s", current as f32 / 10.0);
+  let mut slider = app_slider::slider(
+    value.clone(),
+    AUDIO_SLIDER_WIDTH,
+    0,
+    PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS,
+  );
+
+  slider = slider.on_blur(move || {
+    on_blur(value.get_untracked());
+  });
+
+  Row::new()
+    .width(AUDIO_CONTROL_WIDTH)
+    .align_items(Alignment::Center)
+    .spacing(AUDIO_CONTROL_VALUE_SPACING)
+    .child(
+      Stack::new()
+        .stack_align(StackAlignment::CenterStart)
+        .width(AUDIO_SLIDER_WIDTH)
+        .height(app_slider::SLIDER_HEIGHT)
+        .child(app_slider::track(AUDIO_SLIDER_WIDTH))
+        .child(app_slider::fill(fill_width))
+        .child(slider),
+    )
+    .child(audio_value_label(&label))
+    .into()
 }
 
 fn threshold_slider(
@@ -958,6 +1074,10 @@ fn audio_slider_save_action(
       let _ = save_slider_setting(storage, setting, value);
       if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
         restart_voice_for_audio_setting(storage, session.as_ref());
+      } else if matches!(setting, AudioSliderSetting::PushToTalkReleaseDelay)
+        && let Some(session) = session.as_ref()
+      {
+        session.set_push_to_talk_release_delay_ms(tenths_to_delay_ms(value));
       }
     }
   })
@@ -984,10 +1104,21 @@ fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i3
       settings.voice_activation_threshold = value;
       settings.voice_activation = true;
     }
+    AudioSliderSetting::PushToTalkReleaseDelay => {
+      settings.push_to_talk_release_delay_ms = tenths_to_delay_ms(value);
+    }
   }
 
   let _ = storage.save_settings(&settings);
   settings
+}
+
+fn delay_ms_to_tenths(value: i32) -> i32 {
+  (value.clamp(0, 2000) + PUSH_TO_TALK_RELEASE_DELAY_STEP_MS / 2) / PUSH_TO_TALK_RELEASE_DELAY_STEP_MS
+}
+
+fn tenths_to_delay_ms(value: i32) -> i32 {
+  value.clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS) * PUSH_TO_TALK_RELEASE_DELAY_STEP_MS
 }
 
 fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: bool) {

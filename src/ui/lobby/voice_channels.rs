@@ -20,6 +20,7 @@ use lurq::{
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
+use super::WatchStreamAction;
 use crate::{
   network::protocol::{ChannelId, Permission, Role, UserId},
   session::{LobbyChannel, LobbyUser, ServerSession},
@@ -56,6 +57,7 @@ pub(super) struct VoiceChannelsProps {
   pub local_user_id: UserId,
   pub local_role: Role,
   pub join_channel: Option<JoinChannelAction>,
+  pub watch_stream: Option<WatchStreamAction>,
 }
 
 impl PartialEq for VoiceChannelsProps {
@@ -68,6 +70,7 @@ impl PartialEq for VoiceChannelsProps {
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
       && self.join_channel.is_some() == other.join_channel.is_some()
+      && self.watch_stream.is_some() == other.watch_stream.is_some()
   }
 }
 
@@ -119,13 +122,16 @@ impl Component for VoiceChannels {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
+    let window_focused = ctx.window().is_focused;
     if self.context_menu_open.get_untracked()
-      && (props.disconnected
+      && (!window_focused
+        || props.disconnected
         || self.context_user_id.get_untracked().is_none_or(|user_id| {
-          !props
-            .users_by_channel
-            .values()
-            .any(|users| users.iter().any(|user| user.user_id == user_id))
+          user_id == props.local_user_id
+            || !props
+              .users_by_channel
+              .values()
+              .any(|users| users.iter().any(|user| user.user_id == user_id))
         }))
     {
       close_user_context_menu(
@@ -174,7 +180,9 @@ impl Component for VoiceChannels {
     } else {
       let users_by_channel = props.users_by_channel.clone();
       let selected_channel_id = props.selected_channel_id;
+      let local_user_id = props.local_user_id;
       let join_channel = props.join_channel.clone();
+      let watch_stream = props.watch_stream.clone();
       let streaming_user_ids = props.streaming_user_ids.clone();
       let context_user_id = self.context_user_id.clone();
       let context_menu_open = self.context_menu_open.clone();
@@ -190,7 +198,9 @@ impl Component for VoiceChannels {
             ctx,
             &channel,
             selected_channel_id,
+            local_user_id,
             join_channel.as_ref(),
+            watch_stream.as_ref(),
             users,
             streaming_user_ids.clone(),
             session_for_channels.clone(),
@@ -337,7 +347,9 @@ fn channel_group(
   ctx: &mut Ctx,
   channel: &LobbyChannel,
   selected_channel_id: Option<ChannelId>,
+  local_user_id: UserId,
   join_channel: Option<&JoinChannelAction>,
+  watch_stream: Option<&WatchStreamAction>,
   mut users: Vec<LobbyUser>,
   streaming_user_ids: Vec<UserId>,
   session: Option<ServerSession>,
@@ -363,7 +375,9 @@ fn channel_group(
       channel_user_row(
         ctx,
         &user,
+        user.user_id == local_user_id,
         streaming,
+        watch_stream,
         context_user_id.clone(),
         context_menu_open.clone(),
         context_menu_anchor.clone(),
@@ -455,7 +469,9 @@ fn channel_row(
 fn channel_user_row(
   ctx: &mut Ctx,
   user: &LobbyUser,
+  local: bool,
   streaming: bool,
+  watch_stream: Option<&WatchStreamAction>,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
@@ -467,6 +483,11 @@ fn channel_user_row(
   let open_menu = context_menu_open.clone();
   let open_anchor = context_menu_anchor.clone();
   let open_role_menu = role_menu_user_id.clone();
+  let watch_action = streaming
+    .then(|| watch_stream)
+    .flatten()
+    .filter(|action| !action.state().get().is_pending())
+    .cloned();
   let close_context = context_user_id.clone();
   let close_menu = context_menu_open.clone();
   let close_anchor = context_menu_anchor.clone();
@@ -474,7 +495,7 @@ fn channel_user_row(
   let menu_open = context_user_id.get() == Some(user.user_id);
   let scale = ctx.window().scale_factor.max(f32::EPSILON);
 
-  let row = Row::new()
+  let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Sm)
@@ -487,14 +508,19 @@ fn channel_user_row(
       BackgroundColor::Color(Color::from_hex("#00000000"))
     })
     .cursor(CursorIcon::Pointer)
-    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .on_mouse_click(MouseButton::Right, move |event| {
+    .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)));
+
+  if !local {
+    row = row.on_mouse_click(MouseButton::Right, move |event| {
       let anchor = (event.x / scale, event.y / scale);
       open_anchor.set(Some(anchor));
       open_context.set(Some(user_id));
       open_role_menu.set(None);
       open_menu.set(true);
-    })
+    });
+  }
+
+  row = row
     .on_click(move |_| {
       if close_context.get_untracked() == Some(user_id) {
         close_user_context_menu(
@@ -503,6 +529,9 @@ fn channel_user_row(
           close_anchor.clone(),
           close_role_menu.clone(),
         );
+      }
+      if let Some(action) = watch_action.as_ref() {
+        action.run(user_id);
       }
     })
     .child(user_avatar(&user.username, speaking))
