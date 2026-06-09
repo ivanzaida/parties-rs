@@ -9,27 +9,21 @@ fn main() {
 
   #[cfg(target_os = "windows")]
   {
-    use std::path::Path;
-
-    let original = Path::new("..").join("parties");
-    let encdec = original.join("encdec");
-    let common = original.join("common");
-
     cc::Build::new()
       .cpp(true)
       .std("c++17")
-      .file("src/services/video/gpu_stream_bridge.cpp")
-      .file("src/services/video/nvdec_bridge.cpp")
-      .file("src/services/video/nvenc_bridge.cpp")
-      .file(original.join("client/src/windows/screen_capture.cpp"))
-      .file(encdec.join("src/nvidia/nvidia_loader.cpp"))
-      .file(encdec.join("src/nvidia/nvdec_decoder.cpp"))
-      .file(encdec.join("src/nvidia/nvenc_encoder.cpp"))
-      .include("src/services/video/nvdec_shim")
-      .include(original.join("client/include"))
-      .include(encdec.join("src"))
-      .include(encdec.join("include"))
-      .include(common.join("include"))
+      .flag_if_supported("/EHsc")
+      .file("src/native/windows_video/bridge/gpu_stream_bridge.cpp")
+      .file("src/native/windows_video/bridge/nvdec_bridge.cpp")
+      .file("src/native/windows_video/bridge/nvenc_bridge.cpp")
+      .file("src/native/windows_video/capture/windows_screen_capture.cpp")
+      .file("src/native/windows_video/nvidia/nvidia_loader.cpp")
+      .file("src/native/windows_video/nvidia/nvdec_decoder.cpp")
+      .file("src/native/windows_video/nvidia/nvenc_encoder.cpp")
+      .include("src/native/windows_video")
+      .include("src/native/windows_video/common")
+      .include("src/native/windows_video/capture")
+      .include("src/native/windows_video/nvidia")
       .warnings(false)
       .compile("parties_nvdec_bridge");
 
@@ -37,46 +31,21 @@ fn main() {
     println!("cargo:rustc-link-lib=dxgi");
     println!("cargo:rustc-link-lib=dwmapi");
     println!("cargo:rustc-link-lib=windowsapp");
-    println!("cargo:rerun-if-changed=src/services/video/gpu_stream_bridge.cpp");
-    println!("cargo:rerun-if-changed=src/services/video/nvdec_bridge.cpp");
-    println!("cargo:rerun-if-changed=src/services/video/nvenc_bridge.cpp");
-    println!("cargo:rerun-if-changed=src/services/video/nvdec_shim/parties/log.h");
-    println!("cargo:rerun-if-changed=src/services/video/nvdec_shim/parties/profiler.h");
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvidia_loader.cpp").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      original.join("client/src/windows/screen_capture.cpp").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      original.join("client/include/client/screen_capture.h").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvdec_decoder.cpp").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvenc_encoder.cpp").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvdec_decoder.h").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvenc_encoder.h").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/nvidia_loader.h").display()
-    );
-    println!(
-      "cargo:rerun-if-changed={}",
-      encdec.join("src/nvidia/cuda_drvapi.h").display()
-    );
+    println!("cargo:rerun-if-changed=src/native/windows_video/bridge/gpu_stream_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/bridge/nvdec_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/bridge/nvenc_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/common/video_types.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/capture/windows_screen_capture.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/capture/windows_screen_capture.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvidia_loader.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvidia_loader.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvdec_decoder.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvdec_decoder.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvenc_encoder.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvenc_encoder.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/cuda_drvapi.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/cuviddec.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvcuvid.h");
+    println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvEncodeAPI.h");
   }
 }

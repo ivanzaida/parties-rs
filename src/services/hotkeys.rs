@@ -82,6 +82,7 @@ mod tests {
       ctrl,
       alt,
       shift,
+      meta: false,
       target_id: NodeId::UNASSIGNED,
     }
   }

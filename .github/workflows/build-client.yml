@@ -94,6 +94,7 @@ jobs:
       BINARY_NAME: ${{ matrix.binary_name }}
       BINARY_PATH: target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}
       ARCHIVE_EXT: ${{ matrix.archive_ext }}
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,6 +103,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - name: Cache Cargo dependencies and release build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+            target/${{ matrix.rust_target }}/release
+          key: ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('build.rs', 'src/native/windows_video/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-
 
       - name: Build release client
         run: cargo build --release --target ${{ matrix.rust_target }}

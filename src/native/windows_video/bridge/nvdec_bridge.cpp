@@ -6,9 +6,9 @@
 
 namespace {
 
-using parties::VideoCodecId;
-using parties::encdec::DecodedFrame;
-using parties::encdec::nvidia::NvdecDecoder;
+using parties_rs::video::VideoCodecId;
+using parties_rs::video::DecodedFrame;
+using parties_rs::video::nvidia::NvdecDecoder;
 
 struct NvdecBridge {
     NvdecDecoder decoder;

@@ -1,4 +1,4 @@
-#include <client/screen_capture.h>
+#include "capture/windows_screen_capture.h"
 #include "nvidia/nvenc_encoder.h"
 
 #include <d3d11.h>
@@ -12,10 +12,10 @@
 
 namespace {
 
-using parties::VideoCodecId;
-using parties::client::CaptureTarget;
-using parties::client::ScreenCapture;
-using parties::encdec::nvidia::NvencEncoder;
+using parties_rs::video::VideoCodecId;
+using parties_rs::video::CaptureTarget;
+using parties_rs::video::ScreenCapture;
+using parties_rs::video::nvidia::NvencEncoder;
 using Microsoft::WRL::ComPtr;
 
 struct InputViewCacheEntry {
@@ -262,7 +262,7 @@ GpuStreamBridge* parties_gpu_stream_create(
         bridge->capture.shutdown();
         return nullptr;
     }
-    if (bridge->encoder.codec() != requested_codec) {
+    if (bridge->encoder.info().codec != requested_codec) {
         bridge->capture.shutdown();
         return nullptr;
     }

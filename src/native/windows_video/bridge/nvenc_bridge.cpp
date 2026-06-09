@@ -11,8 +11,8 @@
 namespace {
 
 using Microsoft::WRL::ComPtr;
-using parties::VideoCodecId;
-using parties::encdec::nvidia::NvencEncoder;
+using parties_rs::video::VideoCodecId;
+using parties_rs::video::nvidia::NvencEncoder;
 
 struct NvencBridge {
     ComPtr<ID3D11Device> device;
@@ -101,7 +101,7 @@ NvencBridge* parties_nvenc_create(uint8_t codec, uint16_t width, uint16_t height
     if (!bridge->encoder.init(bridge->device.Get(), width, height, fps, bitrate, requested_codec)) {
         return nullptr;
     }
-    if (bridge->encoder.codec() != requested_codec) {
+    if (bridge->encoder.info().codec != requested_codec) {
         return nullptr;
     }
     bridge->encoder.force_keyframe();
@@ -170,7 +170,7 @@ uint8_t parties_nvenc_codec(NvencBridge* bridge) {
     if (!bridge) {
         return 0;
     }
-    return static_cast<uint8_t>(bridge->encoder.codec());
+    return static_cast<uint8_t>(bridge->encoder.info().codec);
 }
 
 }

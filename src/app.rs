@@ -352,6 +352,7 @@ mod tests {
       shift: false,
       ctrl,
       alt: false,
+      meta: false,
       target_id: NodeId::UNASSIGNED,
     }
   }
