@@ -997,14 +997,85 @@ fn default_db_path() -> PathBuf {
     return path;
   }
 
-  env::current_exe()
-    .ok()
-    .and_then(db_path_next_to_executable)
-    .unwrap_or_else(|| PathBuf::from("parties.db"))
+  #[cfg(target_os = "macos")]
+  {
+    let path = macos_application_support_db_path();
+    migrate_legacy_executable_db(&path);
+    return path;
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    legacy_executable_db_path().unwrap_or_else(|| PathBuf::from("parties.db"))
+  }
+}
+
+fn legacy_executable_db_path() -> Option<PathBuf> {
+  env::current_exe().ok().and_then(db_path_next_to_executable)
 }
 
 fn db_path_next_to_executable(executable: impl AsRef<Path>) -> Option<PathBuf> {
   executable.as_ref().parent().map(|parent| parent.join("parties.db"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_support_db_path() -> PathBuf {
+  env::var_os("HOME")
+    .map(PathBuf::from)
+    .filter(|home| !home.as_os_str().is_empty())
+    .map(macos_application_support_db_path_from_home)
+    .unwrap_or_else(|| PathBuf::from("parties.db"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_support_db_path_from_home(home: PathBuf) -> PathBuf {
+  home
+    .join("Library")
+    .join("Application Support")
+    .join("Parties")
+    .join("parties.db")
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_executable_db(new_path: &Path) {
+  if new_path.exists() {
+    return;
+  }
+
+  let Some(old_path) = legacy_executable_db_path() else {
+    return;
+  };
+  if old_path == new_path || !old_path.exists() {
+    return;
+  }
+  let Some(parent) = new_path.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+    return;
+  };
+  if fs::create_dir_all(parent).is_err() {
+    return;
+  }
+
+  if fs::copy(&old_path, new_path).is_err() {
+    return;
+  }
+  copy_sqlite_sidecar(&old_path, new_path, "wal");
+  copy_sqlite_sidecar(&old_path, new_path, "shm");
+}
+
+#[cfg(target_os = "macos")]
+fn copy_sqlite_sidecar(old_path: &Path, new_path: &Path, suffix: &str) {
+  let old_sidecar = sqlite_sidecar_path(old_path, suffix);
+  if !old_sidecar.exists() {
+    return;
+  }
+
+  let new_sidecar = sqlite_sidecar_path(new_path, suffix);
+  let _ = fs::copy(old_sidecar, new_sidecar);
+}
+
+#[cfg(target_os = "macos")]
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+  PathBuf::from(format!("{}-{suffix}", path.display()))
 }
 
 fn startup_db_file_arg(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {
@@ -1069,6 +1140,29 @@ mod tests {
     assert_eq!(
       db_path_next_to_executable(&executable),
       Some(PathBuf::from("Apps").join("Parties").join("parties.db"))
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn macos_default_db_path_uses_application_support() {
+    let home = PathBuf::from("/Users/alice");
+    assert_eq!(
+      macos_application_support_db_path_from_home(home),
+      PathBuf::from("/Users/alice")
+        .join("Library")
+        .join("Application Support")
+        .join("Parties")
+        .join("parties.db")
+    );
+  }
+
+  #[cfg(target_os = "macos")]
+  #[test]
+  fn sqlite_sidecar_path_appends_suffix_to_db_path() {
+    assert_eq!(
+      sqlite_sidecar_path(Path::new("/tmp/parties.db"), "wal"),
+      PathBuf::from("/tmp/parties.db-wal")
     );
   }
 
