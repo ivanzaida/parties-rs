@@ -692,6 +692,7 @@ pub struct ServerSession {
   speaking_mark_counter: Arc<Mutex<u64>>,
   speaking_clear_scheduled: Arc<Mutex<HashSet<UserId>>>,
   pending_keepalive_ping: Arc<Mutex<Option<Instant>>>,
+  last_network_activity: Arc<Mutex<Instant>>,
   voice_engine: Arc<Mutex<Option<VoiceEngine>>>,
   video_broadcast: Arc<Mutex<Option<VideoBroadcast>>>,
   video_packet_queue: Arc<Mutex<Arc<VideoPacketQueue>>>,
@@ -724,6 +725,7 @@ impl Default for ServerSession {
       speaking_mark_counter: Arc::new(Mutex::new(0)),
       speaking_clear_scheduled: Arc::new(Mutex::new(HashSet::new())),
       pending_keepalive_ping: Arc::new(Mutex::new(None)),
+      last_network_activity: Arc::new(Mutex::new(Instant::now())),
       voice_engine: Arc::new(Mutex::new(None)),
       video_broadcast: Arc::new(Mutex::new(None)),
       video_packet_queue: Arc::new(Mutex::new(Arc::new(VideoPacketQueue::new()))),
@@ -813,6 +815,7 @@ impl ServerSession {
       .pending_keepalive_ping
       .lock()
       .expect("server session lock poisoned") = None;
+    *self.last_network_activity.lock().expect("server session lock poisoned") = Instant::now();
     *self.current.lock().expect("server session lock poisoned") = Some(connected);
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
     *self.receiver_started.lock().expect("server session lock poisoned") = false;
@@ -866,6 +869,7 @@ impl ServerSession {
       .pending_keepalive_ping
       .lock()
       .expect("server session lock poisoned") = None;
+    *self.last_network_activity.lock().expect("server session lock poisoned") = Instant::now();
     *self.current.lock().expect("server session lock poisoned") = None;
     self.clear_tofu_warning();
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
@@ -955,6 +959,14 @@ impl ServerSession {
       .expect("server session lock poisoned")
       .as_ref()
       .map(|connected| connected.server.clone())
+  }
+
+  fn mark_network_activity(&self) {
+    *self.last_network_activity.lock().expect("server session lock poisoned") = Instant::now();
+  }
+
+  fn network_idle_for(&self, now: Instant) -> Duration {
+    now.duration_since(*self.last_network_activity.lock().expect("server session lock poisoned"))
   }
 
   fn stop_lobby_receivers(&self) {
@@ -1828,6 +1840,7 @@ impl ServerSession {
     loop {
       match server.recv().await {
         Ok(message) => {
+          session.mark_network_activity();
           session.apply_server_message(message);
         }
         Err(error) => {
@@ -1873,13 +1886,24 @@ impl ServerSession {
         }
       };
       if keepalive_timed_out {
+        let idle_for = self.network_idle_for(now);
+        if idle_for < KEEPALIVE_TIMEOUT {
+          tracing::debug!(
+            target: "network",
+            "[network] keepalive pong overdue but inbound traffic is active: ping_age={}s idle={}s",
+            KEEPALIVE_TIMEOUT.as_secs(),
+            idle_for.as_secs()
+          );
+          tokio::time::sleep(KEEPALIVE_INTERVAL).await;
+          continue;
+        }
         tracing::warn!(
           target: "network",
-          "[network] keepalive timed out: no pong received within {}s; forcing reconnect",
+          "[network] keepalive timed out: no pong or inbound traffic received within {}s; forcing reconnect",
           KEEPALIVE_TIMEOUT.as_secs()
         );
         self.mark_lobby_error(format!(
-          "keepalive timed out after {}s without pong",
+          "keepalive timed out after {}s without pong or inbound traffic",
           KEEPALIVE_TIMEOUT.as_secs()
         ));
         break;
@@ -1897,15 +1921,18 @@ impl ServerSession {
     loop {
       match server.recv_audio().await {
         Ok(ReceivedAudioPacket::Voice(packet)) => {
+          self.mark_network_activity();
           let speaking = self.handle_voice_packet(packet.clone());
           if speaking {
             self.mark_user_speaking(packet.sender_id);
           }
         }
         Ok(ReceivedAudioPacket::Stream(packet)) => {
+          self.mark_network_activity();
           self.handle_stream_audio_packet(packet);
         }
         Ok(ReceivedAudioPacket::VideoControl(control)) => {
+          self.mark_network_activity();
           self.handle_video_control_packet(control);
         }
         Err(ServerError::Protocol(error)) => {
@@ -1916,9 +1943,8 @@ impl ServerSession {
           let error = error.to_string();
           tracing::warn!(
             target: "voice",
-            "[voice] voice receiver fatal transport error; forcing session reconnect: {error}"
+            "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}"
           );
-          self.mark_lobby_error(format!("voice receiver transport error: {error}"));
           break;
         }
       }
@@ -1940,8 +1966,12 @@ impl ServerSession {
         .spawn(move || {
           while !stop.load(Ordering::Relaxed) {
             match runtime.block_on(server.recv_video()) {
-              Ok(ReceivedVideoPacket::Frame(packet)) => queue.push(packet),
+              Ok(ReceivedVideoPacket::Frame(packet)) => {
+                session.mark_network_activity();
+                queue.push(packet);
+              }
               Ok(ReceivedVideoPacket::VideoControl(control)) => {
+                session.mark_network_activity();
                 session.handle_video_control_packet(control);
               }
               Err(ServerError::Protocol(error)) => {
@@ -1952,11 +1982,8 @@ impl ServerSession {
                 let error = error.to_string();
                 tracing::warn!(
                   target: "video",
-                  "[video] video stream reader fatal transport error; forcing session reconnect: {error}"
+                  "[video] video stream reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
                 );
-                if !stop.load(Ordering::Relaxed) {
-                  session.mark_lobby_error(format!("video stream reader transport error: {error}"));
-                }
                 break;
               }
             }
@@ -1976,7 +2003,10 @@ impl ServerSession {
         .spawn(move || {
           while !stop.load(Ordering::Relaxed) {
             match runtime.block_on(server.recv_forwarded_video_datagram_until(stop.as_ref())) {
-              Ok(Some(packet)) => queue.push(packet),
+              Ok(Some(packet)) => {
+                session.mark_network_activity();
+                queue.push(packet);
+              }
               Ok(None) => break,
               Err(ServerError::Protocol(error)) => {
                 tracing::warn!(target: "video", "[video] ignored malformed video datagram: {error}");
@@ -1986,11 +2016,8 @@ impl ServerSession {
                 let error = error.to_string();
                 tracing::warn!(
                   target: "video",
-                  "[video] video datagram reader fatal transport error; forcing session reconnect: {error}"
+                  "[video] video datagram reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
                 );
-                if !stop.load(Ordering::Relaxed) {
-                  session.mark_lobby_error(format!("video datagram reader transport error: {error}"));
-                }
                 break;
               }
             }
@@ -2779,8 +2806,6 @@ impl ServerSession {
       return;
     }
 
-    tracing::warn!(target: "network", "[network] marking lobby disconnected and closing transport: {message}");
-    self.stop_video_broadcast();
     let mut watching_change = None;
     let reconnect_watch_user_id;
     {
@@ -2793,6 +2818,7 @@ impl ServerSession {
         }
         return;
       }
+      tracing::warn!(target: "network", "[network] marking lobby disconnected and closing transport: {message}");
       reconnect_watch_user_id = lobby.watching_user_id;
       lobby.receiver_running = false;
       lobby.disconnected = true;
@@ -2804,6 +2830,7 @@ impl ServerSession {
         watching_change = Some(previous_user_id);
       }
     }
+    self.stop_video_broadcast();
     *self
       .pending_reconnect_watch_user_id
       .lock()
