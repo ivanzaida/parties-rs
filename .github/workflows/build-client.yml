@@ -2,9 +2,6 @@ name: Build client binaries
 
 on:
   push:
-    paths:
-      - Cargo.toml
-      - .github/workflows/build-client.yml
   workflow_dispatch:
 
 permissions:
@@ -57,6 +54,13 @@ jobs:
           changed=false
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "$current_name" != "$previous_name" || "$current_version" != "$previous_version" ]]; then
             changed=true
+          fi
+
+          if [[ "$changed" != true && "${{ github.event_name }}" == "push" ]]; then
+            tag="v$current_version"
+            if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              changed=true
+            fi
           fi
 
           {
