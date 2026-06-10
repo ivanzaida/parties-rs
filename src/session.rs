@@ -17,7 +17,7 @@ use lurq::{
 use crate::{
   network::{
     protocol::{
-      ChannelId, Role, S2C, UserId, VideoCodecId,
+      ChannelId, Role, S2C, ServerErrorCode, UserId, VideoCodecId,
       control::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
@@ -541,7 +541,6 @@ pub struct LobbyChannel {
   pub max_users: u32,
   pub sort_order: u32,
   pub user_count: u32,
-  pub key_received: bool,
 }
 
 impl From<ChannelInfo> for LobbyChannel {
@@ -552,7 +551,6 @@ impl From<ChannelInfo> for LobbyChannel {
       max_users: channel.max_users,
       sort_order: channel.sort_order,
       user_count: channel.user_count,
-      key_received: false,
     }
   }
 }
@@ -1269,9 +1267,6 @@ impl ServerSession {
       lobby.selected_channel_id = Some(channel_id);
       lobby.selected_text_channel_id = None;
       lobby.stream_browser_channel_id = None;
-      for channel in &mut lobby.channels {
-        channel.key_received = false;
-      }
       Self::sync_selected_users(&mut lobby);
       tracing::debug!(target: "lobby",
         "[lobby] selected voice channel: previous={previous:?} current={channel_id} users={}",
@@ -2203,21 +2198,18 @@ impl ServerSession {
           }
 
           #[cfg(target_os = "windows")]
-          if let Some(surface) =
-            self.dx12_video_surface_for_decode(
-              &mut dx12_decode_surfaces,
-              packet.sender_id,
-              packet.frame.width,
-              packet.frame.height,
-            )
-            && let Some(decoded) = decode_video_packet_to_dx12(
-              &mut decoders,
-              &mut decoder_failures,
-              &mut dx12_decode_failures,
-              &packet,
-              &surface,
-            )
-          {
+          if let Some(surface) = self.dx12_video_surface_for_decode(
+            &mut dx12_decode_surfaces,
+            packet.sender_id,
+            packet.frame.width,
+            packet.frame.height,
+          ) && let Some(decoded) = decode_video_packet_to_dx12(
+            &mut decoders,
+            &mut decoder_failures,
+            &mut dx12_decode_failures,
+            &packet,
+            &surface,
+          ) {
             if decoded {
               let decoded_count = increment_counter(&mut decoded_counts, packet.sender_id);
               if should_log_video_count(decoded_count) {
@@ -3048,16 +3040,6 @@ impl ServerSession {
           lobby.ping_ms = Some(sent_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
         }
       }
-      S2C::ChannelKey(key) => {
-        tracing::debug!(target: "lobby",
-          "[lobby] received channel key: channel={} bytes={}",
-          key.channel_id,
-          key.key.len()
-        );
-        if let Some(channel) = lobby.channels.iter_mut().find(|channel| channel.id == key.channel_id) {
-          channel.key_received = true;
-        }
-      }
       S2C::ScreenShareStarted(started) => {
         let should_notify_stream_started = local_user_id != Some(started.sharer_user_id)
           && user_in_selected_voice_channel(&lobby, started.sharer_user_id);
@@ -3112,9 +3094,9 @@ impl ServerSession {
         lobby.last_error = Some(reason);
         notification_sound = Some(NotificationSound::ModerationAction);
       }
-      S2C::ServerError { message: reason } => {
-        tracing::error!(target: "network", "[network] server error: {reason}");
-        if reason.to_ascii_lowercase().contains("kick") {
+      S2C::ServerError { code, message: reason } => {
+        tracing::error!(target: "network", "[network] server error: code={} message={reason}", code.as_u16());
+        if matches!(code, ServerErrorCode::Kicked | ServerErrorCode::Replaced) {
           notification_sound = Some(NotificationSound::UserKicked);
         }
         lobby.last_error = Some(reason);

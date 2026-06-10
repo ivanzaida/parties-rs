@@ -3,8 +3,8 @@ use std::{
   fmt,
   net::SocketAddr,
   sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
   },
   time::Duration,
 };
@@ -12,20 +12,20 @@ use std::{
 use bytes::Bytes;
 use quinn::{Connection, Endpoint, VarInt};
 use rustls::{
-  client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier}, pki_types::{CertificateDer, ServerName, UnixTime},
-  DigitallySignedStruct,
-  SignatureScheme,
+  DigitallySignedStruct, SignatureScheme,
+  client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+  pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use super::protocol::{
-  control::{AuthIdentity, ChatSendAttachment, ScreenShareMetadata, VoiceState, MAX_CONTROL_MESSAGE_LEN}, data::{
-    FileStreamRequest, ForwardedStreamAudioPacket, ForwardedVideoFrame, ForwardedVoicePacket, PacketType,
-    VideoControl, VideoFrame, MAX_VIDEO_FRAME_LEN,
-  }, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, UserId, VideoCodecId,
-  C2S,
-  S2C,
+  C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
+  control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
+  data::{
+    FileStreamRequest, ForwardedStreamAudioPacket, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN,
+    PacketType, VideoControl, VideoFrame,
+  },
 };
 
 #[derive(Debug)]
@@ -268,10 +268,6 @@ impl Server {
 
   pub async fn authenticate(&self, identity: AuthIdentity) -> Result<(), ServerError> {
     self.send_control(C2S::Auth(identity)).await
-  }
-
-  pub async fn authenticate_legacy(&self, identity: AuthIdentity) -> Result<(), ServerError> {
-    self.send_control(C2S::AuthLegacy(identity)).await
   }
 
   // -- channels --

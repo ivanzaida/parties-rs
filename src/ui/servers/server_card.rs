@@ -7,7 +7,7 @@ use lurq::{
 };
 
 use crate::{
-  network::protocol::Role,
+  network::protocol::{Role, protocol_version_label},
   storage::StoredServer,
   theme,
   ui::{
@@ -275,7 +275,10 @@ fn live_meta_items(ctx: &Ctx, live: &ServerCardLiveInfo) -> Vec<LiveMetaItem> {
         items.push(LiveMetaItem {
           icon: "radio",
           label: ctx
-            .t_args("servers.row.meta.protocol", [("version", protocol_version.to_string())])
+            .t_args(
+              "servers.row.meta.protocol",
+              [("version", protocol_version_label(protocol_version))],
+            )
             .to_string(),
         });
       }

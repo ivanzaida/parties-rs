@@ -22,6 +22,7 @@ use crate::{
   network::{
     protocol::{
       ChannelId, PERMISSION_MATRIX_PERMISSIONS, PERMISSION_MATRIX_ROLES, PROTOCOL_VERSION, Permission, Role, UserId,
+      protocol_version_label,
     },
     server_query::{ServerQueryInfo, query_server},
   },
@@ -757,7 +758,7 @@ fn server_info_card(ctx: &mut Ctx, info: &ConnectedServerInfo, padding: f32) -> 
   let role_label = ctx.t("server_settings.info.role").to_string();
   let role_value = ctx.t(role_label_key(info.role)).to_string();
   let protocol_label = ctx.t("server_settings.info.protocol").to_string();
-  let protocol_value = format!("v{PROTOCOL_VERSION}");
+  let protocol_value = format!("v{}", protocol_version_label(PROTOCOL_VERSION));
 
   settings_card(ctx, "server", &title, padding)
     .child(divider())

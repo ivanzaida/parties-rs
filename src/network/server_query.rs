@@ -111,7 +111,7 @@ fn parse_server_query_reply(bytes: &[u8], expected_token: u32) -> Option<ServerQ
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::network::protocol::BinaryWriter;
+  use crate::network::protocol::{BinaryWriter, PROTOCOL_VERSION};
 
   #[test]
   fn query_request_matches_cpp_shape() {
@@ -128,7 +128,7 @@ mod tests {
     let mut w = BinaryWriter::new();
     w.write_bytes(&SERVER_QUERY_REPLY_MARKER);
     w.write_u32(token);
-    w.write_u16(1);
+    w.write_u16(PROTOCOL_VERSION);
     w.write_u16(2);
     w.write_u16(16);
     w.write_u8(SERVER_QUERY_FLAG_PASSWORD_LOCKED);
@@ -138,7 +138,7 @@ mod tests {
     assert_eq!(
       parse_server_query_reply(&w.into_bytes(), token),
       Some(ServerQueryInfo {
-        protocol_version: 1,
+        protocol_version: PROTOCOL_VERSION,
         server_name: "My Server".to_owned(),
         current_users: 2,
         max_users: 16,
@@ -154,7 +154,7 @@ mod tests {
     let mut w = BinaryWriter::new();
     w.write_bytes(&SERVER_QUERY_REPLY_MARKER);
     w.write_u32(token);
-    w.write_u16(1);
+    w.write_u16(PROTOCOL_VERSION);
     w.write_u16(2);
     w.write_u16(16);
     w.write_u8(SERVER_QUERY_FLAG_PASSWORD_LOCKED);
@@ -163,7 +163,7 @@ mod tests {
     assert_eq!(
       parse_server_query_reply(&w.into_bytes(), token),
       Some(ServerQueryInfo {
-        protocol_version: 1,
+        protocol_version: PROTOCOL_VERSION,
         server_name: "My Server".to_owned(),
         current_users: 2,
         max_users: 16,

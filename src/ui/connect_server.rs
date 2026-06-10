@@ -15,9 +15,9 @@ use lurq::{
 use crate::{
   identity::auth_identity,
   network::{
-    protocol::{DEFAULT_PORT, PROTOCOL_VERSION, S2C},
+    protocol::{DEFAULT_PORT, S2C},
     server::Server,
-    server_query::{ServerQueryInfo, query_server},
+    server_query::query_server,
   },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession},
@@ -53,7 +53,6 @@ pub struct ConnectErrorCopy {
   storage_unavailable: String,
   identity_missing: String,
   timeout: String,
-  malformed_auth: String,
   unexpected_response: String,
   resolve_failed: String,
 }
@@ -69,7 +68,6 @@ impl ConnectErrorCopy {
           [("seconds", CONNECT_TIMEOUT.as_secs().to_string())],
         )
         .to_string(),
-      malformed_auth: ctx.t("connect_server.error.malformed_auth").to_string(),
       unexpected_response: ctx.t("connect_server.error.unexpected_response").to_string(),
       resolve_failed: ctx.t("connect_server.error.resolve_failed").to_string(),
     }
@@ -385,7 +383,7 @@ pub async fn connect_and_store(
       .map_err(|error| error.to_string())?
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
-    let response = authenticate_with_query(&server, auth, query.as_ref(), &errors).await?;
+    let response = authenticate_with_query(&server, auth, &errors).await?;
     tracing::info!(target: "network::connect",
       "[network/connect] authenticated: server='{}' user={} role={:?}",
       response.server_name,
@@ -470,7 +468,6 @@ pub async fn test_connection(
 
   let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
-    let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
     let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
     let fingerprint = server.certificate_fingerprint().unwrap_or_default();
 
@@ -479,7 +476,7 @@ pub async fn test_connection(
       .map_err(|error| error.to_string())?
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
-    let response = authenticate_with_query(&server, auth, query.as_ref(), &errors).await?;
+    let response = authenticate_with_query(&server, auth, &errors).await?;
 
     Ok::<_, String>((server, fingerprint, response))
   })
@@ -500,35 +497,9 @@ pub async fn test_connection(
 
 enum AuthAttempt {
   Authenticated(crate::network::protocol::AuthResponse),
-  RetryLegacy,
-}
-
-#[derive(Clone, Copy)]
-enum AuthMode {
-  Versioned,
-  Legacy,
 }
 
 async fn authenticate_with_query(
-  server: &Server,
-  auth: crate::network::protocol::AuthIdentity,
-  query: Option<&ServerQueryInfo>,
-  errors: &ConnectErrorCopy,
-) -> Result<crate::network::protocol::AuthResponse, String> {
-  match auth_mode_from_query(query) {
-    AuthMode::Versioned => authenticate_versioned_first(server, auth, errors).await,
-    AuthMode::Legacy => authenticate_legacy_first(server, auth, errors).await,
-  }
-}
-
-fn auth_mode_from_query(query: Option<&ServerQueryInfo>) -> AuthMode {
-  match query {
-    Some(info) if info.protocol_version < PROTOCOL_VERSION => AuthMode::Legacy,
-    _ => AuthMode::Versioned,
-  }
-}
-
-async fn authenticate_versioned_first(
   server: &Server,
   auth: crate::network::protocol::AuthIdentity,
   errors: &ConnectErrorCopy,
@@ -540,40 +511,13 @@ async fn authenticate_versioned_first(
 
   match recv_auth_response(server, errors).await? {
     AuthAttempt::Authenticated(response) => Ok(response),
-    AuthAttempt::RetryLegacy => {
-      server
-        .authenticate_legacy(auth)
-        .await
-        .map_err(|error| error.to_string())?;
-      match recv_auth_response(server, errors).await? {
-        AuthAttempt::Authenticated(response) => Ok(response),
-        AuthAttempt::RetryLegacy => Err(errors.malformed_auth.clone()),
-      }
-    }
-  }
-}
-
-async fn authenticate_legacy_first(
-  server: &Server,
-  auth: crate::network::protocol::AuthIdentity,
-  errors: &ConnectErrorCopy,
-) -> Result<crate::network::protocol::AuthResponse, String> {
-  server
-    .authenticate_legacy(auth)
-    .await
-    .map_err(|error| error.to_string())?;
-
-  match recv_auth_response(server, errors).await? {
-    AuthAttempt::Authenticated(response) => Ok(response),
-    AuthAttempt::RetryLegacy => Err(errors.malformed_auth.clone()),
   }
 }
 
 async fn recv_auth_response(server: &Server, errors: &ConnectErrorCopy) -> Result<AuthAttempt, String> {
   match server.recv().await.map_err(|error| error.to_string())? {
     S2C::AuthResponse(response) => Ok(AuthAttempt::Authenticated(response)),
-    S2C::ServerError { message } if message == "Malformed auth message" => Ok(AuthAttempt::RetryLegacy),
-    S2C::ServerError { message } => Err(message),
+    S2C::ServerError { message, .. } => Err(message),
     _ => Err(errors.unexpected_response.clone()),
   }
 }

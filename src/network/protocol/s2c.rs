@@ -1,9 +1,10 @@
 use super::{
-  BinaryReader, ChannelId, ControlFrame, ControlMessageType, DecodeError, DecodeResult, Role, UserId, VideoCodecId,
+  BinaryReader, ChannelId, ControlFrame, ControlMessageType, DecodeError, DecodeResult, Role, ServerErrorCode, UserId,
+  VideoCodecId,
   control::{
-    AdminResult, AuthResponse, ChannelKey, ChannelList, ChannelUserList, ChatFileUploadResponse, ChatHistoryResponse,
-    ChatMessage, ScreenShareMetadata, ScreenShareStarted, TextChannelInfo, UserJoinedChannel, UserLeftChannel,
-    UserRoleChanged, UserVoiceState,
+    AdminResult, AuthResponse, ChannelList, ChannelUserList, ChatFileUploadResponse, ChatHistoryResponse, ChatMessage,
+    ScreenShareMetadata, ScreenShareStarted, TextChannelInfo, UserJoinedChannel, UserLeftChannel, UserRoleChanged,
+    UserVoiceState,
   },
 };
 
@@ -17,7 +18,6 @@ pub enum S2C {
   UserVoiceState(UserVoiceState),
   KeepalivePong,
   UserRoleChanged(UserRoleChanged),
-  ChannelKey(ChannelKey),
   ScreenShareStarted(ScreenShareStarted),
   ScreenShareStopped {
     sharer_user_id: UserId,
@@ -26,6 +26,7 @@ pub enum S2C {
     reason: String,
   },
   ServerError {
+    code: ServerErrorCode,
     message: String,
   },
   AdminResult(AdminResult),
@@ -67,7 +68,6 @@ impl S2C {
       M::UserVoiceState => Ok(Self::UserVoiceState(UserVoiceState::decode_payload(bytes)?)),
       M::KeepalivePong => Ok(Self::KeepalivePong),
       M::UserRoleChanged => Ok(Self::UserRoleChanged(UserRoleChanged::decode_payload(bytes)?)),
-      M::ChannelKey => Ok(Self::ChannelKey(ChannelKey::decode_payload(bytes)?)),
       M::ScreenShareStarted => Ok(Self::ScreenShareStarted(ScreenShareStarted::decode_payload(bytes)?)),
       M::ScreenShareStopped => {
         let mut r = BinaryReader::new(bytes);
@@ -83,9 +83,10 @@ impl S2C {
       }
       M::ServerError => {
         let mut r = BinaryReader::new(bytes);
+        let code = ServerErrorCode::from_u16(r.read_u16()?);
         let message = r.read_string()?;
         r.finish()?;
-        Ok(Self::ServerError { message })
+        Ok(Self::ServerError { code, message })
       }
       M::AdminResult => Ok(Self::AdminResult(AdminResult::decode_payload(bytes)?)),
       M::ChatMessage => {
@@ -197,13 +198,17 @@ mod tests {
   #[test]
   fn server_error_decodes() {
     let mut w = super::super::BinaryWriter::new();
+    w.write_u16(ServerErrorCode::BadAuth.as_u16());
     w.write_string("bad request").unwrap();
     let frame = ControlFrame {
       ty: ControlMessageType::ServerError,
       payload: w.into_bytes(),
     };
     match S2C::decode(&frame).unwrap() {
-      S2C::ServerError { message } => assert_eq!(message, "bad request"),
+      S2C::ServerError { code, message } => {
+        assert_eq!(code, ServerErrorCode::BadAuth);
+        assert_eq!(message, "bad request");
+      }
       other => panic!("expected ServerError, got {other:?}"),
     }
   }

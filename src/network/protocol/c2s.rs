@@ -6,7 +6,6 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum C2S {
   Auth(AuthIdentity),
-  AuthLegacy(AuthIdentity),
   ChannelJoin {
     channel_id: ChannelId,
   },
@@ -87,7 +86,6 @@ impl C2S {
 
     let (ty, payload) = match self {
       Self::Auth(auth) => (M::AuthIdentity, auth.encode_payload()?),
-      Self::AuthLegacy(auth) => (M::AuthIdentity, auth.encode_legacy_payload()?),
 
       Self::ChannelJoin { channel_id } => {
         let mut w = BinaryWriter::new();
