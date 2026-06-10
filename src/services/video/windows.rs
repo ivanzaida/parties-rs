@@ -156,6 +156,8 @@ unsafe extern "C" {
     y_size: u64,
     uv_handle: usize,
     uv_size: u64,
+    adapter_luid_low: u32,
+    adapter_luid_high: i32,
     width: u16,
     height: u16,
   ) -> i32;
@@ -1824,6 +1826,8 @@ impl AmdAmfVideoDecoder {
           surface.y_allocation_size(),
           surface.uv_shared_handle_raw() as usize,
           surface.uv_allocation_size(),
+          surface.adapter_luid_low(),
+          surface.adapter_luid_high(),
           frame.width,
           frame.height,
         )

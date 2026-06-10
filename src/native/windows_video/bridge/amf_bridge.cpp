@@ -11,8 +11,11 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -49,6 +52,11 @@ struct SharedNv12PlanesTarget {
     uint32_t height = 0;
 };
 
+struct PlaneBlitConstants {
+    float uv_scale[2];
+    float padding[2];
+};
+
 enum class SharedNv12CopyResult {
     Fatal,
     Dropped,
@@ -66,11 +74,19 @@ struct AmfBridge {
 
 struct AmfDecoderBridge {
     ~AmfDecoderBridge() {
+        reset_shared_targets();
+    }
+
+    void reset_shared_targets() {
         for (auto& target : shared_nv12_targets) {
             if (target.handle) {
                 CloseHandle(target.handle);
                 target.handle = nullptr;
             }
+            target.texture.Reset();
+            target.mutex.Reset();
+            target.width = 0;
+            target.height = 0;
         }
         for (auto& target : shared_nv12_planes_targets) {
             if (target.y_handle) {
@@ -81,7 +97,19 @@ struct AmfDecoderBridge {
                 CloseHandle(target.uv_handle);
                 target.uv_handle = nullptr;
             }
+            target.y_texture.Reset();
+            target.uv_texture.Reset();
+            target.y_mutex.Reset();
+            target.uv_mutex.Reset();
+            target.width = 0;
+            target.height = 0;
         }
+        y_texture.Reset();
+        uv_texture.Reset();
+        y_handle = nullptr;
+        uv_handle = nullptr;
+        shared_nv12_target_index = 0;
+        shared_nv12_planes_target_index = 0;
     }
 
     ComPtr<ID3D11Device> device;
@@ -97,6 +125,7 @@ struct AmfDecoderBridge {
     ComPtr<ID3D11PixelShader> plane_blit_y_ps;
     ComPtr<ID3D11PixelShader> plane_blit_uv_ps;
     ComPtr<ID3D11SamplerState> plane_blit_sampler;
+    ComPtr<ID3D11Buffer> plane_blit_constants;
     bool plane_blit_srv_mode_logged = false;
     uint64_t shared_nv12_copy_count = 0;
     SharedNv12Target shared_nv12_targets[SHARED_NV12_TARGET_COUNT];
@@ -107,6 +136,11 @@ struct AmfDecoderBridge {
     uint8_t* nv12 = nullptr;
     uintptr_t nv12_len = 0;
     bool decoded = false;
+    VideoCodecId codec = VideoCodecId::H264;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    LUID adapter_luid{};
+    bool adapter_luid_valid = false;
 };
 
 VideoCodecId codec_from_u8(uint8_t codec) {
@@ -157,6 +191,39 @@ bool create_device_on_adapter(IDXGIAdapter1* adapter, Bridge& bridge) {
     return SUCCEEDED(hr);
 }
 
+bool get_adapter_luid_from_device(ID3D11Device* device, LUID& luid) {
+    if (!device) {
+        return false;
+    }
+    ComPtr<IDXGIDevice> dxgi_device;
+    HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&dxgi_device));
+    if (FAILED(hr) || !dxgi_device) {
+        return false;
+    }
+    ComPtr<IDXGIAdapter> adapter;
+    hr = dxgi_device->GetAdapter(&adapter);
+    if (FAILED(hr) || !adapter) {
+        return false;
+    }
+    DXGI_ADAPTER_DESC desc{};
+    hr = adapter->GetDesc(&desc);
+    if (FAILED(hr)) {
+        return false;
+    }
+    luid = desc.AdapterLuid;
+    return true;
+}
+
+bool same_luid(const LUID& left, const LUID& right) {
+    return left.LowPart == right.LowPart && left.HighPart == right.HighPart;
+}
+
+std::string luid_text(const LUID& luid) {
+    char buffer[64]{};
+    std::snprintf(buffer, sizeof(buffer), "%08x:%08x", static_cast<unsigned>(luid.HighPart), luid.LowPart);
+    return buffer;
+}
+
 template <typename Bridge>
 bool create_amd_device(Bridge& bridge) {
     ComPtr<IDXGIFactory1> factory;
@@ -187,12 +254,100 @@ bool create_amd_device(Bridge& bridge) {
         if (create_device_on_adapter(adapter.Get(), bridge)) {
             native_log_info("AMF bridge selected AMD adapter: index={} vendor_id={} device_id={}",
                 index, desc.VendorId, desc.DeviceId);
+            if constexpr (std::is_same_v<Bridge, AmfDecoderBridge>) {
+                bridge.adapter_luid = desc.AdapterLuid;
+                bridge.adapter_luid_valid = true;
+            }
             return true;
         }
     }
 
     native_log_error("AMF bridge did not find a usable AMD D3D11 adapter");
     return false;
+}
+
+bool create_amd_device_on_luid(AmfDecoderBridge& bridge, const LUID& target_luid) {
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        native_log_error("AMF bridge failed to create DXGI factory for LUID match: {}", static_cast<int>(hr));
+        return false;
+    }
+
+    for (UINT index = 0;; ++index) {
+        ComPtr<IDXGIAdapter1> adapter;
+        hr = factory->EnumAdapters1(index, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+        if (FAILED(hr)) {
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != AMD_VENDOR_ID || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            continue;
+        }
+        if (!same_luid(desc.AdapterLuid, target_luid)) {
+            continue;
+        }
+
+        if (create_device_on_adapter(adapter.Get(), bridge)) {
+            bridge.adapter_luid = desc.AdapterLuid;
+            bridge.adapter_luid_valid = true;
+            native_log_info(
+                "AMF bridge selected AMD adapter by renderer LUID: index={} vendor_id={} device_id={} luid={}",
+                index,
+                desc.VendorId,
+                desc.DeviceId,
+                luid_text(desc.AdapterLuid));
+            return true;
+        }
+    }
+
+    native_log_error("AMF bridge did not find AMD D3D11 adapter matching renderer LUID {}", luid_text(target_luid));
+    return false;
+}
+
+bool ensure_decoder_adapter_for_d3d12_target(AmfDecoderBridge* bridge, const LUID& target_luid) {
+    if (!bridge || bridge->width == 0 || bridge->height == 0) {
+        return false;
+    }
+
+    LUID current_luid{};
+    const bool has_current_luid = get_adapter_luid_from_device(bridge->device.Get(), current_luid);
+    if (has_current_luid && same_luid(current_luid, target_luid)) {
+        return true;
+    }
+
+    native_log_warn(
+        "AMF decoder D3D12 target adapter differs from current AMF device: current_luid={} target_luid={}; recreating decoder",
+        has_current_luid ? luid_text(current_luid) : "unknown",
+        luid_text(target_luid));
+
+    bridge->decoder.shutdown();
+    bridge->reset_shared_targets();
+    bridge->device.Reset();
+    bridge->device1.Reset();
+    bridge->device3.Reset();
+    bridge->context.Reset();
+    bridge->plane_blit_vs.Reset();
+    bridge->plane_blit_y_ps.Reset();
+    bridge->plane_blit_uv_ps.Reset();
+    bridge->plane_blit_sampler.Reset();
+    bridge->plane_blit_constants.Reset();
+    bridge->plane_blit_srv_mode_logged = false;
+    bridge->adapter_luid_valid = false;
+
+    if (!create_amd_device_on_luid(*bridge, target_luid) ||
+        FAILED(bridge->device.As(&bridge->device1)) ||
+        FAILED(bridge->device.As(&bridge->device3)) ||
+        !bridge->decoder.init(bridge->device.Get(), bridge->codec, bridge->width, bridge->height)) {
+        native_log_error("AMF decoder failed to recreate on renderer adapter LUID {}", luid_text(target_luid));
+        return false;
+    }
+
+    return true;
 }
 
 bool create_texture(AmfBridge& bridge, uint16_t width, uint16_t height) {
@@ -308,14 +463,18 @@ bool ensure_plane_blit_resources(AmfDecoderBridge* bridge) {
 
       Texture2D plane_texture : register(t0);
       SamplerState plane_sampler : register(s0);
+      cbuffer PlaneBlitConstants : register(b0) {
+        float2 uv_scale;
+        float2 unused_padding;
+      };
 
       float4 ps_y_main(VSOut input) : SV_Target {
-        float y = plane_texture.SampleLevel(plane_sampler, input.uv, 0.0).r;
+        float y = plane_texture.SampleLevel(plane_sampler, input.uv * uv_scale, 0.0).r;
         return float4(y, y, y, 1.0);
       }
 
       float4 ps_uv_main(VSOut input) : SV_Target {
-        float2 uv = plane_texture.SampleLevel(plane_sampler, input.uv, 0.0).rg;
+        float2 uv = plane_texture.SampleLevel(plane_sampler, input.uv * uv_scale, 0.0).rg;
         return float4(uv.x, uv.y, 0.0, 1.0);
       }
     )";
@@ -360,6 +519,17 @@ bool ensure_plane_blit_resources(AmfDecoderBridge* bridge) {
         return false;
     }
 
+    D3D11_BUFFER_DESC constants_desc{};
+    constants_desc.ByteWidth = sizeof(PlaneBlitConstants);
+    constants_desc.Usage = D3D11_USAGE_DYNAMIC;
+    constants_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    constants_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    hr = bridge->device->CreateBuffer(&constants_desc, nullptr, &bridge->plane_blit_constants);
+    if (FAILED(hr)) {
+        native_log_error("AMF decoder plane blit constants create failed: {}", static_cast<int>(hr));
+        return false;
+    }
+
     native_log_info("AMF decoder plane blit shaders ready");
     return true;
 }
@@ -372,8 +542,11 @@ bool blit_nv12_plane_to_texture(
     UINT source_plane_slice,
     ID3D11PixelShader* pixel_shader,
     uint32_t width,
-    uint32_t height) {
-    if (!bridge || !bridge->device || !bridge->context || !source || !target || !pixel_shader || width == 0 || height == 0) {
+    uint32_t height,
+    float uv_scale_x,
+    float uv_scale_y) {
+    if (!bridge || !bridge->device || !bridge->context || !source || !target || !pixel_shader ||
+        !bridge->plane_blit_constants || width == 0 || height == 0 || uv_scale_x <= 0.0f || uv_scale_y <= 0.0f) {
         return false;
     }
 
@@ -435,22 +608,39 @@ bool blit_nv12_plane_to_texture(
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
 
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    hr = bridge->context->Map(bridge->plane_blit_constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr)) {
+        native_log_error("AMF decoder plane blit constants map failed: {}", static_cast<int>(hr));
+        return false;
+    }
+    auto* constants = static_cast<PlaneBlitConstants*>(mapped.pData);
+    constants->uv_scale[0] = uv_scale_x;
+    constants->uv_scale[1] = uv_scale_y;
+    constants->padding[0] = 0.0f;
+    constants->padding[1] = 0.0f;
+    bridge->context->Unmap(bridge->plane_blit_constants.Get(), 0);
+
     ID3D11ShaderResourceView* srv = source_view.Get();
     ID3D11SamplerState* sampler = bridge->plane_blit_sampler.Get();
     ID3D11RenderTargetView* rtv = target_view.Get();
+    ID3D11Buffer* constants_buffer = bridge->plane_blit_constants.Get();
     bridge->context->IASetInputLayout(nullptr);
     bridge->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     bridge->context->VSSetShader(bridge->plane_blit_vs.Get(), nullptr, 0);
     bridge->context->PSSetShader(pixel_shader, nullptr, 0);
     bridge->context->PSSetShaderResources(0, 1, &srv);
     bridge->context->PSSetSamplers(0, 1, &sampler);
+    bridge->context->PSSetConstantBuffers(0, 1, &constants_buffer);
     bridge->context->RSSetViewports(1, &viewport);
     bridge->context->OMSetRenderTargets(1, &rtv, nullptr);
     bridge->context->Draw(3, 0);
 
     ID3D11ShaderResourceView* null_srv = nullptr;
     ID3D11RenderTargetView* null_rtv = nullptr;
+    ID3D11Buffer* null_cb = nullptr;
     bridge->context->PSSetShaderResources(0, 1, &null_srv);
+    bridge->context->PSSetConstantBuffers(0, 1, &null_cb);
     bridge->context->OMSetRenderTargets(1, &null_rtv, nullptr);
     return true;
 }
@@ -505,9 +695,9 @@ bool copy_decoded_surface_to_shared_textures(
 
     D3D11_TEXTURE2D_DESC source_desc{};
     source->GetDesc(&source_desc);
-    if (source_desc.Format != DXGI_FORMAT_NV12 || source_desc.Width != width || source_desc.Height != height) {
+    if (source_desc.Format != DXGI_FORMAT_NV12 || source_desc.Width < width || source_desc.Height < height) {
         native_log_error(
-            "AMF decoder DX12 copy rejected source format/size: format={} size={}x{} expected={}x{}",
+            "AMF decoder DX12 copy rejected source format/size: format={} size={}x{} expected_at_least={}x{}",
             static_cast<int>(source_desc.Format),
             source_desc.Width,
             source_desc.Height,
@@ -535,13 +725,29 @@ bool copy_decoded_surface_to_shared_textures(
         return false;
     }
 
+    D3D11_BOX y_box{};
+    y_box.left = 0;
+    y_box.top = 0;
+    y_box.front = 0;
+    y_box.right = width;
+    y_box.bottom = height;
+    y_box.back = 1;
+
+    D3D11_BOX uv_box{};
+    uv_box.left = 0;
+    uv_box.top = 0;
+    uv_box.front = 0;
+    uv_box.right = width / 2;
+    uv_box.bottom = height / 2;
+    uv_box.back = 1;
+
     {
         parties_rs::video::NativeProfileSpan y_span("native.amf.decode.dx12_copy_y");
-        bridge->context->CopySubresourceRegion(bridge->y_texture.Get(), 0, 0, 0, 0, source, 0, nullptr);
+        bridge->context->CopySubresourceRegion(bridge->y_texture.Get(), 0, 0, 0, 0, source, 0, &y_box);
     }
     {
         parties_rs::video::NativeProfileSpan uv_span("native.amf.decode.dx12_copy_uv");
-        bridge->context->CopySubresourceRegion(bridge->uv_texture.Get(), 0, 0, 0, 0, source, 1, nullptr);
+        bridge->context->CopySubresourceRegion(bridge->uv_texture.Get(), 0, 0, 0, 0, source, 1, &uv_box);
     }
     bridge->context->Flush();
     bridge->decoded = true;
@@ -682,9 +888,9 @@ SharedNv12CopyResult copy_decoded_surface_to_shared_nv12_planes(
 
     D3D11_TEXTURE2D_DESC source_desc{};
     source->GetDesc(&source_desc);
-    if (source_desc.Format != DXGI_FORMAT_NV12 || source_desc.Width != width || source_desc.Height != height) {
+    if (source_desc.Format != DXGI_FORMAT_NV12 || source_desc.Width < width || source_desc.Height < height) {
         native_log_error(
-            "AMF decoder shared planes copy rejected source format/size: format={} size={}x{} expected={}x{}",
+            "AMF decoder shared planes copy rejected source format/size: format={} size={}x{} expected_at_least={}x{}",
             static_cast<int>(source_desc.Format),
             source_desc.Width,
             source_desc.Height,
@@ -692,6 +898,8 @@ SharedNv12CopyResult copy_decoded_surface_to_shared_nv12_planes(
             height);
         return SharedNv12CopyResult::Fatal;
     }
+    const float uv_scale_x = static_cast<float>(width) / static_cast<float>(source_desc.Width);
+    const float uv_scale_y = static_cast<float>(height) / static_cast<float>(source_desc.Height);
 
     const size_t slot = bridge->shared_nv12_planes_target_index % SHARED_NV12_TARGET_COUNT;
     bridge->shared_nv12_planes_target_index += 1;
@@ -731,7 +939,9 @@ SharedNv12CopyResult copy_decoded_surface_to_shared_nv12_planes(
                 0,
                 bridge->plane_blit_y_ps.Get(),
                 width,
-                height)) {
+                height,
+                uv_scale_x,
+                uv_scale_y)) {
             target.uv_mutex->ReleaseSync(0);
             target.y_mutex->ReleaseSync(0);
             return SharedNv12CopyResult::Fatal;
@@ -747,7 +957,9 @@ SharedNv12CopyResult copy_decoded_surface_to_shared_nv12_planes(
                 1,
                 bridge->plane_blit_uv_ps.Get(),
                 width / 2,
-                height / 2)) {
+                height / 2,
+                uv_scale_x,
+                uv_scale_y)) {
             target.uv_mutex->ReleaseSync(0);
             target.y_mutex->ReleaseSync(0);
             return SharedNv12CopyResult::Fatal;
@@ -1088,6 +1300,9 @@ AmfDecoderBridge* parties_amf_decoder_create(uint8_t codec, uint16_t width, uint
     bridge->decoder.on_decoded = [ptr = bridge.get()](const DecodedFrame& frame) { on_decoded(ptr, frame); };
 
     const VideoCodecId requested_codec = codec_from_u8(codec);
+    bridge->codec = requested_codec;
+    bridge->width = width;
+    bridge->height = height;
     if (!bridge->decoder.init(bridge->device.Get(), requested_codec, width, height)) {
         native_log_error("AMF decoder bridge init failed");
         return nullptr;
@@ -1141,10 +1356,22 @@ int parties_amf_decode_to_d3d12(
     uintptr_t,
     void* uv_handle,
     uintptr_t,
+    uint32_t adapter_luid_low,
+    int32_t adapter_luid_high,
     uint16_t width,
     uint16_t height) {
     if (!bridge || !data || len == 0 || !y_handle || !uv_handle || width == 0 || height == 0) {
         native_log_error("AMF decoder bridge DX12 decode rejected invalid input");
+        return -1;
+    }
+
+    LUID target_luid{};
+    target_luid.LowPart = adapter_luid_low;
+    target_luid.HighPart = adapter_luid_high;
+    if (!ensure_decoder_adapter_for_d3d12_target(bridge, target_luid)) {
+        native_log_error(
+            "AMF decoder bridge DX12 decode rejected renderer adapter LUID {}",
+            luid_text(target_luid));
         return -1;
     }
 

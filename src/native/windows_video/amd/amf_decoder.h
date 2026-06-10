@@ -22,6 +22,7 @@ public:
     ~AmfDecoder() override;
 
     bool init(ID3D11Device* device, VideoCodecId codec, uint32_t width, uint32_t height);
+    void shutdown();
 
     bool decode(const uint8_t* data, size_t len, int64_t timestamp) override;
     void flush() override;

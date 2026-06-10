@@ -23,6 +23,7 @@ use crate::{
         TextChannelInfo,
       },
       data::{ForwardedStreamAudioPacket, ForwardedVideoFrame, VideoControl, VideoFrame},
+      VideoCodecId,
     },
     server::{ReceivedAudioPacket, Server, ServerError},
   },
@@ -171,10 +172,11 @@ fn decode_video_packet(
     return Ok(None);
   }
 
-  if decoders
+  let decoder_needs_start = decoders
     .get(&packet.sender_id)
-    .is_none_or(|decoder| decoder.config() != &config)
-  {
+    .is_none_or(|decoder| decoder.config() != &config);
+  if decoder_needs_start {
+    decoders.remove(&packet.sender_id);
     match VideoDecoder::start(config.clone()) {
       Ok(decoder) => {
         let backend = decoder.backend();
@@ -272,10 +274,11 @@ fn decode_video_packet_to_dx12(
     return Some(false);
   }
 
-  if decoders
+  let decoder_needs_start = decoders
     .get(&packet.sender_id)
-    .is_none_or(|decoder| decoder.config() != &config)
-  {
+    .is_none_or(|decoder| decoder.config() != &config);
+  if decoder_needs_start {
+    decoders.remove(&packet.sender_id);
     match VideoDecoder::start(config.clone()) {
       Ok(decoder) => {
         let backend = decoder.backend();
@@ -298,7 +301,9 @@ fn decode_video_packet_to_dx12(
   }
 
   let decoder = decoders.get_mut(&packet.sender_id)?;
-  if decoder.backend() != crate::services::video::NativeVideoBackend::NvidiaNvdec {
+  let dx12_backend_allowed = decoder.backend() == crate::services::video::NativeVideoBackend::NvidiaNvdec
+    || (decoder.backend() == crate::services::video::NativeVideoBackend::AmdAmf && config.codec == VideoCodecId::H264);
+  if !dx12_backend_allowed {
     return None;
   }
 
@@ -340,10 +345,11 @@ fn decode_video_packet_to_shared_nv12_planes(
     return None;
   }
 
-  if decoders
+  let decoder_needs_start = decoders
     .get(&packet.sender_id)
-    .is_none_or(|decoder| decoder.config() != &config)
-  {
+    .is_none_or(|decoder| decoder.config() != &config);
+  if decoder_needs_start {
+    decoders.remove(&packet.sender_id);
     match VideoDecoder::start(config.clone()) {
       Ok(decoder) => {
         let backend = decoder.backend();
@@ -1994,26 +2000,28 @@ impl ServerSession {
         if let Some(user_id) = watched_user {
           awaiting_keyframes.insert(user_id);
           request_keyframe_for(user_id, "watch target changed");
-          if let Some(config) = self.video_decode_config_for_share(user_id)
-            && decoders.get(&user_id).is_none_or(|decoder| decoder.config() != &config)
-          {
-            match VideoDecoder::start(config.clone()) {
-              Ok(decoder) => {
-                let backend = decoder.backend();
-                tracing::info!(target: "video::decode",
-                  "[video:decode] decoder backend prewarmed for user {user_id}: backend={} codec={:?} size={}x{}",
-                  native_video_backend_label(backend),
-                  config.codec,
-                  config.width,
-                  config.height
-                );
-                decoders.insert(user_id, decoder);
-              }
-              Err(error) => {
-                let error = error.to_string();
-                tracing::warn!(target: "video::decode", "[video:decode] failed to prewarm decoder for user {user_id}: {error}");
-                if native_decoder_unavailable_error(&error) {
-                  self.set_video_error(user_id, native_decoder_unavailable_stream_error(error));
+          if let Some(config) = self.video_decode_config_for_share(user_id) {
+            let decoder_needs_start = decoders.get(&user_id).is_none_or(|decoder| decoder.config() != &config);
+            if decoder_needs_start {
+              decoders.remove(&user_id);
+              match VideoDecoder::start(config.clone()) {
+                Ok(decoder) => {
+                  let backend = decoder.backend();
+                  tracing::info!(target: "video::decode",
+                    "[video:decode] decoder backend prewarmed for user {user_id}: backend={} codec={:?} size={}x{}",
+                    native_video_backend_label(backend),
+                    config.codec,
+                    config.width,
+                    config.height
+                  );
+                  decoders.insert(user_id, decoder);
+                }
+                Err(error) => {
+                  let error = error.to_string();
+                  tracing::warn!(target: "video::decode", "[video:decode] failed to prewarm decoder for user {user_id}: {error}");
+                  if native_decoder_unavailable_error(&error) {
+                    self.set_video_error(user_id, native_decoder_unavailable_stream_error(error));
+                  }
                 }
               }
             }
@@ -2069,6 +2077,28 @@ impl ServerSession {
           awaiting_keyframes.remove(&packet.sender_id);
           awaiting_decoded_output.remove(&packet.sender_id);
           continue;
+        }
+
+        let packet_config = VideoDecodeConfig {
+          codec: packet.frame.codec,
+          width: packet.frame.width,
+          height: packet.frame.height,
+        };
+        if decoders
+          .get(&packet.sender_id)
+          .is_some_and(|decoder| decoder.config() != &packet_config)
+        {
+          decoders.remove(&packet.sender_id);
+          decoder_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          dx12_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          shared_nv12_planes_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          shared_nv12_planes_surfaces.retain(|(user_id, _, _), _| *user_id != packet.sender_id);
+          awaiting_decoded_output.remove(&packet.sender_id);
+          awaiting_keyframes.insert(packet.sender_id);
+          request_keyframe_for(packet.sender_id, "video decode config changed");
         }
 
         if awaiting_keyframes.contains(&packet.sender_id) {

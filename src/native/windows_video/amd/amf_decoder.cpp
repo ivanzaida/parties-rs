@@ -60,6 +60,10 @@ bool set_size(amf::AMFComponent* decoder, const wchar_t* property, uint32_t widt
 AmfDecoder::AmfDecoder() = default;
 
 AmfDecoder::~AmfDecoder() {
+    shutdown();
+}
+
+void AmfDecoder::shutdown() {
     if (decoder_) {
         decoder_->Drain();
         decoder_->Terminate();
@@ -82,8 +86,11 @@ AmfDecoder::~AmfDecoder() {
 }
 
 bool AmfDecoder::init(ID3D11Device* device, VideoCodecId codec, uint32_t width, uint32_t height) {
-    if (initialized_ || !device || width == 0 || height == 0) {
+    if (!device || width == 0 || height == 0) {
         return false;
+    }
+    if (initialized_) {
+        shutdown();
     }
 
     const AMF_RESULT init_result = g_AMFFactory.Init();
@@ -269,10 +276,11 @@ bool AmfDecoder::emit_surface(amf::AMFSurface* surface) {
         return false;
     }
 
-    const uint32_t width = static_cast<uint32_t>((std::max)(0, y->GetWidth()));
-    const uint32_t height = static_cast<uint32_t>((std::max)(0, y->GetHeight()));
-    if (width == 0 || height == 0 || (width & 1) != 0 || (height & 1) != 0) {
-        native_log_error("AMF decoder output surface has invalid size {}x{}", width, height);
+    const uint32_t source_width = static_cast<uint32_t>((std::max)(0, y->GetWidth()));
+    const uint32_t source_height = static_cast<uint32_t>((std::max)(0, y->GetHeight()));
+    if (source_width < width_ || source_height < height_ || width_ == 0 || height_ == 0 ||
+        (width_ & 1) != 0 || (height_ & 1) != 0) {
+        native_log_error("AMF decoder output surface has invalid size {}x{}", source_width, source_height);
         return false;
     }
 
@@ -282,8 +290,8 @@ bool AmfDecoder::emit_surface(amf::AMFSurface* surface) {
     frame.v_plane = nullptr;
     frame.y_stride = static_cast<uint32_t>(y->GetHPitch());
     frame.uv_stride = static_cast<uint32_t>(uv->GetHPitch());
-    frame.width = width;
-    frame.height = height;
+    frame.width = width_;
+    frame.height = height_;
     frame.timestamp = surface->GetPts();
     frame.nv12 = true;
 
@@ -376,10 +384,7 @@ bool AmfDecoder::map_readback_slot(ReadbackSlot& slot) {
     HRESULT hr = S_OK;
     {
         NativeProfileSpan map_span("native.amf.decode.dx11_map_readback");
-        hr = context_->Map(slot.texture.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
-    }
-    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
-        return true;
+        hr = context_->Map(slot.texture.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     }
     if (FAILED(hr) || !mapped.pData || mapped.RowPitch == 0) {
         native_log_error("AMF decoder readback texture map failed: {}", static_cast<int>(hr));
@@ -387,24 +392,25 @@ bool AmfDecoder::map_readback_slot(ReadbackSlot& slot) {
         return false;
     }
 
-    const uint32_t width = slot.width;
-    const uint32_t height = slot.height;
-    if (width == 0 || height == 0 || (width & 1) != 0 || (height & 1) != 0) {
+    const uint32_t source_width = slot.width;
+    const uint32_t source_height = slot.height;
+    if (source_width < width_ || source_height < height_ || width_ == 0 || height_ == 0 ||
+        (width_ & 1) != 0 || (height_ & 1) != 0) {
         context_->Unmap(slot.texture.Get(), 0);
         slot.pending = false;
-        native_log_error("AMF decoder DX11 output surface has invalid size {}x{}", width, height);
+        native_log_error("AMF decoder DX11 output surface has invalid size {}x{}", source_width, source_height);
         return false;
     }
 
     auto* bytes = static_cast<const uint8_t*>(mapped.pData);
     DecodedFrame frame{};
     frame.y_plane = bytes;
-    frame.u_plane = bytes + static_cast<size_t>(mapped.RowPitch) * height;
+    frame.u_plane = bytes + static_cast<size_t>(mapped.RowPitch) * source_height;
     frame.v_plane = nullptr;
     frame.y_stride = mapped.RowPitch;
     frame.uv_stride = mapped.RowPitch;
-    frame.width = width;
-    frame.height = height;
+    frame.width = width_;
+    frame.height = height_;
     frame.timestamp = slot.timestamp;
     frame.nv12 = true;
 
