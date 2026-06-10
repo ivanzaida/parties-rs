@@ -1,6 +1,5 @@
 use std::{
   ffi::{CStr, c_char, c_void},
-  mem::ManuallyDrop,
   ptr::{self, NonNull},
   sync::{
     Arc, Once,
@@ -26,29 +25,17 @@ use ::windows::{
         PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
       },
-      MediaFoundation::{
-        IMFActivate, IMFMediaBuffer, IMFMediaEventGenerator, IMFSample, IMFTransform, METransformHaveOutput,
-        METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
-        MF_EVENT_FLAG_NO_WAIT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-        MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType,
-        MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown, MFStartup,
-        MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ALL,
-        MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_LOCALMFT, MFT_ENUM_FLAG_SORTANDFILTER,
-        MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-        MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx,
-        MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-      },
       Multimedia::WAVE_FORMAT_IEEE_FLOAT,
     },
     System::{
       Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
         StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
       },
       Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
     },
   },
-  core::{Error as WindowsError, GUID, IUnknown, Interface, PCWSTR},
+  core::{IUnknown, Interface, PCWSTR},
 };
 use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as OpusChannels, Encoder as OpusEncoder};
 
@@ -65,16 +52,15 @@ use crate::{
     desktop_capture::{
       DesktopCaptureSource, DesktopCaptureSourceKind, find_window_process_id as find_desktop_window_process_id,
     },
-    logger, profiler,
+    profiler,
     screen_share_sources::ScreenShareSourceKind,
   },
 };
 
 #[allow(dead_code)]
-const BACKEND_ORDER: [NativeVideoBackend; 4] = [
+const BACKEND_ORDER: [NativeVideoBackend; 3] = [
   NativeVideoBackend::NvidiaNvenc,
   NativeVideoBackend::AmdAmf,
-  NativeVideoBackend::WindowsMediaFoundation,
   NativeVideoBackend::OpenH264,
 ];
 
@@ -86,6 +72,7 @@ const STREAM_AUDIO_FRAME_DURATION_100NS: i64 = 200_000;
 const STREAM_AUDIO_BITRATE: i32 = 64_000;
 const STREAM_AUDIO_MAX_PACKET_BYTES: usize = 1_275;
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
+const AMD_VENDOR_ID: u32 = 0x1002;
 
 #[repr(C)]
 struct NvdecBridge {
@@ -94,6 +81,16 @@ struct NvdecBridge {
 
 #[repr(C)]
 struct NvencBridge {
+  _private: [u8; 0],
+}
+
+#[repr(C)]
+struct AmfBridge {
+  _private: [u8; 0],
+}
+
+#[repr(C)]
+struct AmfDecoderBridge {
   _private: [u8; 0],
 }
 
@@ -133,7 +130,54 @@ unsafe extern "C" {
   fn parties_nvenc_encoded_ptr(bridge: *mut NvencBridge) -> *const u8;
   fn parties_nvenc_encoded_len(bridge: *mut NvencBridge) -> usize;
   fn parties_nvenc_encoded_keyframe(bridge: *mut NvencBridge) -> i32;
+  fn parties_amf_create(codec: u8, width: u16, height: u16, fps: u32, bitrate: u32) -> *mut AmfBridge;
+  fn parties_amf_destroy(bridge: *mut AmfBridge);
+  fn parties_amf_force_keyframe(bridge: *mut AmfBridge);
+  fn parties_amf_encode_bgra(bridge: *mut AmfBridge, bgra: *const u8, bgra_len: usize, timestamp: i64) -> i32;
+  fn parties_amf_encoded_ptr(bridge: *mut AmfBridge) -> *const u8;
+  fn parties_amf_encoded_len(bridge: *mut AmfBridge) -> usize;
+  fn parties_amf_encoded_keyframe(bridge: *mut AmfBridge) -> i32;
+  fn parties_amf_decoder_create(codec: u8, width: u16, height: u16) -> *mut AmfDecoderBridge;
+  fn parties_amf_decoder_destroy(bridge: *mut AmfDecoderBridge);
+  fn parties_amf_decode(
+    bridge: *mut AmfDecoderBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    nv12: *mut u8,
+    nv12_len: usize,
+  ) -> i32;
+  fn parties_amf_decode_to_d3d12(
+    bridge: *mut AmfDecoderBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    y_handle: usize,
+    y_size: u64,
+    uv_handle: usize,
+    uv_size: u64,
+    width: u16,
+    height: u16,
+  ) -> i32;
+  fn parties_amf_decode_to_shared_nv12(
+    bridge: *mut AmfDecoderBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    width: u16,
+    height: u16,
+    shared_handle_out: *mut usize,
+  ) -> i32;
   fn parties_gpu_stream_create(
+    source_kind: u8,
+    source_handle: usize,
+    codec: u8,
+    width: u16,
+    height: u16,
+    fps: u32,
+    bitrate: u32,
+  ) -> *mut GpuStreamBridge;
+  fn parties_amf_gpu_stream_create(
     source_kind: u8,
     source_handle: usize,
     codec: u8,
@@ -164,14 +208,13 @@ extern "C" fn native_log_callback(level: u8, message: *const c_char) {
   }
 
   let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
-  let level = match level {
-    0 => "debug",
-    1 => "info",
-    2 => "warn",
-    3 => "error",
-    _ => "unknown",
-  };
-  logger::log(&format!("[native/windows/{level}] {message}"));
+  match level {
+    0 => tracing::debug!(target: "native::windows", "[native/windows/debug] {message}"),
+    1 => tracing::info!(target: "native::windows", "[native/windows/info] {message}"),
+    2 => tracing::warn!(target: "native::windows", "[native/windows/warn] {message}"),
+    3 => tracing::error!(target: "native::windows", "[native/windows/error] {message}"),
+    _ => tracing::warn!(target: "native::windows", "[native/windows/unknown] {message}"),
+  }
 }
 
 pub(super) fn encode(
@@ -204,14 +247,14 @@ pub(super) fn encode(
         Some(ready_tx),
       ) {
         thread_stop.store(true, Ordering::Relaxed);
-        logger::log(&format!("[video/windows] broadcast loop stopped with error: {error}"));
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] broadcast loop stopped with error: {error}");
       }
     })
     .map_err(|error| VideoError::new(format!("Failed to start video broadcast thread: {error}")))?;
   let mut threads = Vec::with_capacity(if audio_enabled { 2 } else { 1 });
 
-  match ready_rx.recv() {
-    Ok(Ok(())) => {}
+  let backend = match ready_rx.recv() {
+    Ok(Ok(backend)) => backend,
     Ok(Err(error)) => {
       stop.store(true, Ordering::Relaxed);
       let _ = thread.join();
@@ -224,7 +267,7 @@ pub(super) fn encode(
         "Video broadcast thread exited before native encoder became ready.",
       ));
     }
-  }
+  };
 
   if audio_enabled {
     let audio_thread = match spawn_stream_audio_thread(server, Arc::clone(&stop), stream_audio_target) {
@@ -240,7 +283,7 @@ pub(super) fn encode(
   threads.push(thread);
 
   Ok(VideoBroadcast::from_parts_with_stop_and_keyframes(
-    NativeVideoBackend::WindowsMediaFoundation,
+    backend,
     stop,
     Some(keyframe_requests),
     threads,
@@ -249,44 +292,69 @@ pub(super) fn encode(
 
 pub(super) enum NativeVideoDecoder {
   Nvdec(NvdecVideoDecoder),
-  MediaFoundation(MediaFoundationVideoDecoder),
+  AmdAmf(AmdAmfVideoDecoder),
 }
 
 pub(super) struct NvdecVideoDecoder {
   handle: NonNull<NvdecBridge>,
 }
 
-pub(super) struct MediaFoundationVideoDecoder {
-  _mf: MediaFoundationSession,
-  transform: IMFTransform,
-  output_provides_samples: bool,
-  output_buffer_size: u32,
-  width: u16,
-  height: u16,
+pub(super) struct AmdAmfVideoDecoder {
+  handle: NonNull<AmfDecoderBridge>,
 }
 
 pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
   install_native_logger();
-  match NvdecVideoDecoder::new(&config) {
-    Ok(decoder) => {
-      logger::log(&format!(
-        "[video/windows] decoder ready through NVDEC: codec={:?} size={}x{}",
-        config.codec, config.width, config.height
-      ));
+  match windows_output_dxgi_adapter_vendor_id() {
+    Some(NVIDIA_VENDOR_ID) => {
+      let decoder = NvdecVideoDecoder::new(&config).map_err(|error| {
+        tracing::warn!(target: "video::decode::windows", "[video:decode/windows] NVDEC decoder unavailable and decoder fallback is disabled: {error}");
+        error
+      })?;
+      tracing::info!(target: "video::decode::windows",
+        "[video:decode/windows] decoder ready through NVDEC: codec={:?} size={}x{}",
+        config.codec,
+        config.width,
+        config.height
+      );
       Ok(VideoDecoder::from_windows(
         NativeVideoDecoder::Nvdec(decoder),
         config,
         NativeVideoBackend::NvidiaNvdec,
       ))
     }
-    Err(nvdec_error) => {
-      logger::log(&format!("[video/windows] NVDEC decoder unavailable: {nvdec_error}"));
-      let decoder = MediaFoundationVideoDecoder::new(&config)?;
+    Some(AMD_VENDOR_ID) => {
+      let decoder = AmdAmfVideoDecoder::new(&config).map_err(|error| {
+        tracing::warn!(target: "video::decode::windows", "[video:decode/windows] AMF decoder unavailable and decoder fallback is disabled: {error}");
+        error
+      })?;
+      tracing::info!(target: "video::decode::windows",
+        "[video:decode/windows] decoder ready through AMF: codec={:?} size={}x{}",
+        config.codec,
+        config.width,
+        config.height
+      );
       Ok(VideoDecoder::from_windows(
-        NativeVideoDecoder::MediaFoundation(decoder),
+        NativeVideoDecoder::AmdAmf(decoder),
         config,
-        NativeVideoBackend::WindowsMediaFoundation,
+        NativeVideoBackend::AmdAmf,
       ))
+    }
+    Some(vendor_id) => {
+      let error = VideoError::new(format!(
+        "Selected Windows GPU vendor_id=0x{vendor_id:04x} has no native decoder wired for {}.",
+        codec_label(config.codec)
+      ));
+      tracing::warn!(target: "video::decode::windows", "[video:decode/windows] refusing NVDEC because selected/output adapter is not NVIDIA: {error}");
+      Err(error)
+    }
+    None => {
+      let error = VideoError::new(format!(
+        "Failed to resolve selected Windows GPU; refusing decoder fallback for {}.",
+        codec_label(config.codec)
+      ));
+      tracing::warn!(target: "video::decode::windows", "[video:decode/windows] {error}");
+      Err(error)
     }
   }
 }
@@ -314,21 +382,22 @@ fn run_broadcast_loop(
   stop: Arc<AtomicBool>,
   keyframe_requests: Arc<AtomicU64>,
   loopback: Option<VideoFrameLoopback>,
-  ready: Option<mpsc::SyncSender<Result<(), String>>>,
+  ready: Option<mpsc::SyncSender<Result<NativeVideoBackend, String>>>,
 ) -> Result<(), VideoError> {
-  logger::log("[video/windows] creating native encoder");
+  tracing::info!(target: "video::encode::windows", "[video:encode/windows] creating native encoder");
   let mut config = config;
   let mut failed_encoder_labels = Vec::new();
   let setup = (|| -> Result<(BroadcastEncoder, Option<CaptureSource>), VideoError> {
     if matches!(config.source_kind, ScreenShareSourceKind::Webcam) {
-      logger::log("[video/windows] opening CPU capture source");
+      tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
       let source = CaptureSource::open(&config)?;
       if let Some(capture_fps) = source.capture_fps() {
         if capture_fps != config.fps {
-          logger::log(&format!(
-            "[video/windows] webcam fps adjusted to selected capture mode: requested={} selected={}",
-            config.fps, capture_fps
-          ));
+          tracing::info!(target: "video::encode::windows",
+            "[video:encode/windows] webcam fps adjusted to selected capture mode: requested={} selected={}",
+            config.fps,
+            capture_fps
+          );
           config.fps = capture_fps;
         }
       }
@@ -342,7 +411,7 @@ fn run_broadcast_loop(
     let source = if encoder.owns_capture() {
       None
     } else {
-      logger::log("[video/windows] opening CPU capture source");
+      tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
       Some(CaptureSource::open(&config)?)
     };
     Ok((encoder, source))
@@ -350,7 +419,7 @@ fn run_broadcast_loop(
   let (mut encoder, mut source) = match setup {
     Ok(setup) => {
       if let Some(ready) = ready {
-        let _ = ready.send(Ok(()));
+        let _ = ready.send(Ok(setup.0.backend()));
       }
       setup
     }
@@ -375,7 +444,7 @@ fn run_broadcast_loop(
     if requested_keyframes != handled_keyframe_requests {
       handled_keyframe_requests = requested_keyframes;
       encoder.force_keyframe();
-      logger::log("[video/windows] keyframe requested by PLI");
+      tracing::debug!(target: "video::encode::windows", "[video:encode/windows] keyframe requested by PLI");
     }
     let timestamp_100ns = started_at.elapsed().as_nanos().saturating_div(100) as i64;
     let timestamp_ms = started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
@@ -395,15 +464,15 @@ fn run_broadcast_loop(
       Ok(samples) => samples,
       Err(error) => {
         let failed_backend = encoder.backend_label().to_owned();
-        logger::log(&format!(
-          "[video/windows] encoder backend failed at runtime: backend={failed_backend} error={error}; trying fallback"
-        ));
+        tracing::warn!(target: "video::encode::windows",
+          "[video:encode/windows] encoder backend failed at runtime: backend={failed_backend} error={error}; trying fallback"
+        );
         failed_encoder_labels.push(failed_backend);
         drop(encoder);
         encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
         log_encoder_ready(&encoder, &config);
         if !encoder.owns_capture() && source.is_none() {
-          logger::log("[video/windows] opening CPU capture source");
+          tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
           source = Some(CaptureSource::open(&config)?);
         }
         frame_number = 0;
@@ -450,10 +519,11 @@ fn run_broadcast_loop(
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
-          logger::log(&format!(
-            "[video/windows] dropped live video frame before network queue: frame={} total_dropped={}",
-            frame_number, dropped_live_frames
-          ));
+          tracing::info!(target: "video::encode::windows",
+            "[video:encode/windows] dropped live video frame before network queue: frame={} total_dropped={}",
+            frame_number,
+            dropped_live_frames
+          );
         }
         continue;
       }
@@ -461,24 +531,27 @@ fn run_broadcast_loop(
         loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
-        logger::log("[video/windows] live video datagrams unavailable or too large; using reliable stream fallback");
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] live video datagrams unavailable or too large; using reliable stream fallback");
         logged_stream_fallback = true;
       }
       if !logged_first_frame {
-        logger::log(&format!(
-          "[video/windows] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?} bitstream={}",
+        tracing::info!(target: "video::encode::windows",
+          "[video:encode/windows] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?} bitstream={}",
           frame_number,
           sample_len,
           sample_keyframe,
           send_result,
           sample_probe.unwrap_or_else(|| "unavailable".to_owned())
-        ));
+        );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        logger::log(&format!(
-          "[video/windows] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
-          frame_number, sample_len, sample_keyframe, send_result
-        ));
+        tracing::info!(target: "video::encode::windows",
+          "[video:encode/windows] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
+          frame_number,
+          sample_len,
+          sample_keyframe,
+          send_result
+        );
       }
     }
 
@@ -493,13 +566,13 @@ fn run_broadcast_loop(
     }
   }
 
-  logger::log("[video/windows] broadcast loop stopped by request");
+  tracing::info!(target: "video::encode::windows", "[video:encode/windows] broadcast loop stopped by request");
   Ok(())
 }
 
 fn log_encoder_ready(encoder: &BroadcastEncoder, config: &VideoBroadcastConfig) {
-  logger::log(&format!(
-    "[video/windows] encoder ready: backend={} codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
+  tracing::info!(target: "video::encode::windows",
+    "[video:encode/windows] encoder ready: backend={} codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
     encoder.backend_label(),
     config.codec,
     config.source_width,
@@ -508,7 +581,7 @@ fn log_encoder_ready(encoder: &BroadcastEncoder, config: &VideoBroadcastConfig) 
     config.output_height,
     config.fps,
     config.bitrate_kbps
-  ));
+  );
 }
 
 fn bitstream_probe(bytes: &[u8]) -> String {
@@ -555,17 +628,17 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
   match config.source_kind {
     ScreenShareSourceKind::Window => match find_window_process_id(config.source_id) {
       Ok(process_id) => {
-        logger::log(&format!(
-          "[audio/windows] selected window audio target: window={} pid={process_id}",
+        tracing::info!(target: "audio::encode::windows",
+          "[audio:encode/windows] selected window audio target: window={} pid={process_id}",
           config.source_id
-        ));
+        );
         StreamAudioCaptureTarget::IncludeProcess(process_id)
       }
       Err(error) => {
-        logger::log(&format!(
-          "[audio/windows] could not resolve selected window pid; using default output loopback: window={} error={error}",
+        tracing::warn!(target: "audio::encode::windows",
+          "[audio:encode/windows] could not resolve selected window pid; using default output loopback: window={} error={error}",
           config.source_id
-        ));
+        );
         StreamAudioCaptureTarget::DefaultOutput
       }
     },
@@ -590,9 +663,7 @@ fn spawn_stream_audio_thread(
     .name("parties-stream-audio-windows".to_owned())
     .spawn(move || {
       if let Err(error) = run_stream_audio_loop(server, stop, target) {
-        logger::log(&format!(
-          "[audio/windows] stream audio capture stopped with error: {error}"
-        ));
+        tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture stopped with error: {error}");
       }
     })
     .map_err(|error| VideoError::new(format!("Failed to start stream audio capture thread: {error}")))
@@ -603,7 +674,7 @@ fn run_stream_audio_loop(
   stop: Arc<AtomicBool>,
   target: StreamAudioCaptureTarget,
 ) -> Result<(), VideoError> {
-  logger::log(&format!("[audio/windows] opening {}", target.label()));
+  tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] opening {}", target.label());
   let _com = ComSession::start("stream audio")?;
   let capture = WasapiLoopbackCapture::open(target)?;
   let mut encoder = OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
@@ -623,7 +694,7 @@ fn run_stream_audio_loop(
       .map_err(|error| VideoError::new(format!("Failed to start stream audio capture: {error}")))?;
   }
 
-  logger::log("[audio/windows] stream audio capture started");
+  tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture started");
   while !stop.load(Ordering::Relaxed) {
     let wait = unsafe { WaitForSingleObject(capture.event, 100) };
     if wait == WAIT_TIMEOUT {
@@ -642,7 +713,7 @@ fn run_stream_audio_loop(
     )?;
   }
 
-  logger::log("[audio/windows] stream audio capture stopped by request");
+  tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture stopped by request");
   Ok(())
 }
 
@@ -756,9 +827,7 @@ fn flush_stream_audio_frame_if_ready(
   pcm_frame.clear();
 
   if !*logged_first_packet {
-    logger::log(&format!(
-      "[audio/windows] first stream audio packet sent: bytes={packet_len}"
-    ));
+    tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] first stream audio packet sent: bytes={packet_len}");
     *logged_first_packet = true;
   }
 
@@ -832,15 +901,13 @@ fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioCl
 
   match activate_process_loopback_client(process_id, mode) {
     Ok(audio_client) => {
-      logger::log(&format!(
-        "[audio/windows] process loopback capture activated: mode={mode_label} pid={process_id}"
-      ));
+      tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] process loopback capture activated: mode={mode_label} pid={process_id}");
       Ok(audio_client)
     }
     Err(error) => {
-      logger::log(&format!(
-        "[audio/windows] process loopback unavailable; falling back to default output loopback: mode={mode_label} pid={process_id} error={error}"
-      ));
+      tracing::warn!(target: "audio::encode::windows",
+        "[audio:encode/windows] process loopback unavailable; falling back to default output loopback: mode={mode_label} pid={process_id} error={error}"
+      );
       activate_default_render_loopback_client()
     }
   }
@@ -861,7 +928,7 @@ fn activate_default_render_loopback_client() -> Result<IAudioClient, VideoError>
       .Activate::<IAudioClient>(CLSCTX_ALL, None)
       .map_err(|error| VideoError::new(format!("Failed to activate default output loopback capture: {error}")))?
   };
-  logger::log("[audio/windows] default output loopback capture activated");
+  tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] default output loopback capture activated");
   Ok(audio_client)
 }
 
@@ -1054,11 +1121,17 @@ fn normalize_rgba_frame(
 
 enum BroadcastEncoder {
   GpuNvenc(GpuNvencStreamEncoder),
+  GpuAmf(GpuAmfStreamEncoder),
   Nvenc(NvencVideoEncoder),
-  Mft(MftEncoder),
+  AmdAmf(AmdAmfVideoEncoder),
 }
 
 struct GpuNvencStreamEncoder {
+  handle: NonNull<GpuStreamBridge>,
+  backend_label: String,
+}
+
+struct GpuAmfStreamEncoder {
   handle: NonNull<GpuStreamBridge>,
   backend_label: String,
 }
@@ -1068,16 +1141,8 @@ struct NvencVideoEncoder {
   backend_label: String,
 }
 
-struct MftEncoder {
-  _mf: MediaFoundationSession,
-  transform: IMFTransform,
-  event_generator: Option<IMFMediaEventGenerator>,
-  output_provides_samples: bool,
-  output_buffer_size: u32,
-  frame_duration_100ns: i64,
-  pending_input_requests: u32,
-  pending_output_requests: u32,
-  sent_first_sample: bool,
+struct AmdAmfVideoEncoder {
+  handle: NonNull<AmfBridge>,
   backend_label: String,
 }
 
@@ -1088,39 +1153,107 @@ struct EncodedSample {
 
 impl BroadcastEncoder {
   fn new_excluding(config: &VideoBroadcastConfig, excluded_labels: &[String]) -> Result<Self, VideoError> {
-    let nvidia_available = has_nvidia_adapter().unwrap_or(true);
+    let output_adapter_vendor_id = windows_output_dxgi_adapter_vendor_id();
+    let nvidia_output_adapter = output_adapter_vendor_id == Some(NVIDIA_VENDOR_ID);
+    let amd_output_adapter = output_adapter_vendor_id == Some(AMD_VENDOR_ID);
+    let nvidia_available = nvidia_output_adapter && has_nvidia_adapter().unwrap_or(true);
+    let amd_available = amd_output_adapter && has_amd_adapter().unwrap_or(true);
+    let gpu_capture_source = matches!(
+      config.source_kind,
+      ScreenShareSourceKind::Screen | ScreenShareSourceKind::Window
+    );
 
-    if nvidia_available && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
+    if nvidia_available && nvidia_output_adapter && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC")
+    {
       match GpuNvencStreamEncoder::new(config) {
         Ok(encoder) => return Ok(Self::GpuNvenc(encoder)),
-        Err(error) => logger::log(&format!("[video/windows] GPU capture + NVENC unavailable: {error}")),
+        Err(error) => {
+          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] GPU capture + NVENC unavailable: {error}")
+        }
       }
+    } else if !nvidia_output_adapter && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
+      tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping GPU capture + NVENC");
     } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
-      logger::log("[video/windows] NVIDIA adapter not detected; skipping GPU capture + NVENC");
+      tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping GPU capture + NVENC");
     }
 
     if nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
       match NvencVideoEncoder::new(config) {
         Ok(encoder) => return Ok(Self::Nvenc(encoder)),
-        Err(error) => logger::log(&format!("[video/windows] NVENC unavailable: {error}")),
+        Err(error) => {
+          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVENC unavailable: {error}")
+        }
       }
     } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
-      logger::log("[video/windows] NVIDIA adapter not detected; skipping NVENC");
+      if nvidia_output_adapter {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping NVENC");
+      } else {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping NVENC");
+      }
     }
 
-    Ok(Self::Mft(MftEncoder::new_excluding(config, excluded_labels)?))
+    if amd_available && gpu_capture_source && !excluded_labels.iter().any(|label| label == "GPU capture + AMF") {
+      match GpuAmfStreamEncoder::new(config) {
+        Ok(encoder) => return Ok(Self::GpuAmf(encoder)),
+        Err(error) => {
+          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] GPU capture + AMF unavailable and CPU desktop capture fallback is disabled: {error}");
+          return Err(error);
+        }
+      }
+    } else if amd_available && gpu_capture_source && excluded_labels.iter().any(|label| label == "GPU capture + AMF") {
+      return Err(VideoError::new(
+        "GPU capture + AMF failed and CPU desktop capture fallback is disabled for AMD screen/window streams.",
+      ));
+    } else if !amd_available && gpu_capture_source && !excluded_labels.iter().any(|label| label == "GPU capture + AMF")
+    {
+      if amd_output_adapter {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping GPU capture + AMF");
+      } else {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping GPU capture + AMF");
+      }
+    }
+
+    if amd_available && !excluded_labels.iter().any(|label| label == "AMF") {
+      match AmdAmfVideoEncoder::new(config) {
+        Ok(encoder) => return Ok(Self::AmdAmf(encoder)),
+        Err(error) => {
+          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMF unavailable: {error}")
+        }
+      }
+    } else if !amd_available && !excluded_labels.iter().any(|label| label == "AMF") {
+      if amd_output_adapter {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping AMF");
+      } else {
+        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping AMF");
+      }
+    }
+
+    Err(VideoError::new(format!(
+      "No native Windows hardware encoder is available for {} at {}x{}.",
+      codec_label(config.codec),
+      config.output_width,
+      config.output_height
+    )))
   }
 
   fn backend_label(&self) -> &str {
     match self {
       Self::GpuNvenc(encoder) => &encoder.backend_label,
+      Self::GpuAmf(encoder) => &encoder.backend_label,
       Self::Nvenc(encoder) => &encoder.backend_label,
-      Self::Mft(encoder) => &encoder.backend_label,
+      Self::AmdAmf(encoder) => &encoder.backend_label,
+    }
+  }
+
+  fn backend(&self) -> NativeVideoBackend {
+    match self {
+      Self::GpuNvenc(_) | Self::Nvenc(_) => NativeVideoBackend::NvidiaNvenc,
+      Self::GpuAmf(_) | Self::AmdAmf(_) => NativeVideoBackend::AmdAmf,
     }
   }
 
   fn owns_capture(&self) -> bool {
-    matches!(self, Self::GpuNvenc(_))
+    matches!(self, Self::GpuNvenc(_) | Self::GpuAmf(_))
   }
 
   fn encode(
@@ -1128,24 +1261,24 @@ impl BroadcastEncoder {
     rgba: &[u8],
     frame_number: u32,
     timestamp_100ns: i64,
-    config: &VideoBroadcastConfig,
+    _config: &VideoBroadcastConfig,
   ) -> Result<Vec<EncodedSample>, VideoError> {
     match self {
       Self::GpuNvenc(encoder) => {
         let _span = profiler::span("video.encode.gpu_nvenc");
         encoder.poll(frame_number)
       }
+      Self::GpuAmf(encoder) => {
+        let _span = profiler::span("video.encode.gpu_amf");
+        encoder.poll(frame_number)
+      }
       Self::Nvenc(encoder) => {
         let _span = profiler::span("video.encode.nvenc");
         encoder.encode(rgba, frame_number, timestamp_100ns)
       }
-      Self::Mft(encoder) => {
-        let nv12 = {
-          let _span = profiler::span("video.convert.rgba_to_nv12");
-          rgba_to_nv12(rgba, config.output_width, config.output_height)?
-        };
-        let _span = profiler::span("video.encode.mft");
-        encoder.encode(&nv12, frame_number, timestamp_100ns)
+      Self::AmdAmf(encoder) => {
+        let _span = profiler::span("video.encode.amf");
+        encoder.encode(rgba, frame_number, timestamp_100ns)
       }
     }
   }
@@ -1153,13 +1286,41 @@ impl BroadcastEncoder {
   fn force_keyframe(&mut self) {
     match self {
       Self::GpuNvenc(encoder) => encoder.force_keyframe(),
+      Self::GpuAmf(encoder) => encoder.force_keyframe(),
       Self::Nvenc(encoder) => encoder.force_keyframe(),
-      Self::Mft(_) => {}
+      Self::AmdAmf(encoder) => encoder.force_keyframe(),
     }
   }
 }
 
 fn has_nvidia_adapter() -> Option<bool> {
+  has_dxgi_adapter_with_vendor(NVIDIA_VENDOR_ID)
+}
+
+fn has_amd_adapter() -> Option<bool> {
+  has_dxgi_adapter_with_vendor(AMD_VENDOR_ID)
+}
+
+fn windows_output_dxgi_adapter_vendor_id() -> Option<u32> {
+  let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+    return None;
+  };
+  let mut index = 0;
+  loop {
+    let adapter = match unsafe { factory.EnumAdapters1(index) } {
+      Ok(adapter) => adapter,
+      Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => return None,
+      Err(_) => return None,
+    };
+    let has_output = unsafe { adapter.EnumOutputs(0) }.is_ok();
+    if has_output {
+      return unsafe { adapter.GetDesc1() }.ok().map(|desc| desc.VendorId);
+    }
+    index += 1;
+  }
+}
+
+fn has_dxgi_adapter_with_vendor(vendor_id: u32) -> Option<bool> {
   let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
     return None;
   };
@@ -1172,7 +1333,7 @@ fn has_nvidia_adapter() -> Option<bool> {
       Err(_) => return None,
     };
     if let Ok(desc) = unsafe { adapter.GetDesc1() }
-      && desc.VendorId == NVIDIA_VENDOR_ID
+      && desc.VendorId == vendor_id
     {
       return Some(true);
     }
@@ -1258,6 +1419,84 @@ impl Drop for GpuNvencStreamEncoder {
   }
 }
 
+impl GpuAmfStreamEncoder {
+  fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let source_kind = match config.source_kind {
+      ScreenShareSourceKind::Screen => 0,
+      ScreenShareSourceKind::Window => 1,
+      ScreenShareSourceKind::Webcam => {
+        return Err(VideoError::new(
+          "GPU capture + AMF is only available for screen and window sources.",
+        ));
+      }
+    };
+    let handle = {
+      let _span = profiler::span("video.ffi.gpu_amf_stream_create");
+      unsafe {
+        parties_amf_gpu_stream_create(
+          source_kind,
+          config.source_id as usize,
+          config.codec as u8,
+          config.output_width,
+          config.output_height,
+          config.fps.max(1),
+          config.bitrate_kbps.saturating_mul(1000),
+        )
+      }
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "GPU capture + AMF failed for source {:?}/{} at {}x{}.",
+        config.source_kind, config.source_id, config.output_width, config.output_height
+      ))
+    })?;
+    Ok(Self {
+      handle,
+      backend_label: "GPU capture + AMF".to_owned(),
+    })
+  }
+
+  fn poll(&mut self, _frame_number: u32) -> Result<Vec<EncodedSample>, VideoError> {
+    let result = {
+      let _span = profiler::span("video.ffi.gpu_amf_stream_poll");
+      unsafe { parties_gpu_stream_poll(self.handle.as_ptr()) }
+    };
+    if result < 0 {
+      return Err(VideoError::new(
+        "GPU capture + AMF failed while polling encoded frames.",
+      ));
+    }
+    if result == 0 {
+      return Ok(Vec::new());
+    }
+
+    let _span = profiler::span("video.ffi.gpu_amf_stream_read_encoded");
+    let len = unsafe { parties_gpu_stream_encoded_len(self.handle.as_ptr()) };
+    let ptr = unsafe { parties_gpu_stream_encoded_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() || len == 0 {
+      return Ok(Vec::new());
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    let keyframe = unsafe { parties_gpu_stream_encoded_keyframe(self.handle.as_ptr()) != 0 };
+    Ok(vec![EncodedSample { bytes, keyframe }])
+  }
+
+  fn force_keyframe(&mut self) {
+    unsafe {
+      parties_gpu_stream_force_keyframe(self.handle.as_ptr());
+    }
+  }
+}
+
+impl Drop for GpuAmfStreamEncoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_gpu_stream_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
 impl NvencVideoEncoder {
   fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
     let handle = {
@@ -1334,186 +1573,78 @@ impl Drop for NvencVideoEncoder {
   }
 }
 
-impl MftEncoder {
-  fn new_excluding(config: &VideoBroadcastConfig, excluded_labels: &[String]) -> Result<Self, VideoError> {
-    let mf = MediaFoundationSession::start()?;
-    let output_type = create_video_type(
-      codec_subtype(config.codec)?,
-      config.output_width,
-      config.output_height,
-      config.fps,
-      Some(config.bitrate_kbps.saturating_mul(1000)),
-    )?;
-    let input_type = create_video_type(
-      MFVideoFormat_NV12,
-      config.output_width,
-      config.output_height,
-      config.fps,
-      None,
-    )?;
-    let configured = activate_configured_encoder_transform(config.codec, &output_type, &input_type, excluded_labels)?;
-
+impl AmdAmfVideoEncoder {
+  fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
+    let handle = {
+      let _span = profiler::span("video.ffi.amf_create");
+      unsafe {
+        parties_amf_create(
+          config.codec as u8,
+          config.output_width,
+          config.output_height,
+          config.fps.max(1),
+          config.bitrate_kbps.saturating_mul(1000),
+        )
+      }
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "No AMD AMF encoder is available for {} at {}x{}.",
+        codec_label(config.codec),
+        config.output_width,
+        config.output_height
+      ))
+    })?;
     Ok(Self {
-      _mf: mf,
-      transform: configured.transform,
-      event_generator: configured.event_generator,
-      output_provides_samples: configured.output_provides_samples,
-      output_buffer_size: configured.output_buffer_size,
-      frame_duration_100ns: 10_000_000i64 / i64::from(config.fps.max(1)),
-      pending_input_requests: 0,
-      pending_output_requests: 0,
-      sent_first_sample: false,
-      backend_label: configured.label,
+      handle,
+      backend_label: "AMF".to_owned(),
     })
   }
 
-  fn encode(&mut self, nv12: &[u8], frame_number: u32, timestamp_100ns: i64) -> Result<Vec<EncodedSample>, VideoError> {
-    if self.event_generator.is_some() {
-      return self.encode_async(nv12, frame_number, timestamp_100ns);
-    }
-    self.encode_sync(nv12, frame_number, timestamp_100ns)
-  }
-
-  fn encode_sync(
+  fn encode(
     &mut self,
-    nv12: &[u8],
-    frame_number: u32,
+    rgba: &[u8],
+    _frame_number: u32,
     timestamp_100ns: i64,
   ) -> Result<Vec<EncodedSample>, VideoError> {
-    let input = sample_from_bytes(nv12, timestamp_100ns, self.frame_duration_100ns)?;
+    let bgra = {
+      let _span = profiler::span("video.convert.rgba_to_bgra");
+      rgba_to_bgra(rgba)?
+    };
+    let result = {
+      let _span = profiler::span("video.ffi.amf_encode_bgra");
+      unsafe { parties_amf_encode_bgra(self.handle.as_ptr(), bgra.as_ptr(), bgra.len(), timestamp_100ns) }
+    };
+    if result < 0 {
+      return Err(VideoError::new("AMF failed to encode frame."));
+    }
+    if result == 0 {
+      return Ok(Vec::new());
+    }
+
+    let _span = profiler::span("video.ffi.amf_read_encoded");
+    let len = unsafe { parties_amf_encoded_len(self.handle.as_ptr()) };
+    let ptr = unsafe { parties_amf_encoded_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() || len == 0 {
+      return Ok(Vec::new());
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    let keyframe = unsafe { parties_amf_encoded_keyframe(self.handle.as_ptr()) != 0 };
+    Ok(vec![EncodedSample { bytes, keyframe }])
+  }
+
+  fn force_keyframe(&mut self) {
     unsafe {
-      self
-        .transform
-        .ProcessInput(0, &input, 0)
-        .map_err(|error| VideoError::new(format!("Failed to submit encoder input frame: {error}")))?;
+      parties_amf_force_keyframe(self.handle.as_ptr());
     }
-
-    let mut samples = Vec::new();
-    loop {
-      let Some(sample) = self.process_output()? else {
-        break;
-      };
-      let bytes = bytes_from_sample(&sample)?;
-      if bytes.is_empty() {
-        continue;
-      }
-      let keyframe = !self.sent_first_sample || frame_number == 0;
-      self.sent_first_sample = true;
-      samples.push(EncodedSample { bytes, keyframe });
-    }
-
-    Ok(samples)
   }
+}
 
-  fn encode_async(
-    &mut self,
-    nv12: &[u8],
-    frame_number: u32,
-    timestamp_100ns: i64,
-  ) -> Result<Vec<EncodedSample>, VideoError> {
-    self.collect_async_events()?;
-    let mut samples = self.drain_async_outputs(frame_number)?;
-
-    if self.pending_input_requests > 0 {
-      let input = sample_from_bytes(nv12, timestamp_100ns, self.frame_duration_100ns)?;
-      unsafe {
-        self
-          .transform
-          .ProcessInput(0, &input, 0)
-          .map_err(|error| VideoError::new(format!("Failed to submit async encoder input frame: {error}")))?;
-      }
-      self.pending_input_requests = self.pending_input_requests.saturating_sub(1);
-    }
-
-    self.collect_async_events()?;
-    samples.extend(self.drain_async_outputs(frame_number)?);
-    Ok(samples)
-  }
-
-  fn collect_async_events(&mut self) -> Result<(), VideoError> {
-    let Some(event_generator) = &self.event_generator else {
-      return Ok(());
-    };
-
-    loop {
-      let event = match unsafe { event_generator.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-        Ok(event) => event,
-        Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
-        Err(error) => return Err(VideoError::new(format!("Failed to read async encoder event: {error}"))),
-      };
-      let status = unsafe { event.GetStatus() }
-        .map_err(|error| VideoError::new(format!("Failed to query async encoder event status: {error}")))?;
-      status
-        .ok()
-        .map_err(|error| VideoError::new(format!("Async encoder event failed: {error}")))?;
-      let event_type = unsafe { event.GetType() }
-        .map_err(|error| VideoError::new(format!("Failed to query async encoder event type: {error}")))?;
-
-      if event_type == METransformNeedInput.0 as u32 {
-        self.pending_input_requests = self.pending_input_requests.saturating_add(1);
-      } else if event_type == METransformHaveOutput.0 as u32 {
-        self.pending_output_requests = self.pending_output_requests.saturating_add(1);
-      }
-    }
-
-    Ok(())
-  }
-
-  fn drain_async_outputs(&mut self, frame_number: u32) -> Result<Vec<EncodedSample>, VideoError> {
-    let mut samples = Vec::new();
-    while self.pending_output_requests > 0 {
-      self.pending_output_requests -= 1;
-      let Some(sample) = self.process_output()? else {
-        continue;
-      };
-      let bytes = bytes_from_sample(&sample)?;
-      if bytes.is_empty() {
-        continue;
-      }
-      let keyframe = !self.sent_first_sample || frame_number == 0;
-      self.sent_first_sample = true;
-      samples.push(EncodedSample { bytes, keyframe });
-    }
-    Ok(samples)
-  }
-
-  fn process_output(&mut self) -> Result<Option<IMFSample>, VideoError> {
-    let mut output = MFT_OUTPUT_DATA_BUFFER::default();
-    if !self.output_provides_samples {
-      output.pSample = ManuallyDrop::new(Some(create_empty_output_sample(self.output_buffer_size)?));
-    }
-
-    let mut status = 0u32;
-    let result = unsafe {
-      self
-        .transform
-        .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
-    };
-
-    match result {
-      Ok(()) => {
-        let sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
-        let events = unsafe { ManuallyDrop::take(&mut output.pEvents) };
-        drop(events);
-        Ok(sample)
-      }
-      Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
-        unsafe {
-          drop(ManuallyDrop::take(&mut output.pSample));
-          drop(ManuallyDrop::take(&mut output.pEvents));
-        }
-        Ok(None)
-      }
-      Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => Err(VideoError::new(
-        "Encoder output stream changed; dynamic video format changes are not wired yet.",
-      )),
-      Err(error) => {
-        unsafe {
-          drop(ManuallyDrop::take(&mut output.pSample));
-          drop(ManuallyDrop::take(&mut output.pEvents));
-        }
-        Err(VideoError::new(format!("Failed to read encoder output: {error}")))
-      }
+impl Drop for AmdAmfVideoEncoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_amf_destroy(self.handle.as_ptr());
     }
   }
 }
@@ -1527,7 +1658,7 @@ impl NativeVideoDecoder {
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
     match self {
       Self::Nvdec(decoder) => decoder.decode_frame(frame, output, output_buffer),
-      Self::MediaFoundation(decoder) => decoder.decode_frame(frame, output, output_buffer),
+      Self::AmdAmf(decoder) => decoder.decode_frame(frame, output, output_buffer),
     }
   }
 
@@ -1538,8 +1669,170 @@ impl NativeVideoDecoder {
   ) -> Result<bool, VideoError> {
     match self {
       Self::Nvdec(decoder) => decoder.decode_frame_to_dx12(frame, surface),
-      Self::MediaFoundation(_) => Ok(false),
+      Self::AmdAmf(decoder) => decoder.decode_frame_to_dx12(frame, surface),
     }
+  }
+
+  pub(super) fn decode_frame_to_shared_nv12_handle(&mut self, frame: &VideoFrame) -> Result<Option<usize>, VideoError> {
+    match self {
+      Self::Nvdec(_) => Ok(None),
+      Self::AmdAmf(decoder) => decoder.decode_frame_to_shared_nv12_handle(frame),
+    }
+  }
+}
+
+impl AmdAmfVideoDecoder {
+  fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
+    let handle = {
+      let _span = profiler::span("video.ffi.amf_decoder_create");
+      unsafe { parties_amf_decoder_create(config.codec as u8, config.width, config.height) }
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "No AMD AMF decoder is available for {} at {}x{}.",
+        codec_label(config.codec),
+        config.width,
+        config.height
+      ))
+    })?;
+    Ok(Self { handle })
+  }
+
+  fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    let nv12_len = nv12_len(frame.width, frame.height)?;
+    let mut nv12 = {
+      let _span = profiler::span("video.decode.amf_prepare_output");
+      if output {
+        let mut buffer = output_buffer.unwrap_or_default();
+        if buffer.capacity() < nv12_len {
+          buffer = Vec::with_capacity(nv12_len);
+        }
+        buffer
+      } else {
+        Vec::new()
+      }
+    };
+    let (nv12_ptr, nv12_len) = if output {
+      (nv12.as_mut_ptr().cast::<u8>(), nv12_len)
+    } else {
+      (ptr::null_mut(), 0)
+    };
+    let status = {
+      let _span = profiler::span("video.ffi.amf_decode");
+      unsafe {
+        parties_amf_decode(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          nv12_ptr,
+          nv12_len,
+        )
+      }
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "AMD AMF failed to decode {} frame {}.",
+        codec_label(frame.codec),
+        frame.frame_number
+      )));
+    }
+
+    if status == 0 || !output {
+      return Ok(None);
+    }
+
+    unsafe {
+      let _span = profiler::span("video.decode.amf_commit_output");
+      nv12.set_len(nv12_len);
+    }
+    Ok(Some(NativeDecodedVideoFrame {
+      format: DecodedVideoPixelFormat::Nv12,
+      pixels: nv12,
+      native_image: None,
+    }))
+  }
+}
+
+impl Drop for AmdAmfVideoDecoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_amf_decoder_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
+impl AmdAmfVideoDecoder {
+  fn decode_frame_to_shared_nv12_handle(&mut self, frame: &VideoFrame) -> Result<Option<usize>, VideoError> {
+    let mut shared_handle = 0usize;
+    let status = {
+      let _span = profiler::span("video.ffi.amf_decode_to_shared_nv12");
+      unsafe {
+        parties_amf_decode_to_shared_nv12(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          frame.width,
+          frame.height,
+          &mut shared_handle,
+        )
+      }
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "AMD AMF failed to decode {} frame {} into shared NV12 texture.",
+        codec_label(frame.codec),
+        frame.frame_number
+      )));
+    }
+
+    if status == 0 || shared_handle == 0 {
+      return Ok(None);
+    }
+
+    Ok(Some(shared_handle))
+  }
+
+  fn decode_frame_to_dx12(
+    &mut self,
+    frame: &VideoFrame,
+    surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+  ) -> Result<bool, VideoError> {
+    let status = {
+      let _span = profiler::span("video.ffi.amf_decode_to_d3d12");
+      unsafe {
+        parties_amf_decode_to_d3d12(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          surface.y_shared_handle_raw() as usize,
+          surface.y_allocation_size(),
+          surface.uv_shared_handle_raw() as usize,
+          surface.uv_allocation_size(),
+          frame.width,
+          frame.height,
+        )
+      }
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "AMD AMF failed to decode {} frame {} into DX12 surface.",
+        codec_label(frame.codec),
+        frame.frame_number
+      )));
+    }
+
+    Ok(status > 0)
   }
 }
 
@@ -1658,464 +1951,6 @@ impl Drop for NvdecVideoDecoder {
   }
 }
 
-impl MediaFoundationVideoDecoder {
-  fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
-    let mf = MediaFoundationSession::start()?;
-    let transform = activate_decoder_transform(config.codec)?;
-    let input_type = create_video_type(codec_subtype(config.codec)?, config.width, config.height, 30, None)?;
-    let output_type = create_video_type(MFVideoFormat_NV12, config.width, config.height, 30, None)?;
-
-    unsafe {
-      transform
-        .SetInputType(0, &input_type, 0)
-        .map_err(|error| VideoError::new(format!("Failed to set decoder input type: {error}")))?;
-      transform
-        .SetOutputType(0, &output_type, 0)
-        .map_err(|error| VideoError::new(format!("Failed to set decoder output type: {error}")))?;
-      transform
-        .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
-        .map_err(|error| VideoError::new(format!("Failed to begin decoder streaming: {error}")))?;
-      transform
-        .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-        .map_err(|error| VideoError::new(format!("Failed to start decoder stream: {error}")))?;
-    }
-
-    let output_info = unsafe {
-      transform
-        .GetOutputStreamInfo(0)
-        .map_err(|error| VideoError::new(format!("Failed to query decoder output stream: {error}")))?
-    };
-    let nv12_size = nv12_len(config.width, config.height)? as u32;
-
-    Ok(Self {
-      _mf: mf,
-      transform,
-      output_provides_samples: output_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
-      output_buffer_size: output_info.cbSize.max(nv12_size),
-      width: config.width,
-      height: config.height,
-    })
-  }
-
-  pub(super) fn decode_frame(
-    &mut self,
-    frame: &VideoFrame,
-    output: bool,
-    output_buffer: Option<Vec<u8>>,
-  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-    let _ = output_buffer;
-    let timestamp_100ns = i64::from(frame.timestamp) * 10_000;
-    let input = sample_from_bytes(&frame.encoded, timestamp_100ns, 333_333)?;
-    unsafe {
-      self
-        .transform
-        .ProcessInput(0, &input, 0)
-        .map_err(|error| VideoError::new(format!("Failed to submit decoder input frame: {error}")))?;
-    }
-
-    let mut decoded = None;
-    loop {
-      let Some(sample) = self.process_output()? else {
-        break;
-      };
-      let nv12 = bytes_from_sample(&sample)?;
-      if nv12.is_empty() {
-        continue;
-      }
-      if output {
-        decoded = Some(NativeDecodedVideoFrame {
-          format: DecodedVideoPixelFormat::Rgba8,
-          pixels: nv12_to_rgba(&nv12, self.width, self.height)?,
-          native_image: None,
-        });
-      }
-    }
-
-    Ok(decoded)
-  }
-
-  fn process_output(&mut self) -> Result<Option<IMFSample>, VideoError> {
-    let mut output = MFT_OUTPUT_DATA_BUFFER::default();
-    if !self.output_provides_samples {
-      output.pSample = ManuallyDrop::new(Some(create_empty_output_sample(self.output_buffer_size)?));
-    }
-
-    let mut status = 0u32;
-    let result = unsafe {
-      self
-        .transform
-        .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
-    };
-
-    match result {
-      Ok(()) => {
-        let sample = unsafe { ManuallyDrop::take(&mut output.pSample) };
-        let events = unsafe { ManuallyDrop::take(&mut output.pEvents) };
-        drop(events);
-        Ok(sample)
-      }
-      Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
-        unsafe {
-          drop(ManuallyDrop::take(&mut output.pSample));
-          drop(ManuallyDrop::take(&mut output.pEvents));
-        }
-        Ok(None)
-      }
-      Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => Err(VideoError::new(
-        "Decoder output stream changed; dynamic video format changes are not wired yet.",
-      )),
-      Err(error) => {
-        unsafe {
-          drop(ManuallyDrop::take(&mut output.pSample));
-          drop(ManuallyDrop::take(&mut output.pEvents));
-        }
-        Err(VideoError::new(format!("Failed to read decoder output: {error}")))
-      }
-    }
-  }
-}
-
-struct ConfiguredEncoderTransform {
-  transform: IMFTransform,
-  event_generator: Option<IMFMediaEventGenerator>,
-  output_provides_samples: bool,
-  output_buffer_size: u32,
-  label: String,
-}
-
-fn activate_configured_encoder_transform(
-  codec: VideoCodecId,
-  output_type: &::windows::Win32::Media::MediaFoundation::IMFMediaType,
-  input_type: &::windows::Win32::Media::MediaFoundation::IMFMediaType,
-  excluded_labels: &[String],
-) -> Result<ConfiguredEncoderTransform, VideoError> {
-  let subtype = codec_subtype(codec)?;
-  let output_register_type = MFT_REGISTER_TYPE_INFO {
-    guidMajorType: MFMediaType_Video,
-    guidSubtype: subtype,
-  };
-  let groups = [
-    (
-      "hardware",
-      MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-    ),
-    (
-      "software",
-      MFT_ENUM_FLAG(
-        MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_LOCALMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
-      ),
-    ),
-  ];
-  let mut saw_candidate = false;
-  let mut last_error = None;
-
-  for (group_label, flags) in groups {
-    let mut activates: *mut Option<IMFActivate> = ptr::null_mut();
-    let mut count = 0u32;
-    let enumerate_result = unsafe {
-      MFTEnumEx(
-        MFT_CATEGORY_VIDEO_ENCODER,
-        flags,
-        None,
-        Some(&output_register_type),
-        &mut activates,
-        &mut count,
-      )
-    };
-
-    if let Err(error) = enumerate_result {
-      last_error = Some(format!("Failed to enumerate {group_label} encoder transforms: {error}"));
-      continue;
-    }
-
-    if activates.is_null() || count == 0 {
-      continue;
-    }
-
-    let mut selected = None;
-    unsafe {
-      for index in 0..count as usize {
-        let activate = ptr::read(activates.add(index));
-        let candidate_label = format!("{group_label} Media Foundation encoder #{}", index + 1);
-        if excluded_labels.iter().any(|label| label == &candidate_label) {
-          drop(activate);
-          continue;
-        }
-        if selected.is_none()
-          && let Some(activate) = &activate
-        {
-          saw_candidate = true;
-          match activate.ActivateObject::<IMFTransform>() {
-            Ok(transform) => match configure_encoder_transform(transform, output_type, input_type, &candidate_label) {
-              Ok(configured) => {
-                selected = Some(configured);
-              }
-              Err(error) => {
-                logger::log(&format!("[video/windows] {candidate_label} rejected: {error}"));
-                last_error = Some(error.to_string());
-              }
-            },
-            Err(error) => {
-              let error = format!("{candidate_label} activation failed: {error}");
-              logger::log(&format!("[video/windows] {error}"));
-              last_error = Some(error);
-            }
-          }
-        }
-        drop(activate);
-      }
-      CoTaskMemFree(Some(activates.cast::<c_void>()));
-    }
-
-    if let Some(configured) = selected {
-      return Ok(configured);
-    }
-  }
-
-  if saw_candidate {
-    Err(VideoError::new(format!(
-      "No usable Windows Media Foundation encoder was found for {}. Last error: {}",
-      codec_label(codec),
-      last_error.unwrap_or_else(|| "unknown encoder setup failure".to_owned())
-    )))
-  } else {
-    Err(VideoError::new(format!(
-      "No Windows Media Foundation encoder is available for {}.",
-      codec_label(codec)
-    )))
-  }
-}
-
-fn configure_encoder_transform(
-  transform: IMFTransform,
-  output_type: &::windows::Win32::Media::MediaFoundation::IMFMediaType,
-  input_type: &::windows::Win32::Media::MediaFoundation::IMFMediaType,
-  label: &str,
-) -> Result<ConfiguredEncoderTransform, VideoError> {
-  unsafe {
-    if let Ok(attributes) = transform.GetAttributes() {
-      attributes
-        .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
-        .map_err(|error| VideoError::new(format!("Failed to unlock async encoder transform: {error}")))?;
-    }
-    transform
-      .SetOutputType(0, output_type, 0)
-      .map_err(|error| VideoError::new(format!("Failed to set encoder output type: {error}")))?;
-    transform
-      .SetInputType(0, input_type, 0)
-      .map_err(|error| VideoError::new(format!("Failed to set encoder input type: {error}")))?;
-    transform
-      .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
-      .map_err(|error| VideoError::new(format!("Failed to begin encoder streaming: {error}")))?;
-    transform
-      .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-      .map_err(|error| VideoError::new(format!("Failed to start encoder stream: {error}")))?;
-
-    let output_info = transform
-      .GetOutputStreamInfo(0)
-      .map_err(|error| VideoError::new(format!("Failed to query encoder output stream: {error}")))?;
-    let event_generator =
-      match transform_is_async(&transform)? {
-        true => Some(transform.cast::<IMFMediaEventGenerator>().map_err(|error| {
-          VideoError::new(format!("Async encoder does not expose IMFMediaEventGenerator: {error}"))
-        })?),
-        false => None,
-      };
-
-    Ok(ConfiguredEncoderTransform {
-      transform,
-      event_generator,
-      output_provides_samples: output_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
-      output_buffer_size: output_info.cbSize.max(1024 * 1024),
-      label: label.to_owned(),
-    })
-  }
-}
-
-fn transform_is_async(transform: &IMFTransform) -> Result<bool, VideoError> {
-  let Ok(attributes) = (unsafe { transform.GetAttributes() }) else {
-    return Ok(false);
-  };
-  unsafe { attributes.GetUINT32(&MF_TRANSFORM_ASYNC) }
-    .map(|value| value != 0)
-    .map_err(|error| VideoError::new(format!("Failed to query encoder async attribute: {error}")))
-}
-
-fn activate_decoder_transform(codec: VideoCodecId) -> Result<IMFTransform, VideoError> {
-  let subtype = codec_subtype(codec)?;
-  let input_type = MFT_REGISTER_TYPE_INFO {
-    guidMajorType: MFMediaType_Video,
-    guidSubtype: subtype,
-  };
-  let mut activates: *mut Option<IMFActivate> = ptr::null_mut();
-  let mut count = 0u32;
-  let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_ALL.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
-
-  unsafe {
-    MFTEnumEx(
-      MFT_CATEGORY_VIDEO_DECODER,
-      flags,
-      Some(&input_type),
-      None,
-      &mut activates,
-      &mut count,
-    )
-    .map_err(|error| VideoError::new(format!("Failed to enumerate decoder transforms: {error}")))?;
-  }
-
-  if activates.is_null() || count == 0 {
-    return Err(VideoError::new(format!(
-      "No Windows Media Foundation decoder is available for {}.",
-      codec_label(codec)
-    )));
-  }
-
-  let mut transform = None;
-  unsafe {
-    for index in 0..count as usize {
-      let activate = ptr::read(activates.add(index));
-      if transform.is_none() {
-        if let Some(activate) = &activate {
-          transform = activate.ActivateObject::<IMFTransform>().ok();
-        }
-      }
-      drop(activate);
-    }
-    CoTaskMemFree(Some(activates.cast::<c_void>()));
-  }
-
-  transform.ok_or_else(|| {
-    VideoError::new(format!(
-      "Windows Media Foundation decoder activation failed for {}.",
-      codec_label(codec)
-    ))
-  })
-}
-
-fn create_video_type(
-  subtype: GUID,
-  width: u16,
-  height: u16,
-  fps: u32,
-  bitrate: Option<u32>,
-) -> Result<::windows::Win32::Media::MediaFoundation::IMFMediaType, VideoError> {
-  let media_type = unsafe { MFCreateMediaType().map_err(mf_error("Failed to create media type"))? };
-  unsafe {
-    media_type
-      .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
-      .map_err(mf_error("Failed to set media major type"))?;
-    media_type
-      .SetGUID(&MF_MT_SUBTYPE, &subtype)
-      .map_err(mf_error("Failed to set media subtype"))?;
-    media_type
-      .SetUINT64(&MF_MT_FRAME_SIZE, pack_u32_pair(u32::from(width), u32::from(height)))
-      .map_err(mf_error("Failed to set media frame size"))?;
-    media_type
-      .SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(fps, 1))
-      .map_err(mf_error("Failed to set media frame rate"))?;
-    media_type
-      .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
-      .map_err(mf_error("Failed to set media interlace mode"))?;
-    if let Some(bitrate) = bitrate {
-      media_type
-        .SetUINT32(&MF_MT_AVG_BITRATE, bitrate)
-        .map_err(mf_error("Failed to set media bitrate"))?;
-    }
-  }
-  Ok(media_type)
-}
-
-fn sample_from_bytes(bytes: &[u8], timestamp_100ns: i64, duration_100ns: i64) -> Result<IMFSample, VideoError> {
-  let buffer =
-    unsafe { MFCreateMemoryBuffer(bytes.len() as u32).map_err(mf_error("Failed to create input media buffer"))? };
-  write_buffer(&buffer, bytes)?;
-  let sample = unsafe { MFCreateSample().map_err(mf_error("Failed to create input media sample"))? };
-  unsafe {
-    sample
-      .AddBuffer(&buffer)
-      .map_err(mf_error("Failed to attach input buffer to sample"))?;
-    sample
-      .SetSampleTime(timestamp_100ns)
-      .map_err(mf_error("Failed to set sample timestamp"))?;
-    sample
-      .SetSampleDuration(duration_100ns)
-      .map_err(mf_error("Failed to set sample duration"))?;
-  }
-  Ok(sample)
-}
-
-fn create_empty_output_sample(buffer_size: u32) -> Result<IMFSample, VideoError> {
-  let buffer = unsafe { MFCreateMemoryBuffer(buffer_size).map_err(mf_error("Failed to create output media buffer"))? };
-  let sample = unsafe { MFCreateSample().map_err(mf_error("Failed to create output media sample"))? };
-  unsafe {
-    sample
-      .AddBuffer(&buffer)
-      .map_err(mf_error("Failed to attach output buffer to sample"))?;
-  }
-  Ok(sample)
-}
-
-fn write_buffer(buffer: &IMFMediaBuffer, bytes: &[u8]) -> Result<(), VideoError> {
-  let mut data = ptr::null_mut();
-  unsafe {
-    buffer
-      .Lock(&mut data, None, None)
-      .map_err(mf_error("Failed to lock media buffer"))?;
-    ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
-    buffer.Unlock().map_err(mf_error("Failed to unlock media buffer"))?;
-    buffer
-      .SetCurrentLength(bytes.len() as u32)
-      .map_err(mf_error("Failed to set media buffer length"))?;
-  }
-  Ok(())
-}
-
-fn bytes_from_sample(sample: &IMFSample) -> Result<Vec<u8>, VideoError> {
-  let buffer = unsafe {
-    sample
-      .ConvertToContiguousBuffer()
-      .map_err(mf_error("Failed to read encoded sample buffer"))?
-  };
-  let len = unsafe {
-    buffer
-      .GetCurrentLength()
-      .map_err(mf_error("Failed to query encoded sample length"))?
-  };
-  if len == 0 {
-    return Ok(Vec::new());
-  }
-
-  let mut data = ptr::null_mut();
-  let mut out = vec![0u8; len as usize];
-  unsafe {
-    buffer
-      .Lock(&mut data, None, None)
-      .map_err(mf_error("Failed to lock encoded sample buffer"))?;
-    ptr::copy_nonoverlapping(data, out.as_mut_ptr(), out.len());
-    buffer
-      .Unlock()
-      .map_err(mf_error("Failed to unlock encoded sample buffer"))?;
-  }
-  Ok(out)
-}
-
-fn mf_error(context: &'static str) -> impl FnOnce(WindowsError) -> VideoError {
-  move |error| VideoError::new(format!("{context}: {error}"))
-}
-
-fn pack_u32_pair(high: u32, low: u32) -> u64 {
-  (u64::from(high) << 32) | u64::from(low)
-}
-
-fn codec_subtype(codec: VideoCodecId) -> Result<GUID, VideoError> {
-  match codec {
-    VideoCodecId::Av1 => Ok(MFVideoFormat_AV1),
-    VideoCodecId::H265 => Ok(MFVideoFormat_HEVC),
-    VideoCodecId::H264 => Ok(MFVideoFormat_H264),
-    VideoCodecId::Unknown => Err(VideoError::new("Unsupported video codec.")),
-  }
-}
-
 fn codec_label(codec: VideoCodecId) -> &'static str {
   match codec {
     VideoCodecId::Av1 => "AV1",
@@ -2199,6 +2034,7 @@ fn nv12_len(width: u16, height: u16) -> Result<usize, VideoError> {
   Ok(width * height + width * height / 2)
 }
 
+#[cfg(test)]
 fn nv12_to_rgba(nv12: &[u8], width: u16, height: u16) -> Result<Vec<u8>, VideoError> {
   let width = usize::from(width);
   let height = usize::from(height);
@@ -2237,10 +2073,6 @@ fn clamp_video_byte(value: i32) -> u8 {
   value.clamp(0, 255) as u8
 }
 
-struct MediaFoundationSession {
-  com_initialized: bool,
-}
-
 struct ComSession {
   initialized: bool,
 }
@@ -2274,64 +2106,21 @@ impl Drop for ComSession {
   }
 }
 
-impl MediaFoundationSession {
-  fn start() -> Result<Self, VideoError> {
-    let com_initialized = unsafe {
-      let result = CoInitializeEx(None, COINIT_MULTITHREADED);
-      if result == RPC_E_CHANGED_MODE {
-        false
-      } else if result.is_ok() {
-        true
-      } else {
-        return Err(VideoError::new(format!(
-          "Failed to initialize COM for video: {result:?}"
-        )));
-      }
-    };
-
-    unsafe {
-      MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)
-        .map_err(|error| VideoError::new(format!("Failed to start Media Foundation: {error}")))?;
-    }
-    Ok(Self { com_initialized })
-  }
-}
-
-impl Drop for MediaFoundationSession {
-  fn drop(&mut self) {
-    unsafe {
-      let _ = MFShutdown();
-      if self.com_initialized {
-        CoUninitialize();
-      }
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
-  fn windows_backend_order_matches_original_parties() {
+  fn windows_broadcast_backend_order_prefers_native_hardware() {
     assert_eq!(
       BACKEND_ORDER,
       [
         NativeVideoBackend::NvidiaNvenc,
         NativeVideoBackend::AmdAmf,
-        NativeVideoBackend::WindowsMediaFoundation,
         NativeVideoBackend::OpenH264,
       ]
     );
-    assert_eq!(backend_order_label(), "NVENC -> AMF -> Media Foundation -> OpenH264");
-  }
-
-  #[test]
-  fn media_foundation_codec_subtypes_are_known_for_supported_codecs() {
-    assert_eq!(codec_subtype(VideoCodecId::Av1).unwrap(), MFVideoFormat_AV1);
-    assert_eq!(codec_subtype(VideoCodecId::H265).unwrap(), MFVideoFormat_HEVC);
-    assert_eq!(codec_subtype(VideoCodecId::H264).unwrap(), MFVideoFormat_H264);
-    assert!(codec_subtype(VideoCodecId::Unknown).is_err());
+    assert_eq!(backend_order_label(), "NVENC -> AMF -> OpenH264");
   }
 
   #[test]

@@ -37,6 +37,7 @@ enum class VideoBackend : uint8_t {
     NVENC,
     NVDEC,
     MFT,
+    AMF,
 };
 
 constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;

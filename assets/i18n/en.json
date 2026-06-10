@@ -998,12 +998,17 @@
       "unsupported_av1": {
         "title": "AV1 is not supported on this device",
         "message": "This stream uses AV1, but hardware AV1 decoding is unavailable here. Ask the streamer to switch to H.265 or H.264."
+      },
+      "decoder_unavailable": {
+        "title": "Stream decoder unavailable",
+        "message": "This stream cannot be decoded on the selected GPU. {{reason}}"
       }
     },
     "error": {
       "no_connected_server": "No connected server.",
       "stream_no_dimensions": "Selected stream source has no capture dimensions.",
       "video_codec_invalid": "Video codec must be AV1, H.265, or H.264.",
+      "stream_start_failed": "Failed to start stream",
       "stream_too_small": "Selected stream source is too small to stream after scaling: {{width}}x{{height}}.",
       "storage_unavailable": "Local storage is unavailable.",
       "saved_credentials_missing": "Saved server credentials were not found."
@@ -1125,6 +1130,7 @@
         "description": "Stream what you hear on this source"
       },
       "action": {
+        "settings": "Stream settings",
         "start": "Start stream"
       }
     },

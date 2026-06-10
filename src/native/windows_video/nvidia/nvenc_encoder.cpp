@@ -63,25 +63,26 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    struct CodecEntry { GUID guid; VideoCodecId id; };
-    CodecEntry codecs[] = {
-        {NV_ENC_CODEC_AV1_GUID,  VideoCodecId::AV1},
-        {NV_ENC_CODEC_HEVC_GUID, VideoCodecId::H265},
-        {NV_ENC_CODEC_H264_GUID, VideoCodecId::H264},
-    };
-
-    bool found = false;
-    for (auto& c : codecs) {
-        if (c.id == preferred_codec && try_codec(c.guid, c.id)) { found = true; break; }
+    GUID encode_guid{};
+    switch (preferred_codec) {
+    case VideoCodecId::AV1:
+        encode_guid = NV_ENC_CODEC_AV1_GUID;
+        break;
+    case VideoCodecId::H265:
+        encode_guid = NV_ENC_CODEC_HEVC_GUID;
+        break;
+    case VideoCodecId::H264:
+        encode_guid = NV_ENC_CODEC_H264_GUID;
+        break;
+    default:
+        native_log_error("Unsupported requested NVENC codec: {}", codec_name(preferred_codec));
+        funcs_.nvEncDestroyEncoder(encoder_);
+        encoder_ = nullptr;
+        return false;
     }
-    if (!found) {
-        for (auto& c : codecs) {
-            if (c.id != preferred_codec && try_codec(c.guid, c.id)) { found = true; break; }
-        }
-    }
 
-    if (!found) {
-        native_log_error("No supported codec found");
+    if (!try_codec(encode_guid, preferred_codec)) {
+        native_log_error("Requested NVENC codec is unavailable: {}", codec_name(preferred_codec));
         funcs_.nvEncDestroyEncoder(encoder_);
         encoder_ = nullptr;
         return false;
@@ -89,10 +90,6 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
 
     native_log_info("Selected codec: {} ({}x{} @ {} fps), bitrate: {} bps",
              codec_name(codec_), width, height, fps, bitrate);
-
-    GUID encode_guid = (codec_ == VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
-                     : (codec_ == VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
-                                                       : NV_ENC_CODEC_H264_GUID;
 
     NV_ENC_PRESET_CONFIG preset_config{};
     preset_config.version = NV_ENC_PRESET_CONFIG_VER;

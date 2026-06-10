@@ -20,7 +20,6 @@ use crate::{
     server_query::{ServerQueryInfo, query_server},
   },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS},
-  services::logger,
   session::{ConnectedServer, ConnectedServerInfo, ServerSession},
   storage::{AppSettings, Storage, StoredServer},
   theme,
@@ -351,10 +350,11 @@ pub async fn connect_and_store(
 ) -> Result<ConnectedServerInfo, String> {
   let address = with_default_port(&address);
   let display_name = display_name.trim().to_owned();
-  logger::log(&format!(
-    "[connect] connecting to server: address={} display='{}'",
-    address, display_name
-  ));
+  tracing::info!(target: "network::connect",
+    "[network/connect] connecting to server: address={} display='{}'",
+    address,
+    display_name
+  );
 
   let identity = storage
     .as_ref()
@@ -365,21 +365,20 @@ pub async fn connect_and_store(
 
   let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
-    logger::log(&format!(
-      "[connect] resolved server address: address={address} socket={socket}"
-    ));
+    tracing::info!(target: "network::connect", "[network/connect] resolved server address: address={address} socket={socket}");
     let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
-    logger::log(&format!(
-      "[connect] query result: address={} responded={}",
+    tracing::info!(target: "network::connect",
+      "[network/connect] query result: address={} responded={}",
       address,
       query.is_some()
-    ));
+    );
     let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
     let fingerprint = server.certificate_fingerprint().unwrap_or_default();
-    logger::log(&format!(
-      "[connect] transport connected: address={} certificate_fingerprint={}",
-      address, fingerprint
-    ));
+    tracing::info!(target: "network::connect",
+      "[network/connect] transport connected: address={} certificate_fingerprint={}",
+      address,
+      fingerprint
+    );
 
     let timestamp = SystemTime::now()
       .duration_since(UNIX_EPOCH)
@@ -387,10 +386,12 @@ pub async fn connect_and_store(
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
     let response = authenticate_with_query(&server, auth, query.as_ref(), &errors).await?;
-    logger::log(&format!(
-      "[connect] authenticated: server='{}' user={} role={:?}",
-      response.server_name, response.user_id, response.role
-    ));
+    tracing::info!(target: "network::connect",
+      "[network/connect] authenticated: server='{}' user={} role={:?}",
+      response.server_name,
+      response.user_id,
+      response.role
+    );
 
     Ok::<_, String>((server, fingerprint, response))
   })
@@ -422,10 +423,12 @@ pub async fn connect_and_store(
         display_name,
       })
       .map_err(|error| error.to_string())?;
-    logger::log(&format!(
-      "[connect] saved server credentials metadata: address={} server='{}' user={}",
-      info.address, info.server_name, info.user_id
-    ));
+    tracing::info!(target: "network::connect",
+      "[network/connect] saved server credentials metadata: address={} server='{}' user={}",
+      info.address,
+      info.server_name,
+      info.user_id
+    );
   }
 
   if let Some(session) = session {
@@ -438,10 +441,12 @@ pub async fn connect_and_store(
     }
   }
 
-  logger::log(&format!(
-    "[connect] server ready: address={} server='{}' local_user={}",
-    info.address, info.server_name, info.user_id
-  ));
+  tracing::info!(target: "network::connect",
+    "[network/connect] server ready: address={} server='{}' local_user={}",
+    info.address,
+    info.server_name,
+    info.user_id
+  );
   Ok(info)
 }
 

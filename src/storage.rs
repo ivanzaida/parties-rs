@@ -186,6 +186,7 @@ pub struct WindowState {
   pub y: i32,
   pub width: u32,
   pub height: u32,
+  pub full_screen: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -421,8 +422,14 @@ impl Storage {
   pub fn save_window_state(&self, state: WindowState) -> Result<(), StorageError> {
     let conn = self.connection()?;
     conn.execute(
-      "INSERT OR REPLACE INTO app_window_state (id, x, y, width, height) VALUES (1, ?1, ?2, ?3, ?4)",
-      params![state.x, state.y, state.width as i64, state.height as i64],
+      "INSERT OR REPLACE INTO app_window_state (id, x, y, width, height, full_screen) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+      params![
+        state.x,
+        state.y,
+        state.width as i64,
+        state.height as i64,
+        bool_to_int(state.full_screen)
+      ],
     )?;
     Ok(())
   }
@@ -431,7 +438,7 @@ impl Storage {
     let conn = self.connection()?;
     let state = conn
       .query_row(
-        "SELECT x, y, width, height FROM app_window_state WHERE id = 1",
+        "SELECT x, y, width, height, full_screen FROM app_window_state WHERE id = 1",
         [],
         |row| {
           let width = row.get::<_, i64>(2)?.max(1) as u32;
@@ -441,6 +448,7 @@ impl Storage {
             y: row.get(1)?,
             width,
             height,
+            full_screen: int_to_bool(row.get(4)?),
           })
         },
       )
@@ -714,7 +722,8 @@ impl Storage {
         x INTEGER NOT NULL,
         y INTEGER NOT NULL,
         width INTEGER NOT NULL DEFAULT 1280,
-        height INTEGER NOT NULL DEFAULT 900
+        height INTEGER NOT NULL DEFAULT 900,
+        full_screen INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS app_update_state (
@@ -909,6 +918,12 @@ impl Storage {
     if !column_exists(&conn, "app_window_state", "height")? {
       conn.execute(
         "ALTER TABLE app_window_state ADD COLUMN height INTEGER NOT NULL DEFAULT 900",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_window_state", "full_screen")? {
+      conn.execute(
+        "ALTER TABLE app_window_state ADD COLUMN full_screen INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
     }
@@ -1160,6 +1175,7 @@ mod tests {
       y: 180,
       width: 1440,
       height: 960,
+      full_screen: true,
     };
     storage.save_window_state(state).unwrap();
     assert_eq!(storage.load_window_state().unwrap(), Some(state));

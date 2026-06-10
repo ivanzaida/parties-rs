@@ -63,7 +63,7 @@ pub struct DecodedVideoFrame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[allow(dead_code)]
 pub enum DecodedVideoPixelFormat {
   Rgba8,
   Nv12,
@@ -254,6 +254,22 @@ impl VideoDecoder {
     }
 
     self.inner.decode_frame_to_dx12(&frame.frame, surface)
+  }
+
+  #[cfg(target_os = "windows")]
+  pub fn decode_to_shared_nv12_handle(&mut self, frame: &ForwardedVideoFrame) -> Result<Option<usize>, VideoError> {
+    let frame_config = VideoDecodeConfig {
+      codec: frame.frame.codec,
+      width: frame.frame.width,
+      height: frame.frame.height,
+    };
+    if frame_config != self.config {
+      return Err(VideoError::new(
+        "Video frame format changed; decoder restart is required.",
+      ));
+    }
+
+    self.inner.decode_frame_to_shared_nv12_handle(&frame.frame)
   }
 
   #[cfg(target_os = "windows")]

@@ -69,6 +69,7 @@ bool load_cuda(CudaApi& api) {
     all_ok &= load_sym(mod, "cuInit", api.cuInit);
     all_ok &= load_sym(mod, "cuDeviceGet", api.cuDeviceGet);
     all_ok &= load_sym(mod, "cuDeviceGetCount", api.cuDeviceGetCount);
+    all_ok &= load_sym(mod, "cuDeviceGetName", api.cuDeviceGetName);
     all_ok &= load_sym(mod, "cuCtxCreate_v2", api.cuCtxCreate);
     all_ok &= load_sym(mod, "cuCtxDestroy_v2", api.cuCtxDestroy);
     all_ok &= load_sym(mod, "cuCtxPushCurrent_v2", api.cuCtxPushCurrent);

@@ -14,6 +14,7 @@ struct CudaApi {
     CUresult (CUDAAPI *cuInit)(unsigned int flags);
     CUresult (CUDAAPI *cuDeviceGet)(CUdevice*, int);
     CUresult (CUDAAPI *cuDeviceGetCount)(int*);
+    CUresult (CUDAAPI *cuDeviceGetName)(char*, int, CUdevice);
     CUresult (CUDAAPI *cuCtxCreate)(CUcontext*, unsigned int, CUdevice);
     CUresult (CUDAAPI *cuCtxDestroy)(CUcontext);
     CUresult (CUDAAPI *cuCtxPushCurrent)(CUcontext);

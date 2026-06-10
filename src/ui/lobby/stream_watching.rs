@@ -165,6 +165,15 @@ fn stream_error_text(ctx: &mut Ctx, error: &crate::session::VideoStreamError) ->
       ctx.t("lobby.stream_error.unsupported_av1.title").to_string(),
       ctx.t("lobby.stream_error.unsupported_av1.message").to_string(),
     ),
+    Some("lobby.stream_error.decoder_unavailable") => (
+      ctx.t("lobby.stream_error.decoder_unavailable.title").to_string(),
+      ctx
+        .t_args(
+          "lobby.stream_error.decoder_unavailable.message",
+          [("reason", error.message.clone())],
+        )
+        .to_string(),
+    ),
     _ => (error.title.clone(), error.message.clone()),
   }
 }

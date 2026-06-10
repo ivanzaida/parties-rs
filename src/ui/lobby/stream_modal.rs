@@ -16,6 +16,7 @@ use lurq::{
 
 use super::{StartStreamAction, StartStreamInput};
 use crate::{
+  routes::ROUTE_SETTINGS_STREAM,
   services::{
     hotkeys,
     screen_share_sources::{
@@ -28,10 +29,15 @@ use crate::{
     app_chrome::{CHROME_HEIGHT, RESIZE_HANDLE_SIZE, content_height},
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
+    settings::{SettingsPage, SettingsPopupHandle},
   },
 };
 
 const STREAM_TOGGLE_TRANSITION_MS: u64 = 240;
+const STREAM_MODAL_HEADER_HEIGHT: f32 = 44.0;
+const STREAM_MODAL_AUDIO_HEIGHT: f32 = 74.0;
+const STREAM_MODAL_ACTIONS_HEIGHT: f32 = 34.0;
+const STREAM_MODAL_ERROR_HEIGHT: f32 = 76.0;
 
 #[derive(Clone, Copy)]
 struct StreamModalMetrics {
@@ -39,7 +45,6 @@ struct StreamModalMetrics {
   dialog_height: f32,
   padding: f32,
   spacing: f32,
-  content_scroll_height: f32,
   source_columns: usize,
   source_card_height: f32,
   source_preview_height: f32,
@@ -68,7 +73,6 @@ fn stream_modal_metrics(ctx: &Ctx) -> StreamModalMetrics {
     dialog_height,
     padding,
     spacing,
-    content_scroll_height,
     source_columns,
     source_card_height,
     source_preview_height,
@@ -82,8 +86,9 @@ pub(super) fn start_stream_modal(
   source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
-  stream_codec_label: &str,
+  stream_codec_label: String,
   start_stream: StartStreamAction,
+  start_submitted: Signal<bool>,
 ) -> Element {
   let window = ctx.window();
   let window_width = window.logical_width();
@@ -97,6 +102,62 @@ pub(super) fn start_stream_modal(
   let layer_height = (modal_height - resize_gutter).max(0.0);
   let metrics = stream_modal_metrics(ctx);
   let close_on_escape = open.clone();
+  let start_state = start_stream.state().get();
+  let submitted = start_submitted.get();
+  if submitted && start_state.is_fulfilled() {
+    open.set(false);
+    start_submitted.set(false);
+  }
+  let start_error = if submitted { start_state.error.clone() } else { None };
+  let source_scroll_height = stream_modal_source_scroll_height(metrics, start_error.is_some());
+  let mut dialog = Column::new()
+    .width(metrics.dialog_width)
+    .height(metrics.dialog_height)
+    .max_height(metrics.dialog_height)
+    .spacing(metrics.spacing)
+    .padding(metrics.padding)
+    .rounded(10.0)
+    .background(BackgroundColor::Color(Color::from_hex("#15171A")))
+    .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#30343A")))
+    .child(stream_modal_header(ctx, open.clone()))
+    .child(
+      ScrollVertical::new(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .spacing(metrics.spacing)
+          .child(stream_modal_sources(
+            ctx,
+            source_kind.clone(),
+            source_index.clone(),
+            &stream_codec_label,
+            metrics,
+          )),
+      )
+      .width(Dimension::Pct(100.0))
+      .height(source_scroll_height)
+      .scrollbar(source_grid_scrollbar_style())
+      .scrollbar_hovered(|mut style| {
+        let palette = theme::palette();
+        style.thumb_color = palette.accent_hover;
+        style.track_color = palette.surface_input.with_opacity(0.75);
+        style
+      }),
+    )
+    .child(stream_modal_audio_toggle(ctx, audio_enabled.clone()));
+
+  if let Some(error) = start_error.as_deref() {
+    dialog = dialog.child(stream_modal_error(ctx, error));
+  }
+
+  dialog = dialog.child(stream_modal_actions(
+    ctx,
+    open,
+    source_kind,
+    source_index,
+    audio_enabled,
+    start_stream,
+    start_submitted,
+  ));
 
   Column::new()
     .width(layer_width)
@@ -105,55 +166,49 @@ pub(super) fn start_stream_modal(
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))
-    .child(
-      Column::new()
-        .width(metrics.dialog_width)
-        .height(metrics.dialog_height)
-        .max_height(metrics.dialog_height)
-        .spacing(metrics.spacing)
-        .padding(metrics.padding)
-        .rounded(10.0)
-        .background(BackgroundColor::Color(Color::from_hex("#15171A")))
-        .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#30343A")))
-        .child(stream_modal_header(ctx, open.clone()))
-        .child(
-          ScrollVertical::new(
-            Column::new()
-              .width(Dimension::Pct(100.0))
-              .spacing(metrics.spacing)
-              .child(stream_modal_sources(
-                ctx,
-                source_kind.clone(),
-                source_index.clone(),
-                stream_codec_label,
-                metrics,
-              ))
-              .child(stream_modal_audio_toggle(ctx, audio_enabled.clone())),
-          )
-          .width(Dimension::Pct(100.0))
-          .height(metrics.content_scroll_height)
-          .scrollbar(source_grid_scrollbar_style())
-          .scrollbar_hovered(|mut style| {
-            let palette = theme::palette();
-            style.thumb_color = palette.accent_hover;
-            style.track_color = palette.surface_input.with_opacity(0.75);
-            style
-          }),
-        )
-        .child(stream_modal_actions(
-          ctx,
-          open,
-          source_kind,
-          source_index,
-          audio_enabled,
-          start_stream,
-        )),
-    )
+    .child(dialog)
     .on_key_down(move |event| {
       if hotkeys::is_cancel_key(event) {
         close_on_escape.set(false);
       }
     })
+    .into()
+}
+
+fn stream_modal_source_scroll_height(metrics: StreamModalMetrics, has_error: bool) -> f32 {
+  let fixed_height = STREAM_MODAL_HEADER_HEIGHT
+    + STREAM_MODAL_AUDIO_HEIGHT
+    + STREAM_MODAL_ACTIONS_HEIGHT
+    + metrics.spacing * 3.0
+    + if has_error {
+      STREAM_MODAL_ERROR_HEIGHT + metrics.spacing
+    } else {
+      0.0
+    };
+  (metrics.dialog_height - metrics.padding * 2.0 - fixed_height).max(132.0)
+}
+
+fn stream_modal_error(ctx: &mut Ctx, message: &str) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Md)
+    .padding(theme::SpacingSize::Md)
+    .rounded(theme::RadiusSize::Md)
+    .background(BackgroundColor::Palette(theme::PaletteColor::DangerMuted))
+    .border_inside(1.0, theme::PaletteColor::Danger)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "triangle-alert",
+      size: 16.0,
+      color: theme::palette().danger,
+    }))
+    .child(
+      Text::new(message)
+        .variant(theme::TypographyStyle::Description)
+        .color(theme::PaletteColor::Danger)
+        .width(Dimension::Pct(100.0))
+        .flex(1.0),
+    )
     .into()
 }
 
@@ -344,17 +399,7 @@ fn stream_source_grid(
     ));
   }
 
-  ScrollVertical::new(grid)
-    .width(Dimension::Pct(100.0))
-    .height(metrics.source_grid_height)
-    .scrollbar(source_grid_scrollbar_style())
-    .scrollbar_hovered(|mut style| {
-      let palette = theme::palette();
-      style.thumb_color = palette.accent_hover;
-      style.track_color = palette.surface_input.with_opacity(0.75);
-      style
-    })
-    .into()
+  grid.into()
 }
 
 fn stream_source_empty_state(
@@ -696,9 +741,15 @@ fn stream_modal_actions(
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
   start_stream: StartStreamAction,
+  start_submitted: Signal<bool>,
 ) -> Element {
   let close = open.clone();
-  let confirm_open = open.clone();
+  let settings_open = open.clone();
+  let settings_submitted = start_submitted.clone();
+  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
+  let navigator = ctx.navigator();
+  let cancel_submitted = start_submitted.clone();
+  let run_submitted = start_submitted.clone();
   let pending = start_stream.state().get().is_pending();
   let start_source_kind = source_kind.clone();
   let start_source_index = source_index.clone();
@@ -706,29 +757,47 @@ fn stream_modal_actions(
   Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
-    .justify(Justify::End)
+    .justify(Justify::SpaceBetween)
     .spacing(10.0)
     .child(
-      stream_modal_button(ctx, None, "common.action.cancel", false).on_click(move |_| {
-        close.set(false);
+      stream_modal_button(ctx, Some("settings"), "lobby.stream_modal.action.settings", false).on_click(move |_| {
+        settings_submitted.set(false);
+        settings_open.set(false);
+        if let Some(settings_popup) = settings_popup.as_ref() {
+          settings_popup.open_page(SettingsPage::Stream);
+        } else if let Some(navigator) = navigator.as_ref() {
+          navigator.push(ROUTE_SETTINGS_STREAM);
+        }
       }),
     )
-    .child({
-      let mut button = stream_modal_button(ctx, Some("monitor-up"), "lobby.stream_modal.action.start", true);
-      if !pending {
-        button = button.on_click(move |_| {
-          if let Some(input) = selected_stream_input(
-            start_source_kind.get_untracked(),
-            start_source_index.get_untracked(),
-            start_audio_enabled.get_untracked(),
-          ) {
-            confirm_open.set(false);
-            start_stream.run(input);
+    .child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .justify(Justify::End)
+        .spacing(10.0)
+        .child(
+          stream_modal_button(ctx, None, "common.action.cancel", false).on_click(move |_| {
+            cancel_submitted.set(false);
+            close.set(false);
+          }),
+        )
+        .child({
+          let mut button = stream_modal_button(ctx, Some("monitor-up"), "lobby.stream_modal.action.start", true);
+          if !pending {
+            button = button.on_click(move |_| {
+              if let Some(input) = selected_stream_input(
+                start_source_kind.get_untracked(),
+                start_source_index.get_untracked(),
+                start_audio_enabled.get_untracked(),
+              ) {
+                start_stream.run(input);
+                run_submitted.set(true);
+              }
+            });
           }
-        });
-      }
-      button
-    })
+          button
+        }),
+    )
     .into()
 }
 

@@ -93,6 +93,8 @@ bool ScreenCapture::init() {
 
     ComPtr<IDXGIAdapter1> adapter;
     ComPtr<IDXGIAdapter1> best_adapter;
+    DXGI_ADAPTER_DESC1 best_desc{};
+    UINT best_index = 0;
     for (UINT i = 0; factory && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
         DXGI_ADAPTER_DESC1 desc{};
         adapter->GetDesc1(&desc);
@@ -101,8 +103,11 @@ bool ScreenCapture::init() {
         ComPtr<IDXGIOutput> output;
         bool has_outputs = (adapter->EnumOutputs(0, &output) != DXGI_ERROR_NOT_FOUND);
 
-        if (has_outputs && !best_adapter)
+        if (has_outputs && !best_adapter) {
             best_adapter = adapter;
+            best_desc = desc;
+            best_index = i;
+        }
 
         adapter.Reset();
     }
@@ -113,6 +118,8 @@ bool ScreenCapture::init() {
     HRESULT hr;
 
     if (best_adapter) {
+        native_log_info("Windows capture selected output adapter: index={} vendor_id={} device_id={}",
+            best_index, best_desc.VendorId, best_desc.DeviceId);
         hr = D3D11CreateDevice(
             best_adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags,
             nullptr, 0, D3D11_SDK_VERSION,
@@ -125,6 +132,7 @@ bool ScreenCapture::init() {
                 &device_, &feature_level, &context_);
         }
     } else {
+        native_log_info("Windows capture selected default hardware adapter");
         hr = D3D11CreateDevice(
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
             nullptr, 0, D3D11_SDK_VERSION,
@@ -283,56 +291,58 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
         impl_->frame_arrived_token = impl_->frame_pool.FrameArrived(
             [this, max_frame_time](Direct3D11CaptureFramePool const& sender,
                    winrt::Windows::Foundation::IInspectable const&) {
-                auto frame = sender.TryGetNextFrame();
-                if (!frame) return;
+                while (true) {
+                    auto frame = sender.TryGetNextFrame();
+                    if (!frame) return;
 
-                // Software frame rate limiting for older Windows without MinUpdateInterval
-                if (!frame_limited_) {
-                    auto now = std::chrono::steady_clock::now();
-                    auto limit = max_frame_time * 9 / 10;  // 90% of target interval
-                    if (now - last_frame_time_ < limit) {
+                    // Software frame rate limiting for older Windows without MinUpdateInterval
+                    if (!frame_limited_) {
+                        auto now = std::chrono::steady_clock::now();
+                        auto limit = max_frame_time * 9 / 10;  // 90% of target interval
+                        if (now - last_frame_time_ < limit) {
+                            frame.Close();
+                            continue;
+                        }
+                        last_frame_time_ = now;
+                    }
+
+                    auto content_size = frame.ContentSize();
+                    uint32_t w = static_cast<uint32_t>(content_size.Width);
+                    uint32_t h = static_cast<uint32_t>(content_size.Height);
+
+                    // Get D3D11 texture from WinRT surface
+                    auto surface = frame.Surface();
+                    auto access = surface.as<
+                        ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+
+                    ComPtr<ID3D11Texture2D> texture;
+                    HRESULT hr = access->GetInterface(IID_PPV_ARGS(&texture));
+                    if (FAILED(hr) || !texture) { frame.Close(); continue; }
+
+                    frame_count_++;
+
+                    // Update dimensions if changed — recreate pool and skip this frame
+                    if (w != width_ || h != height_) {
+                        native_log_warn("size changed: {}x{} -> {}x{}",
+                                     width_, height_, w, h);
+                        width_ = w;
+                        height_ = h;
                         frame.Close();
+                        impl_->frame_pool.Recreate(
+                            impl_->winrt_device,
+                            DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                            3,
+                            content_size);
                         return;
                     }
-                    last_frame_time_ = now;
-                }
 
-                auto content_size = frame.ContentSize();
-                uint32_t w = static_cast<uint32_t>(content_size.Width);
-                uint32_t h = static_cast<uint32_t>(content_size.Height);
+                    if (on_frame)
+                        on_frame(texture.Get(), w, h);
 
-                // Get D3D11 texture from WinRT surface
-                auto surface = frame.Surface();
-                auto access = surface.as<
-                    ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
-
-                ComPtr<ID3D11Texture2D> texture;
-                HRESULT hr = access->GetInterface(IID_PPV_ARGS(&texture));
-                if (FAILED(hr) || !texture) { frame.Close(); return; }
-
-                frame_count_++;
-
-                // Update dimensions if changed — recreate pool and skip this frame
-                if (w != width_ || h != height_) {
-                    native_log_warn("size changed: {}x{} -> {}x{}",
-                                 width_, height_, w, h);
-                    width_ = w;
-                    height_ = h;
+                    // Close AFTER on_frame so the WGC pool texture stays valid
+                    // during CopyResource (prevents D3D11 hazard shadow copies).
                     frame.Close();
-                    impl_->frame_pool.Recreate(
-                        impl_->winrt_device,
-                        DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                        3,
-                        content_size);
-                    return;
                 }
-
-                if (on_frame)
-                    on_frame(texture.Get(), w, h);
-
-                // Close AFTER on_frame so the WGC pool texture stays valid
-                // during CopyResource (prevents D3D11 hazard shadow copies).
-                frame.Close();
             });
 
         // Create and start capture session

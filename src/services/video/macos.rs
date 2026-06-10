@@ -65,7 +65,6 @@ use crate::{
   },
   services::{
     desktop_capture::{DesktopCaptureSource, DesktopCaptureSourceKind},
-    logger,
     screen_share_sources::ScreenShareSourceKind,
   },
 };
@@ -335,7 +334,7 @@ pub(super) fn encode(
         Some(init_tx),
       ) {
         thread_stop.store(true, Ordering::Relaxed);
-        logger::log(&format!("[video/macos] broadcast loop stopped with error: {error}"));
+        tracing::warn!(target: "video::encode::macos", "[video:encode/macos] broadcast loop stopped with error: {error}");
       }
     })
     .map_err(|error| VideoError::new(format!("Failed to start macOS video broadcast thread: {error}")))?;
@@ -375,8 +374,8 @@ fn run_broadcast_loop(
 ) -> Result<(), VideoError> {
   match MacosNativeStreamEncoder::new(&config) {
     Ok(mut encoder) => {
-      logger::log(&format!(
-        "[video/macos] native ScreenCaptureKit encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
+      tracing::info!(target: "video::encode::macos",
+        "[video:encode/macos] native ScreenCaptureKit encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
         config.codec,
         config.source_width,
         config.source_height,
@@ -384,7 +383,7 @@ fn run_broadcast_loop(
         config.output_height,
         config.fps,
         config.bitrate_kbps
-      ));
+      );
       if let Some(init_tx) = init_tx {
         let _ = init_tx.send(Ok(()));
       }
@@ -392,21 +391,17 @@ fn run_broadcast_loop(
     }
     Err(error) => {
       if config.source_kind == ScreenShareSourceKind::Webcam {
-        logger::log(&format!(
-          "[video/macos] native AVFoundation webcam encoder unavailable: {error}"
-        ));
+        tracing::warn!(target: "video::encode::macos", "[video:encode/macos] native AVFoundation webcam encoder unavailable: {error}");
         if let Some(init_tx) = init_tx {
           let _ = init_tx.send(Err(error.to_string()));
         }
         return Err(error);
       }
-      logger::log(&format!(
-        "[video/macos] native ScreenCaptureKit encoder unavailable; falling back to CPU capture: {error}"
-      ));
+      tracing::warn!(target: "video::encode::macos", "[video:encode/macos] native ScreenCaptureKit encoder unavailable; falling back to CPU capture: {error}");
     }
   }
 
-  logger::log("[video/macos] creating VideoToolbox encoder");
+  tracing::info!(target: "video::encode::macos", "[video:encode/macos] creating VideoToolbox encoder");
   let mut encoder = match VTEncoder::new(&config) {
     Ok(encoder) => encoder,
     Err(error) => {
@@ -416,8 +411,8 @@ fn run_broadcast_loop(
       return Err(error);
     }
   };
-  logger::log(&format!(
-    "[video/macos] encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
+  tracing::info!(target: "video::encode::macos",
+    "[video:encode/macos] encoder ready: codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
     config.codec,
     config.source_width,
     config.source_height,
@@ -425,8 +420,8 @@ fn run_broadcast_loop(
     config.output_height,
     config.fps,
     config.bitrate_kbps
-  ));
-  logger::log("[video/macos] opening CPU capture source");
+  );
+  tracing::info!(target: "video::encode::macos", "[video:encode/macos] opening CPU capture source");
   let mut source = match CaptureSource::open(&config) {
     Ok(source) => source,
     Err(error) => {
@@ -453,7 +448,7 @@ fn run_broadcast_loop(
     let force_keyframe = requested_keyframes != handled_keyframe_requests || frame_number == 0;
     if requested_keyframes != handled_keyframe_requests {
       handled_keyframe_requests = requested_keyframes;
-      logger::log("[video/macos] keyframe requested by PLI");
+      tracing::debug!(target: "video::encode::macos", "[video:encode/macos] keyframe requested by PLI");
     }
 
     let rgba = source.capture_rgba(config.output_width, config.output_height)?;
@@ -479,10 +474,11 @@ fn run_broadcast_loop(
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
-          logger::log(&format!(
-            "[video/macos] dropped live video frame before network queue: frame={} total_dropped={}",
-            frame_number, dropped_live_frames
-          ));
+          tracing::info!(target: "video::encode::macos",
+            "[video:encode/macos] dropped live video frame before network queue: frame={} total_dropped={}",
+            frame_number,
+            dropped_live_frames
+          );
         }
         continue;
       }
@@ -490,20 +486,26 @@ fn run_broadcast_loop(
         loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
-        logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
+        tracing::warn!(target: "video::encode::macos", "[video:encode/macos] live video datagrams unavailable or too large; using reliable stream fallback");
         logged_stream_fallback = true;
       }
       if !logged_first_frame {
-        logger::log(&format!(
-          "[video/macos] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
-          frame_number, sample_len, sample_keyframe, send_result
-        ));
+        tracing::info!(target: "video::encode::macos",
+          "[video:encode/macos] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
+          frame_number,
+          sample_len,
+          sample_keyframe,
+          send_result
+        );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        logger::log(&format!(
-          "[video/macos] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
-          frame_number, sample_len, sample_keyframe, send_result
-        ));
+        tracing::info!(target: "video::encode::macos",
+          "[video:encode/macos] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
+          frame_number,
+          sample_len,
+          sample_keyframe,
+          send_result
+        );
       }
     }
 
@@ -514,7 +516,7 @@ fn run_broadcast_loop(
     }
   }
 
-  logger::log("[video/macos] broadcast loop stopped by request");
+  tracing::info!(target: "video::encode::macos", "[video:encode/macos] broadcast loop stopped by request");
   Ok(())
 }
 
@@ -546,7 +548,7 @@ fn run_native_broadcast_loop(
     if requested_keyframes != handled_keyframe_requests {
       handled_keyframe_requests = requested_keyframes;
       encoder.force_keyframe();
-      logger::log("[video/macos] keyframe requested by PLI");
+      tracing::debug!(target: "video::encode::macos", "[video:encode/macos] keyframe requested by PLI");
     }
 
     let samples = encoder.poll()?;
@@ -569,10 +571,11 @@ fn run_native_broadcast_loop(
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
-          logger::log(&format!(
-            "[video/macos] dropped live video frame before network queue: frame={} total_dropped={}",
-            frame_number, dropped_live_frames
-          ));
+          tracing::info!(target: "video::encode::macos",
+            "[video:encode/macos] dropped live video frame before network queue: frame={} total_dropped={}",
+            frame_number,
+            dropped_live_frames
+          );
         }
         frame_number = frame_number.wrapping_add(1);
         continue;
@@ -581,20 +584,26 @@ fn run_native_broadcast_loop(
         loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
-        logger::log("[video/macos] live video datagrams unavailable or too large; using reliable stream fallback");
+        tracing::warn!(target: "video::encode::macos", "[video:encode/macos] live video datagrams unavailable or too large; using reliable stream fallback");
         logged_stream_fallback = true;
       }
       if !logged_first_frame {
-        logger::log(&format!(
-          "[video/macos] first native encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
-          frame_number, sample_len, sample_keyframe, send_result
-        ));
+        tracing::info!(target: "video::encode::macos",
+          "[video:encode/macos] first native encoded frame sent: frame={} bytes={} keyframe={} transport={:?}",
+          frame_number,
+          sample_len,
+          sample_keyframe,
+          send_result
+        );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        logger::log(&format!(
-          "[video/macos] native encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
-          frame_number, sample_len, sample_keyframe, send_result
-        ));
+        tracing::info!(target: "video::encode::macos",
+          "[video:encode/macos] native encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
+          frame_number,
+          sample_len,
+          sample_keyframe,
+          send_result
+        );
       }
       frame_number = frame_number.wrapping_add(1);
     }
@@ -609,7 +618,7 @@ fn run_native_broadcast_loop(
     thread::sleep(poll_interval);
   }
 
-  logger::log("[video/macos] native broadcast loop stopped by request");
+  tracing::info!(target: "video::encode::macos", "[video:encode/macos] native broadcast loop stopped by request");
   Ok(())
 }
 
@@ -627,7 +636,7 @@ impl StreamAudioEncoder {
     encoder
       .set_bitrate(OpusBitrate::Bits(STREAM_AUDIO_BITRATE))
       .map_err(|error| VideoError::new(format!("Failed to configure macOS stream audio Opus bitrate: {error}")))?;
-    logger::log("[audio/macos] stream audio capture enabled");
+    tracing::debug!(target: "audio::encode::macos", "[audio:encode/macos] stream audio capture enabled");
     Ok(Self {
       encoder,
       pcm_frame: Vec::with_capacity(STREAM_AUDIO_FRAME_SAMPLES),
@@ -663,9 +672,7 @@ impl StreamAudioEncoder {
     self.pcm_frame.clear();
 
     if !self.logged_first_packet {
-      logger::log(&format!(
-        "[audio/macos] first stream audio packet sent: bytes={packet_len}"
-      ));
+      tracing::debug!(target: "audio::encode::macos", "[audio:encode/macos] first stream audio packet sent: bytes={packet_len}");
       self.logged_first_packet = true;
     }
     Ok(())
@@ -1465,9 +1472,7 @@ fn set_vt_property_string(session: VTCompressionSessionRef, key: &str, value: &s
     CFRelease(value.cast());
   }
   if status != NO_ERR {
-    logger::log(&format!(
-      "[video/macos] VideoToolbox ignored encoder string property {key:?}: OSStatus {status}"
-    ));
+    tracing::warn!(target: "video::encode::macos", "[video:encode/macos] VideoToolbox ignored encoder string property {key:?}: OSStatus {status}");
   }
   Ok(())
 }
@@ -1508,10 +1513,13 @@ pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoErr
     output_rx,
     output_tx,
   };
-  logger::log(&format!(
-    "[video/macos] decoder ready: codec={:?} size={}x{} av1_videotoolbox_unavailable={}",
-    config.codec, config.width, config.height, decoder.av1_videotoolbox_unavailable
-  ));
+  tracing::warn!(target: "video::decode::macos",
+    "[video:decode/macos] decoder ready: codec={:?} size={}x{} av1_videotoolbox_unavailable={}",
+    config.codec,
+    config.width,
+    config.height,
+    decoder.av1_videotoolbox_unavailable
+  );
   Ok(VideoDecoder::from_macos(
     decoder,
     config,
@@ -1536,11 +1544,11 @@ impl NativeVideoDecoder {
 
     let access_units = AccessUnits::parse(frame.codec, &frame.encoded)?;
     if frame.keyframe && self.session.is_none() && !access_units.can_initialize_session(frame.codec) {
-      logger::log(&format!(
-        "[video/macos] keyframe missing VideoToolbox parameter sets: codec={:?} {}",
+      tracing::info!(target: "video::decode::macos",
+        "[video:decode/macos] keyframe missing VideoToolbox parameter sets: codec={:?} {}",
         frame.codec,
         access_units.parameter_set_summary()
-      ));
+      );
     }
 
     let should_initialize_session = match frame.codec {
@@ -1553,18 +1561,16 @@ impl NativeVideoDecoder {
       if let Some(session) = self.session.take() {
         drop(session);
       }
-      logger::log(&format!(
-        "[video/macos] initializing VideoToolbox session from parameter sets: codec={:?} {}",
+      tracing::info!(target: "video::decode::macos",
+        "[video:decode/macos] initializing VideoToolbox session from parameter sets: codec={:?} {}",
         frame.codec,
         access_units.parameter_set_summary()
-      ));
+      );
       match VTSession::new(&self.config, &access_units, self.output_tx.clone()) {
         Ok(session) => self.session = Some(session),
         Err(error) if frame.codec == VideoCodecId::Av1 => {
           self.av1_videotoolbox_unavailable = true;
-          logger::log(&format!(
-            "[video/macos] VideoToolbox AV1 unavailable; falling back to rav1d software decode: {error}"
-          ));
+          tracing::warn!(target: "video::decode::macos", "[video:decode/macos] VideoToolbox AV1 unavailable; falling back to rav1d software decode: {error}");
           return self.decode_av1_software(frame, output, output_buffer);
         }
         Err(error) => return Err(error),

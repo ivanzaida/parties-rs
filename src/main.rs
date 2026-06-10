@@ -30,8 +30,18 @@ const DEFAULT_WINDOW_HEIGHT: u32 = 900;
 const MIN_WINDOW_WIDTH: u32 = 768;
 const MIN_WINDOW_HEIGHT: u32 = 640;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenBounds {
+  x: i32,
+  y: i32,
+  width: u32,
+  height: u32,
+}
+
 fn main() {
   services::logger::init();
+  #[cfg(target_os = "windows")]
+  log_startup_gpu_info();
   #[cfg(target_os = "windows")]
   install_windows_native_diagnostics();
   let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -39,7 +49,12 @@ fn main() {
     .build()
     .expect("failed to create tokio runtime");
   let (startup_storage, window_state, startup_error) = load_startup_storage();
-  let window_state = window_state.map(clamp_window_state_size);
+  let window_state = window_state.map(validate_startup_window_state);
+  let startup_full_screen = window_state.is_some_and(|state| state.full_screen);
+  let window_state_tracker = startup_storage.as_ref().map(|_| app::WindowStateTracker {
+    current: Arc::new(Mutex::new(window_state.unwrap_or_else(|| default_window_state(false)))),
+    last_saved: Arc::new(Mutex::new(window_state)),
+  });
   #[cfg(target_os = "windows")]
   let dx12_video_surfaces = lurq::app::dx12_render::Dx12VideoSurfaceAllocator::new();
   #[cfg(target_os = "windows")]
@@ -78,6 +93,8 @@ fn main() {
       startup_storage: startup_storage.clone(),
       startup_error,
       session: session.clone(),
+      startup_full_screen,
+      window_state_tracker: window_state_tracker.clone(),
     },
   );
   tree.mount_devtools(&mut lurq_app);
@@ -102,14 +119,9 @@ fn main() {
     window = window.with_position(state.x, state.y);
   }
 
-  if let Some(storage) = startup_storage {
-    let current_window_state = Arc::new(Mutex::new(window_state.unwrap_or(WindowState {
-      x: 0,
-      y: 0,
-      width: DEFAULT_WINDOW_WIDTH,
-      height: DEFAULT_WINDOW_HEIGHT,
-    })));
-    let last_saved_state = Arc::new(Mutex::new(window_state));
+  if let (Some(storage), Some(window_state_tracker)) = (startup_storage, window_state_tracker) {
+    let current_window_state = window_state_tracker.current.clone();
+    let last_saved_state = window_state_tracker.last_saved.clone();
     let move_storage = storage.clone();
     let move_state = current_window_state.clone();
     let move_last_saved_state = last_saved_state.clone();
@@ -151,6 +163,98 @@ fn main() {
 
   window.run();
   session.disconnect_for_shutdown();
+}
+
+#[cfg(target_os = "windows")]
+fn log_startup_gpu_info() {
+  use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1};
+
+  let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+    tracing::error!(target: "startup::gpu", "[startup/gpu] failed to create DXGI factory");
+    return;
+  };
+
+  let mut adapter_index = 0;
+  let mut logged_any = false;
+  loop {
+    let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+      Ok(adapter) => adapter,
+      Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+      Err(error) => {
+        tracing::warn!(target: "startup::gpu", "[startup/gpu] failed to enumerate DXGI adapter #{adapter_index}: {error}");
+        break;
+      }
+    };
+    log_dxgi_adapter(adapter_index, &adapter);
+    logged_any = true;
+    adapter_index += 1;
+  }
+
+  if !logged_any {
+    tracing::warn!(target: "startup::gpu", "[startup/gpu] no DXGI adapters found");
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn log_dxgi_adapter(index: u32, adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) {
+  let desc = match unsafe { adapter.GetDesc1() } {
+    Ok(desc) => desc,
+    Err(error) => {
+      tracing::warn!(target: "startup::gpu", "[startup/gpu] adapter #{index}: failed to read desc: {error}");
+      return;
+    }
+  };
+  let name = utf16_null_terminated_to_string(&desc.Description);
+  let vendor = gpu_vendor_label(desc.VendorId);
+  let dedicated_vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
+  let shared_memory_mb = desc.SharedSystemMemory / (1024 * 1024);
+  let output_count = dxgi_output_count(adapter);
+  let default_marker = if index == 0 { " default=true" } else { "" };
+  tracing::info!(target: "startup::gpu",
+    "[startup/gpu] adapter #{index}:{default_marker} vendor={vendor} vendor_id=0x{:04x} device_id=0x{:04x} name='{}' dedicated_vram={}MB shared_memory={}MB outputs={} flags=0x{:x}",
+    desc.VendorId,
+    desc.DeviceId,
+    name,
+    dedicated_vram_mb,
+    shared_memory_mb,
+    output_count,
+    desc.Flags
+  );
+}
+
+#[cfg(target_os = "windows")]
+fn dxgi_output_count(adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> u32 {
+  use windows::Win32::Graphics::Dxgi::DXGI_ERROR_NOT_FOUND;
+
+  let mut output_index = 0;
+  loop {
+    match unsafe { adapter.EnumOutputs(output_index) } {
+      Ok(_) => output_index + 1,
+      Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => return output_index,
+      Err(_) => return output_index,
+    };
+    output_index += 1;
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn utf16_null_terminated_to_string(value: &[u16]) -> String {
+  let len = value
+    .iter()
+    .position(|code_unit| *code_unit == 0)
+    .unwrap_or(value.len());
+  String::from_utf16_lossy(&value[..len])
+}
+
+#[cfg(target_os = "windows")]
+fn gpu_vendor_label(vendor_id: u32) -> &'static str {
+  match vendor_id {
+    0x1002 => "AMD",
+    0x10DE => "NVIDIA",
+    0x8086 => "Intel",
+    0x1414 => "Microsoft",
+    _ => "Unknown",
+  }
 }
 
 fn app_window_icon() -> Option<WindowIcon> {
@@ -195,14 +299,13 @@ extern "C" fn windows_native_log_callback(level: u8, message: *const c_char) {
   }
 
   let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
-  let level = match level {
-    0 => "debug",
-    1 => "info",
-    2 => "warn",
-    3 => "error",
-    _ => "unknown",
-  };
-  services::logger::log(&format!("[native/windows/{level}] {message}"));
+  match level {
+    0 => tracing::debug!(target: "native::windows", "[native/windows/debug] {message}"),
+    1 => tracing::info!(target: "native::windows", "[native/windows/info] {message}"),
+    2 => tracing::warn!(target: "native::windows", "[native/windows/warn] {message}"),
+    3 => tracing::error!(target: "native::windows", "[native/windows/error] {message}"),
+    _ => tracing::warn!(target: "native::windows", "[native/windows/unknown] {message}"),
+  }
 }
 
 fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<String>) {
@@ -217,8 +320,134 @@ fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<Strin
   }
 }
 
+fn default_window_state(full_screen: bool) -> WindowState {
+  WindowState {
+    x: 0,
+    y: 0,
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
+    full_screen,
+  }
+}
+
+fn validate_startup_window_state(state: WindowState) -> WindowState {
+  validate_window_state_for_screens(state, &startup_screen_bounds())
+}
+
+fn validate_window_state_for_screens(state: WindowState, screens: &[ScreenBounds]) -> WindowState {
+  let state = clamp_window_state_size(state);
+  if screens.is_empty() {
+    return state;
+  }
+  if !window_size_fits_any_screen(state, screens) || !window_intersects_any_screen(state, screens) {
+    return default_window_state(state.full_screen);
+  }
+  state
+}
+
 fn clamp_window_state_size(mut state: WindowState) -> WindowState {
   state.width = state.width.max(MIN_WINDOW_WIDTH);
   state.height = state.height.max(MIN_WINDOW_HEIGHT);
   state
+}
+
+fn startup_screen_bounds() -> Vec<ScreenBounds> {
+  xcap::Monitor::all()
+    .ok()
+    .into_iter()
+    .flatten()
+    .filter_map(|monitor| {
+      Some(ScreenBounds {
+        x: monitor.x().ok()?,
+        y: monitor.y().ok()?,
+        width: monitor.width().ok()?,
+        height: monitor.height().ok()?,
+      })
+    })
+    .collect()
+}
+
+fn window_size_fits_any_screen(state: WindowState, screens: &[ScreenBounds]) -> bool {
+  screens
+    .iter()
+    .any(|screen| state.width <= screen.width && state.height <= screen.height)
+}
+
+fn window_intersects_any_screen(state: WindowState, screens: &[ScreenBounds]) -> bool {
+  screens
+    .iter()
+    .any(|screen| rects_intersect(state.x, state.y, state.width, state.height, screen))
+}
+
+fn rects_intersect(x: i32, y: i32, width: u32, height: u32, screen: &ScreenBounds) -> bool {
+  let left = x as i64;
+  let top = y as i64;
+  let right = left + width as i64;
+  let bottom = top + height as i64;
+  let screen_left = screen.x as i64;
+  let screen_top = screen.y as i64;
+  let screen_right = screen_left + screen.width as i64;
+  let screen_bottom = screen_top + screen.height as i64;
+
+  left < screen_right && right > screen_left && top < screen_bottom && bottom > screen_top
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const SCREEN: ScreenBounds = ScreenBounds {
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 1080,
+  };
+
+  fn window_state(x: i32, y: i32, width: u32, height: u32, full_screen: bool) -> WindowState {
+    WindowState {
+      x,
+      y,
+      width,
+      height,
+      full_screen,
+    }
+  }
+
+  #[test]
+  fn startup_window_state_clamps_too_small_size() {
+    let state = validate_window_state_for_screens(window_state(20, 30, 320, 240, true), &[SCREEN]);
+
+    assert_eq!(state.x, 20);
+    assert_eq!(state.y, 30);
+    assert_eq!(state.width, MIN_WINDOW_WIDTH);
+    assert_eq!(state.height, MIN_WINDOW_HEIGHT);
+    assert!(state.full_screen);
+  }
+
+  #[test]
+  fn startup_window_state_resets_when_offscreen() {
+    let state = validate_window_state_for_screens(window_state(5000, 5000, 1280, 900, false), &[SCREEN]);
+
+    assert_eq!(state, default_window_state(false));
+  }
+
+  #[test]
+  fn startup_window_state_resets_when_too_large_for_screens() {
+    let state = validate_window_state_for_screens(window_state(0, 0, 3840, 2160, true), &[SCREEN]);
+
+    assert_eq!(state, default_window_state(true));
+  }
+
+  #[test]
+  fn startup_window_state_keeps_valid_secondary_screen_position() {
+    let secondary = ScreenBounds {
+      x: -1280,
+      y: 0,
+      width: 1280,
+      height: 1024,
+    };
+    let state = validate_window_state_for_screens(window_state(-1000, 40, 900, 700, false), &[SCREEN, secondary]);
+
+    assert_eq!(state, window_state(-1000, 40, 900, 700, false));
+  }
 }

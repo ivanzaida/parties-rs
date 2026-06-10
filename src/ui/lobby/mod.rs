@@ -100,6 +100,7 @@ pub struct LobbyScreen {
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
   start_stream_modal_open: Signal<bool>,
+  stream_start_submitted: Signal<bool>,
   stream_source_kind: Signal<ScreenShareSourceKind>,
   stream_source_index: Signal<usize>,
   stream_audio_enabled: Signal<bool>,
@@ -139,6 +140,7 @@ impl Component for LobbyScreen {
       chat_bottom_anchor: ctx.signal(None),
       chat_top_anchor: ctx.signal(None),
       start_stream_modal_open: ctx.signal(false),
+      stream_start_submitted: ctx.signal(false),
       stream_source_kind: ctx.signal(ScreenShareSourceKind::Screen),
       stream_source_index: ctx.signal(0),
       stream_audio_enabled: ctx.signal(true),
@@ -226,8 +228,13 @@ impl Component for LobbyScreen {
       self.reconnect_attempt.set(0);
     }
 
+    if !self.start_stream_modal_open.get_untracked() && self.stream_start_submitted.get_untracked() {
+      self.stream_start_submitted.set(false);
+    }
+
     let modal_open = self.start_stream_modal_open.clone();
     let modal_start_stream = start_stream.clone();
+    let modal_start_submitted = self.stream_start_submitted.clone();
     let modal_source_kind = self.stream_source_kind.clone();
     let modal_source_index = self.stream_source_index.clone();
     let modal_audio_enabled = self.stream_audio_enabled.clone();
@@ -239,8 +246,9 @@ impl Component for LobbyScreen {
         modal_source_kind.clone(),
         modal_source_index.clone(),
         modal_audio_enabled.clone(),
-        &modal_stream_codec,
+        modal_stream_codec.clone(),
         modal_start_stream.clone(),
+        modal_start_submitted.clone(),
       )
     });
 

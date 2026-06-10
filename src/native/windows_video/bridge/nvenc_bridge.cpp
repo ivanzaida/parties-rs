@@ -2,6 +2,7 @@
 #include "nvidia/nvenc_encoder.h"
 
 #include <d3d11.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 
 #include <cstdint>
@@ -16,6 +17,8 @@ using parties_rs::video::VideoCodecId;
 using parties_rs::video::native_log_error;
 using parties_rs::video::native_log_info;
 using parties_rs::video::nvidia::NvencEncoder;
+
+constexpr UINT NVIDIA_VENDOR_ID = 0x10DE;
 
 struct NvencBridge {
     ComPtr<ID3D11Device> device;
@@ -35,7 +38,7 @@ VideoCodecId codec_from_u8(uint8_t codec) {
     }
 }
 
-bool create_device(NvencBridge& bridge) {
+bool create_device_on_adapter(IDXGIAdapter1* adapter, NvencBridge& bridge) {
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #if defined(_DEBUG)
     flags |= D3D11_CREATE_DEVICE_DEBUG;
@@ -46,8 +49,8 @@ bool create_device(NvencBridge& bridge) {
     };
     D3D_FEATURE_LEVEL selected{};
     HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
+        adapter,
+        D3D_DRIVER_TYPE_UNKNOWN,
         nullptr,
         flags,
         levels,
@@ -59,8 +62,8 @@ bool create_device(NvencBridge& bridge) {
     if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
         flags &= ~D3D11_CREATE_DEVICE_DEBUG;
         hr = D3D11CreateDevice(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
             nullptr,
             flags,
             levels,
@@ -71,6 +74,43 @@ bool create_device(NvencBridge& bridge) {
             &bridge.context);
     }
     return SUCCEEDED(hr);
+}
+
+bool create_nvidia_device(NvencBridge& bridge) {
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        native_log_error("NVENC bridge failed to create DXGI factory: {}", static_cast<int>(hr));
+        return false;
+    }
+
+    for (UINT index = 0;; ++index) {
+        ComPtr<IDXGIAdapter1> adapter;
+        hr = factory->EnumAdapters1(index, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+        if (FAILED(hr)) {
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != NVIDIA_VENDOR_ID) {
+            continue;
+        }
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+            continue;
+        }
+
+        if (create_device_on_adapter(adapter.Get(), bridge)) {
+            native_log_info("NVENC bridge selected NVIDIA adapter: index={} vendor_id={} device_id={}",
+                index, desc.VendorId, desc.DeviceId);
+            return true;
+        }
+    }
+
+    native_log_error("NVENC bridge did not find a usable NVIDIA D3D11 adapter");
+    return false;
 }
 
 bool create_texture(NvencBridge& bridge, uint16_t width, uint16_t height) {
@@ -98,7 +138,7 @@ NvencBridge* parties_nvenc_create(uint8_t codec, uint16_t width, uint16_t height
     }
 
     auto bridge = std::make_unique<NvencBridge>();
-    if (!create_device(*bridge) || !create_texture(*bridge, width, height)) {
+    if (!create_nvidia_device(*bridge) || !create_texture(*bridge, width, height)) {
         native_log_error("NVENC bridge failed to create D3D11 device or texture");
         return nullptr;
     }

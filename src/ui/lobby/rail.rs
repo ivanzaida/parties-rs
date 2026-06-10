@@ -13,10 +13,7 @@ use super::{StopStreamAction, WatchStreamAction};
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
-  services::{
-    logger,
-    voice_controls::{VoiceControlAction, apply_voice_control},
-  },
+  services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::{ConnectedServerInfo, LobbyState, ServerSession},
   storage::{AppSettings, Storage},
   theme,
@@ -126,27 +123,27 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
       if !already_in_voice {
         muted = settings.start_muted_when_joining || deafened;
       }
-      logger::log(&format!(
+      tracing::info!(target: "lobby", 
         "[lobby] join channel requested: channel={channel_id} already_in_voice={already_in_voice} muted={muted} deafened={deafened}"
-      ));
+      );
       server
         .join_channel(channel_id)
         .await
         .map_err(|error| error.to_string())?;
-      logger::log(&format!("[lobby] join channel accepted: channel={channel_id}"));
+      tracing::info!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
       session.select_channel(channel_id);
       session.play_voice_join_notification();
       server
         .update_voice_state(muted, deafened)
         .await
         .map_err(|error| error.to_string())?;
-      logger::log(&format!(
+      tracing::info!(target: "voice", 
         "[voice] local voice state announced after join: channel={channel_id} muted={muted} deafened={deafened}"
-      ));
+      );
       session.set_local_voice_state(muted, deafened);
       match session.start_voice(settings, &no_connected_server) {
-        Ok(()) => logger::log("[voice] local voice capture started after join"),
-        Err(error) => logger::log(&format!("[voice] local voice capture failed after join: {error}")),
+        Ok(()) => tracing::info!(target: "voice", "[voice] local voice capture started after join"),
+        Err(error) => tracing::warn!(target: "voice", "[voice] local voice capture failed after join: {error}"),
       }
       Ok(())
     }

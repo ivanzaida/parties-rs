@@ -72,6 +72,12 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
         native_log_error("cuDeviceGet failed: {}", (int)res);
         return false;
     }
+    char device_name[256]{};
+    if (cuda_.cuDeviceGetName(device_name, static_cast<int>(sizeof(device_name)), cu_device) == CUDA_SUCCESS) {
+        native_log_info("NVDEC selected CUDA device: ordinal={} name='{}'", 0, device_name);
+    } else {
+        native_log_info("NVDEC selected CUDA device: ordinal={}", 0);
+    }
 
     res = cuda_.cuCtxCreate(&cu_ctx_, CU_CTX_SCHED_AUTO, cu_device);
     if (res != CUDA_SUCCESS) {

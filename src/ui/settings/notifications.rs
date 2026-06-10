@@ -13,10 +13,7 @@ use lurq::{
 };
 
 use crate::{
-  services::{
-    logger,
-    notifications::{self, NotificationSound},
-  },
+  services::notifications::{self, NotificationSound},
   session::ServerSession,
   storage::{AppSettings, Storage},
   theme,
@@ -498,7 +495,7 @@ fn notification_sound_action_menu(
       };
 
       if let Err(error) = notifications::install_custom_sound(sound, &path) {
-        logger::log(&format!("[audio] failed to install custom notification sound: {error}"));
+        tracing::error!(target: "notifications", "[notifications] failed to install custom notification sound: {error}");
         return;
       }
 

@@ -1,6 +1,6 @@
 use std::{
   sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
   },
   time::Duration,
@@ -32,7 +32,7 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::Storage,
+  storage::{Storage, WindowState},
   theme,
   ui::{
     app_chrome::{
@@ -71,7 +71,16 @@ pub struct App {
   window_affordances_open: Signal<bool>,
   active_toggle_hotkeys: Signal<Vec<String>>,
   update_status: Signal<StartupUpdateStatus>,
+  startup_full_screen: bool,
+  startup_full_screen_applied: Signal<bool>,
+  window_state_tracker: Option<WindowStateTracker>,
   global_hotkeys: GlobalVoiceHotkeys,
+}
+
+#[derive(Clone)]
+pub struct WindowStateTracker {
+  pub current: Arc<Mutex<WindowState>>,
+  pub last_saved: Arc<Mutex<Option<WindowState>>>,
 }
 
 #[derive(Clone)]
@@ -80,6 +89,8 @@ pub struct AppProps {
   pub startup_storage: Option<Storage>,
   pub startup_error: Option<String>,
   pub session: ServerSession,
+  pub startup_full_screen: bool,
+  pub window_state_tracker: Option<WindowStateTracker>,
 }
 
 impl PartialEq for AppProps {
@@ -193,6 +204,9 @@ impl Component for App {
       window_affordances_open: ctx.signal(true),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
       update_status,
+      startup_full_screen: props.startup_full_screen,
+      startup_full_screen_applied: ctx.signal(false),
+      window_state_tracker: props.window_state_tracker.clone(),
       global_hotkeys,
     }
   }
@@ -205,6 +219,13 @@ impl Component for App {
     let storage = self.storage.get();
     if let Some(storage) = storage.clone() {
       ctx.provide(storage);
+    }
+    let startup_window = ctx.window();
+    if self.startup_full_screen && !self.startup_full_screen_applied.get_untracked() {
+      self.startup_full_screen_applied.set(true);
+      startup_window.set_full_screen(true);
+    } else {
+      self.sync_window_full_screen(storage.as_ref(), startup_window.is_full_screen);
     }
     let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
     if let Some(settings) = settings.as_ref() {
@@ -421,6 +442,30 @@ impl App {
     }
 
     Some(pill.into())
+  }
+}
+
+impl App {
+  fn sync_window_full_screen(&self, storage: Option<&Storage>, full_screen: bool) {
+    let (Some(storage), Some(tracker)) = (storage, self.window_state_tracker.as_ref()) else {
+      return;
+    };
+
+    let state = {
+      let mut state = tracker.current.lock().expect("window state lock poisoned");
+      if state.full_screen == full_screen {
+        return;
+      }
+      state.full_screen = full_screen;
+      *state
+    };
+    let mut last_saved = tracker.last_saved.lock().expect("window state lock poisoned");
+    if *last_saved == Some(state) {
+      return;
+    }
+    if storage.save_window_state(state).is_ok() {
+      *last_saved = Some(state);
+    }
   }
 }
 

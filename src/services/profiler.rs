@@ -5,8 +5,6 @@ use std::{
   time::{Duration, Instant},
 };
 
-use super::logger;
-
 const DEFAULT_LOG_INTERVAL: Duration = Duration::from_secs(2);
 
 static PROFILER: LazyLock<Profiler> = LazyLock::new(Profiler::from_startup);
@@ -88,10 +86,7 @@ impl Profiler {
     for (name, stat) in summaries {
       let avg = stat.total.as_secs_f64() * 1000.0 / stat.count.max(1) as f64;
       let max = stat.max.as_secs_f64() * 1000.0;
-      logger::log(&format!(
-        "[profile] {name}: count={} avg={avg:.3}ms max={max:.3}ms",
-        stat.count
-      ));
+      tracing::info!(target: "profile", "[profile] {name}: count={} avg={avg:.3}ms max={max:.3}ms", stat.count);
     }
   }
 }

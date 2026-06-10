@@ -13,10 +13,7 @@ mod windows_impl {
   };
 
   use super::VideoError;
-  use crate::services::{
-    logger,
-    webcam_devices::windows_webcam::{MediaFoundationSession, find_activate_by_id},
-  };
+  use crate::services::webcam_devices::windows_webcam::{MediaFoundationSession, find_activate_by_id};
 
   pub(crate) struct WebcamCapture {
     _mf: MediaFoundationSession,
@@ -58,7 +55,7 @@ mod windows_impl {
       };
 
       let selected = configure_reader_output(&reader, u32::from(width), u32::from(height), fps)?;
-      logger::log(&format!(
+      tracing::info!(target: "video",
         "[video] webcam capture ready: source={} format={} size={}x{} fps={} requested={}x{}@{} backend=MediaFoundation",
         source_id,
         selected.format.label(),
@@ -68,8 +65,8 @@ mod windows_impl {
         width,
         height,
         fps
-      ));
-      logger::log(&format!("[video] webcam source link selected: {value}"));
+      );
+      tracing::info!(target: "video", "[video] webcam source link selected: {value}");
 
       Ok(Self {
         _mf,

@@ -1,4 +1,5 @@
 #include "capture/windows_screen_capture.h"
+#include "amd/amf_encoder.h"
 #include "common/video_types.h"
 #include "nvidia/nvenc_encoder.h"
 
@@ -22,6 +23,7 @@ using parties_rs::video::ScreenCapture;
 using parties_rs::video::native_log_error;
 using parties_rs::video::native_log_info;
 using parties_rs::video::native_log_warn;
+using parties_rs::video::amd::AmfEncoder;
 using parties_rs::video::nvidia::NvencEncoder;
 using Microsoft::WRL::ComPtr;
 
@@ -51,7 +53,8 @@ struct GpuStreamBridge {
     ComPtr<ID3D11VideoProcessor> video_processor;
     ComPtr<ID3D11VideoProcessorOutputView> scaled_output_view;
     ComPtr<ID3D11Texture2D> scaled_texture;
-    NvencEncoder encoder;
+    NvencEncoder nvenc;
+    AmfEncoder amf;
     std::vector<InputViewCacheEntry> input_view_cache;
     std::vector<RegisteredInputCacheEntry> registered_input_cache;
     std::mutex mutex;
@@ -60,6 +63,7 @@ struct GpuStreamBridge {
     bool pending_keyframe = false;
     bool readable_keyframe = false;
     bool encoder_ready = false;
+    bool use_amf = false;
     bool apartment_initialized = false;
     bool scale_required = false;
     int scaled_input_slot = -1;
@@ -79,7 +83,9 @@ VideoCodecId codec_from_u8(uint8_t codec) {
 }
 
 void clear_scaler(GpuStreamBridge& bridge) {
-    bridge.encoder.unregister_inputs();
+    if (!bridge.use_amf) {
+        bridge.nvenc.unregister_inputs();
+    }
     bridge.scaled_input_slot = -1;
     bridge.scale_required = false;
     bridge.input_view_cache.clear();
@@ -178,12 +184,15 @@ bool register_scaled_input(GpuStreamBridge& bridge) {
     if (!bridge.scale_required) {
         return true;
     }
-    bridge.scaled_input_slot = bridge.encoder.register_input(bridge.scaled_texture.Get());
+    if (bridge.use_amf) {
+        return true;
+    }
+    bridge.scaled_input_slot = bridge.nvenc.register_input(bridge.scaled_texture.Get());
     return bridge.scaled_input_slot >= 0;
 }
 
 int registered_input_slot_for_frame(GpuStreamBridge& bridge, ID3D11Texture2D* texture) {
-    if (!texture || bridge.scale_required) {
+    if (!texture || bridge.scale_required || bridge.use_amf) {
         return -1;
     }
 
@@ -193,7 +202,7 @@ int registered_input_slot_for_frame(GpuStreamBridge& bridge, ID3D11Texture2D* te
         }
     }
 
-    int slot = bridge.encoder.register_input(texture);
+    int slot = bridge.nvenc.register_input(texture);
     if (slot < 0) {
         return -1;
     }
@@ -442,22 +451,24 @@ void parties_wgc_snapshot_free(uint8_t* bytes) {
     std::free(bytes);
 }
 
-GpuStreamBridge* parties_gpu_stream_create(
+GpuStreamBridge* create_gpu_stream(
     uint8_t source_kind,
     uintptr_t source_handle,
     uint8_t codec,
     uint16_t width,
     uint16_t height,
     uint32_t fps,
-    uint32_t bitrate) {
-    native_log_info("GPU stream create requested: source_kind={} source_handle={} codec={} output={}x{} fps={} bitrate={}",
-        source_kind, source_handle, codec, width, height, fps, bitrate);
+    uint32_t bitrate,
+    bool use_amf) {
+    native_log_info("{} GPU stream create requested: source_kind={} source_handle={} codec={} output={}x{} fps={} bitrate={}",
+        use_amf ? "AMF" : "NVENC", source_kind, source_handle, codec, width, height, fps, bitrate);
     if (!source_handle || width == 0 || height == 0 || fps == 0 || bitrate == 0) {
         native_log_error("GPU stream create rejected invalid arguments");
         return nullptr;
     }
 
     auto bridge = std::make_unique<GpuStreamBridge>();
+    bridge->use_amf = use_amf;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         bridge->apartment_initialized = true;
@@ -489,18 +500,26 @@ GpuStreamBridge* parties_gpu_stream_create(
     }
 
     const VideoCodecId requested_codec = codec_from_u8(codec);
-    if (!bridge->encoder.init(bridge->capture.device(), width, height, fps, bitrate, requested_codec)) {
+    const bool encoder_ready = use_amf
+        ? bridge->amf.init(bridge->capture.device(), width, height, fps, bitrate, requested_codec)
+        : bridge->nvenc.init(bridge->capture.device(), width, height, fps, bitrate, requested_codec);
+    if (!encoder_ready) {
         native_log_error("GPU stream encoder init failed");
         bridge->capture.shutdown();
         return nullptr;
     }
-    if (bridge->encoder.info().codec != requested_codec) {
+    const auto encoder_info = use_amf ? bridge->amf.info() : bridge->nvenc.info();
+    if (encoder_info.codec != requested_codec) {
         native_log_error("GPU stream encoder selected unexpected codec: requested={} actual={}",
-            static_cast<int>(requested_codec), static_cast<int>(bridge->encoder.info().codec));
+            static_cast<int>(requested_codec), static_cast<int>(encoder_info.codec));
         bridge->capture.shutdown();
         return nullptr;
     }
-    bridge->encoder.force_keyframe();
+    if (use_amf) {
+        bridge->amf.force_keyframe();
+    } else {
+        bridge->nvenc.force_keyframe();
+    }
 
     if (!configure_scaler(*bridge, bridge->source_width, bridge->source_height, width, height, fps)) {
         native_log_error("GPU stream scaler init failed: source={}x{} output={}x{}", bridge->source_width, bridge->source_height, width, height);
@@ -513,11 +532,16 @@ GpuStreamBridge* parties_gpu_stream_create(
         return nullptr;
     }
 
-    bridge->encoder.on_encoded = [ptr = bridge.get()](const uint8_t* data, size_t len, bool keyframe) {
+    auto on_encoded = [ptr = bridge.get()](const uint8_t* data, size_t len, bool keyframe) {
         std::lock_guard<std::mutex> lock(ptr->mutex);
         ptr->pending.assign(data, data + len);
         ptr->pending_keyframe = keyframe;
     };
+    if (use_amf) {
+        bridge->amf.on_encoded = on_encoded;
+    } else {
+        bridge->nvenc.on_encoded = on_encoded;
+    }
 
     bridge->capture.on_frame = [ptr = bridge.get(), width, height, fps](ID3D11Texture2D* texture, uint32_t frame_width, uint32_t frame_height) {
         const int64_t timestamp = static_cast<int64_t>(ptr->frame_number++ * ptr->frame_duration_100ns);
@@ -539,27 +563,55 @@ GpuStreamBridge* parties_gpu_stream_create(
                 native_log_error("GPU stream scaled input re-registration failed");
                 return;
             }
-            ptr->encoder.force_keyframe();
+            if (ptr->use_amf) {
+                ptr->amf.force_keyframe();
+            } else {
+                ptr->nvenc.force_keyframe();
+            }
         }
         ID3D11Texture2D* encoder_texture = scale_frame(*ptr, texture);
         if (!encoder_texture) {
             return;
         }
-        if (ptr->scale_required && ptr->scaled_input_slot >= 0) {
-            ptr->encoder.encode_registered(ptr->scaled_input_slot, timestamp);
+        if (ptr->use_amf) {
+            ptr->amf.encode(encoder_texture, timestamp);
+        } else if (ptr->scale_required && ptr->scaled_input_slot >= 0) {
+            ptr->nvenc.encode_registered(ptr->scaled_input_slot, timestamp);
         } else {
             int slot = registered_input_slot_for_frame(*ptr, encoder_texture);
             if (slot >= 0) {
-                ptr->encoder.encode_registered(slot, timestamp);
+                ptr->nvenc.encode_registered(slot, timestamp);
             } else {
-                ptr->encoder.encode(encoder_texture, timestamp);
+                ptr->nvenc.encode(encoder_texture, timestamp);
             }
         }
     };
 
     bridge->encoder_ready = true;
-    native_log_info("GPU stream ready: source={}x{} output={}x{} scale_required={}", bridge->source_width, bridge->source_height, width, height, bridge->scale_required);
+    native_log_info("{} GPU stream ready: source={}x{} output={}x{} scale_required={}", use_amf ? "AMF" : "NVENC", bridge->source_width, bridge->source_height, width, height, bridge->scale_required);
     return bridge.release();
+}
+
+GpuStreamBridge* parties_gpu_stream_create(
+    uint8_t source_kind,
+    uintptr_t source_handle,
+    uint8_t codec,
+    uint16_t width,
+    uint16_t height,
+    uint32_t fps,
+    uint32_t bitrate) {
+    return create_gpu_stream(source_kind, source_handle, codec, width, height, fps, bitrate, false);
+}
+
+GpuStreamBridge* parties_amf_gpu_stream_create(
+    uint8_t source_kind,
+    uintptr_t source_handle,
+    uint8_t codec,
+    uint16_t width,
+    uint16_t height,
+    uint32_t fps,
+    uint32_t bitrate) {
+    return create_gpu_stream(source_kind, source_handle, codec, width, height, fps, bitrate, true);
 }
 
 void parties_gpu_stream_destroy(GpuStreamBridge* bridge) {
@@ -568,7 +620,11 @@ void parties_gpu_stream_destroy(GpuStreamBridge* bridge) {
 
 void parties_gpu_stream_force_keyframe(GpuStreamBridge* bridge) {
     if (bridge && bridge->encoder_ready) {
-        bridge->encoder.force_keyframe();
+        if (bridge->use_amf) {
+            bridge->amf.force_keyframe();
+        } else {
+            bridge->nvenc.force_keyframe();
+        }
     }
 }
 

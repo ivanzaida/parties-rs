@@ -21,7 +21,7 @@ use sonora::{
   config::{EchoCanceller, HighPassFilter, MaxProcessingRate, NoiseSuppression, NoiseSuppressionLevel, Pipeline},
 };
 
-use super::{audio_devices, logger};
+use super::audio_devices;
 use crate::{
   network::{
     protocol::{
@@ -112,9 +112,7 @@ impl VoiceEngine {
       Ok(stream) => Some(stream),
       Err(error) => {
         if settings.echo_cancellation {
-          logger::log(&format!(
-            "[voice] echo cancellation enabled, but render reference output stream failed: {error}"
-          ));
+          tracing::warn!(target: "audio::decode", "[audio:decode] echo cancellation enabled, but render reference output stream failed: {error}");
         }
         None
       }
@@ -445,10 +443,10 @@ fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProce
   if settings.echo_cancellation {
     let delay_ms = aec_delay_ms();
     let _ = audio_processing.set_stream_delay_ms(delay_ms);
-    logger::log(&format!(
-      "[voice] echo cancellation enabled: stream_delay_ms={}",
+    tracing::info!(target: "audio::encode",
+      "[audio:encode] echo cancellation enabled: stream_delay_ms={}",
       audio_processing.stream_delay_ms()
-    ));
+    );
   }
 
   Some(Arc::new(Mutex::new(audio_processing)))
@@ -576,7 +574,7 @@ where
     .build_input_stream::<T, _, _>(
       config,
       move |data, _| state.push_catching(data),
-      move |error| logger::log(&format!("[voice] input stream error: {error}")),
+      move |error| tracing::warn!(target: "audio::encode", "[audio:encode] input stream error: {error}"),
       None,
     )
     .map_err(|error| VoiceError::new(format!("Failed to build input stream: {error}")))
@@ -694,7 +692,7 @@ impl InputCaptureState {
       self.capture_frame.clear();
       self.process_frame.clear();
       self.opus_frame.clear();
-      logger::log("[voice] input capture callback panicked; disabling voice capture until restart");
+      tracing::error!(target: "audio::encode", "[audio:encode] input capture callback panicked; disabling voice capture until restart");
     }
   }
 
@@ -929,7 +927,7 @@ where
     .build_output_stream::<T, _, _>(
       config,
       move |data, _| state.render(data),
-      move |error| logger::log(&format!("[voice] output stream error: {error}")),
+      move |error| tracing::warn!(target: "audio::decode", "[audio:decode] output stream error: {error}"),
       None,
     )
     .map_err(|error| VoiceError::new(format!("Failed to build output stream: {error}")))

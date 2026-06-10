@@ -9,7 +9,7 @@ use lurq::images::ImageData;
 
 use crate::services::{
   desktop_capture::{DesktopCaptureSource, DesktopCaptureSourceKind, DesktopFrame},
-  logger, profiler,
+  profiler,
   webcam_devices::{webcam_device_id, webcam_devices_with_fallbacks},
 };
 
@@ -88,78 +88,76 @@ pub async fn load_source_preview(key: ScreenSharePreviewKey) -> ScreenSharePrevi
   let started_at = Instant::now();
   let cache = PREVIEW_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
   if let Some(preview) = cache.lock().expect("preview cache lock poisoned").get(&key) {
-    logger::log(&format!(
+    tracing::debug!(target: "stream::thumbnails",
       "[stream/thumbnails/profile] cache hit for {} preview source id={} size={}x{} elapsed={}",
       source_kind_label(key.kind),
       key.id,
       key.width,
       key.height,
       format_duration(started_at.elapsed())
-    ));
+    );
     return preview.clone();
   }
 
   let (sender, receiver) = tokio::sync::oneshot::channel();
   let thread_name = format!("stream-thumbnail-{}-{}", source_kind_label(key.kind), key.id);
-  logger::log(&format!(
+  tracing::debug!(target: "stream::thumbnails",
     "[stream/thumbnails/profile] starting {} preview source id={} size={}x{}",
     source_kind_label(key.kind),
     key.id,
     key.width,
     key.height
-  ));
+  );
   let spawned = thread::Builder::new().name(thread_name).spawn(move || {
     let _span = profiler::span("stream.thumbnail.worker");
     let worker_started_at = Instant::now();
     let _ = sender.send(capture_source_preview(key));
-    logger::log(&format!(
+    tracing::debug!(target: "stream::thumbnails",
       "[stream/thumbnails/profile] worker finished {} preview source id={} size={}x{} elapsed={}",
       source_kind_label(key.kind),
       key.id,
       key.width,
       key.height,
       format_duration(worker_started_at.elapsed())
-    ));
+    );
   });
 
   if let Err(error) = spawned {
-    logger::log_once(&format!(
-      "[stream/thumbnails] failed to spawn {} preview task for source id={} size={}x{}: {}",
+    crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] failed to spawn {} preview task for source id={} size={}x{}: {}",
       source_kind_label(key.kind),
       key.id,
       key.width,
       key.height,
       error
-    ));
+    );
     let preview = store_source_preview(key, ScreenSharePreview::empty());
-    logger::log(&format!(
+    tracing::debug!(target: "stream::thumbnails",
       "[stream/thumbnails/profile] finished {} preview source id={} size={}x{} status=spawn_failed elapsed={}",
       source_kind_label(key.kind),
       key.id,
       key.width,
       key.height,
       format_duration(started_at.elapsed())
-    ));
+    );
     return preview;
   }
 
   let preview = match receiver.await {
     Ok(preview) => preview,
     Err(error) => {
-      logger::log_once(&format!(
-        "[stream/thumbnails] failed to receive {} preview task for source id={} size={}x{}: {}",
+      crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] failed to receive {} preview task for source id={} size={}x{}: {}",
         source_kind_label(key.kind),
         key.id,
         key.width,
         key.height,
         error
-      ));
+      );
       ScreenSharePreview::empty()
     }
   };
 
   let preview = store_source_preview(key, preview);
-  logger::log(&format!(
+  tracing::debug!(target: "stream::thumbnails",
     "[stream/thumbnails/profile] finished {} preview source id={} size={}x{} status={} elapsed={}",
     source_kind_label(key.kind),
     key.id,
@@ -167,7 +165,7 @@ pub async fn load_source_preview(key: ScreenSharePreviewKey) -> ScreenSharePrevi
     key.height,
     if preview.image.is_some() { "loaded" } else { "fallback" },
     format_duration(started_at.elapsed())
-  ));
+  );
   preview
 }
 
@@ -184,7 +182,7 @@ pub fn list_screen_sources() -> Vec<ScreenShareSource> {
   let screens = match DesktopCaptureSource::list_screens() {
     Ok(screens) => screens,
     Err(error) => {
-      logger::log_once(&format!("[stream/thumbnails] failed to list screen sources: {error}"));
+      crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] failed to list screen sources: {error}");
       return Vec::new();
     }
   };
@@ -196,7 +194,7 @@ pub fn list_window_sources() -> Vec<ScreenShareSource> {
   let windows = match DesktopCaptureSource::list_windows() {
     Ok(windows) => windows,
     Err(error) => {
-      logger::log_once(&format!("[stream/thumbnails] failed to list window sources: {error}"));
+      crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] failed to list window sources: {error}");
       return Vec::new();
     }
   };
@@ -244,10 +242,13 @@ fn desktop_source(source: DesktopCaptureSource) -> ScreenShareSource {
 
 fn desktop_window_source(source: DesktopCaptureSource) -> Option<ScreenShareSource> {
   if source.width < MIN_WINDOW_SOURCE_WIDTH || source.height < MIN_WINDOW_SOURCE_HEIGHT {
-    logger::log_once(&format!(
-      "[stream/sources] ignoring tiny window source: id={} app=\"{}\" title=\"{}\" size={}x{}",
-      source.id, source.description, source.name, source.width, source.height
-    ));
+    crate::log_once!(debug, target: "stream::sources", "[stream/sources] ignoring tiny window source: id={} app=\"{}\" title=\"{}\" size={}x{}",
+      source.id,
+      source.description,
+      source.name,
+      source.width,
+      source.height
+    );
     return None;
   }
   Some(desktop_source(source))
@@ -262,10 +263,9 @@ fn capture_source_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
 }
 
 fn capture_webcam_preview(key: ScreenSharePreviewKey) -> ScreenSharePreview {
-  logger::log_once(&format!(
-    "[stream/thumbnails] webcam preview is not available yet; using fallback icon for source id={}",
+  crate::log_once!(debug, target: "stream::thumbnails", "[stream/thumbnails] webcam preview is not available yet; using fallback icon for source id={}",
     key.id
-  ));
+  );
   ScreenSharePreview::empty()
 }
 
@@ -296,38 +296,39 @@ fn captured_preview(
       let preview = thumbnail_image(frame);
       let thumbnail_elapsed = thumbnail_started_at.elapsed();
       match preview.as_ref() {
-        Some(preview) => logger::log_once(&format!(
-          "[stream/thumbnails] captured {} preview for source id={} source={}x{} raw={}x{} thumbnail={}x{} capture={} thumbnail={} total={}",
-          source_kind_label(key.kind),
-          key.id,
-          key.width,
-          key.height,
-          captured_width,
-          captured_height,
-          preview.width(),
-          preview.height(),
-          format_duration(capture_elapsed),
-          format_duration(thumbnail_elapsed),
-          format_duration(started_at.elapsed())
-        )),
-        None => logger::log_once(&format!(
-          "[stream/thumbnails] invalid {} preview dimensions for source id={} source={}x{} raw={}x{} capture={} thumbnail={} total={}",
-          source_kind_label(key.kind),
-          key.id,
-          key.width,
-          key.height,
-          captured_width,
-          captured_height,
-          format_duration(capture_elapsed),
-          format_duration(thumbnail_elapsed),
-          format_duration(started_at.elapsed())
-        )),
+        Some(preview) => {
+          crate::log_once!(debug, target: "stream::thumbnails", "[stream/thumbnails] captured {} preview for source id={} source={}x{} raw={}x{} thumbnail={}x{} capture={} thumbnail={} total={}",
+            source_kind_label(key.kind),
+            key.id,
+            key.width,
+            key.height,
+            captured_width,
+            captured_height,
+            preview.width(),
+            preview.height(),
+            format_duration(capture_elapsed),
+            format_duration(thumbnail_elapsed),
+            format_duration(started_at.elapsed())
+          )
+        }
+        None => {
+          crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] invalid {} preview dimensions for source id={} source={}x{} raw={}x{} capture={} thumbnail={} total={}",
+            source_kind_label(key.kind),
+            key.id,
+            key.width,
+            key.height,
+            captured_width,
+            captured_height,
+            format_duration(capture_elapsed),
+            format_duration(thumbnail_elapsed),
+            format_duration(started_at.elapsed())
+          )
+        }
       }
       preview
     }
     Err(error) => {
-      logger::log_once(&format!(
-        "[stream/thumbnails] failed to capture {} preview for source id={} size={}x{} capture={} total={}: {}",
+      crate::log_once!(warn, target: "stream::thumbnails", "[stream/thumbnails] failed to capture {} preview for source id={} size={}x{} capture={} total={}: {}",
         source_kind_label(key.kind),
         key.id,
         key.width,
@@ -335,7 +336,7 @@ fn captured_preview(
         format_duration(capture_elapsed),
         format_duration(started_at.elapsed()),
         error
-      ));
+      );
       None
     }
   };

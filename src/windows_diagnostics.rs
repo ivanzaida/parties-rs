@@ -5,8 +5,10 @@ use std::{
     Mutex,
     atomic::{AtomicBool, Ordering},
   },
+  time::Duration,
 };
 
+use sentry::protocol::{Event, Value};
 use windows::{
   Win32::{
     Foundation::{HMODULE, NTSTATUS},
@@ -132,18 +134,29 @@ unsafe fn log_exception(source: &str, info: *mut EXCEPTION_POINTERS) {
     fault1,
     fault2
   ));
-  unsafe {
-    log_stack(info);
+  let stack = unsafe { stack_trace(info) };
+  if let Some(stack) = stack.as_deref() {
+    log_seh(&format!("[seh] stack: {stack}"));
   }
+  report_sentry_seh(
+    source,
+    code,
+    record.ExceptionAddress,
+    &location,
+    fault0,
+    fault1,
+    fault2,
+    stack.as_deref(),
+  );
 }
 
-unsafe fn log_stack(info: *mut EXCEPTION_POINTERS) {
+unsafe fn stack_trace(info: *mut EXCEPTION_POINTERS) -> Option<String> {
   if info.is_null() {
-    return;
+    return None;
   }
   let context_record = unsafe { (*info).ContextRecord };
   if context_record.is_null() {
-    return;
+    return None;
   }
 
   #[cfg(target_arch = "x86_64")]
@@ -193,13 +206,67 @@ unsafe fn log_stack(info: *mut EXCEPTION_POINTERS) {
       ));
     }
 
-    log_seh(&format!("[seh] stack: {}", parts.join(" ")));
+    Some(parts.join(" "))
   }
 
   #[cfg(not(target_arch = "x86_64"))]
   {
-    log_seh("[seh] stack: unsupported Windows architecture for Rust stack walk");
+    Some("unsupported Windows architecture for Rust stack walk".to_owned())
   }
+}
+
+fn report_sentry_seh(
+  source: &str,
+  code: u32,
+  address: *mut c_void,
+  module: &str,
+  fault0: usize,
+  fault1: usize,
+  fault2: usize,
+  stack: Option<&str>,
+) {
+  let sentry_module = sentry_module_location(module);
+  let mut event = Event {
+    level: sentry::Level::Fatal,
+    logger: Some("native::windows::seh".to_owned()),
+    message: Some(format!(
+      "Windows SEH {source} exception: code=0x{code:08x} kind={} module={sentry_module}",
+      seh_code_name(code)
+    )),
+    ..Default::default()
+  };
+  event.tags.insert("exception.source".to_owned(), source.to_owned());
+  event.tags.insert("exception.code".to_owned(), format!("0x{code:08x}"));
+  event
+    .tags
+    .insert("exception.kind".to_owned(), seh_code_name(code).to_owned());
+  event
+    .extra
+    .insert("exception_address".to_owned(), Value::String(format!("{address:p}")));
+  event.extra.insert("module".to_owned(), Value::String(sentry_module));
+  event
+    .extra
+    .insert("fault0".to_owned(), Value::String(format!("0x{fault0:x}")));
+  event
+    .extra
+    .insert("fault1".to_owned(), Value::String(format!("0x{fault1:x}")));
+  event
+    .extra
+    .insert("fault2".to_owned(), Value::String(format!("0x{fault2:x}")));
+  if let Some(stack) = stack {
+    event.extra.insert("stack".to_owned(), Value::String(stack.to_owned()));
+  }
+
+  sentry::capture_event(event);
+  let _ = crate::services::logger::flush_sentry(Duration::from_secs(2));
+}
+
+fn sentry_module_location(location: &str) -> String {
+  let Some((path, offset)) = location.rsplit_once("+0x") else {
+    return location.to_owned();
+  };
+  let file_name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+  format!("{file_name}+0x{offset}")
 }
 
 unsafe extern "system" fn stack_walk_function_table_access(
@@ -287,5 +354,5 @@ fn ntstatus_code(code: NTSTATUS) -> u32 {
 }
 
 fn log_seh(message: &str) {
-  crate::services::logger::log(&format!("[native/windows/error] {message}"));
+  tracing::error!(target: "native::windows::seh", "[native/windows/error] {message}");
 }

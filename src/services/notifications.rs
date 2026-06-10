@@ -305,7 +305,7 @@ pub fn play(sound: NotificationSound, settings: NotificationAudioSettings) {
     .name("parties-notification-sound".to_owned())
     .spawn(move || {
       if let Err(error) = play_blocking(sound, settings) {
-        super::logger::log(&format!("[audio] notification sound unavailable: {error}"));
+        tracing::warn!(target: "notifications", "[notifications] notification sound unavailable: {error}");
       }
     });
 }
@@ -360,7 +360,7 @@ where
     .build_output_stream::<T, _, _>(
       config,
       move |data, _| state.render(data),
-      move |error| super::logger::log(&format!("[audio] notification output error: {error}")),
+      move |error| tracing::warn!(target: "notifications", "[notifications] notification output error: {error}"),
       None,
     )
     .map_err(|error| format!("Failed to build output stream: {error}"))
@@ -389,15 +389,15 @@ fn decode_notification_sound(sound: NotificationSound, overrides: &str) -> Resul
     match fs::read(&path) {
       Ok(bytes) => match decode_mp3(&bytes) {
         Ok(decoded) => return Ok(decoded),
-        Err(error) => super::logger::log(&format!(
-          "[audio] custom notification sound invalid: path={} error={error}",
+        Err(error) => tracing::warn!(target: "notifications",
+          "[notifications] custom notification sound invalid: path={} error={error}",
           path.display()
-        )),
+        ),
       },
-      Err(error) => super::logger::log(&format!(
-        "[audio] custom notification sound unavailable: path={} error={error}",
+      Err(error) => tracing::warn!(target: "notifications",
+        "[notifications] custom notification sound unavailable: path={} error={error}",
         path.display()
-      )),
+      ),
     }
   }
   decode_mp3(resolve_sound_with_overrides(sound, overrides).bytes)
