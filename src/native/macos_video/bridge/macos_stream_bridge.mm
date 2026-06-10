@@ -713,6 +713,33 @@ bool ensure_camera_authorized() {
   return granted;
 }
 
+bool ensure_microphone_authorized() {
+  AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+  if (status == AVAuthorizationStatusAuthorized) {
+    return true;
+  }
+  if (status == AVAuthorizationStatusDenied || status == AVAuthorizationStatusRestricted) {
+    set_last_error("microphone permission is denied or restricted");
+    return false;
+  }
+  if (status != AVAuthorizationStatusNotDetermined) {
+    set_last_error("microphone permission is unavailable");
+    return false;
+  }
+
+  __block BOOL granted = NO;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL access_granted) {
+    granted = access_granted;
+    dispatch_semaphore_signal(sem);
+  }];
+  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
+  if (!granted) {
+    set_last_error("microphone permission was not granted");
+  }
+  return granted;
+}
+
 bool configure_camera_format(AVCaptureDevice* device, uint16_t width, uint16_t height, uint32_t fps, uint32_t* actual_fps) {
   NSError* error = nil;
   if (![device lockForConfiguration:&error]) {
@@ -810,6 +837,11 @@ bool configure_camera_format(AVCaptureDevice* device, uint16_t width, uint16_t h
 @end
 
 extern "C" {
+
+int parties_macos_microphone_authorize() {
+  set_last_error("");
+  return ensure_microphone_authorized() ? 1 : 0;
+}
 
 uintptr_t parties_macos_camera_refresh() {
   set_last_error("");

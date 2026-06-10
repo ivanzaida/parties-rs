@@ -33,6 +33,12 @@ use crate::{
   storage::AppSettings,
 };
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+  fn parties_macos_microphone_authorize() -> i32;
+  fn parties_macos_last_error() -> *const std::ffi::c_char;
+}
+
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: usize = 1;
 const STREAM_CHANNELS: usize = 2;
@@ -494,6 +500,8 @@ fn build_input_path(
   stop: Arc<AtomicBool>,
   on_local_voice: LocalVoiceCallback,
 ) -> Result<(Option<cpal::Stream>, Option<JoinHandle<()>>), VoiceError> {
+  ensure_microphone_authorized()?;
+
   let Some(device) = audio_devices::input_device(&settings.audio_input_device) else {
     return Ok((None, None));
   };
@@ -555,6 +563,35 @@ fn build_input_path(
 
   let encoder_thread = spawn_encoder_thread(server, frame_rx, free_frame_tx, stop, on_local_voice, control)?;
   Ok((Some(input_stream), Some(encoder_thread)))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_microphone_authorized() -> Result<(), VoiceError> {
+  let authorized = unsafe { parties_macos_microphone_authorize() != 0 };
+  if authorized {
+    return Ok(());
+  }
+
+  let error = unsafe {
+    let ptr = parties_macos_last_error();
+    if ptr.is_null() {
+      None
+    } else {
+      std::ffi::CStr::from_ptr(ptr)
+        .to_str()
+        .ok()
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+    }
+  }
+  .unwrap_or_else(|| "microphone permission was not granted".to_owned());
+
+  Err(VoiceError::new(error))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_microphone_authorized() -> Result<(), VoiceError> {
+  Ok(())
 }
 
 fn build_input_stream<T>(
