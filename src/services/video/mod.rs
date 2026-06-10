@@ -257,7 +257,10 @@ impl VideoDecoder {
   }
 
   #[cfg(target_os = "windows")]
-  pub fn decode_to_shared_nv12_handle(&mut self, frame: &ForwardedVideoFrame) -> Result<Option<usize>, VideoError> {
+  pub fn decode_to_shared_nv12_planes(
+    &mut self,
+    frame: &ForwardedVideoFrame,
+  ) -> Result<Option<(usize, usize)>, VideoError> {
     let frame_config = VideoDecodeConfig {
       codec: frame.frame.codec,
       width: frame.frame.width,
@@ -269,7 +272,7 @@ impl VideoDecoder {
       ));
     }
 
-    self.inner.decode_frame_to_shared_nv12_handle(&frame.frame)
+    self.inner.decode_frame_to_shared_nv12_planes(&frame.frame)
   }
 
   #[cfg(target_os = "windows")]

@@ -51,6 +51,7 @@ fn main() {
       .compile("parties_nvdec_bridge");
 
     println!("cargo:rustc-link-lib=d3d11");
+    println!("cargo:rustc-link-lib=d3dcompiler");
     println!("cargo:rustc-link-lib=dxgi");
     println!("cargo:rustc-link-lib=dwmapi");
     println!("cargo:rustc-link-lib=winmm");

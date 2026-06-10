@@ -159,14 +159,15 @@ unsafe extern "C" {
     width: u16,
     height: u16,
   ) -> i32;
-  fn parties_amf_decode_to_shared_nv12(
+  fn parties_amf_decode_to_shared_nv12_planes(
     bridge: *mut AmfDecoderBridge,
     data: *const u8,
     len: usize,
     timestamp: i64,
     width: u16,
     height: u16,
-    shared_handle_out: *mut usize,
+    y_shared_handle_out: *mut usize,
+    uv_shared_handle_out: *mut usize,
   ) -> i32;
   fn parties_gpu_stream_create(
     source_kind: u8,
@@ -1673,10 +1674,13 @@ impl NativeVideoDecoder {
     }
   }
 
-  pub(super) fn decode_frame_to_shared_nv12_handle(&mut self, frame: &VideoFrame) -> Result<Option<usize>, VideoError> {
+  pub(super) fn decode_frame_to_shared_nv12_planes(
+    &mut self,
+    frame: &VideoFrame,
+  ) -> Result<Option<(usize, usize)>, VideoError> {
     match self {
       Self::Nvdec(_) => Ok(None),
-      Self::AmdAmf(decoder) => decoder.decode_frame_to_shared_nv12_handle(frame),
+      Self::AmdAmf(decoder) => decoder.decode_frame_to_shared_nv12_planes(frame),
     }
   }
 }
@@ -1769,36 +1773,38 @@ impl Drop for AmdAmfVideoDecoder {
 }
 
 impl AmdAmfVideoDecoder {
-  fn decode_frame_to_shared_nv12_handle(&mut self, frame: &VideoFrame) -> Result<Option<usize>, VideoError> {
-    let mut shared_handle = 0usize;
+  fn decode_frame_to_shared_nv12_planes(&mut self, frame: &VideoFrame) -> Result<Option<(usize, usize)>, VideoError> {
+    let mut y_shared_handle = 0usize;
+    let mut uv_shared_handle = 0usize;
     let status = {
-      let _span = profiler::span("video.ffi.amf_decode_to_shared_nv12");
+      let _span = profiler::span("video.ffi.amf_decode_to_shared_nv12_planes");
       unsafe {
-        parties_amf_decode_to_shared_nv12(
+        parties_amf_decode_to_shared_nv12_planes(
           self.handle.as_ptr(),
           frame.encoded.as_ptr(),
           frame.encoded.len(),
           i64::from(frame.frame_number),
           frame.width,
           frame.height,
-          &mut shared_handle,
+          &mut y_shared_handle,
+          &mut uv_shared_handle,
         )
       }
     };
 
     if status < 0 {
       return Err(VideoError::new(format!(
-        "AMD AMF failed to decode {} frame {} into shared NV12 texture.",
+        "AMD AMF failed to decode {} frame {} into shared NV12 plane textures.",
         codec_label(frame.codec),
         frame.frame_number
       )));
     }
 
-    if status == 0 || shared_handle == 0 {
+    if status == 0 || y_shared_handle == 0 || uv_shared_handle == 0 {
       return Ok(None);
     }
 
-    Ok(Some(shared_handle))
+    Ok(Some((y_shared_handle, uv_shared_handle)))
   }
 
   fn decode_frame_to_dx12(

@@ -553,8 +553,14 @@ fn startup_log_domain_arg(args: impl IntoIterator<Item = std::ffi::OsString>) ->
       }
     }
 
-    if arg_text == "-log_domain" || arg_text == "--log_domain" || arg_text == "-log-domain" || arg_text == "--log-domain" {
-      return args.next().and_then(|domain| log_domain_filter(&domain.to_string_lossy()));
+    if arg_text == "-log_domain"
+      || arg_text == "--log_domain"
+      || arg_text == "-log-domain"
+      || arg_text == "--log-domain"
+    {
+      return args
+        .next()
+        .and_then(|domain| log_domain_filter(&domain.to_string_lossy()));
     }
   }
 

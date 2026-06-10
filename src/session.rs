@@ -1,6 +1,5 @@
 use std::{
   collections::{HashMap, HashSet, VecDeque},
-  env,
   sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -47,7 +46,7 @@ const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 #[cfg(target_os = "windows")]
 const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = true;
 #[cfg(target_os = "windows")]
-const SHARED_NV12_SURFACE_CACHE_LIMIT: usize = 8;
+const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 8;
 #[cfg(target_os = "windows")]
 const WINDOWS_NVIDIA_VENDOR_ID: u32 = 0x10DE;
 #[cfg(target_os = "windows")]
@@ -65,12 +64,12 @@ static DX12_NATIVE_STREAM_DECODE_SUPPORTED: std::sync::LazyLock<bool> = std::syn
       true
     }
     Some(WINDOWS_AMD_VENDOR_ID) => {
-      tracing::info!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is AMD, AMF split NV12 interop is allowed");
+      tracing::info!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is AMD, AMF shared NV12 planes interop is allowed");
       true
     }
     Some(vendor_id) => {
       tracing::warn!(target: "video::decode",
-        "[video:decode] DX12 native stream decode disabled: default DXGI adapter vendor_id=0x{vendor_id:04x} is not NVIDIA"
+        "[video:decode] DX12 native stream decode disabled: default DXGI adapter vendor_id=0x{vendor_id:04x} is not NVIDIA or AMD"
       );
       false
     }
@@ -79,19 +78,6 @@ static DX12_NATIVE_STREAM_DECODE_SUPPORTED: std::sync::LazyLock<bool> = std::syn
       false
     }
   }
-});
-
-#[cfg(target_os = "windows")]
-static AMF_SHARED_NV12_DECODE_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-  let enabled = env::var("PARTIES_AMF_SHARED_NV12")
-    .map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
-    .unwrap_or(false);
-  if enabled {
-    tracing::info!(target: "video::decode", "[video:decode] experimental AMF shared-NV12 decode prepath enabled");
-  } else {
-    tracing::info!(target: "video::decode", "[video:decode] experimental AMF shared-NV12 decode prepath disabled; set PARTIES_AMF_SHARED_NV12=1 to opt in");
-  }
-  enabled
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,10 +298,7 @@ fn decode_video_packet_to_dx12(
   }
 
   let decoder = decoders.get_mut(&packet.sender_id)?;
-  if !matches!(
-    decoder.backend(),
-    crate::services::video::NativeVideoBackend::NvidiaNvdec | crate::services::video::NativeVideoBackend::AmdAmf
-  ) {
+  if decoder.backend() != crate::services::video::NativeVideoBackend::NvidiaNvdec {
     return None;
   }
 
@@ -334,17 +317,13 @@ fn decode_video_packet_to_dx12(
 }
 
 #[cfg(target_os = "windows")]
-fn decode_video_packet_to_shared_nv12(
+fn decode_video_packet_to_shared_nv12_planes(
   decoders: &mut HashMap<UserId, VideoDecoder>,
   decoder_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
-  shared_nv12_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
+  shared_nv12_planes_failures: &mut HashSet<(UserId, VideoDecodeConfig)>,
   packet: &ForwardedVideoFrame,
-) -> Option<Result<Option<usize>, String>> {
-  if *DX12_NATIVE_STREAM_DECODE_SUPPORTED {
-    return None;
-  }
-
-  if !*AMF_SHARED_NV12_DECODE_ENABLED {
+) -> Option<Result<Option<(usize, usize)>, String>> {
+  if !*DX12_NATIVE_STREAM_DECODE_SUPPORTED {
     return None;
   }
 
@@ -354,7 +333,10 @@ fn decode_video_packet_to_shared_nv12(
     height: packet.frame.height,
   };
   let failure_key = (packet.sender_id, config.clone());
-  if shared_nv12_failures.contains(&failure_key) || decoder_failures.contains(&failure_key) {
+  if shared_nv12_planes_failures.contains(&failure_key) {
+    return None;
+  }
+  if decoder_failures.contains(&failure_key) {
     return None;
   }
 
@@ -366,12 +348,13 @@ fn decode_video_packet_to_shared_nv12(
       Ok(decoder) => {
         let backend = decoder.backend();
         tracing::info!(target: "video::decode",
-          "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} shared_nv12_prepath=true",
+          "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} shared_nv12_planes_prepath={}",
           packet.sender_id,
           native_video_backend_label(backend),
           config.codec,
           config.width,
-          config.height
+          config.height,
+          backend == crate::services::video::NativeVideoBackend::AmdAmf
         );
         decoders.insert(packet.sender_id, decoder);
       }
@@ -388,15 +371,15 @@ fn decode_video_packet_to_shared_nv12(
     return None;
   }
 
-  match decoder.decode_to_shared_nv12_handle(packet) {
-    Ok(handle) => Some(Ok(handle)),
+  match decoder.decode_to_shared_nv12_planes(packet) {
+    Ok(handles) => Some(Ok(handles)),
     Err(error) => {
       tracing::warn!(target: "video::decode",
-        "[video:decode] failed to decode frame from user {} into shared NV12 texture: {error}",
+        "[video:decode] failed to decode frame from user {} into shared NV12 plane textures: {error}",
         packet.sender_id
       );
       decoders.remove(&packet.sender_id);
-      shared_nv12_failures.insert(failure_key);
+      shared_nv12_planes_failures.insert(failure_key);
       Some(Err(error.to_string()))
     }
   }
@@ -1958,10 +1941,10 @@ impl ServerSession {
     #[cfg(target_os = "windows")]
     let mut dx12_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
     #[cfg(target_os = "windows")]
-    let mut shared_nv12_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
+    let mut shared_nv12_planes_decode_failures = HashSet::<(UserId, VideoDecodeConfig)>::new();
     #[cfg(target_os = "windows")]
-    let mut shared_nv12_surfaces =
-      HashMap::<(UserId, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>::new();
+    let mut shared_nv12_planes_surfaces =
+      HashMap::<(UserId, usize, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>::new();
     let mut awaiting_keyframes = self.watching_user_id().into_iter().collect::<HashSet<_>>();
     let mut awaiting_decoded_output = HashSet::<UserId>::new();
     let mut received_counts = HashMap::<UserId, u64>::new();
@@ -2004,9 +1987,9 @@ impl ServerSession {
         #[cfg(target_os = "windows")]
         dx12_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         #[cfg(target_os = "windows")]
-        shared_nv12_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
+        shared_nv12_planes_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         #[cfg(target_os = "windows")]
-        shared_nv12_surfaces.retain(|(user_id, _), _| Some(*user_id) == watched_user);
+        shared_nv12_planes_surfaces.retain(|(user_id, _, _), _| Some(*user_id) == watched_user);
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
         if let Some(user_id) = watched_user {
           awaiting_keyframes.insert(user_id);
@@ -2096,6 +2079,8 @@ impl ServerSession {
           decoder_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           #[cfg(target_os = "windows")]
           dx12_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          shared_nv12_planes_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           tracing::debug!(target: "video::decode",
             "[video:decode] catch-up keyframe received for user {}: frame={}",
             packet.sender_id,
@@ -2124,27 +2109,26 @@ impl ServerSession {
           }
 
           #[cfg(target_os = "windows")]
-          if output
-            && let Some(shared_result) = decode_video_packet_to_shared_nv12(
-              &mut decoders,
-              &mut decoder_failures,
-              &mut shared_nv12_decode_failures,
-              &packet,
-            )
-          {
-            match shared_result {
-              Ok(Some(shared_handle)) => {
-                if let Some(surface) = self.shared_nv12_video_surface_for_decode(
-                  &mut shared_nv12_surfaces,
+          if let Some(shared_planes_result) = decode_video_packet_to_shared_nv12_planes(
+            &mut decoders,
+            &mut decoder_failures,
+            &mut shared_nv12_planes_decode_failures,
+            &packet,
+          ) {
+            match shared_planes_result {
+              Ok(Some((y_shared_handle, uv_shared_handle))) => {
+                if let Some(surface) = self.shared_nv12_planes_video_surface_for_decode(
+                  &mut shared_nv12_planes_surfaces,
                   packet.sender_id,
                   packet.frame.width,
                   packet.frame.height,
-                  shared_handle,
+                  y_shared_handle,
+                  uv_shared_handle,
                 ) {
                   let decoded_count = increment_counter(&mut decoded_counts, packet.sender_id);
                   if should_log_video_count(decoded_count) {
-                    tracing::info!(target: "video::decode",
-                      "[video:decode] decoded shared NV12 frame #{decoded_count} from user {}: codec={:?} size={}x{} handle=0x{shared_handle:x}",
+                    tracing::debug!(target: "video::decode",
+                      "[video:decode] decoded shared NV12 planes frame #{decoded_count} from user {}: codec={:?} size={}x{} y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x}",
                       packet.sender_id,
                       packet.frame.codec,
                       packet.frame.width,
@@ -2160,22 +2144,18 @@ impl ServerSession {
                   );
                   continue;
                 }
-                shared_nv12_decode_failures.insert(decode_failure_key.clone());
+                shared_nv12_planes_decode_failures.insert(decode_failure_key.clone());
                 decoders.remove(&packet.sender_id);
-                awaiting_keyframes.insert(packet.sender_id);
-                request_keyframe_for(packet.sender_id, "shared NV12 surface open failed");
-                continue;
               }
               Ok(None) => {
                 if should_log_video_count(received_count) {
-                  tracing::info!(target: "video::decode", "[video:decode] received frame produced no shared NV12 decoded output yet");
+                  tracing::info!(target: "video::decode", "[video:decode] received frame produced no shared NV12 planes decoded output yet");
                 }
                 continue;
               }
               Err(_) => {
-                awaiting_keyframes.insert(packet.sender_id);
-                request_keyframe_for(packet.sender_id, "shared NV12 decode failed");
-                continue;
+                // The failure key is already recorded by decode_video_packet_to_shared_nv12_planes.
+                // Fall through to the regular decode path so playback still starts.
               }
             }
           }
@@ -2479,6 +2459,86 @@ impl ServerSession {
   }
 
   #[cfg(target_os = "windows")]
+  fn shared_nv12_planes_video_surface_for_decode(
+    &self,
+    surface_cache: &mut HashMap<(UserId, usize, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>,
+    user_id: UserId,
+    width: u16,
+    height: u16,
+    y_shared_handle: usize,
+    uv_shared_handle: usize,
+  ) -> Option<Arc<lurq::app::dx12_render::Dx12Nv12Surface>> {
+    if y_shared_handle == 0 || uv_shared_handle == 0 {
+      return None;
+    }
+
+    if let Some(surface) = surface_cache.get(&(user_id, y_shared_handle, uv_shared_handle)) {
+      let image = surface.image_data();
+      if image.width() == u32::from(width)
+        && image.height() == u32::from(height)
+        && image.format() == lurq::images::ImagePixelFormat::Nv12
+        && !surface.is_packed_nv12()
+        && surface.y_shared_handle_raw() as usize == y_shared_handle
+        && surface.uv_shared_handle_raw() as usize == uv_shared_handle
+      {
+        return Some(surface.clone());
+      }
+      surface_cache.remove(&(user_id, y_shared_handle, uv_shared_handle));
+    }
+
+    {
+      let frames = self.video_frames.lock().expect("server session lock poisoned");
+      if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
+        let image = surface.image_data();
+        if image.width() == u32::from(width)
+          && image.height() == u32::from(height)
+          && image.format() == lurq::images::ImagePixelFormat::Nv12
+          && !surface.is_packed_nv12()
+          && surface.y_shared_handle_raw() as usize == y_shared_handle
+          && surface.uv_shared_handle_raw() as usize == uv_shared_handle
+        {
+          return Some(surface.clone());
+        }
+      }
+    }
+
+    let allocator = self.dx12_video_surface_allocator()?;
+    match allocator.open_shared_nv12_planes_surface(
+      u32::from(width),
+      u32::from(height),
+      y_shared_handle as isize,
+      uv_shared_handle as isize,
+    ) {
+      Ok(Some(surface)) => {
+        let surface = Arc::new(surface);
+        let native = surface.native_image_data();
+        tracing::info!(target: "video::decode",
+          "[video:decode] opened shared NV12 planes DX12 surface: user={user_id} image={} y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x} size={}x{} cache_entries={}",
+          native.id(),
+          width,
+          height,
+          surface_cache.len() + 1
+        );
+        if surface_cache.len() >= SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT {
+          surface_cache.retain(|(cached_user_id, cached_y_handle, cached_uv_handle), _| {
+            *cached_user_id == user_id && *cached_y_handle == y_shared_handle && *cached_uv_handle == uv_shared_handle
+          });
+        }
+        surface_cache.insert((user_id, y_shared_handle, uv_shared_handle), surface.clone());
+        Some(surface)
+      }
+      Ok(None) => {
+        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: DX12 video surface allocator is not ready");
+        None
+      }
+      Err(error) => {
+        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x} size={}x{} error={error}", width, height);
+        None
+      }
+    }
+  }
+
+  #[cfg(target_os = "windows")]
   fn dx12_video_surface_for_decode(
     &self,
     user_id: UserId,
@@ -2514,78 +2574,6 @@ impl ServerSession {
   }
 
   #[cfg(target_os = "windows")]
-  fn shared_nv12_video_surface_for_decode(
-    &self,
-    surface_cache: &mut HashMap<(UserId, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>,
-    user_id: UserId,
-    width: u16,
-    height: u16,
-    shared_handle: usize,
-  ) -> Option<Arc<lurq::app::dx12_render::Dx12Nv12Surface>> {
-    if shared_handle == 0 {
-      return None;
-    }
-
-    if let Some(surface) = surface_cache.get(&(user_id, shared_handle)) {
-      let image = surface.image_data();
-      if image.width() == u32::from(width)
-        && image.height() == u32::from(height)
-        && image.format() == lurq::images::ImagePixelFormat::Nv12
-        && surface.is_packed_nv12()
-        && surface.y_shared_handle_raw() as usize == shared_handle
-      {
-        return Some(surface.clone());
-      }
-      surface_cache.remove(&(user_id, shared_handle));
-    }
-
-    {
-      let frames = self.video_frames.lock().expect("server session lock poisoned");
-      if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
-        let image = surface.image_data();
-        if image.width() == u32::from(width)
-          && image.height() == u32::from(height)
-          && image.format() == lurq::images::ImagePixelFormat::Nv12
-          && surface.is_packed_nv12()
-          && surface.y_shared_handle_raw() as usize == shared_handle
-        {
-          return Some(surface.clone());
-        }
-      }
-    }
-
-    let allocator = self.dx12_video_surface_allocator()?;
-    match allocator.open_shared_nv12_surface(u32::from(width), u32::from(height), shared_handle as isize) {
-      Ok(Some(surface)) => {
-        let surface = Arc::new(surface);
-        let native = surface.native_image_data();
-        tracing::info!(target: "video::decode",
-          "[video:decode] opened shared NV12 DX12 surface: user={user_id} image={} handle=0x{shared_handle:x} size={}x{} cache_entries={}",
-          native.id(),
-          width,
-          height,
-          surface_cache.len() + 1
-        );
-        if surface_cache.len() >= SHARED_NV12_SURFACE_CACHE_LIMIT {
-          surface_cache.retain(|(cached_user_id, cached_handle), _| {
-            *cached_user_id == user_id && *cached_handle == shared_handle
-          });
-        }
-        surface_cache.insert((user_id, shared_handle), surface.clone());
-        Some(surface)
-      }
-      Ok(None) => {
-        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 video surface: DX12 video surface allocator is not ready");
-        None
-      }
-      Err(error) => {
-        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 video surface: handle=0x{shared_handle:x} size={}x{} error={error}", width, height);
-        None
-      }
-    }
-  }
-
-  #[cfg(target_os = "windows")]
   fn handle_dx12_video_frame(
     &self,
     sender_id: UserId,
@@ -2611,11 +2599,12 @@ impl ServerSession {
             && existing.image_data().height() == u32::from(height)
       );
       if replace {
-        tracing::info!(target: "video::decode",
-          "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
-        );
+        if bumped_version == 1 || bumped_version % 120 == 0 {
+          tracing::info!(target: "video::decode",
+            "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
+          );
+        }
         frames.insert(sender_id, VideoFrameImage::Dx12Surface(surface));
-        force_revision = true;
       } else if bumped_version == 1 || bumped_version % 120 == 0 {
         tracing::info!(target: "video::decode",
           "[video:decode] updating DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=false"
@@ -2639,7 +2628,7 @@ impl ServerSession {
     }
 
     let bump_revision = force_revision || self.should_bump_video_revision(sender_id);
-    if bump_revision && (force_revision || bumped_version == 1 || bumped_version % 120 == 0) {
+    if bump_revision && (bumped_version == 1 || bumped_version % 120 == 0) {
       tracing::info!(target: "video::decode",
         "[video:decode] bumping video revision for DX12 frame: user={sender_id} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} forced={force_revision}"
       );
