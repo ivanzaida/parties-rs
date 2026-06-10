@@ -46,6 +46,12 @@ pub enum ReceivedAudioPacket {
   VideoControl(VideoControl),
 }
 
+#[derive(Debug)]
+pub enum ReceivedVideoPacket {
+  Frame(ForwardedVideoFrame),
+  VideoControl(VideoControl),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoFrameSend {
   Datagram,
@@ -418,9 +424,17 @@ impl Server {
     Ok(packet)
   }
 
+  pub async fn recv_video(&self) -> Result<ReceivedVideoPacket, ServerError> {
+    decode_video_stream_packet(self.recv_video_packet().await?)
+  }
+
   pub async fn recv_video_frame(&self) -> Result<ForwardedVideoFrame, ServerError> {
-    let packet = self.recv_video_packet().await?;
-    Ok(ForwardedVideoFrame::decode_owned(packet)?)
+    loop {
+      match self.recv_video().await? {
+        ReceivedVideoPacket::Frame(packet) => return Ok(packet),
+        ReceivedVideoPacket::VideoControl(_) => {}
+      }
+    }
   }
 
   pub async fn recv_forwarded_video_datagram_until(
@@ -653,6 +667,25 @@ fn validate_video_codec(codec: VideoCodecId) -> Result<(), DecodeError> {
   }
 }
 
+fn decode_video_stream_packet(packet: Vec<u8>) -> Result<ReceivedVideoPacket, ServerError> {
+  let Some(packet_type) = packet.first().copied() else {
+    return Err(ServerError::Protocol(DecodeError::UnexpectedEof {
+      needed: 1,
+      remaining: 0,
+    }));
+  };
+
+  match PacketType::from_u8(packet_type).ok_or(DecodeError::InvalidPacketType(packet_type))? {
+    PacketType::VideoFrame => ForwardedVideoFrame::decode_owned(packet)
+      .map(ReceivedVideoPacket::Frame)
+      .map_err(ServerError::Protocol),
+    PacketType::VideoControl => VideoControl::decode_datagram(&packet)
+      .map(ReceivedVideoPacket::VideoControl)
+      .map_err(ServerError::Protocol),
+    _ => Err(ServerError::Protocol(DecodeError::InvalidPacketType(packet_type))),
+  }
+}
+
 #[derive(Debug)]
 enum DecodedDatagram {
   Voice(ForwardedVoicePacket),
@@ -714,6 +747,55 @@ mod tests {
         max: MAX_VIDEO_FRAME_LEN
       }
     );
+  }
+
+  #[test]
+  fn video_stream_decoder_routes_forwarded_video_packets() {
+    let packet = vec![
+      PacketType::VideoFrame as u8,
+      29,
+      0,
+      0,
+      0,
+      7,
+      0,
+      0,
+      0,
+      11,
+      0,
+      0,
+      0,
+      1,
+      128,
+      2,
+      224,
+      1,
+      VideoCodecId::H264 as u8,
+      1,
+      2,
+      3,
+    ];
+    let ReceivedVideoPacket::Frame(decoded) = decode_video_stream_packet(packet).unwrap() else {
+      panic!("expected video frame packet");
+    };
+
+    assert_eq!(decoded.sender_id, 29);
+    assert_eq!(decoded.frame.frame_number, 7);
+    assert_eq!(decoded.frame.width, 640);
+    assert_eq!(decoded.frame.height, 480);
+    assert_eq!(decoded.frame.codec, VideoCodecId::H264);
+    assert_eq!(decoded.frame.encoded, vec![1, 2, 3]);
+  }
+
+  #[test]
+  fn video_stream_decoder_routes_video_control_packets() {
+    let packet = VideoControl::Pli { user_id: 42 }.encode_datagram();
+    let ReceivedVideoPacket::VideoControl(VideoControl::Pli { user_id }) = decode_video_stream_packet(packet).unwrap()
+    else {
+      panic!("expected video control packet");
+    };
+
+    assert_eq!(user_id, 42);
   }
 
   #[test]

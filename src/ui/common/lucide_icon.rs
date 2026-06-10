@@ -23,24 +23,28 @@ impl Component for LucideIcon {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>();
-    let glyph = String::from(name_to_char(props.icon));
 
     Row::new()
       .width(props.size)
       .height(props.size)
       .align_items(Alignment::Center)
       .justify(Justify::Center)
-      .child(Text::styled(
-        &glyph,
-        TextStyle {
-          font_family: "lucide".into(),
-          font_size: props.size,
-          line_height: 1.0,
-          color: props.color,
-          ..TextStyle::default()
-        },
-      ))
+      .child(lucide_icon_text(props.icon, props.size, props.color))
   }
+}
+
+pub(crate) fn lucide_icon_text(icon: &'static str, size: f32, color: Color) -> Text {
+  let glyph = String::from(name_to_char(icon));
+  Text::styled(
+    &glyph,
+    TextStyle {
+      font_family: "lucide".into(),
+      font_size: size,
+      line_height: 1.0,
+      color,
+      ..TextStyle::default()
+    },
+  )
 }
 
 fn name_to_char(name: &str) -> char {

@@ -10,7 +10,7 @@ use lurq::{
 
 use crate::{
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::common::lucide_icon::{LucideIcon, LucideIconProps, lucide_icon_text},
 };
 
 pub(super) fn section_head(
@@ -82,12 +82,12 @@ pub(super) fn aligned_channel_icon(ctx: &mut Ctx, icon: &'static str, size: f32)
   aligned_channel_icon_with_color(ctx, icon, size, theme::palette().text_muted)
 }
 
-pub(super) fn aligned_channel_icon_with_color(ctx: &mut Ctx, icon: &'static str, size: f32, color: Color) -> Element {
+pub(super) fn aligned_channel_icon_with_color(_ctx: &mut Ctx, icon: &'static str, size: f32, color: Color) -> Element {
   Row::new()
     .width(size)
     .height(size)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
-    .child(ctx.mount::<LucideIcon>(LucideIconProps { icon, size, color }))
+    .child(lucide_icon_text(icon, size, color))
     .into()
 }

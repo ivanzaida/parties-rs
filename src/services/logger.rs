@@ -14,7 +14,7 @@ use tracing_subscriber::{EnvFilter, fmt::MakeWriter, prelude::*};
 
 const DEFAULT_LOG_FILE_PREFIX: &str = "parties_rs_";
 const DEFAULT_LOG_FILE_SUFFIX: &str = ".log";
-const DEFAULT_SENTRY_DSN: &str = "http://26d5cb6b996d927b87a439d87ba63ec9@sentry.lurq.dev/2";
+const DEFAULT_SENTRY_DSN: &str = "https://26d5cb6b996d927b87a439d87ba63ec9@sentry.lurq.dev/2";
 
 static SEEN_MSGS: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
 static LOGGER_INIT: Once = Once::new();

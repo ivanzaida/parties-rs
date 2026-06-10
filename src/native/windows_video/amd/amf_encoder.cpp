@@ -258,6 +258,9 @@ bool AmfEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
             surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, true);
         } else {
             surface->SetProperty(AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR);
+            surface->SetProperty(AMF_VIDEO_ENCODER_INSERT_AUD, true);
+            surface->SetProperty(AMF_VIDEO_ENCODER_INSERT_SPS, true);
+            surface->SetProperty(AMF_VIDEO_ENCODER_INSERT_PPS, true);
         }
     }
 

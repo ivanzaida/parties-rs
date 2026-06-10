@@ -17,15 +17,14 @@ use lurq::{
 use crate::{
   network::{
     protocol::{
-      ChannelId, Role, S2C, UserId,
+      ChannelId, Role, S2C, UserId, VideoCodecId,
       control::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
       },
       data::{ForwardedStreamAudioPacket, ForwardedVideoFrame, VideoControl, VideoFrame},
-      VideoCodecId,
     },
-    server::{ReceivedAudioPacket, Server, ServerError},
+    server::{ReceivedAudioPacket, ReceivedVideoPacket, Server, ServerError},
   },
   services::{
     notifications::{self, NotificationAudioSettings, NotificationSound},
@@ -1897,12 +1896,16 @@ impl ServerSession {
       let runtime = runtime.clone();
       let stop = stop.clone();
       let queue = queue.clone();
+      let session = self.clone();
       thread::Builder::new()
         .name("parties-video-reader".to_owned())
         .spawn(move || {
           while !stop.load(Ordering::Relaxed) {
-            match runtime.block_on(server.recv_video_frame()) {
-              Ok(packet) => queue.push(packet),
+            match runtime.block_on(server.recv_video()) {
+              Ok(ReceivedVideoPacket::Frame(packet)) => queue.push(packet),
+              Ok(ReceivedVideoPacket::VideoControl(control)) => {
+                session.handle_video_control_packet(control);
+              }
               Err(ServerError::Protocol(error)) => {
                 tracing::warn!(target: "video", "[video] ignored malformed video packet: {error}");
                 continue;
@@ -1995,7 +1998,7 @@ impl ServerSession {
         #[cfg(target_os = "windows")]
         shared_nv12_planes_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         #[cfg(target_os = "windows")]
-        shared_nv12_planes_surfaces.retain(|(user_id, _, _), _| Some(*user_id) == watched_user);
+        shared_nv12_planes_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
         if let Some(user_id) = watched_user {
           awaiting_keyframes.insert(user_id);
@@ -2095,7 +2098,7 @@ impl ServerSession {
           #[cfg(target_os = "windows")]
           shared_nv12_planes_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           #[cfg(target_os = "windows")]
-          shared_nv12_planes_surfaces.retain(|(user_id, _, _), _| *user_id != packet.sender_id);
+          shared_nv12_planes_surfaces.retain(|(user_id, ..), _| *user_id != packet.sender_id);
           awaiting_decoded_output.remove(&packet.sender_id);
           awaiting_keyframes.insert(packet.sender_id);
           request_keyframe_for(packet.sender_id, "video decode config changed");

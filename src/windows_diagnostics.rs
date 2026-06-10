@@ -1,5 +1,6 @@
 use std::{
-  ffi::{CStr, c_void},
+  env,
+  ffi::{CStr, CString, c_void},
   mem::size_of,
   sync::{
     Mutex,
@@ -54,13 +55,36 @@ pub fn install() {
     AddVectoredExceptionHandler(1, Some(vectored_exception_handler));
     SetUnhandledExceptionFilter(Some(unhandled_exception_filter));
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
-    if let Err(error) = SymInitialize(GetCurrentProcess(), PCSTR::null(), true) {
-      log_seh(&format!("[seh] rust SEH symbol initialization failed: {error}"));
+    let symbol_path = symbol_search_path();
+    let symbol_path = symbol_path
+      .as_ref()
+      .map(|path| PCSTR(path.as_ptr().cast()))
+      .unwrap_or_else(PCSTR::null);
+    if let Err(error) = SymInitialize(GetCurrentProcess(), symbol_path, true) {
+      log_seh_warn(&format!("[seh] rust SEH symbol initialization failed: {error}"));
       return;
     }
   }
 
-  log_seh("[seh] rust windows SEH logger installed");
+  log_seh_info("[seh] rust windows SEH logger installed");
+}
+
+fn symbol_search_path() -> Option<CString> {
+  let mut paths = Vec::new();
+  if let Ok(exe) = env::current_exe()
+    && let Some(parent) = exe.parent()
+  {
+    paths.push(parent.to_path_buf());
+  }
+  if let Ok(current_dir) = env::current_dir() {
+    paths.push(current_dir);
+  }
+  if let Some(path) = env::var_os("_NT_SYMBOL_PATH") {
+    paths.extend(env::split_paths(&path));
+  }
+
+  let search_path = env::join_paths(paths).ok()?;
+  CString::new(search_path.to_string_lossy().as_bytes()).ok()
 }
 
 unsafe extern "system" fn vectored_exception_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
@@ -125,7 +149,7 @@ unsafe fn log_exception(source: &str, info: *mut EXCEPTION_POINTERS) {
   let fault0 = exception_parameter(record, 0);
   let fault1 = exception_parameter(record, 1);
   let fault2 = exception_parameter(record, 2);
-  log_seh(&format!(
+  log_seh_error(&format!(
     "[seh] {source} exception: code=0x{code:08x} kind={} address={:p} module={} fault0=0x{:x} fault1=0x{:x} fault2=0x{:x}",
     seh_code_name(code),
     record.ExceptionAddress,
@@ -136,7 +160,7 @@ unsafe fn log_exception(source: &str, info: *mut EXCEPTION_POINTERS) {
   ));
   let stack = unsafe { stack_trace(info) };
   if let Some(stack) = stack.as_deref() {
-    log_seh(&format!("[seh] stack: {stack}"));
+    log_seh_error(&format!("[seh] stack: {stack}"));
   }
   report_sentry_seh(
     source,
@@ -353,6 +377,14 @@ fn ntstatus_code(code: NTSTATUS) -> u32 {
   code.0 as u32
 }
 
-fn log_seh(message: &str) {
+fn log_seh_info(message: &str) {
+  tracing::info!(target: "native::windows::seh", "[native/windows/info] {message}");
+}
+
+fn log_seh_warn(message: &str) {
+  tracing::warn!(target: "native::windows::seh", "[native/windows/warn] {message}");
+}
+
+fn log_seh_error(message: &str) {
   tracing::error!(target: "native::windows::seh", "[native/windows/error] {message}");
 }
