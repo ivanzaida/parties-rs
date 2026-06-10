@@ -3,8 +3,8 @@ use std::{
   fmt,
   net::SocketAddr,
   sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
   },
   time::Duration,
 };
@@ -12,20 +12,20 @@ use std::{
 use bytes::Bytes;
 use quinn::{Connection, Endpoint, VarInt};
 use rustls::{
-  DigitallySignedStruct, SignatureScheme,
-  client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-  pki_types::{CertificateDer, ServerName, UnixTime},
+  client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier}, pki_types::{CertificateDer, ServerName, UnixTime},
+  DigitallySignedStruct,
+  SignatureScheme,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use super::protocol::{
-  C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
-  control::{AuthIdentity, ChatSendAttachment, MAX_CONTROL_MESSAGE_LEN, ScreenShareMetadata, VoiceState},
-  data::{
-    FileStreamRequest, ForwardedStreamAudioPacket, ForwardedVideoFrame, ForwardedVoicePacket, MAX_VIDEO_FRAME_LEN,
-    PacketType, VideoControl, VideoFrame,
-  },
+  control::{AuthIdentity, ChatSendAttachment, ScreenShareMetadata, VoiceState, MAX_CONTROL_MESSAGE_LEN}, data::{
+    FileStreamRequest, ForwardedStreamAudioPacket, ForwardedVideoFrame, ForwardedVoicePacket, PacketType,
+    VideoControl, VideoFrame, MAX_VIDEO_FRAME_LEN,
+  }, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, UserId, VideoCodecId,
+  C2S,
+  S2C,
 };
 
 #[derive(Debug)]
@@ -428,6 +428,7 @@ impl Server {
     decode_video_stream_packet(self.recv_video_packet().await?)
   }
 
+  #[allow(dead_code)]
   pub async fn recv_video_frame(&self) -> Result<ForwardedVideoFrame, ServerError> {
     loop {
       match self.recv_video().await? {
