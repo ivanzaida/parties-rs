@@ -47,10 +47,10 @@ const MIN_PCM_FRAMES_BEFORE_PLAYOUT: usize = 2;
 const MAX_PLC_FRAMES: i16 = 3;
 const MAX_CAPTURE_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * 5;
 const MAX_OPUS_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * INPUT_FRAME_POOL;
-const MAX_RENDER_QUEUE_SAMPLES: usize = PROCESS_FRAME_SIZE * 10;
+const MAX_RENDER_QUEUE_SAMPLES: usize = PROCESS_FRAME_SIZE * 50;
 const STREAM_BUFFER_TARGET_MS: u32 = 20;
 const VOICE_ACTIVATION_HOLD_FRAMES: u8 = 12;
-const DEFAULT_AEC_DELAY_MS: i32 = 80;
+const DEFAULT_AEC_DELAY_MS: i32 = 20;
 const AEC_DELAY_ENV: &str = "PARTIES_AEC_DELAY_MS";
 const MAX_PUSH_TO_TALK_RELEASE_DELAY_MS: i32 = 2_000;
 static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -453,8 +453,11 @@ fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProce
 }
 
 fn aec_delay_ms() -> i32 {
-  env::var(AEC_DELAY_ENV)
-    .ok()
+  configured_aec_delay_ms(env::var(AEC_DELAY_ENV).ok().as_deref())
+}
+
+fn configured_aec_delay_ms(value: Option<&str>) -> i32 {
+  value
     .and_then(|value| value.parse::<i32>().ok())
     .unwrap_or(DEFAULT_AEC_DELAY_MS)
     .clamp(0, 500)
@@ -1465,6 +1468,19 @@ mod tests {
     let config = low_latency_stream_config(&supported);
 
     assert_eq!(config.buffer_size, BufferSize::Fixed(960));
+  }
+
+  #[test]
+  fn aec_delay_defaults_to_low_latency_path() {
+    assert_eq!(configured_aec_delay_ms(None), DEFAULT_AEC_DELAY_MS);
+    assert_eq!(configured_aec_delay_ms(Some("not-a-number")), DEFAULT_AEC_DELAY_MS);
+  }
+
+  #[test]
+  fn aec_delay_env_is_clamped_to_supported_range() {
+    assert_eq!(configured_aec_delay_ms(Some("-10")), 0);
+    assert_eq!(configured_aec_delay_ms(Some("35")), 35);
+    assert_eq!(configured_aec_delay_ms(Some("800")), 500);
   }
 
   #[test]
