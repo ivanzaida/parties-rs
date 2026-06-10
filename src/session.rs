@@ -44,6 +44,7 @@ const DEFAULT_USER_VOLUME: i32 = 100;
 const MAX_QUEUED_VIDEO_PACKETS: usize = 48;
 const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 12;
 const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
+const VOICE_RECEIVE_GAP_LOG_AFTER: Duration = Duration::from_secs(3);
 #[cfg(target_os = "windows")]
 const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = true;
 #[cfg(target_os = "windows")]
@@ -2048,15 +2049,46 @@ impl ServerSession {
     let mut last_packet = "none";
     let mut last_voice_sender = None;
     let mut last_voice_sequence = None;
+    let mut last_voice_by_sender = HashMap::<UserId, (u16, Instant)>::new();
 
     let stop_reason = loop {
       match server.recv_audio().await {
         Ok(ReceivedAudioPacket::Voice(packet)) => {
           self.mark_network_activity();
+          let now = Instant::now();
           voice_packets = voice_packets.saturating_add(1);
           last_packet = "voice";
           last_voice_sender = Some(packet.sender_id);
           last_voice_sequence = Some(packet.sequence);
+          if let Some((previous_sequence, previous_at)) =
+            last_voice_by_sender.insert(packet.sender_id, (packet.sequence, now))
+          {
+            let sequence_delta = packet.sequence.wrapping_sub(previous_sequence);
+            let gap = now.duration_since(previous_at);
+            if sequence_delta != 1 {
+              tracing::warn!(
+                target: "voice",
+                "[voice] voice packet sequence gap from user {}: previous_sequence={} current_sequence={} delta={} gap_ms={} total_voice_packets={} {}",
+                packet.sender_id,
+                previous_sequence,
+                packet.sequence,
+                sequence_delta,
+                gap.as_millis(),
+                voice_packets,
+                self.connection_debug_context()
+              );
+            } else if gap >= VOICE_RECEIVE_GAP_LOG_AFTER {
+              tracing::info!(
+                target: "voice",
+                "[voice] voice packets resumed from user {} after {}ms: sequence={} total_voice_packets={} {}",
+                packet.sender_id,
+                gap.as_millis(),
+                packet.sequence,
+                voice_packets,
+                self.connection_debug_context()
+              );
+            }
+          }
           if voice_packets == 1 {
             tracing::info!(
               target: "voice",

@@ -59,6 +59,7 @@ const VOICE_ACTIVATION_HOLD_FRAMES: u8 = 12;
 const DEFAULT_AEC_DELAY_MS: i32 = 20;
 const AEC_DELAY_ENV: &str = "PARTIES_AEC_DELAY_MS";
 const MAX_PUSH_TO_TALK_RELEASE_DELAY_MS: i32 = 2_000;
+const VOICE_SEND_LOG_INTERVAL: u64 = 100;
 static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -83,6 +84,10 @@ impl fmt::Display for VoiceError {
 }
 
 impl std::error::Error for VoiceError {}
+
+fn should_log_voice_send_count(count: u64) -> bool {
+  count == 1 || count % VOICE_SEND_LOG_INTERVAL == 0
+}
 
 pub struct VoiceEngine {
   _input_stream: Option<cpal::Stream>,
@@ -637,9 +642,16 @@ fn spawn_encoder_thread(
   thread::Builder::new()
     .name("parties-voice-encoder".to_owned())
     .spawn(move || {
+      tracing::info!(target: "audio::encode", "[audio:encode] voice encoder thread started");
+      let started_at = Instant::now();
       let mut sequence = 0u16;
       let mut opus = vec![0u8; MAX_OPUS_PACKET];
       let mut voice_gate = VoiceActivationGate::default();
+      let mut encoded_packets = 0_u64;
+      let mut sent_packets = 0_u64;
+      let mut send_errors = 0_u64;
+      let mut suppressed_frames = 0_u64;
+      let mut encode_errors = 0_u64;
       while !stop.load(Ordering::Relaxed) {
         let mut frame = match frame_rx.recv_timeout(Duration::from_millis(50)) {
           Ok(frame) => frame,
@@ -648,6 +660,7 @@ fn spawn_encoder_thread(
         };
 
         if !voice_gate.should_transmit(&control, &frame) {
+          suppressed_frames = suppressed_frames.saturating_add(1);
           frame.clear();
           let _ = free_frame_tx.try_send(frame);
           continue;
@@ -655,7 +668,13 @@ fn spawn_encoder_thread(
 
         let len = match encoder.encode_float(&frame, &mut opus) {
           Ok(len) => len,
-          Err(_) => {
+          Err(error) => {
+            encode_errors = encode_errors.saturating_add(1);
+            tracing::warn!(
+              target: "audio::encode",
+              "[audio:encode] voice opus encode failed #{}: {error}",
+              encode_errors
+            );
             frame.clear();
             let _ = free_frame_tx.try_send(frame);
             continue;
@@ -667,13 +686,36 @@ fn spawn_encoder_thread(
           continue;
         }
 
-        if server.send_voice(sequence, &opus[..len]).is_ok() {
-          on_local_voice();
+        encoded_packets = encoded_packets.saturating_add(1);
+        match server.send_voice(sequence, &opus[..len]) {
+          Ok(()) => {
+            sent_packets = sent_packets.saturating_add(1);
+            if should_log_voice_send_count(sent_packets) {
+              tracing::debug!(
+                target: "audio::encode",
+                "[audio:encode] sent voice packet #{sent_packets}: sequence={sequence} bytes={len} encoded_packets={encoded_packets} suppressed_frames={suppressed_frames}"
+              );
+            }
+            on_local_voice();
+          }
+          Err(error) => {
+            send_errors = send_errors.saturating_add(1);
+            tracing::warn!(
+              target: "audio::encode",
+              "[audio:encode] voice datagram send failed #{}: sequence={sequence} bytes={len} encoded_packets={encoded_packets} sent_packets={sent_packets} error={error}",
+              send_errors
+            );
+          }
         }
         sequence = sequence.wrapping_add(1);
         frame.clear();
         let _ = free_frame_tx.try_send(frame);
       }
+      tracing::info!(
+        target: "audio::encode",
+        "[audio:encode] voice encoder thread stopped: uptime_ms={} encoded_packets={encoded_packets} sent_packets={sent_packets} send_errors={send_errors} encode_errors={encode_errors} suppressed_frames={suppressed_frames} next_sequence={sequence}",
+        started_at.elapsed().as_millis()
+      );
     })
     .map_err(|error| VoiceError::new(format!("Failed to start encoder thread: {error}")))
 }
