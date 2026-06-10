@@ -324,6 +324,25 @@ jobs:
             -format UDZO \
             "$dmg_path"
 
+      - name: Code sign macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          dmg_path="dist/$artifact.$ARCHIVE_EXT"
+          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+
+          if [[ -z "$identity" ]]; then
+            echo "::error::No Developer ID Application identity found in imported keychain."
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          codesign --force --timestamp --sign "$identity" "$dmg_path"
+          codesign --verify --verbose=2 "$dmg_path"
+
       - name: Notarize macOS DMG
         if: runner.os == 'macOS'
         shell: bash
