@@ -983,6 +983,42 @@ impl ServerSession {
     now.duration_since(*self.last_network_activity.lock().expect("server session lock poisoned"))
   }
 
+  fn connection_debug_context(&self) -> String {
+    let now = Instant::now();
+    let network_idle_ms = self.network_idle_for(now).as_millis();
+    let pending_ping_age_ms = self
+      .pending_keepalive_ping
+      .lock()
+      .expect("server session lock poisoned")
+      .as_ref()
+      .map(|sent_at| now.duration_since(*sent_at).as_millis());
+    let (selected_channel_id, selected_users, disconnected, receiver_running) = {
+      let lobby = self.lobby.lock().expect("server session lock poisoned");
+      (
+        lobby.selected_channel_id,
+        lobby.users.len(),
+        lobby.disconnected,
+        lobby.receiver_running,
+      )
+    };
+    let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
+    let (voice_engine_present, captures_voice) = {
+      let voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+      (
+        voice_engine.is_some(),
+        voice_engine.as_ref().is_some_and(VoiceEngine::captures_voice),
+      )
+    };
+    let info = self.info();
+    format!(
+      "server={} address={} local_user={:?} channel={selected_channel_id:?} channel_users={selected_users} muted={muted} deafened={deafened} voice_engine={voice_engine_present} captures_voice={captures_voice} disconnected={disconnected} receiver_running={receiver_running} pending_ping_age_ms={pending_ping_age_ms:?} network_idle_ms={network_idle_ms} shutdown={}",
+      info.as_ref().map(|info| info.server_name.as_str()).unwrap_or("<none>"),
+      info.as_ref().map(|info| info.address.as_str()).unwrap_or("<none>"),
+      info.as_ref().map(|info| info.user_id),
+      self.shutdown_requested.load(Ordering::Relaxed)
+    )
+  }
+
   fn set_connection_warning(&self, kind: LobbyConnectionWarningKind, message: String) {
     let mut should_bump = false;
     {
@@ -1691,6 +1727,11 @@ impl ServerSession {
   pub fn start_voice(&self, settings: AppSettings, no_connected_server: &str) -> Result<(), String> {
     let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
+    tracing::info!(
+      target: "voice",
+      "[voice] starting local voice engine: muted={muted} deafened={deafened} {}",
+      self.connection_debug_context()
+    );
     let on_local_voice = self.local_voice_callback();
     let engine =
       VoiceEngine::start(server, settings, muted, deafened, on_local_voice).map_err(|error| error.to_string())?;
@@ -1714,8 +1755,16 @@ impl ServerSession {
     {
       engine.set_stream_volume(user_id, volume);
     }
-    let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
-    *voice_engine = Some(engine);
+    {
+      let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+      *voice_engine = Some(engine);
+    }
+    tracing::info!(
+      target: "voice",
+      "[voice] local voice engine started: captures_voice={} {}",
+      self.voice_active(),
+      self.connection_debug_context()
+    );
     Ok(())
   }
 
@@ -1730,6 +1779,11 @@ impl ServerSession {
     }
 
     let (_, deafened) = self.local_voice_state().unwrap_or((false, false));
+    tracing::info!(
+      target: "voice",
+      "[voice] starting stream audio playback engine: deafened={deafened} {}",
+      self.connection_debug_context()
+    );
     let engine = VoiceEngine::start_playback(settings, deafened).map_err(|error| error.to_string())?;
     for (user_id, volume) in self
       .user_volumes
@@ -1751,8 +1805,15 @@ impl ServerSession {
     {
       engine.set_stream_volume(user_id, volume);
     }
-    let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
-    *voice_engine = Some(engine);
+    {
+      let mut voice_engine = self.voice_engine.lock().expect("server session lock poisoned");
+      *voice_engine = Some(engine);
+    }
+    tracing::info!(
+      target: "voice",
+      "[voice] stream audio playback engine started: {}",
+      self.connection_debug_context()
+    );
     Ok(())
   }
 
@@ -1766,7 +1827,19 @@ impl ServerSession {
   }
 
   pub fn stop_voice(&self) {
-    self.voice_engine.lock().expect("server session lock poisoned").take();
+    let stopped = self
+      .voice_engine
+      .lock()
+      .expect("server session lock poisoned")
+      .take()
+      .is_some();
+    if stopped {
+      tracing::info!(
+        target: "voice",
+        "[voice] local voice engine stopped: {}",
+        self.connection_debug_context()
+      );
+    }
   }
 
   pub fn start_video_broadcast(&self, config: VideoBroadcastConfig, no_connected_server: &str) -> Result<(), String> {
@@ -1884,6 +1957,11 @@ impl ServerSession {
       };
     }
 
+    tracing::info!(
+      target: "voice",
+      "[voice] aborting voice receiver because lobby receiver stopped: {}",
+      session.connection_debug_context()
+    );
     voice_task.abort();
     video_stop.store(true, Ordering::Relaxed);
     server.wake_video_datagram_reader();
@@ -1957,10 +2035,38 @@ impl ServerSession {
   }
 
   async fn run_voice_activity_receiver(&self, server: Arc<Server>) {
-    loop {
+    tracing::info!(
+      target: "voice",
+      "[voice] voice receiver started: {}",
+      self.connection_debug_context()
+    );
+    let started_at = Instant::now();
+    let mut voice_packets = 0_u64;
+    let mut stream_packets = 0_u64;
+    let mut video_controls = 0_u64;
+    let mut malformed_packets = 0_u64;
+    let mut last_packet = "none";
+    let mut last_voice_sender = None;
+    let mut last_voice_sequence = None;
+
+    let stop_reason = loop {
       match server.recv_audio().await {
         Ok(ReceivedAudioPacket::Voice(packet)) => {
           self.mark_network_activity();
+          voice_packets = voice_packets.saturating_add(1);
+          last_packet = "voice";
+          last_voice_sender = Some(packet.sender_id);
+          last_voice_sequence = Some(packet.sequence);
+          if voice_packets == 1 {
+            tracing::info!(
+              target: "voice",
+              "[voice] first voice packet received: sender={} sequence={} bytes={} {}",
+              packet.sender_id,
+              packet.sequence,
+              packet.opus.len(),
+              self.connection_debug_context()
+            );
+          }
           let speaking = self.handle_voice_packet(packet.clone());
           if speaking {
             self.mark_user_speaking(packet.sender_id);
@@ -1968,30 +2074,63 @@ impl ServerSession {
         }
         Ok(ReceivedAudioPacket::Stream(packet)) => {
           self.mark_network_activity();
+          stream_packets = stream_packets.saturating_add(1);
+          last_packet = "stream_audio";
+          if stream_packets == 1 {
+            tracing::info!(
+              target: "voice",
+              "[voice] first stream audio packet received: sender={} bytes={} {}",
+              packet.sender_id,
+              packet.opus.len(),
+              self.connection_debug_context()
+            );
+          }
           self.handle_stream_audio_packet(packet);
         }
         Ok(ReceivedAudioPacket::VideoControl(control)) => {
           self.mark_network_activity();
+          video_controls = video_controls.saturating_add(1);
+          last_packet = "video_control";
           self.handle_video_control_packet(control);
         }
         Err(ServerError::Protocol(error)) => {
-          tracing::warn!(target: "voice", "[voice] ignored malformed audio packet: {error}");
+          malformed_packets = malformed_packets.saturating_add(1);
+          tracing::warn!(
+            target: "voice",
+            "[voice] ignored malformed audio packet #{}: {error}; {}",
+            malformed_packets,
+            self.connection_debug_context()
+          );
           continue;
         }
         Err(error) => {
           let error = error.to_string();
+          let stop_reason = format!("transport error: {error}");
           tracing::warn!(
             target: "voice",
-            "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}"
+            "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}; {}",
+            self.connection_debug_context()
           );
           self.set_connection_warning(
             LobbyConnectionWarningKind::VoiceReceiverStopped,
             format!("Voice receiver stopped: {error}"),
           );
-          break;
+          break stop_reason;
         }
       }
-    }
+    };
+
+    tracing::warn!(
+      target: "voice",
+      "[voice] voice receiver stopped: reason='{stop_reason}' uptime_ms={} voice_packets={} stream_packets={} video_controls={} malformed_packets={} last_packet={} last_voice_sender={last_voice_sender:?} last_voice_sequence={last_voice_sequence:?} {}",
+      started_at.elapsed().as_millis(),
+      voice_packets,
+      stream_packets,
+      video_controls,
+      malformed_packets,
+      last_packet,
+      self.connection_debug_context()
+    );
   }
 
   fn run_video_receiver(&self, server: Arc<Server>, runtime: tokio::runtime::Handle, stop: Arc<AtomicBool>) {
