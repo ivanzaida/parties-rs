@@ -602,6 +602,19 @@ pub struct LobbyScreenShare {
   pub metadata: ScreenShareMetadata,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LobbyConnectionWarningKind {
+  KeepalivePongOverdue,
+  VoiceReceiverStopped,
+  VideoReceiverStopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LobbyConnectionWarning {
+  pub kind: LobbyConnectionWarningKind,
+  pub message: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LobbyState {
   pub channels: Vec<LobbyChannel>,
@@ -623,6 +636,7 @@ pub struct LobbyState {
   pub ping_ms: Option<u32>,
   pub disconnected: bool,
   pub last_error: Option<String>,
+  pub connection_warning: Option<LobbyConnectionWarning>,
 }
 
 #[allow(dead_code)]
@@ -967,6 +981,24 @@ impl ServerSession {
 
   fn network_idle_for(&self, now: Instant) -> Duration {
     now.duration_since(*self.last_network_activity.lock().expect("server session lock poisoned"))
+  }
+
+  fn set_connection_warning(&self, kind: LobbyConnectionWarningKind, message: String) {
+    let mut should_bump = false;
+    {
+      let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if lobby.disconnected {
+        return;
+      }
+      let warning = LobbyConnectionWarning { kind, message };
+      if lobby.connection_warning.as_ref() != Some(&warning) {
+        lobby.connection_warning = Some(warning);
+        should_bump = true;
+      }
+    }
+    if should_bump {
+      self.bump_revision();
+    }
   }
 
   fn stop_lobby_receivers(&self) {
@@ -1894,6 +1926,13 @@ impl ServerSession {
             KEEPALIVE_TIMEOUT.as_secs(),
             idle_for.as_secs()
           );
+          self.set_connection_warning(
+            LobbyConnectionWarningKind::KeepalivePongOverdue,
+            format!(
+              "No pong for {}s, but traffic is still arriving.",
+              KEEPALIVE_TIMEOUT.as_secs()
+            ),
+          );
           tokio::time::sleep(KEEPALIVE_INTERVAL).await;
           continue;
         }
@@ -1945,6 +1984,10 @@ impl ServerSession {
             target: "voice",
             "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}"
           );
+          self.set_connection_warning(
+            LobbyConnectionWarningKind::VoiceReceiverStopped,
+            format!("Voice receiver stopped: {error}"),
+          );
           break;
         }
       }
@@ -1984,6 +2027,10 @@ impl ServerSession {
                   target: "video",
                   "[video] video stream reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
                 );
+                session.set_connection_warning(
+                  LobbyConnectionWarningKind::VideoReceiverStopped,
+                  format!("Video stream receiver stopped: {error}"),
+                );
                 break;
               }
             }
@@ -2017,6 +2064,10 @@ impl ServerSession {
                 tracing::warn!(
                   target: "video",
                   "[video] video datagram reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
+                );
+                session.set_connection_warning(
+                  LobbyConnectionWarningKind::VideoReceiverStopped,
+                  format!("Video datagram receiver stopped: {error}"),
                 );
                 break;
               }
@@ -2823,6 +2874,7 @@ impl ServerSession {
       lobby.receiver_running = false;
       lobby.disconnected = true;
       lobby.last_error = Some(message);
+      lobby.connection_warning = None;
       lobby.stream_browser_channel_id = None;
       lobby.screen_shares.clear();
       let (previous_user_id, changed) = Self::set_watching_user_in_lobby(&mut lobby, None);
@@ -3125,6 +3177,13 @@ impl ServerSession {
       }
       S2C::KeepalivePong => {
         lobby.keepalive_ok = true;
+        if lobby
+          .connection_warning
+          .as_ref()
+          .is_some_and(|warning| warning.kind == LobbyConnectionWarningKind::KeepalivePongOverdue)
+        {
+          lobby.connection_warning = None;
+        }
         if let Some(sent_at) = self
           .pending_keepalive_ping
           .lock()
