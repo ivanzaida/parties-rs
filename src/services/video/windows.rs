@@ -21,15 +21,14 @@ use ::windows::{
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
         IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
-        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
+        IAudioClient, PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
       },
       Multimedia::WAVE_FORMAT_IEEE_FLOAT,
     },
     System::{
       Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize,
         StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
       },
       Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
@@ -612,7 +611,6 @@ fn bitstream_probe(bytes: &[u8]) -> String {
 
 #[derive(Clone, Copy, Debug)]
 enum StreamAudioCaptureTarget {
-  DefaultOutput,
   ExcludeProcess(u32),
   IncludeProcess(u32),
 }
@@ -620,7 +618,6 @@ enum StreamAudioCaptureTarget {
 impl StreamAudioCaptureTarget {
   fn label(self) -> String {
     match self {
-      Self::DefaultOutput => "default output loopback".to_owned(),
       Self::ExcludeProcess(process_id) => format!("process loopback excluding pid {process_id}"),
       Self::IncludeProcess(process_id) => format!("process loopback including pid {process_id}"),
     }
@@ -631,6 +628,14 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
   match config.source_kind {
     ScreenShareSourceKind::Window => match find_window_process_id(config.source_id) {
       Ok(process_id) => {
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        if process_id == current_process_id {
+          tracing::warn!(target: "audio::encode::windows",
+            "[audio:encode/windows] selected window belongs to current process; using output loopback excluding current process: window={} pid={process_id}",
+            config.source_id
+          );
+          return StreamAudioCaptureTarget::ExcludeProcess(current_process_id);
+        }
         tracing::info!(target: "audio::encode::windows",
           "[audio:encode/windows] selected window audio target: window={} pid={process_id}",
           config.source_id
@@ -638,11 +643,12 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
         StreamAudioCaptureTarget::IncludeProcess(process_id)
       }
       Err(error) => {
+        let process_id = unsafe { GetCurrentProcessId() };
         tracing::warn!(target: "audio::encode::windows",
-          "[audio:encode/windows] could not resolve selected window pid; using default output loopback: window={} error={error}",
-          config.source_id
+          "[audio:encode/windows] could not resolve selected window pid; using output loopback excluding current process: window={} exclude_pid={process_id} error={error}",
+          config.source_id,
         );
-        StreamAudioCaptureTarget::DefaultOutput
+        StreamAudioCaptureTarget::ExcludeProcess(process_id)
       }
     },
     ScreenShareSourceKind::Screen | ScreenShareSourceKind::Webcam => {
@@ -666,7 +672,7 @@ fn spawn_stream_audio_thread(
     .name("parties-stream-audio-windows".to_owned())
     .spawn(move || {
       if let Err(error) = run_stream_audio_loop(server, stop, target) {
-        tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture stopped with error: {error}");
+        tracing::warn!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture disabled: {error}");
       }
     })
     .map_err(|error| VideoError::new(format!("Failed to start stream audio capture thread: {error}")))
@@ -888,18 +894,13 @@ impl WasapiLoopbackCapture {
 }
 
 fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioClient, VideoError> {
-  let process_loopback = match target {
-    StreamAudioCaptureTarget::DefaultOutput => None,
+  let (process_id, mode, mode_label) = match target {
     StreamAudioCaptureTarget::ExcludeProcess(process_id) => {
-      Some((process_id, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, "exclude"))
+      (process_id, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, "exclude")
     }
     StreamAudioCaptureTarget::IncludeProcess(process_id) => {
-      Some((process_id, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, "include"))
+      (process_id, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, "include")
     }
-  };
-
-  let Some((process_id, mode, mode_label)) = process_loopback else {
-    return activate_default_render_loopback_client();
   };
 
   match activate_process_loopback_client(process_id, mode) {
@@ -909,30 +910,13 @@ fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioCl
     }
     Err(error) => {
       tracing::warn!(target: "audio::encode::windows",
-        "[audio:encode/windows] process loopback unavailable; falling back to default output loopback: mode={mode_label} pid={process_id} error={error}"
+        "[audio:encode/windows] process loopback unavailable; refusing default output loopback because it would capture Parties audio: mode={mode_label} pid={process_id} error={error}"
       );
-      activate_default_render_loopback_client()
+      Err(VideoError::new(format!(
+        "Process loopback unavailable for stream audio ({mode_label} pid {process_id}); default output fallback disabled to avoid capturing Parties audio: {error}"
+      )))
     }
   }
-}
-
-fn activate_default_render_loopback_client() -> Result<IAudioClient, VideoError> {
-  let enumerator: IMMDeviceEnumerator = unsafe {
-    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-      .map_err(|error| VideoError::new(format!("Failed to create audio endpoint enumerator: {error}")))?
-  };
-  let device = unsafe {
-    enumerator
-      .GetDefaultAudioEndpoint(eRender, eConsole)
-      .map_err(|error| VideoError::new(format!("Failed to get default render endpoint: {error}")))?
-  };
-  let audio_client = unsafe {
-    device
-      .Activate::<IAudioClient>(CLSCTX_ALL, None)
-      .map_err(|error| VideoError::new(format!("Failed to activate default output loopback capture: {error}")))?
-  };
-  tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] default output loopback capture activated");
-  Ok(audio_client)
 }
 
 fn activate_process_loopback_client(process_id: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClient, VideoError> {
