@@ -40,6 +40,7 @@ struct ScreenBounds {
 
 fn main() {
   services::logger::init();
+  services::updater::start_platform_updater();
   #[cfg(target_os = "windows")]
   log_startup_gpu_info();
   #[cfg(target_os = "windows")]

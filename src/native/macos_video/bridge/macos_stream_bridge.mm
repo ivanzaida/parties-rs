@@ -5,6 +5,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <VideoToolbox/VideoToolbox.h>
+#import <objc/message.h>
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +26,7 @@ constexpr uint32_t kCodecH264 = 3;
 constexpr int64_t kTimeScale100Ns = 10000000;
 constexpr uint32_t kStreamAudioSampleRate = 48000;
 constexpr uint32_t kStreamAudioChannels = 2;
+static __strong id g_sparkle_updater_controller = nil;
 
 CMVideoCodecType codec_type_from_u8(uint8_t codec) {
   switch (codec) {
@@ -184,6 +186,14 @@ std::string ns_error_string(NSError* error) {
   }
   NSString* description = error.localizedDescription ?: error.description;
   return std::string(description.UTF8String ?: "unknown error");
+}
+
+id sparkle_updater_controller() {
+  return g_sparkle_updater_controller;
+}
+
+void set_sparkle_updater_controller(id controller) {
+  g_sparkle_updater_controller = controller;
 }
 
 } // namespace
@@ -1050,6 +1060,46 @@ uintptr_t parties_macos_stream_audio_len(MacosStreamBridge* bridge) {
     return 0;
   }
   return bridge->readable_audio.size();
+}
+
+void parties_macos_sparkle_start() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (sparkle_updater_controller() != nil) {
+      return;
+    }
+
+    NSString* framework_path =
+      [[[NSBundle mainBundle] privateFrameworksPath] stringByAppendingPathComponent:@"Sparkle.framework"];
+    NSBundle* framework_bundle = [NSBundle bundleWithPath:framework_path];
+    if (framework_bundle != nil && !framework_bundle.loaded) {
+      NSError* error = nil;
+      [framework_bundle loadAndReturnError:&error];
+    }
+
+    Class controller_class = NSClassFromString(@"SPUStandardUpdaterController");
+    if (controller_class == nil) {
+      return;
+    }
+
+    SEL selector = @selector(initWithStartingUpdater:updaterDelegate:userDriverDelegate:);
+    id allocated = ((id (*)(id, SEL))objc_msgSend)((id)controller_class, @selector(alloc));
+    id controller = ((id (*)(id, SEL, BOOL, id, id))objc_msgSend)(allocated, selector, YES, nil, nil);
+    set_sparkle_updater_controller(controller);
+  });
+}
+
+void parties_macos_sparkle_check_for_updates() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    id controller = sparkle_updater_controller();
+    if (controller == nil) {
+      parties_macos_sparkle_start();
+      controller = sparkle_updater_controller();
+    }
+    if (controller == nil || ![controller respondsToSelector:@selector(checkForUpdates:)]) {
+      return;
+    }
+    ((void (*)(id, SEL, id))objc_msgSend)(controller, @selector(checkForUpdates:), nil);
+  });
 }
 
 }

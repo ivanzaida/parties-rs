@@ -17,6 +17,8 @@ pub fn webcam_devices_with_fallbacks(
   default_label: &str,
   indexed_label: &dyn Fn(usize) -> String,
 ) -> Vec<WebcamDevice> {
+  #[cfg(not(target_os = "windows"))]
+  let _ = default_label;
   #[cfg(not(target_os = "macos"))]
   let _ = indexed_label;
 

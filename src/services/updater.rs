@@ -20,6 +20,13 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SIMULATE_UPDATE_ENV: &str = "PARTIES_UPDATER_SIMULATE";
 const SIMULATE_UPDATE_VERSION_ENV: &str = "PARTIES_UPDATER_SIMULATE_VERSION";
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+  fn parties_macos_sparkle_start();
+  #[allow(dead_code)]
+  fn parties_macos_sparkle_check_for_updates();
+}
+
 #[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
 pub enum StartupUpdateStatus {
   Idle,
@@ -123,6 +130,21 @@ pub async fn run_startup_update_check(
   }
 }
 
+pub fn start_platform_updater() {
+  #[cfg(target_os = "macos")]
+  unsafe {
+    parties_macos_sparkle_start();
+  }
+}
+
+#[allow(dead_code)]
+pub fn check_for_platform_updates() {
+  #[cfg(target_os = "macos")]
+  unsafe {
+    parties_macos_sparkle_check_for_updates();
+  }
+}
+
 fn target_suffix() -> Option<&'static str> {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
   {
@@ -139,6 +161,11 @@ fn target_suffix() -> Option<&'static str> {
 async fn run_startup_update_check_inner(
   status: lurq::core::Signal<StartupUpdateStatus>,
 ) -> Result<StartupUpdateOutcome, UpdateError> {
+  if platform_updater_handles_startup_checks() {
+    status.set(StartupUpdateStatus::Skipped("Sparkle handles macOS updates".to_owned()));
+    return Ok(StartupUpdateOutcome { prepared: false });
+  }
+
   if simulated_update_enabled() {
     return run_simulated_startup_update(status).await;
   }
@@ -282,6 +309,10 @@ async fn fetch_latest_release(client: &Client, target_suffix: &str) -> Result<La
     .ok_or(UpdateError::MissingAsset(expected_asset))?;
 
   Ok(LatestRelease { version, asset })
+}
+
+fn platform_updater_handles_startup_checks() -> bool {
+  cfg!(target_os = "macos")
 }
 
 fn parse_release_asset(value: &Value) -> Option<ReleaseAsset> {
