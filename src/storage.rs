@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
   identity::LocalIdentity,
-  network::protocol::{PublicKey, Role, SecretKey, UserId},
+  network::protocol::{ChannelId, PublicKey, Role, SecretKey, UserId},
 };
 
 #[derive(Debug)]
@@ -193,6 +193,14 @@ pub struct WindowState {
 pub struct StoredUpdateState {
   pub last_checked_at: i64,
   pub last_seen_version: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredUpdateResumeState {
+  pub server_address: String,
+  pub voice_channel_id: Option<ChannelId>,
+  pub muted: bool,
+  pub deafened: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -483,6 +491,56 @@ impl Storage {
     Ok(state.unwrap_or_default())
   }
 
+  pub fn save_update_resume_state(&self, state: &StoredUpdateResumeState) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute(
+      r#"
+      INSERT OR REPLACE INTO app_update_resume (id, server_address, voice_channel_id, muted, deafened)
+      VALUES (1, ?1, ?2, ?3, ?4)
+      "#,
+      params![
+        &state.server_address,
+        state.voice_channel_id.map(i64::from),
+        bool_to_int(state.muted),
+        bool_to_int(state.deafened)
+      ],
+    )?;
+    Ok(())
+  }
+
+  pub fn load_update_resume_state(&self) -> Result<Option<StoredUpdateResumeState>, StorageError> {
+    let conn = self.connection()?;
+    let state = conn
+      .query_row(
+        "SELECT server_address, voice_channel_id, muted, deafened FROM app_update_resume WHERE id = 1",
+        [],
+        |row| {
+          Ok(StoredUpdateResumeState {
+            server_address: row.get(0)?,
+            voice_channel_id: row.get::<_, Option<i64>>(1)?.map(|value| value as ChannelId),
+            muted: int_to_bool(row.get(2)?),
+            deafened: int_to_bool(row.get(3)?),
+          })
+        },
+      )
+      .optional()?;
+    Ok(state)
+  }
+
+  pub fn clear_update_resume_state(&self) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    conn.execute("DELETE FROM app_update_resume WHERE id = 1", [])?;
+    Ok(())
+  }
+
+  pub fn take_update_resume_state(&self) -> Result<Option<StoredUpdateResumeState>, StorageError> {
+    let state = self.load_update_resume_state()?;
+    if state.is_some() {
+      self.clear_update_resume_state()?;
+    }
+    Ok(state)
+  }
+
   pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
     let conn = self.connection()?;
     let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
@@ -730,6 +788,14 @@ impl Storage {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         last_checked_at INTEGER NOT NULL DEFAULT 0,
         last_seen_version TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS app_update_resume (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        server_address TEXT NOT NULL,
+        voice_channel_id INTEGER,
+        muted INTEGER NOT NULL DEFAULT 0,
+        deafened INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS volume_overrides (
@@ -1114,6 +1180,30 @@ mod tests {
 
     storage.delete_server("127.0.0.1:7800").unwrap();
     assert!(storage.load_servers().unwrap().is_empty());
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn update_resume_state_is_consumed_once() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-update-resume-{nonce}.db"));
+    let storage = Storage::open(&path).unwrap();
+    let state = StoredUpdateResumeState {
+      server_address: "127.0.0.1:7800".to_owned(),
+      voice_channel_id: Some(42),
+      muted: true,
+      deafened: false,
+    };
+
+    assert_eq!(storage.load_update_resume_state().unwrap(), None);
+    storage.save_update_resume_state(&state).unwrap();
+    assert_eq!(storage.load_update_resume_state().unwrap(), Some(state.clone()));
+    assert_eq!(storage.take_update_resume_state().unwrap(), Some(state));
+    assert_eq!(storage.load_update_resume_state().unwrap(), None);
+    assert_eq!(storage.take_update_resume_state().unwrap(), None);
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

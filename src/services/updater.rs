@@ -12,7 +12,10 @@ use reqwest::Client;
 use semver::Version;
 use serde_json::Value;
 
-use crate::storage::{Storage, StoredUpdateState};
+use crate::{
+  session::ServerSession,
+  storage::{Storage, StoredUpdateResumeState, StoredUpdateState},
+};
 
 const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/ivanzaida/parties-rs/releases/latest";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -489,11 +492,56 @@ fn extract_tar_executable(
   Err(UpdateError::Archive(format!("{executable_name} not found in tar.gz")))
 }
 
-pub fn restart_into_update(staged_executable: &str) -> Result<(), String> {
+pub fn restart_into_update(
+  staged_executable: &str,
+  storage: Option<&Storage>,
+  session: Option<&ServerSession>,
+) -> Result<(), String> {
   let staged_executable = PathBuf::from(staged_executable);
   let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
   schedule_replacement(&staged_executable, &current_exe)?;
+  save_update_resume_state(storage, session);
   std::process::exit(0);
+}
+
+fn save_update_resume_state(storage: Option<&Storage>, session: Option<&ServerSession>) {
+  let Some(storage) = storage else {
+    return;
+  };
+  let Some(session) = session else {
+    let _ = storage.clear_update_resume_state();
+    return;
+  };
+  let Some(info) = session.info() else {
+    let _ = storage.clear_update_resume_state();
+    return;
+  };
+
+  let lobby = session.lobby();
+  let voice_channel_id = lobby.selected_channel_id;
+  let (muted, deafened) = session.local_voice_state().unwrap_or((false, false));
+  let state = StoredUpdateResumeState {
+    server_address: info.address,
+    voice_channel_id,
+    muted,
+    deafened,
+  };
+
+  match storage.save_update_resume_state(&state) {
+    Ok(()) => {
+      tracing::info!(
+        target: "updater",
+        "[updater] saved restart resume target: server={} voice_channel={:?} muted={} deafened={}",
+        state.server_address,
+        state.voice_channel_id,
+        state.muted,
+        state.deafened
+      );
+    }
+    Err(error) => {
+      tracing::warn!(target: "updater", "[updater] failed to save restart resume target: {error}");
+    }
+  }
 }
 
 #[cfg(target_os = "windows")]

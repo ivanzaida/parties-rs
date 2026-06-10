@@ -16,16 +16,18 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY},
   services::{
     startup::{StartupProgress, StartupProgressLabels, load_startup_data},
     updater::{StartupUpdateStatus, restart_into_update, run_startup_update_check},
   },
-  storage::Storage,
+  session::ServerSession,
+  storage::{AppSettings, Storage},
   theme,
   ui::{
     brand_logo::logo_mark,
     common::lucide_icon::{LucideIcon, LucideIconProps},
+    connect_server::{ConnectErrorCopy, connect_and_store},
     loader::loader,
   },
 };
@@ -55,6 +57,7 @@ pub struct LoadingIdentityScreen {
   minimum_visible: Signal<bool>,
   minimum_visible_timeout: Timeout,
   navigated: Signal<bool>,
+  resume_started: Signal<bool>,
   preview_error_visible: Signal<bool>,
   preview_error_timeout: Timeout,
 }
@@ -112,6 +115,7 @@ impl Component for LoadingIdentityScreen {
       minimum_visible,
       minimum_visible_timeout,
       navigated: ctx.signal(false),
+      resume_started: ctx.signal(false),
       preview_error_visible,
       preview_error_timeout,
     }
@@ -147,6 +151,14 @@ impl Component for LoadingIdentityScreen {
           .get(),
       )
     };
+    let session = ctx.use_context::<ServerSession>();
+    let resume_errors = ConnectErrorCopy::from_ctx(ctx);
+    let restore_update_resume = ctx.future_action(move |storage: Storage| {
+      let session = session.clone();
+      let errors = resume_errors.clone();
+      async move { restore_update_resume_after_restart(storage, session, errors).await }
+    });
+    let restore_update_resume_state = restore_update_resume.state().get();
     let startup_error = startup.as_ref().and_then(|startup| startup.error.clone());
     let initial_error = (retry_nonce == 0).then(|| props.startup_error.clone()).flatten();
     let progress_error = startup_error.as_ref().or(initial_error.as_ref());
@@ -173,17 +185,38 @@ impl Component for LoadingIdentityScreen {
       && !update_blocks_startup
       && !self.navigated.get_untracked()
     {
-      self.navigated.set(true);
       if props.storage.get_untracked() != data.storage {
         props.storage.set(data.storage.clone());
       }
-      if let Some(navigator) = ctx.navigator() {
-        let route = if data.has_identity {
-          ROUTE_CHOOSE_SERVER
-        } else {
-          ROUTE_IDENTITY_SETUP
-        };
-        navigator.replace(route);
+      let mut waiting_for_resume = false;
+      if data.has_identity
+        && !self.resume_started.get_untracked()
+        && let Some(storage) = data.storage.clone()
+      {
+        self.resume_started.set(true);
+        restore_update_resume.run(storage);
+        waiting_for_resume = true;
+      }
+      if data.has_identity
+        && self.resume_started.get_untracked()
+        && !restore_update_resume_state.is_fulfilled()
+        && !restore_update_resume_state.is_rejected()
+      {
+        waiting_for_resume = true;
+      }
+
+      if !waiting_for_resume {
+        self.navigated.set(true);
+        if let Some(navigator) = ctx.navigator() {
+          let route = if restore_update_resume_state.data == Some(true) {
+            ROUTE_LOBBY
+          } else if data.has_identity {
+            ROUTE_CHOOSE_SERVER
+          } else {
+            ROUTE_IDENTITY_SETUP
+          };
+          navigator.replace(route);
+        }
       }
     }
 
@@ -211,6 +244,116 @@ impl Component for LoadingIdentityScreen {
       .clip()
       .child(content)
   }
+}
+
+async fn restore_update_resume_after_restart(
+  storage: Storage,
+  session: Option<ServerSession>,
+  errors: ConnectErrorCopy,
+) -> Result<bool, String> {
+  let resume = match storage.take_update_resume_state() {
+    Ok(Some(resume)) => resume,
+    Ok(None) => return Ok(false),
+    Err(error) => {
+      tracing::warn!(target: "updater", "[updater] failed to load restart resume target: {error}");
+      return Ok(false);
+    }
+  };
+  let Some(session) = session else {
+    tracing::warn!(target: "updater", "[updater] skipped restart resume: no session context");
+    return Ok(false);
+  };
+  let server = match storage.load_server(&resume.server_address) {
+    Ok(Some(server)) => server,
+    Ok(None) => {
+      tracing::warn!(
+        target: "updater",
+        "[updater] skipped restart resume: saved server missing address={}",
+        resume.server_address
+      );
+      return Ok(false);
+    }
+    Err(error) => {
+      tracing::warn!(target: "updater", "[updater] failed to load restart resume server: {error}");
+      return Ok(false);
+    }
+  };
+  let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
+  let display_name = if server.display_name.trim().is_empty() {
+    settings.display_name.clone()
+  } else {
+    server.display_name.clone()
+  };
+
+  tracing::info!(
+    target: "updater",
+    "[updater] restoring server after update restart: address={} voice_channel={:?}",
+    server.address,
+    resume.voice_channel_id
+  );
+  if let Err(error) = connect_and_store(
+    server.address.clone(),
+    server.server_password,
+    display_name,
+    Some(storage.clone()),
+    Some(session.clone()),
+    errors,
+  )
+  .await
+  {
+    tracing::warn!(target: "updater", "[updater] failed to restore server after update restart: {error}");
+    return Ok(false);
+  }
+
+  let Some(channel_id) = resume.voice_channel_id else {
+    return Ok(true);
+  };
+  let Some(connected_server) = session.server() else {
+    tracing::warn!(target: "updater", "[updater] skipped voice channel restore after update restart: no connected server");
+    return Ok(true);
+  };
+  if let Err(error) = connected_server.join_channel(channel_id).await {
+    tracing::warn!(
+      target: "updater",
+      "[updater] failed to rejoin voice channel after update restart: channel={} error={}",
+      channel_id,
+      error
+    );
+    return Ok(true);
+  }
+
+  let (mut muted, deafened) = (resume.muted, resume.deafened);
+  if deafened {
+    muted = true;
+  }
+  session.select_channel(channel_id);
+  if let Err(error) = connected_server.update_voice_state(muted, deafened).await {
+    tracing::warn!(
+      target: "updater",
+      "[updater] failed to restore voice state after update restart: channel={} error={}",
+      channel_id,
+      error
+    );
+    return Ok(true);
+  }
+  session.set_local_voice_state(muted, deafened);
+  match session.start_voice(settings, "") {
+    Ok(()) => tracing::info!(
+      target: "updater",
+      "[updater] restored voice channel after update restart: channel={} muted={} deafened={}",
+      channel_id,
+      muted,
+      deafened
+    ),
+    Err(error) => tracing::warn!(
+      target: "updater",
+      "[updater] failed to restart voice capture after update restart: channel={} error={}",
+      channel_id,
+      error
+    ),
+  }
+
+  Ok(true)
 }
 
 impl LoadingIdentityScreen {
@@ -330,9 +473,11 @@ impl LoadingIdentityScreen {
 
     if let Some(staged_executable) = ready_path {
       let update_status = update_status_signal.clone();
+      let storage = ctx.props::<LoadingIdentityScreenProps>().storage.get_untracked();
+      let session = ctx.use_context::<ServerSession>();
       panel = panel.child(Row::new().align_items(Alignment::Center).child(
         self.restart_update_button(ctx, status).on_click(move |_| {
-          if let Err(error) = restart_into_update(&staged_executable) {
+          if let Err(error) = restart_into_update(&staged_executable, storage.as_ref(), session.as_ref()) {
             update_status.set(StartupUpdateStatus::Failed(error));
           }
         }),
@@ -593,6 +738,7 @@ impl LoadingIdentityScreen {
     let minimum_visible = self.minimum_visible.clone();
     let minimum_visible_timeout = self.minimum_visible_timeout.clone();
     let navigated = self.navigated.clone();
+    let resume_started = self.resume_started.clone();
     let preview_error_visible = self.preview_error_visible.clone();
     let preview_error_timeout = self.preview_error_timeout.clone();
     let starting = copy.startup.starting.clone();
@@ -611,6 +757,7 @@ impl LoadingIdentityScreen {
             minimum_visible.set(false);
             minimum_visible_timeout.restart();
             navigated.set(false);
+            resume_started.set(false);
             progress.set(StartupProgress::new(0.08, starting.clone()));
             retry_nonce.update(|nonce| *nonce = nonce.wrapping_add(1));
           }),
