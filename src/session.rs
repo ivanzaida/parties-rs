@@ -48,6 +48,8 @@ const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = true;
 #[cfg(target_os = "windows")]
 const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 8;
 #[cfg(target_os = "windows")]
+const DX12_DECODE_SURFACE_RING_SIZE: usize = 8;
+#[cfg(target_os = "windows")]
 const WINDOWS_NVIDIA_VENDOR_ID: u32 = 0x10DE;
 #[cfg(target_os = "windows")]
 const WINDOWS_AMD_VENDOR_ID: u32 = 0x1002;
@@ -1954,6 +1956,9 @@ impl ServerSession {
     #[cfg(target_os = "windows")]
     let mut shared_nv12_planes_surfaces =
       HashMap::<(UserId, usize, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>::new();
+    #[cfg(target_os = "windows")]
+    let mut dx12_decode_surfaces =
+      HashMap::<(UserId, u16, u16), VecDeque<Arc<lurq::app::dx12_render::Dx12Nv12Surface>>>::new();
     let mut awaiting_keyframes = self.watching_user_id().into_iter().collect::<HashSet<_>>();
     let mut awaiting_decoded_output = HashSet::<UserId>::new();
     let mut received_counts = HashMap::<UserId, u64>::new();
@@ -1999,6 +2004,8 @@ impl ServerSession {
         shared_nv12_planes_decode_failures.retain(|(user_id, _)| Some(*user_id) == watched_user);
         #[cfg(target_os = "windows")]
         shared_nv12_planes_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
+        #[cfg(target_os = "windows")]
+        dx12_decode_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
         awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
         if let Some(user_id) = watched_user {
           awaiting_keyframes.insert(user_id);
@@ -2099,6 +2106,8 @@ impl ServerSession {
           shared_nv12_planes_decode_failures.retain(|(user_id, _)| *user_id != packet.sender_id);
           #[cfg(target_os = "windows")]
           shared_nv12_planes_surfaces.retain(|(user_id, ..), _| *user_id != packet.sender_id);
+          #[cfg(target_os = "windows")]
+          dx12_decode_surfaces.retain(|(user_id, ..), _| *user_id != packet.sender_id);
           awaiting_decoded_output.remove(&packet.sender_id);
           awaiting_keyframes.insert(packet.sender_id);
           request_keyframe_for(packet.sender_id, "video decode config changed");
@@ -2195,7 +2204,12 @@ impl ServerSession {
 
           #[cfg(target_os = "windows")]
           if let Some(surface) =
-            self.dx12_video_surface_for_decode(packet.sender_id, packet.frame.width, packet.frame.height)
+            self.dx12_video_surface_for_decode(
+              &mut dx12_decode_surfaces,
+              packet.sender_id,
+              packet.frame.width,
+              packet.frame.height,
+            )
             && let Some(decoded) = decode_video_packet_to_dx12(
               &mut decoders,
               &mut decoder_failures,
@@ -2574,6 +2588,7 @@ impl ServerSession {
   #[cfg(target_os = "windows")]
   fn dx12_video_surface_for_decode(
     &self,
+    surface_cache: &mut HashMap<(UserId, u16, u16), VecDeque<Arc<lurq::app::dx12_render::Dx12Nv12Surface>>>,
     user_id: UserId,
     width: u16,
     height: u16,
@@ -2582,22 +2597,22 @@ impl ServerSession {
       return None;
     }
 
+    let key = (user_id, width, height);
+    let surfaces = surface_cache.entry(key).or_default();
+    if surfaces.len() >= DX12_DECODE_SURFACE_RING_SIZE
+      && let Some(surface) = surfaces.pop_front()
     {
-      let frames = self.video_frames.lock().expect("server session lock poisoned");
-      if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
-        let image = surface.image_data();
-        if image.width() == u32::from(width)
-          && image.height() == u32::from(height)
-          && image.format() == lurq::images::ImagePixelFormat::Nv12
-        {
-          return Some(surface.clone());
-        }
-      }
+      surfaces.push_back(surface.clone());
+      return Some(surface);
     }
 
     let allocator = self.dx12_video_surface_allocator()?;
     match allocator.create_nv12_surface(u32::from(width), u32::from(height)) {
-      Ok(Some(surface)) => Some(Arc::new(surface)),
+      Ok(Some(surface)) => {
+        let surface = Arc::new(surface);
+        surfaces.push_back(surface.clone());
+        Some(surface)
+      }
       Ok(None) => None,
       Err(error) => {
         tracing::warn!(target: "video::decode", "[video:decode] failed to allocate DX12 video surface: {error}");
