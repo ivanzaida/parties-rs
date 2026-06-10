@@ -39,6 +39,7 @@ use crate::{
 };
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_USER_VOLUME: i32 = 100;
 const MAX_QUEUED_VIDEO_PACKETS: usize = 48;
 const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 12;
@@ -808,6 +809,10 @@ impl ServerSession {
     self.stop_lobby_receivers();
     self.stop_voice();
     self.stop_video_broadcast();
+    *self
+      .pending_keepalive_ping
+      .lock()
+      .expect("server session lock poisoned") = None;
     *self.current.lock().expect("server session lock poisoned") = Some(connected);
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
     *self.receiver_started.lock().expect("server session lock poisoned") = false;
@@ -857,6 +862,10 @@ impl ServerSession {
     self.stop_lobby_receivers();
     self.stop_voice();
     self.stop_video_broadcast();
+    *self
+      .pending_keepalive_ping
+      .lock()
+      .expect("server session lock poisoned") = None;
     *self.current.lock().expect("server session lock poisoned") = None;
     self.clear_tofu_warning();
     *self.lobby.lock().expect("server session lock poisoned") = LobbyState::default();
@@ -1848,11 +1857,38 @@ impl ServerSession {
 
   async fn run_keepalive_sender(&self, server: Arc<Server>) {
     loop {
-      *self
-        .pending_keepalive_ping
-        .lock()
-        .expect("server session lock poisoned") = Some(Instant::now());
-      let _ = server.ping().await;
+      let now = Instant::now();
+      let keepalive_timed_out = {
+        let mut pending = self
+          .pending_keepalive_ping
+          .lock()
+          .expect("server session lock poisoned");
+        match *pending {
+          Some(sent_at) if now.duration_since(sent_at) >= KEEPALIVE_TIMEOUT => true,
+          Some(_) => false,
+          None => {
+            *pending = Some(now);
+            false
+          }
+        }
+      };
+      if keepalive_timed_out {
+        tracing::warn!(
+          target: "network",
+          "[network] keepalive timed out: no pong received within {}s; forcing reconnect",
+          KEEPALIVE_TIMEOUT.as_secs()
+        );
+        self.mark_lobby_error(format!(
+          "keepalive timed out after {}s without pong",
+          KEEPALIVE_TIMEOUT.as_secs()
+        ));
+        break;
+      }
+      if let Err(error) = server.ping().await {
+        tracing::warn!(target: "network", "[network] keepalive send failed; forcing reconnect: {error}");
+        self.mark_lobby_error(format!("keepalive send failed: {error}"));
+        break;
+      }
       tokio::time::sleep(KEEPALIVE_INTERVAL).await;
     }
   }
@@ -1877,7 +1913,12 @@ impl ServerSession {
           continue;
         }
         Err(error) => {
-          tracing::warn!(target: "voice", "[voice] voice receiver stopped: {error}");
+          let error = error.to_string();
+          tracing::warn!(
+            target: "voice",
+            "[voice] voice receiver fatal transport error; forcing session reconnect: {error}"
+          );
+          self.mark_lobby_error(format!("voice receiver transport error: {error}"));
           break;
         }
       }
@@ -1908,7 +1949,14 @@ impl ServerSession {
                 continue;
               }
               Err(error) => {
-                tracing::warn!(target: "video", "[video] video reader stopped: {error}");
+                let error = error.to_string();
+                tracing::warn!(
+                  target: "video",
+                  "[video] video stream reader fatal transport error; forcing session reconnect: {error}"
+                );
+                if !stop.load(Ordering::Relaxed) {
+                  session.mark_lobby_error(format!("video stream reader transport error: {error}"));
+                }
                 break;
               }
             }
@@ -1922,6 +1970,7 @@ impl ServerSession {
       let runtime = runtime.clone();
       let stop = stop.clone();
       let queue = queue.clone();
+      let session = self.clone();
       thread::Builder::new()
         .name("parties-video-datagram-reader".to_owned())
         .spawn(move || {
@@ -1934,7 +1983,14 @@ impl ServerSession {
                 continue;
               }
               Err(error) => {
-                tracing::warn!(target: "video", "[video] video datagram reader stopped: {error}");
+                let error = error.to_string();
+                tracing::warn!(
+                  target: "video",
+                  "[video] video datagram reader fatal transport error; forcing session reconnect: {error}"
+                );
+                if !stop.load(Ordering::Relaxed) {
+                  session.mark_lobby_error(format!("video datagram reader transport error: {error}"));
+                }
                 break;
               }
             }
@@ -2719,16 +2775,24 @@ impl ServerSession {
 
   pub fn mark_lobby_error(&self, message: String) {
     if self.shutdown_requested.load(Ordering::Relaxed) {
-      tracing::warn!(target: "network", "[network] ignoring lobby receiver error during shutdown: {message}");
+      tracing::warn!(target: "network", "[network] ignoring network error during shutdown: {message}");
       return;
     }
 
-    tracing::warn!(target: "network", "[network] marking lobby disconnected: {message}");
+    tracing::warn!(target: "network", "[network] marking lobby disconnected and closing transport: {message}");
     self.stop_video_broadcast();
     let mut watching_change = None;
     let reconnect_watch_user_id;
     {
       let mut lobby = self.lobby.lock().expect("server session lock poisoned");
+      if lobby.disconnected {
+        tracing::warn!(target: "network", "[network] lobby already disconnected; ignoring additional network error: {message}");
+        if lobby.last_error.is_none() {
+          lobby.last_error = Some(message);
+          self.bump_revision();
+        }
+        return;
+      }
       reconnect_watch_user_id = lobby.watching_user_id;
       lobby.receiver_running = false;
       lobby.disconnected = true;
@@ -2749,6 +2813,9 @@ impl ServerSession {
     }
     if let Some(previous_user_id) = watching_change {
       self.finish_watching_user_change(previous_user_id, None);
+    }
+    if let Some(server) = self.server() {
+      server.disconnect();
     }
     self.bump_revision();
   }
