@@ -105,7 +105,7 @@ pub fn init() {
       if explicit_log_file.is_none() {
         cleanup_old_default_log_files(&path);
       }
-      match open_log_file(&path) {
+      match open_log_file(&path, explicit_log_file.is_none()) {
         Ok(file) => {
           let (writer, guard) = tracing_appender::non_blocking(file);
           let _ = LOG_GUARD.set(guard);
@@ -410,12 +410,17 @@ fn sensitive_key(key: &str) -> bool {
     || key == "display_name"
 }
 
-fn open_log_file(path: &Path) -> std::io::Result<std::fs::File> {
+fn open_log_file(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
   if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
     fs::create_dir_all(parent)?;
   }
 
-  OpenOptions::new().create(true).append(true).open(path)
+  OpenOptions::new()
+    .create(true)
+    .write(true)
+    .append(append)
+    .truncate(!append)
+    .open(path)
 }
 
 #[cfg(not(debug_assertions))]
@@ -495,7 +500,7 @@ fn startup_log_filter_directive(args: impl IntoIterator<Item = std::ffi::OsStrin
     .or_else(startup_log_level_env)
     .unwrap_or_else(|| "info".to_owned());
 
-  normalize_log_filter_aliases(&directive)
+  suppress_noisy_log_targets(&normalize_log_filter_aliases(&directive))
 }
 
 fn log_filter_from_directive(directive: &str) -> EnvFilter {
@@ -653,6 +658,35 @@ fn normalize_log_filter_directive_alias(directive: &str) -> String {
   format!("{normalized_target}{}", &directive[target_end..])
 }
 
+fn suppress_noisy_log_targets(filter: &str) -> String {
+  const NOISY_TARGETS: [&str; 4] = ["wgpu", "wgpu_core", "wgpu_hal", "naga"];
+
+  let mut directives = filter.to_owned();
+  for target in NOISY_TARGETS {
+    if !log_filter_mentions_target(filter, target) {
+      directives.push(',');
+      directives.push_str(target);
+      directives.push_str("=warn");
+    }
+  }
+  directives
+}
+
+fn log_filter_mentions_target(filter: &str, target: &str) -> bool {
+  filter
+    .split(',')
+    .map(str::trim)
+    .filter(|directive| !directive.is_empty())
+    .any(|directive| {
+      let target_end = directive
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '=' | '[').then_some(index))
+        .unwrap_or(directive.len());
+      let directive_target = &directive[..target_end];
+      directive_target == target || directive_target.starts_with(&format!("{target}::"))
+    })
+}
+
 fn log_filter_alias_target(target: &str) -> Option<&'static str> {
   match target {
     "video:decode" | "video-decode" => Some("video::decode"),
@@ -775,6 +809,22 @@ mod tests {
     assert_eq!(
       normalize_log_filter_aliases("video-decode[frame]=debug,audio-decode=info"),
       "video::decode[frame]=debug,audio::decode=info"
+    );
+  }
+
+  #[test]
+  fn suppress_noisy_log_targets_adds_default_wgpu_suppression() {
+    assert_eq!(
+      suppress_noisy_log_targets("debug"),
+      "debug,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn"
+    );
+  }
+
+  #[test]
+  fn suppress_noisy_log_targets_keeps_explicit_wgpu_directive() {
+    assert_eq!(
+      suppress_noisy_log_targets("debug,wgpu=debug,wgpu_core::device=trace"),
+      "debug,wgpu=debug,wgpu_core::device=trace,wgpu_hal=warn,naga=warn"
     );
   }
 
