@@ -116,6 +116,7 @@ pub struct LobbyState {
   pub disconnected: bool,
   pub last_error: Option<String>,
   pub connection_warning: Option<LobbyConnectionWarning>,
+  pub auto_reconnect_disabled: bool,
 }
 
 #[derive(Default)]
@@ -642,6 +643,22 @@ pub(super) fn apply_server_message(
       tracing::error!(target: "network", "[network] server error: code={} message={reason}", code.as_u16());
       if matches!(code, ServerErrorCode::Kicked | ServerErrorCode::Replaced) {
         effects.notification_sound = Some(NotificationSound::UserKicked);
+        effects.stop_local_voice = true;
+        lobby.disconnected = true;
+        lobby.receiver_running = false;
+        lobby.connection_warning = None;
+        lobby.auto_reconnect_disabled = true;
+        lobby.stream_browser_channel_id = None;
+        lobby.screen_shares.clear();
+        let (previous_user_id, changed) = set_watching_user(lobby, None);
+        if changed {
+          effects.watching_change = Some(previous_user_id);
+        }
+        tracing::warn!(
+          target: "network",
+          "[network] server requested non-reconnectable disconnect: code={} message={reason}",
+          code.as_u16()
+        );
       }
       lobby.last_error = Some(reason);
     }
@@ -665,7 +682,7 @@ pub(super) fn apply_server_message(
 
 #[cfg(test)]
 mod tests {
-  use super::message_mentions_display_name;
+  use super::*;
 
   #[test]
   fn mention_detection_matches_at_display_name() {
@@ -680,5 +697,37 @@ mod tests {
   #[test]
   fn mention_detection_does_not_match_partial_words() {
     assert!(!message_mentions_display_name("the lurking issue", "lurk"));
+  }
+
+  #[test]
+  fn kicked_server_error_marks_disconnect_without_auto_reconnect() {
+    let mut lobby = LobbyState {
+      selected_channel_id: Some(1),
+      receiver_running: true,
+      watching_user_id: Some(7),
+      ..LobbyState::default()
+    };
+    let effects = apply_server_message(
+      &mut lobby,
+      S2C::ServerError {
+        code: ServerErrorCode::Kicked,
+        message: "kicked by admin".to_owned(),
+      },
+      ServerMessageContext {
+        local_user_id: Some(4),
+        local_display_name: "local".to_owned(),
+        local_voice_state: (false, false),
+        pending_keepalive_ping: None,
+      },
+    );
+
+    assert!(lobby.disconnected);
+    assert!(lobby.auto_reconnect_disabled);
+    assert!(!lobby.receiver_running);
+    assert_eq!(lobby.last_error.as_deref(), Some("kicked by admin"));
+    assert_eq!(lobby.watching_user_id, None);
+    assert!(effects.stop_local_voice);
+    assert_eq!(effects.notification_sound, Some(NotificationSound::UserKicked));
+    assert_eq!(effects.watching_change, Some(Some(7)));
   }
 }

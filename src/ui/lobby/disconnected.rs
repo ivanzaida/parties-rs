@@ -30,7 +30,8 @@ pub(super) fn disconnected_lobby(
   let leave_session = session.clone();
   let reconnect_state = reconnect.state().get();
   let auto_attempt = reconnect_attempt.get();
-  let should_auto_reconnect = !reconnect_state.is_pending() && auto_attempt < AUTO_RECONNECT_MAX_ATTEMPTS;
+  let should_auto_reconnect =
+    !lobby.auto_reconnect_disabled && !reconnect_state.is_pending() && auto_attempt < AUTO_RECONNECT_MAX_ATTEMPTS;
   let display_attempt = if should_auto_reconnect {
     let next_attempt = auto_attempt + 1;
     reconnect_attempt.set(next_attempt);
