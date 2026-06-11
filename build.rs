@@ -25,6 +25,7 @@ fn main() {
     cc::Build::new()
       .cpp(true)
       .std("c++17")
+      .define("_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS", None)
       .flag_if_supported("/EHsc")
       .file("src/native/windows_video/common/native_log.cpp")
       .file("src/native/windows_video/amd/amf/public/common/AMFFactory.cpp")
