@@ -371,21 +371,25 @@ impl Server {
   }
 
   pub async fn send_video_packet(&self, packet: &[u8]) -> Result<(), ServerError> {
-    let framed = encode_video_stream_packet(packet)?;
-    self.video_send.lock().await.write_all(&framed).await?;
+    validate_video_stream_packet_len(packet.len())?;
+    let len = (packet.len() as u32).to_le_bytes();
+    let mut send = self.video_send.lock().await;
+    send.write_all(&len).await?;
+    send.write_all(packet).await?;
     Ok(())
   }
 
   #[allow(dead_code)]
   pub async fn send_video_frame(&self, frame: VideoFrame) -> Result<(), ServerError> {
     validate_video_codec(frame.codec)?;
-    self.send_video_packet(&frame.encode_packet()).await
+    let packet = frame.encode_packet();
+    self.send_video_packet(&packet).await
   }
 
-  pub async fn send_live_video_frame(&self, frame: VideoFrame) -> Result<VideoFrameSend, ServerError> {
+  pub async fn send_live_video_frame(&self, frame: &VideoFrame) -> Result<VideoFrameSend, ServerError> {
     validate_video_codec(frame.codec)?;
     let packet = frame.encode_packet();
-    match self.connection.send_datagram(packet.clone().into()) {
+    match self.connection.send_datagram(packet.clone()) {
       Ok(()) => Ok(VideoFrameSend::Datagram),
       Err(
         quinn::SendDatagramError::TooLarge
@@ -633,6 +637,7 @@ fn hex_char(value: u8) -> char {
   }
 }
 
+#[cfg(test)]
 fn encode_video_stream_packet(packet: &[u8]) -> Result<Vec<u8>, DecodeError> {
   validate_video_stream_packet_len(packet.len())?;
 
@@ -781,7 +786,7 @@ mod tests {
     assert_eq!(decoded.frame.width, 640);
     assert_eq!(decoded.frame.height, 480);
     assert_eq!(decoded.frame.codec, VideoCodecId::H264);
-    assert_eq!(decoded.frame.encoded, vec![1, 2, 3]);
+    assert_eq!(decoded.frame.encoded.as_ref(), &[1, 2, 3]);
   }
 
   #[test]
@@ -870,6 +875,6 @@ mod tests {
     assert_eq!(decoded.frame.width, 640);
     assert_eq!(decoded.frame.height, 480);
     assert_eq!(decoded.frame.codec, VideoCodecId::H264);
-    assert_eq!(decoded.frame.encoded, vec![1, 2, 3]);
+    assert_eq!(decoded.frame.encoded.as_ref(), &[1, 2, 3]);
   }
 }

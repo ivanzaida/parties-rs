@@ -26,6 +26,7 @@ constexpr uint32_t kCodecH264 = 3;
 constexpr int64_t kTimeScale100Ns = 10000000;
 constexpr uint32_t kStreamAudioSampleRate = 48000;
 constexpr uint32_t kStreamAudioChannels = 2;
+constexpr uint32_t kMaxKeyFrameIntervalSeconds = 600;
 static __strong id g_sparkle_updater_controller = nil;
 static bool g_sparkle_startup_background_check_requested = false;
 
@@ -83,34 +84,56 @@ bool append_parameter_set(CMFormatDescriptionRef format_description,
   return true;
 }
 
-bool append_length_prefixed_sample(CMBlockBufferRef block_buffer, std::vector<uint8_t>& out) {
-  const size_t total_len = CMBlockBufferGetDataLength(block_buffer);
+bool append_length_prefixed_sample_as_annex_b(CMBlockBufferRef block_buffer, std::vector<uint8_t>& out) {
+  const size_t initial_size = out.size();
+  size_t total_len = 0;
+  size_t contiguous_len = 0;
+  char* contiguous_data = nullptr;
+  OSStatus pointer_status =
+    CMBlockBufferGetDataPointer(block_buffer, 0, &contiguous_len, &total_len, &contiguous_data);
   if (total_len == 0) {
     return false;
   }
 
-  std::vector<uint8_t> bytes(total_len);
-  if (CMBlockBufferCopyDataBytes(block_buffer, 0, total_len, bytes.data()) != noErr) {
-    return false;
+  std::vector<uint8_t> bytes;
+  const uint8_t* data = nullptr;
+  if (pointer_status == noErr && contiguous_data && contiguous_len >= total_len) {
+    data = reinterpret_cast<const uint8_t*>(contiguous_data);
+  } else {
+    bytes.resize(total_len);
+    if (CMBlockBufferCopyDataBytes(block_buffer, 0, total_len, bytes.data()) != noErr) {
+      return false;
+    }
+    data = bytes.data();
   }
 
+  // Length prefixes and Annex B start codes are both 4 bytes here, so the
+  // converted sample has the same byte length as the VideoToolbox sample.
+  out.reserve(initial_size + total_len);
+  out.resize(initial_size + total_len);
   size_t offset = 0;
-  while (offset < bytes.size()) {
-    if (bytes.size() - offset < 4) {
+  size_t written = initial_size;
+  while (offset < total_len) {
+    if (total_len - offset < 4) {
+      out.resize(initial_size);
       return false;
     }
     uint32_t len = 0;
-    std::memcpy(&len, bytes.data() + offset, sizeof(len));
+    std::memcpy(&len, data + offset, sizeof(len));
     len = CFSwapInt32BigToHost(len);
     offset += 4;
-    if (len == 0 || bytes.size() - offset < len) {
+    if (len == 0 || total_len - offset < len) {
+      out.resize(initial_size);
       return false;
     }
     static constexpr uint8_t start_code[] = {0, 0, 0, 1};
-    out.insert(out.end(), std::begin(start_code), std::end(start_code));
-    out.insert(out.end(), bytes.data() + offset, bytes.data() + offset + len);
+    std::memcpy(out.data() + written, start_code, sizeof(start_code));
+    written += sizeof(start_code);
+    std::memcpy(out.data() + written, data + offset, len);
+    written += len;
     offset += len;
   }
+  out.resize(written);
   return true;
 }
 
@@ -138,6 +161,8 @@ bool sample_to_wire(uint8_t codec, CMSampleBufferRef sample_buffer, std::vector<
     return CMBlockBufferCopyDataBytes(block_buffer, 0, len, out.data()) == noErr;
   }
 
+  const size_t sample_len = CMBlockBufferGetDataLength(block_buffer);
+  out.reserve(sample_len + 256);
   CMFormatDescriptionRef format_description = CMSampleBufferGetFormatDescription(sample_buffer);
   if (keyframe && format_description) {
     if (codec == kCodecH265) {
@@ -149,10 +174,19 @@ bool sample_to_wire(uint8_t codec, CMSampleBufferRef sample_buffer, std::vector<
       append_parameter_set(format_description, false, 1, out);
     }
   }
-  return append_length_prefixed_sample(block_buffer, out);
+  return append_length_prefixed_sample_as_annex_b(block_buffer, out);
 }
 
 struct MacosStreamBridge;
+
+struct MacosEncodedBuffer {
+  std::vector<uint8_t> bytes;
+  bool keyframe = false;
+};
+
+struct MacosAudioBuffer {
+  std::vector<float> samples;
+};
 
 struct CameraDeviceInfo {
   std::string unique_id;
@@ -639,7 +673,7 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
     VTSessionSetProperty(session, kVTCompressionPropertyKey_ExpectedFrameRate, fps_ref);
     CFRelease(fps_ref);
   }
-  int32_t key_interval = static_cast<int32_t>(fps * 2);
+  int32_t key_interval = static_cast<int32_t>((std::max)(fps, 1u) * kMaxKeyFrameIntervalSeconds);
   CFNumberRef key_ref = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &key_interval);
   if (key_ref) {
     VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, key_ref);
@@ -1066,6 +1100,10 @@ const char* parties_macos_stream_last_error() {
   return last_error().c_str();
 }
 
+const char* parties_macos_last_error() {
+  return parties_macos_stream_last_error();
+}
+
 void parties_macos_stream_destroy(MacosStreamBridge* bridge) {
   delete bridge;
 }
@@ -1115,6 +1153,47 @@ int parties_macos_stream_encoded_keyframe(MacosStreamBridge* bridge) {
   return bridge->readable_keyframe ? 1 : 0;
 }
 
+MacosEncodedBuffer* parties_macos_stream_take_encoded(MacosStreamBridge* bridge) {
+  if (!bridge) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(bridge->mutex);
+  if (bridge->readable.empty()) {
+    return nullptr;
+  }
+  auto* buffer = new MacosEncodedBuffer();
+  buffer->bytes = std::move(bridge->readable);
+  buffer->keyframe = bridge->readable_keyframe;
+  bridge->readable.clear();
+  bridge->readable_keyframe = false;
+  return buffer;
+}
+
+const uint8_t* parties_macos_encoded_buffer_ptr(MacosEncodedBuffer* buffer) {
+  if (!buffer || buffer->bytes.empty()) {
+    return nullptr;
+  }
+  return buffer->bytes.data();
+}
+
+uintptr_t parties_macos_encoded_buffer_len(MacosEncodedBuffer* buffer) {
+  if (!buffer) {
+    return 0;
+  }
+  return buffer->bytes.size();
+}
+
+int parties_macos_encoded_buffer_keyframe(MacosEncodedBuffer* buffer) {
+  if (!buffer) {
+    return 0;
+  }
+  return buffer->keyframe ? 1 : 0;
+}
+
+void parties_macos_encoded_buffer_destroy(MacosEncodedBuffer* buffer) {
+  delete buffer;
+}
+
 int parties_macos_stream_audio_poll(MacosStreamBridge* bridge) {
   if (!bridge) {
     return -1;
@@ -1140,6 +1219,38 @@ uintptr_t parties_macos_stream_audio_len(MacosStreamBridge* bridge) {
     return 0;
   }
   return bridge->readable_audio.size();
+}
+
+MacosAudioBuffer* parties_macos_stream_take_audio(MacosStreamBridge* bridge) {
+  if (!bridge) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(bridge->mutex);
+  if (bridge->readable_audio.empty()) {
+    return nullptr;
+  }
+  auto* buffer = new MacosAudioBuffer();
+  buffer->samples = std::move(bridge->readable_audio);
+  bridge->readable_audio.clear();
+  return buffer;
+}
+
+const float* parties_macos_audio_buffer_ptr(MacosAudioBuffer* buffer) {
+  if (!buffer || buffer->samples.empty()) {
+    return nullptr;
+  }
+  return buffer->samples.data();
+}
+
+uintptr_t parties_macos_audio_buffer_len(MacosAudioBuffer* buffer) {
+  if (!buffer) {
+    return 0;
+  }
+  return buffer->samples.size();
+}
+
+void parties_macos_audio_buffer_destroy(MacosAudioBuffer* buffer) {
+  delete buffer;
 }
 
 void parties_macos_sparkle_start() {

@@ -1,10 +1,11 @@
 use std::{
   fmt,
   sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
   },
   thread::JoinHandle,
+  time::{Duration, Instant},
 };
 
 use crate::{
@@ -42,6 +43,7 @@ pub struct VideoBroadcastConfig {
 }
 
 pub type VideoFrameLoopback = Arc<dyn Fn(VideoFrame) + Send + Sync + 'static>;
+const MIN_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -111,6 +113,7 @@ impl std::error::Error for VideoError {}
 pub struct VideoBroadcast {
   stop: Arc<AtomicBool>,
   keyframe_requests: Option<Arc<AtomicU64>>,
+  last_keyframe_request: Mutex<Option<Instant>>,
   threads: Vec<JoinHandle<()>>,
   backend: NativeVideoBackend,
 }
@@ -147,6 +150,16 @@ impl VideoBroadcast {
 
   pub fn request_keyframe(&self) {
     if let Some(requests) = &self.keyframe_requests {
+      let now = Instant::now();
+      let mut last = self
+        .last_keyframe_request
+        .lock()
+        .expect("video keyframe request lock poisoned");
+      if last.is_some_and(|last| now.duration_since(last) < MIN_KEYFRAME_REQUEST_INTERVAL) {
+        tracing::debug!(target: "video", "[video] suppressing duplicate local keyframe request");
+        return;
+      }
+      *last = Some(now);
       requests.fetch_add(1, Ordering::Relaxed);
     }
   }
@@ -173,6 +186,7 @@ impl VideoBroadcast {
     Self {
       stop,
       keyframe_requests,
+      last_keyframe_request: Mutex::new(None),
       threads,
       backend,
     }

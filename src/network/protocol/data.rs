@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use super::{BinaryReader, BinaryWriter, DecodeError, DecodeResult, UserId, VIDEO_FLAG_KEYFRAME, VideoCodecId};
 
@@ -102,21 +102,21 @@ pub struct VideoFrame {
   pub width: u16,
   pub height: u16,
   pub codec: VideoCodecId,
-  pub encoded: Vec<u8>,
+  pub encoded: Bytes,
 }
 
 impl VideoFrame {
-  pub fn encode_packet(&self) -> Vec<u8> {
-    let mut w = BinaryWriter::new();
-    w.write_u8(PacketType::VideoFrame as u8);
-    w.write_u32(self.frame_number);
-    w.write_u32(self.timestamp);
-    w.write_u8(if self.keyframe { VIDEO_FLAG_KEYFRAME } else { 0 });
-    w.write_u16(self.width);
-    w.write_u16(self.height);
-    w.write_u8(self.codec as u8);
-    w.write_bytes(&self.encoded);
-    w.into_bytes()
+  pub fn encode_packet(&self) -> Bytes {
+    let mut bytes = BytesMut::with_capacity(1 + 4 + 4 + 1 + 2 + 2 + 1 + self.encoded.len());
+    bytes.extend_from_slice(&[PacketType::VideoFrame as u8]);
+    bytes.extend_from_slice(&self.frame_number.to_le_bytes());
+    bytes.extend_from_slice(&self.timestamp.to_le_bytes());
+    bytes.extend_from_slice(&[if self.keyframe { VIDEO_FLAG_KEYFRAME } else { 0 }]);
+    bytes.extend_from_slice(&self.width.to_le_bytes());
+    bytes.extend_from_slice(&self.height.to_le_bytes());
+    bytes.extend_from_slice(&[self.codec as u8]);
+    bytes.extend_from_slice(&self.encoded);
+    bytes.freeze()
   }
 
   pub fn decode_payload(bytes: &[u8]) -> DecodeResult<Self> {
@@ -137,7 +137,7 @@ impl VideoFrame {
         value: raw_codec,
       });
     }
-    let encoded = r.read_remaining().to_vec();
+    let encoded = Bytes::copy_from_slice(r.read_remaining());
     Ok(Self {
       frame_number,
       timestamp,
@@ -165,7 +165,7 @@ impl ForwardedVideoFrame {
     Ok(Self { sender_id, frame })
   }
 
-  pub fn decode_owned(mut bytes: Vec<u8>) -> DecodeResult<Self> {
+  pub fn decode_owned(bytes: Vec<u8>) -> DecodeResult<Self> {
     const HEADER_LEN: usize = 1 + 4 + 4 + 4 + 1 + 2 + 2 + 1;
     if bytes.len() < HEADER_LEN {
       return Err(DecodeError::UnexpectedEof {
@@ -195,8 +195,7 @@ impl ForwardedVideoFrame {
       });
     }
 
-    bytes.drain(..HEADER_LEN);
-    let encoded = bytes;
+    let encoded = Bytes::from(bytes).slice(HEADER_LEN..);
     Ok(Self {
       sender_id,
       frame: VideoFrame {
@@ -374,6 +373,6 @@ mod tests {
     assert_eq!(decoded.frame.width, 1920);
     assert_eq!(decoded.frame.height, 1080);
     assert_eq!(decoded.frame.codec, VideoCodecId::Av1);
-    assert_eq!(decoded.frame.encoded, vec![1, 2, 3, 4]);
+    assert_eq!(decoded.frame.encoded.as_ref(), &[1, 2, 3, 4]);
   }
 }

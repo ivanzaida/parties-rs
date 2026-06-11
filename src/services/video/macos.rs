@@ -1,6 +1,6 @@
 use std::{
   ffi::{CStr, c_char, c_void},
-  mem::MaybeUninit,
+  ops::Range,
   ptr,
   ptr::NonNull,
   slice,
@@ -13,9 +13,10 @@ use std::{
   time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use core_foundation_sys::{
   array::{CFArrayGetValueAtIndex, CFArrayRef},
-  base::{Boolean, CFAllocatorRef, CFRelease, CFTypeRef, OSStatus, kCFAllocatorDefault},
+  base::{Boolean, CFAllocatorRef, CFRelease, CFTypeRef, OSStatus, kCFAllocatorDefault, kCFAllocatorNull},
   data::CFDataCreate,
   dictionary::{
     CFDictionaryCreate, CFDictionaryGetValue, CFDictionaryRef, kCFTypeDictionaryKeyCallBacks,
@@ -27,7 +28,6 @@ use core_foundation_sys::{
 use core_media_sys::{
   block_buffer::{
     CMBlockBufferCopyDataBytes, CMBlockBufferCreateWithMemoryBlock, CMBlockBufferGetDataLength, CMBlockBufferRef,
-    CMBlockBufferReplaceDataBytes,
   },
   format_description::CMVideoFormatDescriptionRef,
   sample_buffer::{CMSampleBufferRef, CMSampleTimingInfo},
@@ -40,19 +40,6 @@ use core_video_sys::pixel_buffer::{
   kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as OpusChannels, Encoder as OpusEncoder};
-use rav1d::{
-  Dav1dResult,
-  include::dav1d::{
-    data::Dav1dData,
-    dav1d::{Dav1dContext, Dav1dSettings},
-    headers::{DAV1D_PIXEL_LAYOUT_I400, DAV1D_PIXEL_LAYOUT_I420, DAV1D_PIXEL_LAYOUT_I422, DAV1D_PIXEL_LAYOUT_I444},
-    picture::Dav1dPicture,
-  },
-  src::lib::{
-    dav1d_close, dav1d_data_create, dav1d_data_unref, dav1d_default_settings, dav1d_get_picture, dav1d_open,
-    dav1d_picture_unref, dav1d_send_data,
-  },
-};
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
@@ -76,11 +63,9 @@ const K_CM_VIDEO_CODEC_TYPE_H264: u32 = 0x6176_6331; // 'avc1'
 const K_CM_VIDEO_CODEC_TYPE_HEVC: u32 = 0x6876_6331; // 'hvc1'
 const K_CM_VIDEO_CODEC_TYPE_AV1: u32 = 0x6176_3031; // 'av01'
 const OBU_SEQUENCE_HEADER: u8 = 1;
-const DAV1D_EAGAIN: i32 = -35;
-const MAX_SOFTWARE_AV1_PIXELS: u32 = 1920 * 1080;
-const SOFTWARE_AV1_THREADS: i32 = 2;
-const SOFTWARE_AV1_ENV: &str = "PARTIES_MACOS_SOFTWARE_AV1";
 const SIMULATE_UNSUPPORTED_AV1_ENV: &str = "PARTIES_SIMULATE_UNSUPPORTED_AV1";
+const ALLOW_CPU_VIDEO_FALLBACK_ENV: &str = "PARTIES_MACOS_ALLOW_CPU_VIDEO_FALLBACK";
+const MAX_KEYFRAME_INTERVAL_SECONDS: u32 = 600;
 const ENCODE_FRAME_DURATION_100NS: i64 = 10_000_000;
 const STREAM_AUDIO_SAMPLE_RATE: u32 = 48_000;
 const STREAM_AUDIO_CHANNELS: usize = 2;
@@ -104,6 +89,12 @@ type VTEncodeInfoFlags = u32;
 
 #[repr(C)]
 struct MacosStreamBridge(c_void);
+
+#[repr(C)]
+struct MacosEncodedBuffer(c_void);
+
+#[repr(C)]
+struct MacosAudioBuffer(c_void);
 
 type VTDecompressionOutputCallback = extern "C" fn(
   decompression_output_ref_con: *mut c_void,
@@ -293,17 +284,25 @@ unsafe extern "C" {
 
   fn parties_macos_stream_poll(bridge: *mut MacosStreamBridge) -> i32;
 
-  fn parties_macos_stream_encoded_ptr(bridge: *mut MacosStreamBridge) -> *const u8;
+  fn parties_macos_stream_take_encoded(bridge: *mut MacosStreamBridge) -> *mut MacosEncodedBuffer;
 
-  fn parties_macos_stream_encoded_len(bridge: *mut MacosStreamBridge) -> usize;
+  fn parties_macos_encoded_buffer_ptr(buffer: *mut MacosEncodedBuffer) -> *const u8;
 
-  fn parties_macos_stream_encoded_keyframe(bridge: *mut MacosStreamBridge) -> i32;
+  fn parties_macos_encoded_buffer_len(buffer: *mut MacosEncodedBuffer) -> usize;
+
+  fn parties_macos_encoded_buffer_keyframe(buffer: *mut MacosEncodedBuffer) -> i32;
+
+  fn parties_macos_encoded_buffer_destroy(buffer: *mut MacosEncodedBuffer);
 
   fn parties_macos_stream_audio_poll(bridge: *mut MacosStreamBridge) -> i32;
 
-  fn parties_macos_stream_audio_ptr(bridge: *mut MacosStreamBridge) -> *const f32;
+  fn parties_macos_stream_take_audio(bridge: *mut MacosStreamBridge) -> *mut MacosAudioBuffer;
 
-  fn parties_macos_stream_audio_len(bridge: *mut MacosStreamBridge) -> usize;
+  fn parties_macos_audio_buffer_ptr(buffer: *mut MacosAudioBuffer) -> *const f32;
+
+  fn parties_macos_audio_buffer_len(buffer: *mut MacosAudioBuffer) -> usize;
+
+  fn parties_macos_audio_buffer_destroy(buffer: *mut MacosAudioBuffer);
 
   static kCMSampleAttachmentKey_NotSync: CFStringRef;
 }
@@ -397,7 +396,17 @@ fn run_broadcast_loop(
         }
         return Err(error);
       }
-      tracing::warn!(target: "video::encode::macos", "[video:encode/macos] native ScreenCaptureKit encoder unavailable; falling back to CPU capture: {error}");
+      if !cpu_video_fallback_enabled() {
+        let fallback_error = VideoError::new(format!(
+          "Native macOS ScreenCaptureKit + VideoToolbox streaming failed and CPU video fallback is disabled to avoid high CPU usage. Set {ALLOW_CPU_VIDEO_FALLBACK_ENV}=1 to allow the legacy CPU fallback. Native error: {error}"
+        ));
+        tracing::warn!(target: "video::encode::macos", "[video:encode/macos] {fallback_error}");
+        if let Some(init_tx) = init_tx {
+          let _ = init_tx.send(Err(fallback_error.to_string()));
+        }
+        return Err(fallback_error);
+      }
+      tracing::warn!(target: "video::encode::macos", "[video:encode/macos] native ScreenCaptureKit encoder unavailable; CPU fallback explicitly enabled by {ALLOW_CPU_VIDEO_FALLBACK_ENV}: {error}");
     }
   }
 
@@ -466,10 +475,10 @@ fn run_broadcast_loop(
         width: config.output_width,
         height: config.output_height,
         codec: config.codec,
-        encoded: sample.bytes,
+        encoded: sample.bytes.into(),
       };
       let send_result = runtime
-        .block_on(server.send_live_video_frame(frame.clone()))
+        .block_on(server.send_live_video_frame(&frame))
         .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
@@ -563,10 +572,10 @@ fn run_native_broadcast_loop(
         width: config.output_width,
         height: config.output_height,
         codec: config.codec,
-        encoded: sample.bytes,
+        encoded: sample.bytes.into(),
       };
       let send_result = runtime
-        .block_on(server.send_live_video_frame(frame.clone()))
+        .block_on(server.send_live_video_frame(&frame))
         .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?;
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
@@ -609,9 +618,8 @@ fn run_native_broadcast_loop(
     }
 
     if let Some(audio_encoder) = audio_encoder.as_mut() {
-      let audio = encoder.poll_audio()?;
-      if !audio.is_empty() {
-        audio_encoder.encode_samples(&server, &audio)?;
+      if let Some(audio) = encoder.poll_audio()? {
+        audio_encoder.encode_samples(&server, audio.as_ref())?;
       }
     }
 
@@ -685,6 +693,92 @@ struct MacosNativeStreamEncoder {
 
 unsafe impl Send for MacosNativeStreamEncoder {}
 
+struct NativeEncodedBytes {
+  handle: NonNull<MacosEncodedBuffer>,
+}
+
+unsafe impl Send for NativeEncodedBytes {}
+
+struct NativeAudioSamples {
+  handle: NonNull<MacosAudioBuffer>,
+}
+
+unsafe impl Send for NativeAudioSamples {}
+
+impl NativeEncodedBytes {
+  fn new(handle: NonNull<MacosEncodedBuffer>) -> Self {
+    Self { handle }
+  }
+
+  fn len(&self) -> usize {
+    unsafe { parties_macos_encoded_buffer_len(self.handle.as_ptr()) }
+  }
+
+  fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+}
+
+impl AsRef<[u8]> for NativeEncodedBytes {
+  fn as_ref(&self) -> &[u8] {
+    let len = self.len();
+    if len == 0 {
+      return &[];
+    }
+    let ptr = unsafe { parties_macos_encoded_buffer_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() {
+      &[]
+    } else {
+      unsafe { slice::from_raw_parts(ptr, len) }
+    }
+  }
+}
+
+impl Drop for NativeEncodedBytes {
+  fn drop(&mut self) {
+    unsafe {
+      parties_macos_encoded_buffer_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
+impl NativeAudioSamples {
+  fn new(handle: NonNull<MacosAudioBuffer>) -> Self {
+    Self { handle }
+  }
+
+  fn len(&self) -> usize {
+    unsafe { parties_macos_audio_buffer_len(self.handle.as_ptr()) }
+  }
+
+  fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+}
+
+impl AsRef<[f32]> for NativeAudioSamples {
+  fn as_ref(&self) -> &[f32] {
+    let len = self.len();
+    if len == 0 {
+      return &[];
+    }
+    let ptr = unsafe { parties_macos_audio_buffer_ptr(self.handle.as_ptr()) };
+    if ptr.is_null() {
+      &[]
+    } else {
+      unsafe { slice::from_raw_parts(ptr, len) }
+    }
+  }
+}
+
+impl Drop for NativeAudioSamples {
+  fn drop(&mut self) {
+    unsafe {
+      parties_macos_audio_buffer_destroy(self.handle.as_ptr());
+    }
+  }
+}
+
 impl MacosNativeStreamEncoder {
   fn new(config: &VideoBroadcastConfig) -> Result<Self, VideoError> {
     if config.source_kind == ScreenShareSourceKind::Webcam {
@@ -752,18 +846,21 @@ impl MacosNativeStreamEncoder {
       return Ok(Vec::new());
     }
 
-    let len = unsafe { parties_macos_stream_encoded_len(self.handle.as_ptr()) };
-    let ptr = unsafe { parties_macos_stream_encoded_ptr(self.handle.as_ptr()) };
-    if ptr.is_null() || len == 0 {
+    let buffer = unsafe { parties_macos_stream_take_encoded(self.handle.as_ptr()) };
+    let Some(buffer) = NonNull::new(buffer) else {
+      return Ok(Vec::new());
+    };
+
+    let keyframe = unsafe { parties_macos_encoded_buffer_keyframe(buffer.as_ptr()) != 0 };
+    let owner = NativeEncodedBytes::new(buffer);
+    if owner.is_empty() {
       return Ok(Vec::new());
     }
-
-    let bytes = unsafe { slice::from_raw_parts(ptr, len) }.to_vec();
-    let keyframe = unsafe { parties_macos_stream_encoded_keyframe(self.handle.as_ptr()) != 0 };
+    let bytes = Bytes::from_owner(owner);
     Ok(vec![EncodedSample { bytes, keyframe }])
   }
 
-  fn poll_audio(&mut self) -> Result<Vec<f32>, VideoError> {
+  fn poll_audio(&mut self) -> Result<Option<NativeAudioSamples>, VideoError> {
     let result = unsafe { parties_macos_stream_audio_poll(self.handle.as_ptr()) };
     if result < 0 {
       return Err(VideoError::new(
@@ -771,15 +868,18 @@ impl MacosNativeStreamEncoder {
       ));
     }
     if result == 0 {
-      return Ok(Vec::new());
+      return Ok(None);
     }
 
-    let len = unsafe { parties_macos_stream_audio_len(self.handle.as_ptr()) };
-    let ptr = unsafe { parties_macos_stream_audio_ptr(self.handle.as_ptr()) };
-    if ptr.is_null() || len == 0 {
-      return Ok(Vec::new());
+    let buffer = unsafe { parties_macos_stream_take_audio(self.handle.as_ptr()) };
+    let Some(buffer) = NonNull::new(buffer) else {
+      return Ok(None);
+    };
+    let samples = NativeAudioSamples::new(buffer);
+    if samples.is_empty() {
+      return Ok(None);
     }
-    Ok(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
+    Ok(Some(samples))
   }
 
   fn force_keyframe(&mut self) {
@@ -879,7 +979,7 @@ struct EncodedCallbackSample {
 unsafe impl Send for EncodedCallbackSample {}
 
 struct EncodedSample {
-  bytes: Vec<u8>,
+  bytes: Bytes,
   keyframe: bool,
 }
 
@@ -920,7 +1020,7 @@ impl VTEncoder {
     set_vt_property_i32(
       session,
       "MaxKeyFrameInterval",
-      config.fps.max(1).saturating_mul(2) as i32,
+      config.fps.max(1).saturating_mul(MAX_KEYFRAME_INTERVAL_SECONDS) as i32,
     )?;
     if config.codec == VideoCodecId::H264 {
       set_vt_property_string(session, "ProfileLevel", "H264_Baseline_AutoLevel")?;
@@ -1184,7 +1284,10 @@ fn encoded_sample_from_callback(
 
   let keyframe = sample_is_keyframe(sample.sample_buffer);
   if codec == VideoCodecId::Av1 {
-    return Ok(Some(EncodedSample { bytes, keyframe }));
+    return Ok(Some(EncodedSample {
+      bytes: bytes.into(),
+      keyframe,
+    }));
   }
 
   if keyframe {
@@ -1196,7 +1299,10 @@ fn encoded_sample_from_callback(
     bytes = length_prefixed_sample_to_annex_b(&bytes)?;
   }
 
-  Ok(Some(EncodedSample { bytes, keyframe }))
+  Ok(Some(EncodedSample {
+    bytes: bytes.into(),
+    keyframe,
+  }))
 }
 
 fn sample_is_keyframe(sample_buffer: CMSampleBufferRef) -> bool {
@@ -1480,7 +1586,6 @@ fn set_vt_property_string(session: VTCompressionSessionRef, key: &str, value: &s
 pub(super) struct NativeVideoDecoder {
   config: VideoDecodeConfig,
   session: Option<VTSession>,
-  software_av1: Option<SoftwareAv1Decoder>,
   av1_videotoolbox_unavailable: bool,
   output_rx: mpsc::Receiver<DecodedCallbackFrame>,
   output_tx: mpsc::Sender<DecodedCallbackFrame>,
@@ -1508,7 +1613,6 @@ pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoErr
   let decoder = NativeVideoDecoder {
     config: config.clone(),
     session: None,
-    software_av1: None,
     av1_videotoolbox_unavailable: false,
     output_rx,
     output_tx,
@@ -1532,18 +1636,30 @@ impl NativeVideoDecoder {
     &mut self,
     frame: &VideoFrame,
     output: bool,
-    output_buffer: Option<Vec<u8>>,
+    _output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
     if frame.codec == VideoCodecId::Av1 && simulate_unsupported_av1() {
       return Err(unsupported_av1_error());
     }
 
     if frame.codec == VideoCodecId::Av1 && self.av1_videotoolbox_unavailable {
-      return self.decode_av1_software(frame, output, output_buffer);
+      return Err(unsupported_av1_error());
     }
 
-    let access_units = AccessUnits::parse(frame.codec, &frame.encoded)?;
-    if frame.keyframe && self.session.is_none() && !access_units.can_initialize_session(frame.codec) {
+    let length_prefixed_h26x =
+      matches!(frame.codec, VideoCodecId::H264 | VideoCodecId::H265) && !looks_like_annex_b(&frame.encoded);
+    let can_use_encoded_sample_directly = length_prefixed_h26x && self.session.is_some();
+    let access_units = if can_use_encoded_sample_directly {
+      None
+    } else {
+      Some(AccessUnits::parse(frame.codec, frame.encoded.clone())?)
+    };
+
+    if let Some(access_units) = &access_units
+      && frame.keyframe
+      && self.session.is_none()
+      && !access_units.can_initialize_session(frame.codec)
+    {
       tracing::info!(target: "video::decode::macos",
         "[video:decode/macos] keyframe missing VideoToolbox parameter sets: codec={:?} {}",
         frame.codec,
@@ -1551,16 +1667,19 @@ impl NativeVideoDecoder {
       );
     }
 
-    let should_initialize_session = match frame.codec {
-      VideoCodecId::Av1 => self.session.is_none(),
-      VideoCodecId::H264 | VideoCodecId::H265 => access_units.can_initialize_session(frame.codec),
-      VideoCodecId::Unknown => false,
+    let should_initialize_session = match (frame.codec, access_units.as_ref()) {
+      (VideoCodecId::Av1, _) => self.session.is_none(),
+      (VideoCodecId::H264 | VideoCodecId::H265, Some(access_units)) => access_units.can_initialize_session(frame.codec),
+      (VideoCodecId::H264 | VideoCodecId::H265, None) | (VideoCodecId::Unknown, _) => false,
     };
 
     if should_initialize_session {
       if let Some(session) = self.session.take() {
         drop(session);
       }
+      let access_units = access_units
+        .as_ref()
+        .ok_or_else(|| VideoError::new("VideoToolbox decoder initialization requires parsed access units."))?;
       tracing::info!(target: "video::decode::macos",
         "[video:decode/macos] initializing VideoToolbox session from parameter sets: codec={:?} {}",
         frame.codec,
@@ -1570,8 +1689,8 @@ impl NativeVideoDecoder {
         Ok(session) => self.session = Some(session),
         Err(error) if frame.codec == VideoCodecId::Av1 => {
           self.av1_videotoolbox_unavailable = true;
-          tracing::warn!(target: "video::decode::macos", "[video:decode/macos] VideoToolbox AV1 unavailable; falling back to rav1d software decode: {error}");
-          return self.decode_av1_software(frame, output, output_buffer);
+          tracing::warn!(target: "video::decode::macos", "[video:decode/macos] VideoToolbox AV1 unavailable; refusing software decode: {error}");
+          return Err(unsupported_av1_error());
         }
         Err(error) => return Err(error),
       }
@@ -1580,8 +1699,11 @@ impl NativeVideoDecoder {
     let Some(session) = self.session.as_mut() else {
       return Ok(None);
     };
-    let sample_data = access_units.sample_data(frame.codec)?;
-    let sample = SampleBuffer::new(&sample_data, session.format_description, frame.timestamp)?;
+    let sample_data = match access_units.as_ref() {
+      Some(access_units) => access_units.sample_data(frame.codec)?,
+      None => frame.encoded.clone(),
+    };
+    let sample = SampleBuffer::new(sample_data, session.format_description, frame.timestamp)?;
     while let Ok(stale) = self.output_rx.try_recv() {
       if !stale.pixel_buffer.is_null() {
         unsafe {
@@ -1635,19 +1757,20 @@ impl NativeVideoDecoder {
 
     if !latest.is_null() {
       let native_image = native_image_from_pixel_buffer(latest).ok();
-      let pixels = copy_nv12_pixel_buffer(latest).unwrap_or_default();
+      let pixels = if native_image.is_some() {
+        Vec::new()
+      } else {
+        copy_nv12_pixel_buffer(latest).unwrap_or_default()
+      };
       unsafe {
         CFRelease(latest.cast());
       }
       match native_image {
-        Some(native_image) => {
-          let _ = output_buffer;
-          Ok(Some(NativeDecodedVideoFrame {
-            format: DecodedVideoPixelFormat::Nv12,
-            pixels,
-            native_image: Some(native_image),
-          }))
-        }
+        Some(native_image) => Ok(Some(NativeDecodedVideoFrame {
+          format: DecodedVideoPixelFormat::Nv12,
+          pixels,
+          native_image: Some(native_image),
+        })),
         None if !pixels.is_empty() => Ok(Some(NativeDecodedVideoFrame {
           format: DecodedVideoPixelFormat::Nv12,
           pixels,
@@ -1659,152 +1782,20 @@ impl NativeVideoDecoder {
       Ok(None)
     }
   }
-
-  fn decode_av1_software(
-    &mut self,
-    frame: &VideoFrame,
-    output: bool,
-    output_buffer: Option<Vec<u8>>,
-  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-    if !software_av1_enabled() {
-      return Err(unsupported_av1_error());
-    }
-
-    let pixels = u32::from(frame.width) * u32::from(frame.height);
-    if pixels > MAX_SOFTWARE_AV1_PIXELS {
-      return Err(VideoError::new(format!(
-        "macOS VideoToolbox AV1 is unavailable and software AV1 is disabled for {}x{} streams to avoid excessive CPU usage. Use H.265/H.264 or lower AV1 resolution, or raise the software AV1 limit in macos.rs.",
-        frame.width, frame.height
-      )));
-    }
-
-    let decoder = match self.software_av1.as_mut() {
-      Some(decoder) => decoder,
-      None => {
-        self.software_av1 = Some(SoftwareAv1Decoder::new()?);
-        self.software_av1.as_mut().unwrap()
-      }
-    };
-    decoder.decode(frame, output, output_buffer)
-  }
-}
-
-fn software_av1_enabled() -> bool {
-  std::env::var_os(SOFTWARE_AV1_ENV).is_some_and(|value| value == "1" || value == "true")
 }
 
 fn simulate_unsupported_av1() -> bool {
   std::env::var_os(SIMULATE_UNSUPPORTED_AV1_ENV).is_some_and(|value| value == "1" || value == "true")
 }
 
+fn cpu_video_fallback_enabled() -> bool {
+  std::env::var_os(ALLOW_CPU_VIDEO_FALLBACK_ENV).is_some_and(|value| value == "1" || value == "true")
+}
+
 fn unsupported_av1_error() -> VideoError {
-  VideoError::new(format!(
-    "macOS VideoToolbox AV1 is unavailable and software AV1 is disabled because it is too CPU-heavy for realtime playback. Use H.265/H.264, or set {SOFTWARE_AV1_ENV}=1 to force software AV1."
-  ))
-}
-
-struct SoftwareAv1Decoder {
-  context: Option<Dav1dContext>,
-}
-
-impl SoftwareAv1Decoder {
-  fn new() -> Result<Self, VideoError> {
-    let mut settings = MaybeUninit::<Dav1dSettings>::uninit();
-    unsafe {
-      dav1d_default_settings(NonNull::new(settings.as_mut_ptr()).unwrap());
-    }
-    let mut settings = unsafe { settings.assume_init() };
-    settings.n_threads = SOFTWARE_AV1_THREADS;
-    settings.max_frame_delay = 1;
-    settings.apply_grain = 0;
-
-    let mut context = None;
-    let result = unsafe { dav1d_open(Some(NonNull::from(&mut context)), Some(NonNull::from(&mut settings))) };
-    dav1d_result(result, "open rav1d decoder")?;
-    if context.is_none() {
-      return Err(VideoError::new("rav1d returned no decoder context."));
-    }
-    Ok(Self { context })
-  }
-
-  fn decode(
-    &mut self,
-    frame: &VideoFrame,
-    output: bool,
-    output_buffer: Option<Vec<u8>>,
-  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-    let Some(context) = self.context else {
-      return Err(VideoError::new("rav1d decoder context is closed."));
-    };
-
-    let mut data = Dav1dData::default();
-    let data_ptr = unsafe { dav1d_data_create(Some(NonNull::from(&mut data)), frame.encoded.len()) };
-    if data_ptr.is_null() {
-      return Err(VideoError::new("rav1d failed to allocate encoded input buffer."));
-    }
-    unsafe {
-      ptr::copy_nonoverlapping(frame.encoded.as_ptr(), data_ptr, frame.encoded.len());
-    }
-    data.m.timestamp = i64::from(frame.timestamp);
-
-    let result = unsafe { dav1d_send_data(Some(context), Some(NonNull::from(&mut data))) };
-    if result.0 != 0 {
-      unsafe {
-        dav1d_data_unref(Some(NonNull::from(&mut data)));
-      }
-      return Err(VideoError::new(format!(
-        "rav1d failed to consume AV1 frame {}: {}.",
-        frame.frame_number,
-        dav1d_error_label(result)
-      )));
-    }
-
-    let mut latest = None;
-    loop {
-      let mut picture = Dav1dPicture::default();
-      let result = unsafe { dav1d_get_picture(Some(context), Some(NonNull::from(&mut picture))) };
-      if result.0 == DAV1D_EAGAIN {
-        break;
-      }
-      if result.0 != 0 {
-        return Err(VideoError::new(format!(
-          "rav1d failed to output AV1 frame {}: {}.",
-          frame.frame_number,
-          dav1d_error_label(result)
-        )));
-      }
-
-      let conversion_result = if output {
-        picture_to_nv12(&picture, output_buffer.clone()).map(Some)
-      } else {
-        Ok(None)
-      };
-      unsafe {
-        dav1d_picture_unref(Some(NonNull::from(&mut picture)));
-      }
-      let Some(pixels) = conversion_result? else {
-        continue;
-      };
-      if output {
-        latest = Some(pixels);
-      }
-    }
-
-    Ok(latest.map(|pixels| NativeDecodedVideoFrame {
-      format: DecodedVideoPixelFormat::Nv12,
-      pixels,
-      native_image: None,
-    }))
-  }
-}
-
-impl Drop for SoftwareAv1Decoder {
-  fn drop(&mut self) {
-    let mut context = self.context.take();
-    unsafe {
-      dav1d_close(Some(NonNull::from(&mut context)));
-    }
-  }
+  VideoError::new(
+    "macOS VideoToolbox AV1 is unavailable and software AV1 decode is disabled to avoid excessive CPU usage. Use H.265/H.264 or a Mac with hardware AV1 decode.",
+  )
 }
 
 impl VTSession {
@@ -2638,21 +2629,26 @@ impl Drop for PixelBufferAttributes {
 
 struct SampleBuffer {
   ptr: CMSampleBufferRef,
+  _sample_data: Bytes,
 }
 
 impl SampleBuffer {
   fn new(
-    sample_data: &[u8],
+    sample_data: Bytes,
     format_description: CMVideoFormatDescriptionRef,
     timestamp_ms: u32,
   ) -> Result<Self, VideoError> {
+    if sample_data.is_empty() {
+      return Err(VideoError::new("Encoded video sample is empty."));
+    }
+
     let mut block = ptr::null();
     let status = unsafe {
       CMBlockBufferCreateWithMemoryBlock(
         kCFAllocatorDefault,
-        ptr::null_mut(),
+        sample_data.as_ptr().cast::<c_void>().cast_mut(),
         sample_data.len(),
-        kCFAllocatorDefault,
+        kCFAllocatorNull,
         ptr::null(),
         0,
         sample_data.len(),
@@ -2663,16 +2659,6 @@ impl SampleBuffer {
     if status != NO_ERR || block.is_null() {
       return Err(VideoError::new(format!(
         "Failed to create CoreMedia block buffer: OSStatus {status}."
-      )));
-    }
-
-    let status = unsafe { CMBlockBufferReplaceDataBytes(sample_data.as_ptr().cast(), block, 0, sample_data.len()) };
-    if status != NO_ERR {
-      unsafe {
-        CFRelease(block.cast());
-      }
-      return Err(VideoError::new(format!(
-        "Failed to copy encoded video bytes into CoreMedia block buffer: OSStatus {status}."
       )));
     }
 
@@ -2709,7 +2695,10 @@ impl SampleBuffer {
       CFRelease(block.cast());
     }
 
-    Ok(Self { ptr: sample })
+    Ok(Self {
+      ptr: sample,
+      _sample_data: sample_data,
+    })
   }
 }
 
@@ -2723,51 +2712,54 @@ impl Drop for SampleBuffer {
 
 #[derive(Default)]
 struct AccessUnits {
-  raw_sample: Option<Vec<u8>>,
+  raw_sample: Option<Bytes>,
   av1_sequence_header: Option<Vec<u8>>,
   h264_sps: Option<Vec<u8>>,
   h264_pps: Option<Vec<u8>>,
   h265_vps: Option<Vec<u8>>,
   h265_sps: Option<Vec<u8>>,
   h265_pps: Option<Vec<u8>>,
-  nals: Vec<Vec<u8>>,
+  encoded: Bytes,
+  nals: Vec<Range<usize>>,
   length_prefixed_input: bool,
 }
 
 impl AccessUnits {
-  fn parse(codec: VideoCodecId, encoded: &[u8]) -> Result<Self, VideoError> {
+  fn parse(codec: VideoCodecId, encoded: Bytes) -> Result<Self, VideoError> {
     if encoded.is_empty() {
       return Err(VideoError::new("Encoded video frame is empty."));
     }
 
     let mut units = Self::default();
     if codec == VideoCodecId::Av1 {
-      units.raw_sample = Some(encoded.to_vec());
-      units.av1_sequence_header = find_av1_sequence_header_obu(encoded);
+      units.av1_sequence_header = find_av1_sequence_header_obu(&encoded);
+      units.raw_sample = Some(encoded);
       return Ok(units);
     }
 
-    let nals = if looks_like_annex_b(encoded) {
-      split_annex_b(encoded)
+    let nals = if looks_like_annex_b(&encoded) {
+      split_annex_b_ranges(&encoded)
     } else {
       units.length_prefixed_input = true;
-      split_length_prefixed(encoded)?
+      split_length_prefixed_ranges(&encoded)?
     };
+    units.encoded = encoded;
 
     for nal in nals {
       if nal.is_empty() {
         continue;
       }
+      let nal_bytes = &units.encoded[nal.clone()];
       match codec {
-        VideoCodecId::H264 => match nal[0] & 0x1f {
-          7 => units.h264_sps = Some(nal.clone()),
-          8 => units.h264_pps = Some(nal.clone()),
+        VideoCodecId::H264 => match nal_bytes[0] & 0x1f {
+          7 => units.h264_sps = Some(nal_bytes.to_vec()),
+          8 => units.h264_pps = Some(nal_bytes.to_vec()),
           _ => {}
         },
-        VideoCodecId::H265 => match (nal[0] >> 1) & 0x3f {
-          32 => units.h265_vps = Some(nal.clone()),
-          33 => units.h265_sps = Some(nal.clone()),
-          34 => units.h265_pps = Some(nal.clone()),
+        VideoCodecId::H265 => match (nal_bytes[0] >> 1) & 0x3f {
+          32 => units.h265_vps = Some(nal_bytes.to_vec()),
+          33 => units.h265_sps = Some(nal_bytes.to_vec()),
+          34 => units.h265_pps = Some(nal_bytes.to_vec()),
           _ => {}
         },
         VideoCodecId::Av1 | VideoCodecId::Unknown => {}
@@ -2804,7 +2796,7 @@ impl AccessUnits {
     )
   }
 
-  fn sample_data(&self, codec: VideoCodecId) -> Result<Vec<u8>, VideoError> {
+  fn sample_data(&self, codec: VideoCodecId) -> Result<Bytes, VideoError> {
     if codec == VideoCodecId::Av1 {
       return self
         .raw_sample
@@ -2812,13 +2804,26 @@ impl AccessUnits {
         .ok_or_else(|| VideoError::new("Encoded AV1 frame is empty."));
     }
 
-    let mut out = Vec::new();
-    for nal in &self.nals {
-      let len = u32::try_from(nal.len()).map_err(|_| VideoError::new("NAL unit is too large."))?;
-      out.extend_from_slice(&len.to_be_bytes());
-      out.extend_from_slice(nal);
+    if self.length_prefixed_input {
+      return Ok(self.encoded.clone());
     }
-    Ok(out)
+
+    let sample_len = self.nals.iter().try_fold(0usize, |total, nal| {
+      let len = nal.end.saturating_sub(nal.start);
+      let _ = u32::try_from(len).map_err(|_| VideoError::new("NAL unit is too large."))?;
+      total
+        .checked_add(4)
+        .and_then(|value| value.checked_add(len))
+        .ok_or_else(|| VideoError::new("Encoded video sample is too large."))
+    })?;
+    let mut out = Vec::with_capacity(sample_len);
+    for nal in &self.nals {
+      let nal_bytes = &self.encoded[nal.clone()];
+      let len = u32::try_from(nal_bytes.len()).map_err(|_| VideoError::new("NAL unit is too large."))?;
+      out.extend_from_slice(&len.to_be_bytes());
+      out.extend_from_slice(nal_bytes);
+    }
+    Ok(Bytes::from(out))
   }
 }
 
@@ -2914,147 +2919,19 @@ fn copy_locked_nv12_pixel_buffer(
   Ok(out)
 }
 
-fn picture_to_nv12(picture: &Dav1dPicture, output_buffer: Option<Vec<u8>>) -> Result<Vec<u8>, VideoError> {
-  if picture.p.bpc != 8 {
-    return Err(VideoError::new(format!(
-      "rav1d returned unsupported AV1 bit depth {}; only 8-bit output is wired.",
-      picture.p.bpc
-    )));
-  }
-
-  let width = usize::try_from(picture.p.w).map_err(|_| VideoError::new("rav1d returned invalid AV1 width."))?;
-  let height = usize::try_from(picture.p.h).map_err(|_| VideoError::new("rav1d returned invalid AV1 height."))?;
-  if width == 0 || height == 0 {
-    return Err(VideoError::new("rav1d returned an empty AV1 picture."));
-  }
-  if width % 2 != 0 || height % 2 != 0 {
-    return Err(VideoError::new(format!(
-      "rav1d returned AV1 dimensions {width}x{height}; NV12 output requires even dimensions."
-    )));
-  }
-
-  let y_ptr = picture.data[0].ok_or_else(|| VideoError::new("rav1d AV1 picture is missing the Y plane."))?;
-  let chroma = chroma_layout(picture.p.layout)?;
-  let stride_y =
-    usize::try_from(picture.stride[0]).map_err(|_| VideoError::new("rav1d returned unsupported negative Y stride."))?;
-  let y_plane = unsafe { slice::from_raw_parts(y_ptr.as_ptr().cast::<u8>(), stride_y * height) };
-
-  let mut output = output_buffer.unwrap_or_default();
-  let y_len = width
-    .checked_mul(height)
-    .ok_or_else(|| VideoError::new("AV1 NV12 output buffer size overflow."))?;
-  let nv12_len = y_len
-    .checked_add(y_len / 2)
-    .ok_or_else(|| VideoError::new("AV1 NV12 output buffer size overflow."))?;
-  output.resize(nv12_len, 128);
-
-  for y in 0..height {
-    let src_start = y * stride_y;
-    let dst_start = y * width;
-    output[dst_start..dst_start + width].copy_from_slice(&y_plane[src_start..src_start + width]);
-  }
-
-  match chroma {
-    ChromaLayout::Monochrome => {}
-    ChromaLayout::Yuv {
-      width_shift,
-      height_shift,
-    } => {
-      let u_ptr = picture.data[1].ok_or_else(|| VideoError::new("rav1d AV1 picture is missing the U plane."))?;
-      let v_ptr = picture.data[2].ok_or_else(|| VideoError::new("rav1d AV1 picture is missing the V plane."))?;
-      let stride_uv = usize::try_from(picture.stride[1])
-        .map_err(|_| VideoError::new("rav1d returned unsupported negative UV stride."))?;
-      let uv_height = (height + (1 << height_shift) - 1) >> height_shift;
-      let u_plane = unsafe { slice::from_raw_parts(u_ptr.as_ptr().cast::<u8>(), stride_uv * uv_height) };
-      let v_plane = unsafe { slice::from_raw_parts(v_ptr.as_ptr().cast::<u8>(), stride_uv * uv_height) };
-      yuv_to_nv12_chroma(
-        u_plane,
-        v_plane,
-        stride_uv,
-        width,
-        height,
-        width_shift,
-        height_shift,
-        &mut output[y_len..],
-      );
-    }
-  }
-
-  Ok(output)
-}
-
-enum ChromaLayout {
-  Monochrome,
-  Yuv { width_shift: usize, height_shift: usize },
-}
-
-fn chroma_layout(layout: u32) -> Result<ChromaLayout, VideoError> {
-  match layout {
-    DAV1D_PIXEL_LAYOUT_I400 => Ok(ChromaLayout::Monochrome),
-    DAV1D_PIXEL_LAYOUT_I420 => Ok(ChromaLayout::Yuv {
-      width_shift: 1,
-      height_shift: 1,
-    }),
-    DAV1D_PIXEL_LAYOUT_I422 => Ok(ChromaLayout::Yuv {
-      width_shift: 1,
-      height_shift: 0,
-    }),
-    DAV1D_PIXEL_LAYOUT_I444 => Ok(ChromaLayout::Yuv {
-      width_shift: 0,
-      height_shift: 0,
-    }),
-    _ => Err(VideoError::new(format!(
-      "rav1d returned unsupported AV1 pixel layout {layout}."
-    ))),
-  }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn yuv_to_nv12_chroma(
-  u_plane: &[u8],
-  v_plane: &[u8],
-  stride_uv: usize,
-  width: usize,
-  height: usize,
-  width_shift: usize,
-  height_shift: usize,
-  uv_output: &mut [u8],
-) {
-  for y in (0..height).step_by(2) {
-    let uv_row = (y / 2) * width;
-    let source_y = y >> height_shift;
-    for x in (0..width).step_by(2) {
-      let source_x = x >> width_shift;
-      let offset = uv_row + x;
-      uv_output[offset] = u_plane[source_y * stride_uv + source_x];
-      uv_output[offset + 1] = v_plane[source_y * stride_uv + source_x];
-    }
-  }
-}
-
-fn dav1d_result(result: Dav1dResult, action: &str) -> Result<(), VideoError> {
-  if result.0 == 0 {
-    Ok(())
-  } else {
-    Err(VideoError::new(format!(
-      "Failed to {action}: {}.",
-      dav1d_error_label(result)
-    )))
-  }
-}
-
-fn dav1d_error_label(result: Dav1dResult) -> String {
-  match result.0 {
-    DAV1D_EAGAIN => "EAGAIN".to_string(),
-    code => format!("Dav1dResult {code}"),
-  }
-}
-
 fn looks_like_annex_b(bytes: &[u8]) -> bool {
   bytes.starts_with(&[0, 0, 1]) || bytes.starts_with(&[0, 0, 0, 1])
 }
 
+#[cfg(test)]
 fn split_annex_b(bytes: &[u8]) -> Vec<Vec<u8>> {
+  split_annex_b_ranges(bytes)
+    .into_iter()
+    .map(|range| bytes[range].to_vec())
+    .collect()
+}
+
+fn split_annex_b_ranges(bytes: &[u8]) -> Vec<Range<usize>> {
   let mut out = Vec::new();
   let mut cursor = 0;
   while let Some((start_code, start_code_len)) = find_start_code(bytes, cursor) {
@@ -3063,7 +2940,7 @@ fn split_annex_b(bytes: &[u8]) -> Vec<Vec<u8>> {
       .map(|(index, _)| index)
       .unwrap_or(bytes.len());
     if nal_start < next {
-      out.push(bytes[nal_start..next].to_vec());
+      out.push(nal_start..next);
     }
     cursor = next;
   }
@@ -3084,7 +2961,17 @@ fn find_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
   None
 }
 
+#[cfg(test)]
 fn split_length_prefixed(bytes: &[u8]) -> Result<Vec<Vec<u8>>, VideoError> {
+  Ok(
+    split_length_prefixed_ranges(bytes)?
+      .into_iter()
+      .map(|range| bytes[range].to_vec())
+      .collect(),
+  )
+}
+
+fn split_length_prefixed_ranges(bytes: &[u8]) -> Result<Vec<Range<usize>>, VideoError> {
   let mut out = Vec::new();
   let mut cursor = 0;
   while cursor + 4 <= bytes.len() {
@@ -3093,7 +2980,7 @@ fn split_length_prefixed(bytes: &[u8]) -> Result<Vec<Vec<u8>>, VideoError> {
     if len == 0 || cursor + len > bytes.len() {
       return Err(VideoError::new("Invalid length-prefixed video NAL unit."));
     }
-    out.push(bytes[cursor..cursor + len].to_vec());
+    out.push(cursor..cursor + len);
     cursor += len;
   }
   if cursor != bytes.len() {

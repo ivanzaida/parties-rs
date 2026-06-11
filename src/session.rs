@@ -17,7 +17,7 @@ use lurq::{
 use crate::{
   network::{
     protocol::{
-      ChannelId, Role, S2C, ServerErrorCode, UserId, VideoCodecId,
+      ChannelId, Role, S2C, ServerErrorCode, UserId,
       control::{
         ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
         TextChannelInfo,
@@ -217,7 +217,7 @@ fn decode_video_packet(
 fn unsupported_av1_decode_error(codec: crate::network::protocol::VideoCodecId, error: &str) -> bool {
   codec == crate::network::protocol::VideoCodecId::Av1
     && error.contains("macOS VideoToolbox AV1 is unavailable")
-    && error.contains("software AV1 is disabled")
+    && error.contains("software AV1 decode is disabled")
 }
 
 fn unsupported_av1_stream_error() -> VideoStreamError {
@@ -304,7 +304,8 @@ fn decode_video_packet_to_dx12(
 
   let decoder = decoders.get_mut(&packet.sender_id)?;
   let dx12_backend_allowed = decoder.backend() == crate::services::video::NativeVideoBackend::NvidiaNvdec
-    || (decoder.backend() == crate::services::video::NativeVideoBackend::AmdAmf && config.codec == VideoCodecId::H264);
+    || (decoder.backend() == crate::services::video::NativeVideoBackend::AmdAmf
+      && config.codec == crate::network::protocol::VideoCodecId::H264);
   if !dx12_backend_allowed {
     return None;
   }

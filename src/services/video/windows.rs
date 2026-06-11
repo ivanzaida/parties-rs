@@ -511,12 +511,12 @@ fn run_broadcast_loop(
         width: config.output_width,
         height: config.output_height,
         codec: config.codec,
-        encoded: sample.bytes,
+        encoded: sample.bytes.into(),
       };
       let send_result = {
         let _span = profiler::span("video.network.send_live_frame");
         runtime
-          .block_on(server.send_live_video_frame(frame.clone()))
+          .block_on(server.send_live_video_frame(&frame))
           .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?
       };
       if send_result == VideoFrameSend::Dropped {
