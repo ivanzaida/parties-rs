@@ -119,15 +119,6 @@ impl VideoPacketQueue {
       if self.closed.load(Ordering::Relaxed) {
         return;
       }
-      if !packet.frame.keyframe {
-        let before = packets.len();
-        packets.retain(|queued| queued.sender_id != packet.sender_id || queued.frame.keyframe);
-        let dropped = before.saturating_sub(packets.len());
-        if dropped > 0 {
-          self.dropped.fetch_add(dropped as u64, Ordering::Relaxed);
-          tracing::debug!(target: "video", "[video] replaced queued stale video frames with latest frame: dropped={dropped}");
-        }
-      }
       if packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
         packets.pop_front();
         self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -301,6 +292,7 @@ pub(super) fn run_video_receiver<S>(
     HashMap::<(UserId, u16, u16), VecDeque<Arc<lurq::app::dx12_render::Dx12Nv12Surface>>>::new();
   let mut awaiting_keyframes = session.watching_user_id().into_iter().collect::<HashSet<_>>();
   let mut awaiting_decoded_output = HashSet::<UserId>::new();
+  let mut expected_frame_numbers = HashMap::<UserId, u32>::new();
   let mut received_counts = HashMap::<UserId, u64>::new();
   let mut decoded_counts = HashMap::<UserId, u64>::new();
   let mut last_watched_user = session.watching_user_id();
@@ -337,6 +329,7 @@ pub(super) fn run_video_receiver<S>(
     if watched_user != last_watched_user {
       decode_pool.retain_watched(watched_user);
       awaiting_decoded_output.retain(|user_id| Some(*user_id) == watched_user);
+      expected_frame_numbers.retain(|user_id, _| Some(*user_id) == watched_user);
       #[cfg(target_os = "windows")]
       shared_nv12_planes_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
       #[cfg(target_os = "windows")]
@@ -407,6 +400,7 @@ pub(super) fn run_video_receiver<S>(
         decode_pool.remove_user(packet.sender_id);
         awaiting_keyframes.remove(&packet.sender_id);
         awaiting_decoded_output.remove(&packet.sender_id);
+        expected_frame_numbers.remove(&packet.sender_id);
         continue;
       }
 
@@ -422,6 +416,7 @@ pub(super) fn run_video_receiver<S>(
         #[cfg(target_os = "windows")]
         dx12_decode_surfaces.retain(|(user_id, ..), _| *user_id != packet.sender_id);
         awaiting_decoded_output.remove(&packet.sender_id);
+        expected_frame_numbers.remove(&packet.sender_id);
         awaiting_keyframes.insert(packet.sender_id);
         request_keyframe_for(packet.sender_id, "video decode config changed");
       }
@@ -437,6 +432,37 @@ pub(super) fn run_video_receiver<S>(
           packet.sender_id,
           packet.frame.frame_number
         );
+      }
+
+      if packet.frame.keyframe {
+        expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
+      } else {
+        match expected_frame_numbers.get(&packet.sender_id).copied() {
+          Some(expected_frame_number) if packet.frame.frame_number == expected_frame_number => {
+            expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
+          }
+          Some(expected_frame_number) => {
+            awaiting_decoded_output.remove(&packet.sender_id);
+            expected_frame_numbers.remove(&packet.sender_id);
+            decode_pool.reset_user(packet.sender_id);
+            awaiting_keyframes.insert(packet.sender_id);
+            request_keyframe_for(packet.sender_id, "video frame gap detected");
+            tracing::warn!(target: "video::decode",
+              "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
+              packet.sender_id,
+              expected_frame_number,
+              packet.frame.frame_number
+            );
+            continue;
+          }
+          None => {
+            awaiting_decoded_output.remove(&packet.sender_id);
+            decode_pool.reset_user(packet.sender_id);
+            awaiting_keyframes.insert(packet.sender_id);
+            request_keyframe_for(packet.sender_id, "missing initial keyframe");
+            continue;
+          }
+        }
       }
 
       let received_count = increment_counter(&mut received_counts, packet.sender_id);
@@ -513,10 +539,14 @@ pub(super) fn run_video_receiver<S>(
         }
         Err(error) => {
           awaiting_decoded_output.remove(&sender_id);
+          expected_frame_numbers.remove(&sender_id);
           if unsupported_av1_decode_error(codec, &error) {
             session.set_video_error(sender_id, unsupported_av1_stream_error());
           } else if native_decoder_unavailable_error(&error) {
             session.set_video_error(sender_id, native_decoder_unavailable_stream_error(error));
+          } else {
+            awaiting_keyframes.insert(sender_id);
+            request_keyframe_for(sender_id, "video decode failed");
           }
         }
       }

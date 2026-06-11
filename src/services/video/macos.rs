@@ -1669,7 +1669,9 @@ impl NativeVideoDecoder {
 
     let should_initialize_session = match (frame.codec, access_units.as_ref()) {
       (VideoCodecId::Av1, _) => self.session.is_none(),
-      (VideoCodecId::H264 | VideoCodecId::H265, Some(access_units)) => access_units.can_initialize_session(frame.codec),
+      (VideoCodecId::H264 | VideoCodecId::H265, Some(access_units)) => {
+        self.session.is_none() && access_units.can_initialize_session(frame.codec)
+      }
       (VideoCodecId::H264 | VideoCodecId::H265, None) | (VideoCodecId::Unknown, _) => false,
     };
 
