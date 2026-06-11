@@ -73,6 +73,7 @@ impl VideoFrameImage {
 pub(super) struct VideoFrameSink {
   frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
+  metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
   revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   lobby: Arc<Mutex<LobbyState>>,
   revision: Signal<u64>,
@@ -85,6 +86,7 @@ impl VideoFrameSink {
     Self {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
+      metadata: Arc::new(Mutex::new(HashMap::new())),
       revision_marks: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       revision,
@@ -102,6 +104,7 @@ impl VideoFrameSink {
     Self {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
+      metadata: Arc::new(Mutex::new(HashMap::new())),
       revision_marks: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       revision,
@@ -112,6 +115,7 @@ impl VideoFrameSink {
   pub(super) fn clear_all(&self) {
     self.frames.lock().clear();
     self.errors.lock().clear();
+    self.metadata.lock().clear();
     self.revision_marks.lock().clear();
   }
 
@@ -127,16 +131,19 @@ impl VideoFrameSink {
     let mut frames = self.frames.lock();
     let mut marks = self.revision_marks.lock();
     let mut errors = self.errors.lock();
+    let mut metadata = self.metadata.lock();
     match watched_user_id {
       Some(user_id) => {
         frames.retain(|cached_user_id, _| *cached_user_id == user_id);
         marks.retain(|cached_user_id, _| *cached_user_id == user_id);
         errors.retain(|cached_user_id, _| *cached_user_id == user_id);
+        metadata.retain(|cached_user_id, _| *cached_user_id == user_id);
       }
       None => {
         frames.clear();
         marks.clear();
         errors.clear();
+        metadata.clear();
       }
     }
   }
@@ -145,10 +152,12 @@ impl VideoFrameSink {
     self.frames.lock().remove(&user_id);
     self.revision_marks.lock().remove(&user_id);
     self.errors.lock().remove(&user_id);
+    self.metadata.lock().remove(&user_id);
   }
 
   pub(super) fn set_error(&self, user_id: UserId, error: VideoStreamError) {
     self.frames.lock().remove(&user_id);
+    self.metadata.lock().remove(&user_id);
     let changed = {
       let mut errors = self.errors.lock();
       let changed = errors.get(&user_id) != Some(&error);
@@ -443,17 +452,31 @@ impl VideoFrameSink {
   }
 
   fn update_share_metadata(&self, sender_id: UserId, metadata: ScreenShareMetadata) -> bool {
+    {
+      let cached_metadata = self.metadata.lock();
+      if cached_metadata.get(&sender_id) == Some(&metadata) {
+        return false;
+      }
+    }
+
     let mut lobby = self.lobby.lock();
-    if let Some(share) = lobby
+    let Some(share) = lobby
       .screen_shares
       .iter_mut()
       .find(|share| share.sharer_user_id == sender_id)
-      && share.metadata != metadata
-    {
+    else {
+      self.metadata.lock().remove(&sender_id);
+      return false;
+    };
+
+    let changed = if share.metadata != metadata {
       share.metadata = metadata;
-      return true;
-    }
-    false
+      true
+    } else {
+      false
+    };
+    self.metadata.lock().insert(sender_id, share.metadata.clone());
+    changed
   }
 
   fn should_bump_video_revision(&self, user_id: UserId) -> bool {

@@ -41,12 +41,16 @@ const WINDOWS_NVIDIA_VENDOR_ID: u32 = 0x10DE;
 const WINDOWS_AMD_VENDOR_ID: u32 = 0x1002;
 
 #[cfg(target_os = "windows")]
+static WINDOWS_DEFAULT_DXGI_ADAPTER_VENDOR_ID: std::sync::LazyLock<Option<u32>> =
+  std::sync::LazyLock::new(windows_default_dxgi_adapter_vendor_id);
+
+#[cfg(target_os = "windows")]
 pub(super) static DX12_NATIVE_STREAM_DECODE_SUPPORTED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
   if !ENABLE_DX12_NATIVE_STREAM_DECODE {
     return false;
   }
 
-  match windows_default_dxgi_adapter_vendor_id() {
+  match *WINDOWS_DEFAULT_DXGI_ADAPTER_VENDOR_ID {
     Some(WINDOWS_NVIDIA_VENDOR_ID) => {
       tracing::info!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is NVIDIA, NVDEC interop is allowed");
       true
@@ -389,7 +393,7 @@ pub(super) fn run_video_receiver<S>(
       .last();
 
     for (packet_index, packet) in batch.drain(..).enumerate() {
-      if Some(packet.sender_id) != session.watching_user_id() {
+      if Some(packet.sender_id) != watched_user {
         decode_pool.remove_user(packet.sender_id);
         awaiting_keyframes.remove(&packet.sender_id);
         awaiting_decoded_output.remove(&packet.sender_id);
@@ -444,80 +448,16 @@ pub(super) fn run_video_receiver<S>(
       }
 
       #[cfg(target_os = "windows")]
-      if let Some(shared_planes_result) = decode_pool.decode_to_shared_nv12_planes(&packet) {
-        match shared_planes_result {
-          Ok(Some((y_shared_handle, uv_shared_handle))) => {
-            if let Some(surface) = session.shared_nv12_planes_video_surface_for_decode(
-              &mut shared_nv12_planes_surfaces,
-              packet.sender_id,
-              packet.frame.width,
-              packet.frame.height,
-              y_shared_handle,
-              uv_shared_handle,
-            ) {
-              let decoded_count = increment_counter(&mut decoded_counts, packet.sender_id);
-              if should_log_video_count(decoded_count) {
-                tracing::debug!(target: "video::decode",
-                  "[video:decode] decoded shared NV12 planes frame #{decoded_count} from user {}: codec={:?} size={}x{} y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x}",
-                  packet.sender_id,
-                  packet.frame.codec,
-                  packet.frame.width,
-                  packet.frame.height
-                );
-              }
-              session.present_dx12_video_frame(
-                packet.sender_id,
-                packet.frame.codec,
-                packet.frame.width,
-                packet.frame.height,
-                surface,
-              );
-              continue;
-            }
-            decode_pool.mark_shared_nv12_planes_failure(packet.sender_id, &packet.frame);
-          }
-          Ok(None) => {
-            if should_log_video_count(received_count) {
-              tracing::info!(target: "video::decode", "[video:decode] received frame produced no shared NV12 planes decoded output yet");
-            }
-            continue;
-          }
-          Err(_) => {
-            // The failure key is already recorded by decode_video_packet_to_shared_nv12_planes.
-            // Fall through to the regular decode path so playback still starts.
-          }
-        }
-      }
-
-      #[cfg(target_os = "windows")]
-      if let Some(surface) = session.dx12_video_surface_for_decode(
+      if try_present_windows_native_video_frame(
+        &session,
+        &mut decode_pool,
+        &mut shared_nv12_planes_surfaces,
         &mut dx12_decode_surfaces,
-        packet.sender_id,
-        packet.frame.width,
-        packet.frame.height,
-      ) && let Some(decoded) = decode_pool.decode_to_dx12(&packet, &surface)
+        &mut decoded_counts,
+        received_count,
+        &packet,
+      ) != WindowsNativeVideoDecode::Fallback
       {
-        if decoded {
-          let decoded_count = increment_counter(&mut decoded_counts, packet.sender_id);
-          if should_log_video_count(decoded_count) {
-            tracing::debug!(target: "video::decode",
-              "[video:decode] decoded DX12 frame #{decoded_count} from user {}: codec={:?} size={}x{} format=Nv12",
-              packet.sender_id,
-              packet.frame.codec,
-              packet.frame.width,
-              packet.frame.height
-            );
-          }
-          session.present_dx12_video_frame(
-            packet.sender_id,
-            packet.frame.codec,
-            packet.frame.width,
-            packet.frame.height,
-            surface,
-          );
-        } else if should_log_video_count(received_count) {
-          tracing::info!(target: "video::decode", "[video:decode] received frame produced no DX12 decoded output yet");
-        }
         continue;
       }
 
@@ -577,6 +517,119 @@ pub(super) fn run_video_receiver<S>(
   drop(reader_thread);
   drop(datagram_reader_thread);
   tracing::info!(target: "video", "[video] receiver thread stopping");
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsNativeVideoDecode {
+  Presented,
+  Pending,
+  Fallback,
+}
+
+#[cfg(target_os = "windows")]
+fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
+  session: &S,
+  decode_pool: &mut VideoDecodePool,
+  shared_nv12_planes_surfaces: &mut HashMap<(UserId, usize, usize), Arc<lurq::app::dx12_render::Dx12Nv12Surface>>,
+  dx12_decode_surfaces: &mut HashMap<(UserId, u16, u16), VecDeque<Arc<lurq::app::dx12_render::Dx12Nv12Surface>>>,
+  decoded_counts: &mut HashMap<UserId, u64>,
+  received_count: u64,
+  packet: &ForwardedVideoFrame,
+) -> WindowsNativeVideoDecode {
+  if let Some(shared_planes_result) = decode_pool.decode_to_shared_nv12_planes(packet) {
+    match shared_planes_result {
+      Ok(Some((y_shared_handle, uv_shared_handle))) => {
+        if let Some(surface) = session.shared_nv12_planes_video_surface_for_decode(
+          shared_nv12_planes_surfaces,
+          packet.sender_id,
+          packet.frame.width,
+          packet.frame.height,
+          y_shared_handle,
+          uv_shared_handle,
+        ) {
+          let decoded_count = increment_counter(decoded_counts, packet.sender_id);
+          if should_log_video_count(decoded_count) {
+            tracing::debug!(target: "video::decode",
+              "[video:decode] decoded shared NV12 planes frame #{decoded_count} from user {}: codec={:?} size={}x{} y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x}",
+              packet.sender_id,
+              packet.frame.codec,
+              packet.frame.width,
+              packet.frame.height
+            );
+          }
+          session.present_dx12_video_frame(
+            packet.sender_id,
+            packet.frame.codec,
+            packet.frame.width,
+            packet.frame.height,
+            surface,
+          );
+          return WindowsNativeVideoDecode::Presented;
+        }
+        decode_pool.mark_shared_nv12_planes_failure(packet.sender_id, &packet.frame);
+      }
+      Ok(None) => {
+        if should_log_video_count(received_count) {
+          tracing::info!(target: "video::decode", "[video:decode] received frame produced no shared NV12 planes decoded output yet");
+        }
+        return WindowsNativeVideoDecode::Pending;
+      }
+      Err(_) => {
+        // The failure key is already recorded by decode_to_shared_nv12_planes.
+        // Fall through to the regular decode path so playback still starts.
+      }
+    }
+  }
+
+  if !windows_dx12_surface_decode_allowed(packet.frame.codec) {
+    return WindowsNativeVideoDecode::Fallback;
+  }
+
+  if let Some(surface) = session.dx12_video_surface_for_decode(
+    dx12_decode_surfaces,
+    packet.sender_id,
+    packet.frame.width,
+    packet.frame.height,
+  ) && let Some(decoded) = decode_pool.decode_to_dx12(packet, &surface)
+  {
+    if decoded {
+      let decoded_count = increment_counter(decoded_counts, packet.sender_id);
+      if should_log_video_count(decoded_count) {
+        tracing::debug!(target: "video::decode",
+          "[video:decode] decoded DX12 frame #{decoded_count} from user {}: codec={:?} size={}x{} format=Nv12",
+          packet.sender_id,
+          packet.frame.codec,
+          packet.frame.width,
+          packet.frame.height
+        );
+      }
+      session.present_dx12_video_frame(
+        packet.sender_id,
+        packet.frame.codec,
+        packet.frame.width,
+        packet.frame.height,
+        surface,
+      );
+      WindowsNativeVideoDecode::Presented
+    } else {
+      if should_log_video_count(received_count) {
+        tracing::info!(target: "video::decode", "[video:decode] received frame produced no DX12 decoded output yet");
+      }
+      WindowsNativeVideoDecode::Pending
+    }
+  } else {
+    WindowsNativeVideoDecode::Fallback
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_dx12_surface_decode_allowed(codec: VideoCodecId) -> bool {
+  match *WINDOWS_DEFAULT_DXGI_ADAPTER_VENDOR_ID {
+    Some(WINDOWS_NVIDIA_VENDOR_ID) => true,
+    Some(WINDOWS_AMD_VENDOR_ID) => codec == VideoCodecId::H264,
+    _ => false,
+  }
 }
 
 fn increment_counter(counters: &mut HashMap<UserId, u64>, user_id: UserId) -> u64 {
