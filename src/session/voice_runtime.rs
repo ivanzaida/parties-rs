@@ -1,0 +1,426 @@
+use std::{
+  collections::HashMap,
+  sync::Arc,
+  time::{Duration, Instant},
+};
+
+use parking_lot::Mutex;
+
+use super::LobbyConnectionWarningKind;
+use crate::{
+  network::{
+    protocol::{
+      UserId,
+      data::{ForwardedStreamAudioPacket, ForwardedVoicePacket, VideoControl},
+    },
+    server::{ReceivedAudioPacket, Server, ServerError},
+  },
+  services::voice::{LocalVoiceCallback, VoiceEngine},
+  storage::AppSettings,
+};
+
+const DEFAULT_USER_VOLUME: i32 = 100;
+const VOICE_RECEIVE_GAP_LOG_AFTER: Duration = Duration::from_secs(3);
+
+pub(super) trait VoiceReceiverSession: Clone + Send + Sync + 'static {
+  fn connection_debug_context(&self) -> String;
+  fn mark_voice_network_activity(&self);
+  fn handle_voice_packet(&self, packet: ForwardedVoicePacket) -> bool;
+  fn mark_user_speaking(&self, user_id: UserId);
+  fn handle_stream_audio_packet(&self, packet: ForwardedStreamAudioPacket);
+  fn handle_video_control_packet(&self, control: VideoControl);
+  fn set_voice_connection_warning(&self, kind: LobbyConnectionWarningKind, message: String);
+}
+
+pub(super) async fn run_voice_activity_receiver<S>(session: S, server: Arc<Server>)
+where
+  S: VoiceReceiverSession,
+{
+  tracing::info!(
+    target: "voice",
+    "[voice] voice receiver started: {}",
+    session.connection_debug_context()
+  );
+  let started_at = Instant::now();
+  let mut voice_packets = 0_u64;
+  let mut stream_packets = 0_u64;
+  let mut video_controls = 0_u64;
+  let mut malformed_packets = 0_u64;
+  let mut last_packet = "none";
+  let mut last_voice_sender = None;
+  let mut last_voice_sequence = None;
+  let mut last_voice_by_sender = HashMap::<UserId, (u16, Instant)>::new();
+
+  let stop_reason = loop {
+    match server.recv_audio().await {
+      Ok(ReceivedAudioPacket::Voice(packet)) => {
+        session.mark_voice_network_activity();
+        let now = Instant::now();
+        voice_packets = voice_packets.saturating_add(1);
+        last_packet = "voice";
+        last_voice_sender = Some(packet.sender_id);
+        last_voice_sequence = Some(packet.sequence);
+        if let Some((previous_sequence, previous_at)) =
+          last_voice_by_sender.insert(packet.sender_id, (packet.sequence, now))
+        {
+          let sequence_delta = packet.sequence.wrapping_sub(previous_sequence);
+          let gap = now.duration_since(previous_at);
+          if sequence_delta != 1 {
+            tracing::warn!(
+              target: "voice",
+              "[voice] voice packet sequence gap from user {}: previous_sequence={} current_sequence={} delta={} gap_ms={} total_voice_packets={} {}",
+              packet.sender_id,
+              previous_sequence,
+              packet.sequence,
+              sequence_delta,
+              gap.as_millis(),
+              voice_packets,
+              session.connection_debug_context()
+            );
+          } else if gap >= VOICE_RECEIVE_GAP_LOG_AFTER {
+            tracing::info!(
+              target: "voice",
+              "[voice] voice packets resumed from user {} after {}ms: sequence={} total_voice_packets={} {}",
+              packet.sender_id,
+              gap.as_millis(),
+              packet.sequence,
+              voice_packets,
+              session.connection_debug_context()
+            );
+          }
+        }
+        if voice_packets == 1 {
+          tracing::info!(
+            target: "voice",
+            "[voice] first voice packet received: sender={} sequence={} bytes={} {}",
+            packet.sender_id,
+            packet.sequence,
+            packet.opus.len(),
+            session.connection_debug_context()
+          );
+        }
+        let speaking = session.handle_voice_packet(packet.clone());
+        if speaking {
+          session.mark_user_speaking(packet.sender_id);
+        }
+      }
+      Ok(ReceivedAudioPacket::Stream(packet)) => {
+        session.mark_voice_network_activity();
+        stream_packets = stream_packets.saturating_add(1);
+        last_packet = "stream_audio";
+        if stream_packets == 1 {
+          tracing::info!(
+            target: "voice",
+            "[voice] first stream audio packet received: sender={} bytes={} {}",
+            packet.sender_id,
+            packet.opus.len(),
+            session.connection_debug_context()
+          );
+        }
+        session.handle_stream_audio_packet(packet);
+      }
+      Ok(ReceivedAudioPacket::VideoControl(control)) => {
+        session.mark_voice_network_activity();
+        video_controls = video_controls.saturating_add(1);
+        last_packet = "video_control";
+        session.handle_video_control_packet(control);
+      }
+      Err(ServerError::Protocol(error)) => {
+        malformed_packets = malformed_packets.saturating_add(1);
+        tracing::warn!(
+          target: "voice",
+          "[voice] ignored malformed audio packet #{}: {error}; {}",
+          malformed_packets,
+          session.connection_debug_context()
+        );
+        continue;
+      }
+      Err(error) => {
+        let error = error.to_string();
+        let stop_reason = format!("transport error: {error}");
+        tracing::warn!(
+          target: "voice",
+          "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}; {}",
+          session.connection_debug_context()
+        );
+        session.set_voice_connection_warning(
+          LobbyConnectionWarningKind::VoiceReceiverStopped,
+          format!("Voice receiver stopped: {error}"),
+        );
+        break stop_reason;
+      }
+    }
+  };
+
+  tracing::warn!(
+    target: "voice",
+    "[voice] voice receiver stopped: reason='{stop_reason}' uptime_ms={} voice_packets={} stream_packets={} video_controls={} malformed_packets={} last_packet={} last_voice_sender={last_voice_sender:?} last_voice_sequence={last_voice_sequence:?} {}",
+    started_at.elapsed().as_millis(),
+    voice_packets,
+    stream_packets,
+    video_controls,
+    malformed_packets,
+    last_packet,
+    session.connection_debug_context()
+  );
+}
+
+pub(super) struct VoiceRuntime {
+  engine: Mutex<Option<VoiceEngine>>,
+  voice_audio_counts: Mutex<HashMap<UserId, u64>>,
+  stream_audio_counts: Mutex<HashMap<UserId, u64>>,
+  user_volumes: Mutex<HashMap<UserId, i32>>,
+  stream_volumes: Mutex<HashMap<UserId, i32>>,
+}
+
+impl VoiceRuntime {
+  pub(super) fn new() -> Self {
+    Self {
+      engine: Mutex::new(None),
+      voice_audio_counts: Mutex::new(HashMap::new()),
+      stream_audio_counts: Mutex::new(HashMap::new()),
+      user_volumes: Mutex::new(HashMap::new()),
+      stream_volumes: Mutex::new(HashMap::new()),
+    }
+  }
+
+  pub(super) fn clear_counts(&self) {
+    self.voice_audio_counts.lock().clear();
+    self.stream_audio_counts.lock().clear();
+  }
+
+  pub(super) fn clear_volumes(&self) {
+    self.user_volumes.lock().clear();
+    self.stream_volumes.lock().clear();
+  }
+
+  pub(super) fn engine_status(&self) -> (bool, bool) {
+    let engine = self.engine.lock();
+    (
+      engine.is_some(),
+      engine.as_ref().is_some_and(VoiceEngine::captures_voice),
+    )
+  }
+
+  pub(super) fn has_engine(&self) -> bool {
+    self.engine.lock().is_some()
+  }
+
+  pub(super) fn start_capture(
+    &self,
+    server: Arc<Server>,
+    settings: AppSettings,
+    muted: bool,
+    deafened: bool,
+    on_local_voice: LocalVoiceCallback,
+  ) -> Result<bool, String> {
+    let engine =
+      VoiceEngine::start(server, settings, muted, deafened, on_local_voice).map_err(|error| error.to_string())?;
+    self.apply_stored_volumes(&engine);
+    let captures_voice = engine.captures_voice();
+    *self.engine.lock() = Some(engine);
+    Ok(captures_voice)
+  }
+
+  pub(super) fn ensure_stream_playback(&self, settings: AppSettings, deafened: bool) -> Result<bool, String> {
+    if self.engine.lock().is_some() {
+      return Ok(false);
+    }
+
+    let engine = VoiceEngine::start_playback(settings, deafened).map_err(|error| error.to_string())?;
+    self.apply_stored_volumes(&engine);
+    *self.engine.lock() = Some(engine);
+    Ok(true)
+  }
+
+  pub(super) fn voice_active(&self) -> bool {
+    self.engine.lock().as_ref().is_some_and(VoiceEngine::captures_voice)
+  }
+
+  pub(super) fn stop(&self) -> bool {
+    self.engine.lock().take().is_some()
+  }
+
+  pub(super) fn set_voice_state(&self, muted: bool, deafened: bool) {
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_voice_state(muted, deafened);
+    }
+  }
+
+  pub(super) fn set_voice_activation_threshold(&self, value: i32) {
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_voice_activation_threshold(value);
+    }
+  }
+
+  pub(super) fn set_push_to_talk_release_delay_ms(&self, value: i32) {
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_push_to_talk_release_delay_ms(value);
+    }
+  }
+
+  pub(super) fn set_push_to_talk_active(&self, active: bool) -> u64 {
+    let engine = self.engine.lock();
+    if let Some(engine) = engine.as_ref() {
+      engine.set_push_to_talk_active(active);
+      engine.push_to_talk_release_delay_ms()
+    } else {
+      0
+    }
+  }
+
+  pub(super) fn user_volume(&self, user_id: UserId) -> i32 {
+    self
+      .user_volumes
+      .lock()
+      .get(&user_id)
+      .copied()
+      .unwrap_or(DEFAULT_USER_VOLUME)
+  }
+
+  pub(super) fn set_user_volume(&self, user_id: UserId, volume: i32) -> i32 {
+    let volume = volume.clamp(0, 100);
+    {
+      let mut user_volumes = self.user_volumes.lock();
+      if volume == DEFAULT_USER_VOLUME {
+        user_volumes.remove(&user_id);
+      } else {
+        user_volumes.insert(user_id, volume);
+      }
+    }
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_user_volume(user_id, volume);
+    }
+    volume
+  }
+
+  pub(super) fn stream_volume(&self, user_id: UserId) -> i32 {
+    self
+      .stream_volumes
+      .lock()
+      .get(&user_id)
+      .copied()
+      .unwrap_or(DEFAULT_USER_VOLUME)
+  }
+
+  pub(super) fn set_stream_volume(&self, user_id: UserId, volume: i32) -> i32 {
+    let volume = volume.clamp(0, 100);
+    {
+      let mut stream_volumes = self.stream_volumes.lock();
+      if volume == DEFAULT_USER_VOLUME {
+        stream_volumes.remove(&user_id);
+      } else {
+        stream_volumes.insert(user_id, volume);
+      }
+    }
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_stream_volume(user_id, volume);
+    }
+    volume
+  }
+
+  pub(super) fn handle_voice_packet(&self, packet: ForwardedVoicePacket) -> bool {
+    let sender_id = packet.sender_id;
+    let sequence = packet.sequence;
+    let packet_len = packet.opus.len();
+    let received_count = {
+      let mut counts = self.voice_audio_counts.lock();
+      increment_counter(&mut counts, sender_id)
+    };
+    if should_log_audio_count(received_count) {
+      tracing::debug!(target: "audio::decode",
+        "[audio:decode] received voice #{received_count} from user {}: sequence={} bytes={}",
+        sender_id,
+        sequence,
+        packet_len
+      );
+    }
+
+    let status = self.engine.lock().as_mut().map(|engine| engine.push_packet(packet));
+    if should_log_audio_count(received_count) {
+      tracing::debug!(target: "audio::decode",
+        "[audio:decode] voice audio {} for user {} speaking={}",
+        match status {
+          Some(status) if status.queued => "queued",
+          Some(_) => "dropped",
+          None => "dropped: no voice engine",
+        },
+        sender_id,
+        status.is_some_and(|status| status.speaking)
+      );
+    }
+    status.map(|status| status.speaking).unwrap_or(true)
+  }
+
+  pub(super) fn handle_stream_audio_packet(&self, packet: ForwardedStreamAudioPacket, watched_user_id: Option<UserId>) {
+    let received_count = {
+      let mut counts = self.stream_audio_counts.lock();
+      increment_counter(&mut counts, packet.sender_id)
+    };
+    if should_log_audio_count(received_count) {
+      tracing::debug!(target: "audio::decode",
+        "[audio:decode] received stream audio #{received_count} from user {}: watched={watched_user_id:?} bytes={}",
+        packet.sender_id,
+        packet.opus.len()
+      );
+    }
+    if watched_user_id != Some(packet.sender_id) {
+      return;
+    }
+
+    let queued = self
+      .engine
+      .lock()
+      .as_mut()
+      .is_some_and(|engine| engine.push_stream_audio_packet(packet));
+    if should_log_audio_count(received_count) {
+      tracing::debug!(target: "audio::decode",
+        "[audio:decode] stream audio {} for watched user {}",
+        if queued { "queued" } else { "dropped" },
+        watched_user_id.unwrap_or_default()
+      );
+    }
+  }
+
+  pub(super) fn clear_stream_audio(&self, user_id: Option<UserId>) {
+    let engine = self.engine.lock();
+    let Some(engine) = engine.as_ref() else {
+      return;
+    };
+
+    if let Some(user_id) = user_id {
+      engine.clear_stream_audio(user_id);
+    } else {
+      engine.clear_all_stream_audio();
+    }
+  }
+
+  fn apply_stored_volumes(&self, engine: &VoiceEngine) {
+    let user_volumes = self.user_volumes.lock();
+    for (user_id, volume) in user_volumes.iter() {
+      engine.set_user_volume(*user_id, *volume);
+    }
+    drop(user_volumes);
+
+    let stream_volumes = self.stream_volumes.lock();
+    for (user_id, volume) in stream_volumes.iter() {
+      engine.set_stream_volume(*user_id, *volume);
+    }
+  }
+}
+
+impl Default for VoiceRuntime {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+fn increment_counter(counters: &mut HashMap<UserId, u64>, user_id: UserId) -> u64 {
+  let counter = counters.entry(user_id).or_insert(0);
+  *counter += 1;
+  *counter
+}
+
+fn should_log_audio_count(count: u64) -> bool {
+  count == 1 || count % 100 == 0
+}

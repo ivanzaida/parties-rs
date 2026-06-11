@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "parties-rs"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "bip39",
  "bytes",
@@ -3726,6 +3726,7 @@ dependencies = [
  "lurq",
  "minimp3",
  "opus",
+ "parking_lot",
  "quinn",
  "rav1d",
  "rdev",
