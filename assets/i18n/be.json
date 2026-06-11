@@ -1054,7 +1054,11 @@
       "not_in_channel": "Не ў канале",
       "voice_connected": "Голас падключаны",
       "connected": "Падключана да сервера",
-      "channel_connected": "{{channel}} · {{status}}"
+      "channel_connected": "{{channel}} · {{status}}",
+      "warning_keepalive": "Злучэнне нестабільнае",
+      "warning_voice": "Праблема з галасавым злучэннем",
+      "warning_video": "Праблема са стрымам",
+      "warning_channel": "{{channel}} · {{message}}"
     },
     "rail": {
       "user_meta": "{{user}} · {{role}}",

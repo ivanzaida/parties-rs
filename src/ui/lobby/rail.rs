@@ -14,7 +14,7 @@ use crate::{
   network::protocol::{ChannelId, Role, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{ConnectedServerInfo, LobbyState, ServerSession},
+  session::{ConnectedServerInfo, LobbyConnectionWarningKind, LobbyState, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -353,16 +353,32 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
   let selected = lobby
     .selected_channel_id
     .and_then(|id| lobby.channels.iter().find(|channel| channel.id == id));
+  let warning = (!lobby.disconnected)
+    .then_some(lobby.connection_warning.as_ref())
+    .flatten();
   let fallback_title = ctx.t("lobby.connection.not_in_channel");
   let connected_to_voice = selected.is_some() && !lobby.disconnected;
-  let title = if lobby.disconnected {
-    ctx.t("lobby.status.disconnected")
+  let title = if let Some(warning) = warning {
+    ctx.t(connection_warning_title_key(&warning.kind)).to_string()
+  } else if lobby.disconnected {
+    ctx.t("lobby.status.disconnected").to_string()
   } else if connected_to_voice {
-    ctx.t("lobby.connection.voice_connected")
+    ctx.t("lobby.connection.voice_connected").to_string()
   } else {
-    fallback_title
+    fallback_title.to_string()
   };
-  let sub = if let Some(channel) = selected {
+  let sub = if let Some(warning) = warning {
+    if let Some(channel) = selected {
+      ctx
+        .t_args(
+          "lobby.connection.warning_channel",
+          [("channel", channel.name.clone()), ("message", warning.message.clone())],
+        )
+        .to_string()
+    } else {
+      warning.message.clone()
+    }
+  } else if let Some(channel) = selected {
     let status = ctx.t("lobby.connection.connected");
     ctx
       .t_args(
@@ -375,7 +391,9 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
   } else {
     ctx.t("lobby.connection.connected").to_string()
   };
-  let (status_icon, icon_color) = if lobby.disconnected {
+  let (status_icon, icon_color) = if warning.is_some() {
+    ("triangle-alert", theme::palette().warning)
+  } else if lobby.disconnected {
     ("unplug", theme::palette().danger)
   } else if connected_to_voice {
     ("audio-lines", theme::palette().success)
@@ -402,7 +420,16 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
             .variant(theme::TypographyStyle::Button)
             .color(theme::PaletteColor::TextPrimary),
         )
-        .child(status_sub(connected_to_voice, &sub)),
+        .child(status_sub(
+          if warning.is_some() {
+            Some(theme::PaletteColor::Warning)
+          } else if connected_to_voice {
+            Some(theme::PaletteColor::Success)
+          } else {
+            None
+          },
+          &sub,
+        )),
     )
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: status_icon,
@@ -412,14 +439,22 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
     .into()
 }
 
-fn status_sub(connected_to_voice: bool, label: &str) -> Element {
+fn connection_warning_title_key(kind: &LobbyConnectionWarningKind) -> &'static str {
+  match kind {
+    LobbyConnectionWarningKind::KeepalivePongOverdue => "lobby.connection.warning_keepalive",
+    LobbyConnectionWarningKind::VoiceReceiverStopped => "lobby.connection.warning_voice",
+    LobbyConnectionWarningKind::VideoReceiverStopped => "lobby.connection.warning_video",
+  }
+}
+
+fn status_sub(dot_color: Option<theme::PaletteColor>, label: &str) -> Element {
   let mut row = Row::new().align_items(Alignment::Center).spacing(6.0);
 
-  if connected_to_voice {
+  if let Some(dot_color) = dot_color {
     row = row.child(
       Rect::new(7.0, 7.0)
         .rounded(4.0)
-        .background(BackgroundColor::Palette(theme::PaletteColor::Success)),
+        .background(BackgroundColor::Palette(dot_color)),
     );
   }
 

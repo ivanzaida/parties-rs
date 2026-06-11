@@ -102,6 +102,16 @@ pub(super) fn start_stream_modal(
   let layer_height = (modal_height - resize_gutter).max(0.0);
   let metrics = stream_modal_metrics(ctx);
   let close_on_escape = open.clone();
+  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
+  let settings_open = settings_popup.as_ref().is_some_and(SettingsPopupHandle::is_open);
+  let dialog_ref = ctx.element_ref();
+  let close_on_outside = open.clone();
+  ctx.on_click_outside(dialog_ref.clone(), move |_| {
+    if settings_open {
+      return;
+    }
+    close_on_outside.set(false);
+  });
   let start_state = start_stream.state().get();
   let submitted = start_submitted.get();
   if submitted && start_state.is_fulfilled() {
@@ -117,6 +127,7 @@ pub(super) fn start_stream_modal(
     .spacing(metrics.spacing)
     .padding(metrics.padding)
     .rounded(10.0)
+    .ref_element(dialog_ref)
     .background(BackgroundColor::Color(Color::from_hex("#15171A")))
     .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#30343A")))
     .child(stream_modal_header(ctx, open.clone()))
@@ -168,7 +179,7 @@ pub(super) fn start_stream_modal(
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))
     .child(dialog)
     .on_key_down(move |event| {
-      if hotkeys::is_cancel_key(event) {
+      if hotkeys::is_cancel_key(event) && !settings_open {
         close_on_escape.set(false);
       }
     })
@@ -744,12 +755,12 @@ fn stream_modal_actions(
   start_submitted: Signal<bool>,
 ) -> Element {
   let close = open.clone();
-  let settings_open = open.clone();
   let settings_submitted = start_submitted.clone();
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let navigator = ctx.navigator();
   let cancel_submitted = start_submitted.clone();
   let run_submitted = start_submitted.clone();
+  let run_close = open.clone();
   let pending = start_stream.state().get().is_pending();
   let start_source_kind = source_kind.clone();
   let start_source_index = source_index.clone();
@@ -762,7 +773,6 @@ fn stream_modal_actions(
     .child(
       stream_modal_button(ctx, Some("settings"), "lobby.stream_modal.action.settings", false).on_click(move |_| {
         settings_submitted.set(false);
-        settings_open.set(false);
         if let Some(settings_popup) = settings_popup.as_ref() {
           settings_popup.open_page(SettingsPage::Stream);
         } else if let Some(navigator) = navigator.as_ref() {
@@ -791,7 +801,8 @@ fn stream_modal_actions(
                 start_audio_enabled.get_untracked(),
               ) {
                 start_stream.run(input);
-                run_submitted.set(true);
+                run_submitted.set(false);
+                run_close.set(false);
               }
             });
           }

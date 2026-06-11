@@ -430,12 +430,14 @@ impl App {
     if let StartupUpdateStatus::Ready { staged_executable, .. } = status {
       let staged_executable = staged_executable.clone();
       let update_status = self.update_status.clone();
+      let storage = self.storage.get_untracked();
+      let session = self.session.clone();
       pill = pill
         .cursor(CursorIcon::Pointer)
         .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
         .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput)))
         .on_click(move |_| {
-          if let Err(error) = restart_into_update(&staged_executable) {
+          if let Err(error) = restart_into_update(&staged_executable, storage.as_ref(), Some(&session)) {
             update_status.set(StartupUpdateStatus::Failed(error));
           }
         });

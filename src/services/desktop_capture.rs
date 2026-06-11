@@ -339,7 +339,7 @@ fn window_source(window: Window) -> Option<DesktopCaptureSource> {
 
   let id = window.id().ok()?;
   remember_window(id, window.clone());
-  let app_name = window.app_name().unwrap_or_default();
+  let app_name = display_window_app_name(&window.app_name().unwrap_or_default());
   let title = window.title().unwrap_or_default();
   let name = source_window_name(&app_name, &title)?;
   let width = window.width().unwrap_or(0);
@@ -386,5 +386,47 @@ fn source_window_name(app_name: &str, title: &str) -> Option<String> {
     (true, false) => Some(title.to_owned()),
     (false, false) if title == app_name => Some(title.to_owned()),
     (false, false) => Some(format!("{app_name} - {title}")),
+  }
+}
+
+fn display_window_app_name(app_name: &str) -> String {
+  let app_name = app_name.trim().trim_matches('"');
+  let Some(file_name) = app_name.rsplit(['\\', '/']).next() else {
+    return String::new();
+  };
+  let file_name = file_name.trim();
+  if file_name.len() > 4 && file_name[file_name.len() - 4..].eq_ignore_ascii_case(".exe") {
+    file_name[..file_name.len() - 4].to_owned()
+  } else {
+    file_name.to_owned()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{display_window_app_name, source_window_name};
+
+  #[test]
+  fn display_window_app_name_strips_windows_executable_path() {
+    assert_eq!(
+      display_window_app_name(r#"C:\Program Files\Google\Chrome\Application\chrome.exe"#),
+      "chrome"
+    );
+  }
+
+  #[test]
+  fn display_window_app_name_strips_quoted_path_and_extension() {
+    assert_eq!(display_window_app_name(r#""C:\Apps\Discord.EXE""#), "Discord");
+  }
+
+  #[test]
+  fn source_window_name_uses_sanitized_app_name_with_title() {
+    let app = display_window_app_name(r#"C:\Program Files\App\app.exe"#);
+    assert_eq!(source_window_name(&app, "Project"), Some("app - Project".to_owned()));
+  }
+
+  #[test]
+  fn source_window_name_prefers_title_when_app_matches_title() {
+    assert_eq!(source_window_name("Settings", "Settings"), Some("Settings".to_owned()));
   }
 }

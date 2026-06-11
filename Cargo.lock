@@ -2615,9 +2615,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cd323f54b4d1fda245fc766c54e9896a58a2a8f6515a374f8d4c0639c399ac2"
+checksum = "ba9ee580886a78f807662b8008a3f699548b905f637047391f3985107d03d7cb"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "parties-rs"
-version = "0.1.15"
+version = "0.1.17"
 dependencies = [
  "bip39",
  "bytes",
@@ -3684,6 +3684,7 @@ dependencies = [
  "lurq",
  "minimp3",
  "opus",
+ "parking_lot",
  "quinn",
  "rdev",
  "reqwest 0.12.28",
@@ -7209,3 +7210,7 @@ dependencies = [
  "syn",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "lurq"
+version = "0.10.6"

@@ -1,2 +1,2 @@
 [alias]
-parties = ["run", "--", "--db_path=H:\\pampers\\parties.db"]
+parties = ["run", "--"]

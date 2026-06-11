@@ -1054,7 +1054,11 @@
       "not_in_channel": "Not in a channel",
       "voice_connected": "Voice connected",
       "connected": "Connected to server",
-      "channel_connected": "{{channel}} · {{status}}"
+      "channel_connected": "{{channel}} · {{status}}",
+      "warning_keepalive": "Connection unstable",
+      "warning_voice": "Voice connection issue",
+      "warning_video": "Stream connection issue",
+      "warning_channel": "{{channel}} · {{message}}"
     },
     "rail": {
       "user_meta": "{{user}} · {{role}}",
