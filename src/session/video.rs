@@ -25,8 +25,8 @@ use crate::{
   },
 };
 
-pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 48;
-pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 12;
+pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 3;
+pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
 pub(super) const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 
 #[cfg(target_os = "windows")]
@@ -119,9 +119,19 @@ impl VideoPacketQueue {
       if self.closed.load(Ordering::Relaxed) {
         return;
       }
+      if !packet.frame.keyframe {
+        let before = packets.len();
+        packets.retain(|queued| queued.sender_id != packet.sender_id || queued.frame.keyframe);
+        let dropped = before.saturating_sub(packets.len());
+        if dropped > 0 {
+          self.dropped.fetch_add(dropped as u64, Ordering::Relaxed);
+          tracing::debug!(target: "video", "[video] replaced queued stale video frames with latest frame: dropped={dropped}");
+        }
+      }
       if packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
         packets.pop_front();
         self.dropped.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(target: "video", "[video] dropped queued stale video packet to preserve latency: max_queue={MAX_QUEUED_VIDEO_PACKETS}");
       }
       packets.push_back(packet);
     }

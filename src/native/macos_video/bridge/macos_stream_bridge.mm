@@ -42,7 +42,7 @@ CMVideoCodecType codec_type_from_u8(uint8_t codec) {
 NSString* codec_profile(uint8_t codec) {
   switch (codec) {
     case kCodecH265: return (__bridge NSString*)kVTProfileLevel_HEVC_Main_AutoLevel;
-    case kCodecH264: return (__bridge NSString*)kVTProfileLevel_H264_High_AutoLevel;
+    case kCodecH264: return (__bridge NSString*)kVTProfileLevel_H264_Baseline_AutoLevel;
     default: return nil;
   }
 }
@@ -633,13 +633,6 @@ bool create_encoder(MacosStreamBridge* bridge, uint16_t width, uint16_t height, 
 
   VTSessionSetProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
   VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-
-  float quality = 1.0f;
-  CFNumberRef quality_ref = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloat32Type, &quality);
-  if (quality_ref) {
-    VTSessionSetProperty(session, kVTCompressionPropertyKey_Quality, quality_ref);
-    CFRelease(quality_ref);
-  }
 
   int32_t bitrate_i32 = static_cast<int32_t>(bitrate);
   CFNumberRef bitrate_ref = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &bitrate_i32);
