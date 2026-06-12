@@ -2,11 +2,12 @@ use std::process::Command;
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Weekday};
 use lurq::{
+  animation::Transition,
   app::ctx::Ctx,
-  components::{Column, Row, ScrollVertical, Text, TextInput},
+  components::{Column, Row, ScrollVertical, Stack, Text, TextInput},
   core::Signal,
   layout::{
-    Alignment,
+    Alignment, StackAlignment,
     layout_kind::{Justify, ScrollState},
     scrollbar::{ScrollBarPlacement, ScrollBarStyle},
   },
@@ -18,13 +19,19 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
-  session::{ConnectedServerInfo, LobbyState, LobbyTextChannel, ServerSession},
+  session::{
+    ConnectedServerInfo, LobbyState, LobbyTextChannel, ServerSession,
+    chat_commands::{ChatCommandRegistry, CommandInfo},
+  },
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
   },
 };
+
+const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
+const CHAT_COMMAND_SUGGESTION_BOTTOM_GAP: f32 = 6.0;
 
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
@@ -66,10 +73,6 @@ pub(super) fn text_channel_detail(
     chat_scroll_state.clone(),
     chat_bottom_anchor,
   );
-  let mut body = Column::new()
-    .width(Dimension::Pct(100.0))
-    .height(Dimension::Pct(100.0))
-    .flex(1.0);
   let mut messages_column = Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(18.0)
@@ -121,7 +124,11 @@ pub(super) fn text_channel_detail(
     messages_column = messages_column.child(error_notice(ctx, error));
   }
 
-  body = body
+  let mut messages_layer = Stack::new()
+    .stack_align(StackAlignment::BottomStart)
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
     .child(chat_messages_scroll(
       messages_column,
       chat_scroll_state,
@@ -130,9 +137,19 @@ pub(super) fn text_channel_detail(
       channel.id,
       oldest_message_id,
       can_page,
-    ))
-    .child(chat_composer(ctx, channel, message_input, send_chat));
-  body.into()
+    ));
+
+  if let Some((suggestions, suggestions_height)) = chat_command_suggestions(ctx, message_input.clone()) {
+    messages_layer = messages_layer.child(chat_command_suggestion_overlay(suggestions, suggestions_height));
+  }
+
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .child(messages_layer)
+    .child(chat_composer(ctx, channel, message_input, send_chat))
+    .into()
 }
 
 fn chat_messages_scroll(
@@ -147,6 +164,7 @@ fn chat_messages_scroll(
   let history = chat_history.clone();
   ScrollVertical::new(messages)
     .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
     .flex(1.0)
     .with_scroll_state(scroll_state)
     .scrollbar(chat_scrollbar_style())
@@ -685,6 +703,270 @@ fn chat_composer(
         ),
     )
     .into()
+}
+
+fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Option<(Element, f32)> {
+  let input = message_input.get();
+  let trimmed = input.trim_start();
+  if !trimmed.starts_with('/') {
+    return None;
+  }
+
+  let query = trimmed
+    .split_whitespace()
+    .next()
+    .unwrap_or(trimmed)
+    .to_ascii_lowercase();
+  let commands = ChatCommandRegistry::new()
+    .commands()
+    .into_iter()
+    .filter(|command| command.name.to_ascii_lowercase().starts_with(&query))
+    .collect::<Vec<_>>();
+  if commands.is_empty() {
+    return None;
+  }
+  let list_height = command_suggestion_list_height(commands.len());
+  let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + list_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
+
+  let title = if query == "/" {
+    "COMMANDS".to_owned()
+  } else {
+    format!("COMMANDS MATCHING {}", query.to_ascii_uppercase())
+  };
+
+  let mut list = Column::new().width(Dimension::Pct(100.0)).padding_bottom(6.0);
+
+  for (index, command) in commands.into_iter().enumerate() {
+    list = list.child(command_suggestion_row(
+      ctx,
+      command,
+      input.clone(),
+      message_input.clone(),
+      index == 0,
+    ));
+  }
+
+  Some((
+    Column::new()
+      .width(Dimension::Pct(100.0))
+      .padding_left(24.0)
+      .padding_right(24.0)
+      .padding_bottom(CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
+      .child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .rounded(theme::RadiusSize::Lg)
+          .clip()
+          .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+          .border_inside(1.0, theme::PaletteColor::Border)
+          .child(command_suggestion_title(&title))
+          .child(
+            ScrollVertical::new(list)
+              .width(Dimension::Pct(100.0))
+              .height(list_height)
+              .scrollbar(chat_scrollbar_style()),
+          ),
+      )
+      .into(),
+    suggestions_height,
+  ))
+}
+
+fn chat_command_suggestion_overlay(suggestions: Element, height: f32) -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(height)
+    .child(suggestions)
+    .into()
+}
+
+fn command_suggestion_list_height(command_count: usize) -> f32 {
+  let visible_rows = command_count.min(7) as f32;
+  (visible_rows * 60.0 + 6.0).clamp(66.0, 426.0)
+}
+
+fn command_suggestion_row(
+  ctx: &mut Ctx,
+  command: CommandInfo,
+  input: String,
+  message_input: Signal<String>,
+  selected: bool,
+) -> Element {
+  let fill = command_fill_text(&command);
+  let background = if selected {
+    BackgroundColor::Color(Color::from_hex("#232830"))
+  } else {
+    BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)
+  };
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Lg)
+    .padding_vertical(10.0)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .background(background)
+    .transition(Transition::background_color().duration_ms(120))
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#2B313A"))))
+    .on_click(move |_| message_input.set(fill.clone()))
+    .child(command_icon(ctx))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .spacing(theme::SpacingSize::Xs)
+        .child(command_usage_row(command_usage_parts(&command.usage, &input)))
+        .child(
+          Text::new(&command.description)
+            .variant(theme::TypographyStyle::Link)
+            .color(theme::PaletteColor::TextSecondary),
+        ),
+    )
+    .into()
+}
+
+fn command_icon(ctx: &mut Ctx) -> Element {
+  Row::new()
+    .width(28.0)
+    .height(28.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(14.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
+    .border_inside(1.0, theme::PaletteColor::BorderStrong)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "terminal",
+      size: 14.0,
+      color: theme::palette().text_secondary,
+    }))
+    .into()
+}
+
+fn command_suggestion_title(title: &str) -> Element {
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT)
+    .align_items(Alignment::Center)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .child(
+      Text::new(title)
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted),
+    )
+    .into()
+}
+
+fn command_usage_row(parts: Vec<CommandUsagePart>) -> Element {
+  let mut row = Row::new()
+    .width(Dimension::Pct(100.0))
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Sm)
+    .wrap();
+
+  for part in parts {
+    let child: Element = match part {
+      CommandUsagePart::Name(name) => Text::new(&name)
+        .variant(theme::TypographyStyle::Heading)
+        .color(theme::PaletteColor::TextPrimary)
+        .into(),
+      CommandUsagePart::Argument { label, invalid } => command_argument_pill(&label, invalid),
+    };
+    row = row.child(child);
+  }
+
+  row.into()
+}
+
+enum CommandUsagePart {
+  Name(String),
+  Argument { label: String, invalid: bool },
+}
+
+fn command_usage_parts(usage: &str, input: &str) -> Vec<CommandUsagePart> {
+  let input_args = command_preview_input_args(input);
+  let mut argument_index = 0usize;
+  usage
+    .split_whitespace()
+    .map(|part| {
+      if let Some(argument) = part.strip_prefix('{').and_then(|part| part.strip_suffix('}')) {
+        let invalid = input_args
+          .get(argument_index)
+          .is_some_and(|value| !command_argument_value_valid(argument, value));
+        argument_index += 1;
+        CommandUsagePart::Argument {
+          label: argument.to_owned(),
+          invalid,
+        }
+      } else {
+        CommandUsagePart::Name(part.to_owned())
+      }
+    })
+    .collect()
+}
+
+fn command_argument_pill(argument: &str, invalid: bool) -> Element {
+  let (background, border, text_color) = if invalid {
+    (
+      BackgroundColor::Palette(theme::PaletteColor::DangerMuted),
+      BackgroundColor::Color(theme::palette().danger.with_opacity(0.55)),
+      theme::PaletteColor::Danger,
+    )
+  } else {
+    (
+      BackgroundColor::Color(Color::from_hex("#0B0C0E")),
+      BackgroundColor::Palette(theme::PaletteColor::BorderStrong),
+      theme::PaletteColor::TextSecondary,
+    )
+  };
+
+  Row::new()
+    .height(22.0)
+    .align_items(Alignment::Center)
+    .padding_horizontal(6.0)
+    .rounded(theme::RadiusSize::Md)
+    .background(background)
+    .border_inside(1.0, border)
+    .child(
+      Text::new(argument)
+        .variant(theme::TypographyStyle::Button)
+        .color(text_color),
+    )
+    .into()
+}
+
+fn command_preview_input_args(input: &str) -> Vec<String> {
+  input
+    .trim_start()
+    .split_whitespace()
+    .skip(1)
+    .map(str::to_owned)
+    .collect()
+}
+
+fn command_argument_value_valid(argument: &str, value: &str) -> bool {
+  let Some((name, ty)) = argument.split_once(':') else {
+    return true;
+  };
+  let ty = ty.strip_prefix('?').unwrap_or(ty);
+  let name = name.strip_suffix('?').unwrap_or(name);
+  match ty {
+    "u8" => value.parse::<u8>().is_ok_and(|value| name != "volume" || value <= 100),
+    "u16" => value.parse::<u16>().is_ok(),
+    "u32" => value.parse::<u32>().is_ok_and(|value| value > 0),
+    "u64" => value.parse::<u64>().is_ok_and(|value| value > 0),
+    "role" => matches!(
+      value.to_ascii_lowercase().as_str(),
+      "owner" | "admin" | "moderator" | "mod" | "user"
+    ),
+    "choice" | "string" => !value.trim().is_empty(),
+    _ => true,
+  }
+}
+
+fn command_fill_text(command: &CommandInfo) -> String {
+  format!("{} ", command.name)
 }
 
 fn submit_chat(channel_id: ChannelId, message_input: &Signal<String>, send_chat: &SendChatAction) {

@@ -213,6 +213,16 @@ impl VoiceEngine {
       .set_user_volume(user_id, volume_percent);
   }
 
+  pub fn restart_audio_receiver(&mut self, user_id: UserId) -> bool {
+    let had_decoder = self.decoders.remove(&user_id).is_some();
+    let cleared_audio = self
+      .mixer
+      .lock()
+      .expect("voice mixer lock poisoned")
+      .clear_voice_audio_for_user(user_id);
+    had_decoder || cleared_audio
+  }
+
   pub fn set_stream_volume(&self, user_id: UserId, volume_percent: i32) {
     self
       .mixer
@@ -1357,6 +1367,15 @@ impl VoiceMixer {
       if let Some(stream) = self.streams.remove(&stream_id) {
         self.recycle_stream(stream);
       }
+    }
+  }
+
+  fn clear_voice_audio_for_user(&mut self, user_id: UserId) -> bool {
+    if let Some(stream) = self.streams.remove(&AudioStreamId::Voice(user_id)) {
+      self.recycle_stream(stream);
+      true
+    } else {
+      false
     }
   }
 

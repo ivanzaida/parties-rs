@@ -10,7 +10,7 @@ chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 cpal = "0.18.0"
 ed25519-dalek = "2.2.0"
 getrandom = "0.4.2"
-lurq = { version = "0.12.3", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
+lurq = { version = "0.13.0", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
 minimp3 = "0.6.1"
 opus = "0.3.1"
 quinn = "0.11"
@@ -32,6 +32,9 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 sentry = { version = "0.48.2", default-features = false, features = ["backtrace", "contexts", "debug-images", "panic", "reqwest", "rustls"] }
 sentry-tracing = "0.48.2"
 parking_lot = "0.12.5"
+
+[patch.crates-io]
+lurq = { path = "../lurq/crates/lurq" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8.7"

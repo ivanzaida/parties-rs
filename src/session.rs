@@ -24,6 +24,7 @@ use crate::{
   storage::AppSettings,
 };
 
+pub mod chat_commands;
 mod connection;
 mod lobby;
 mod speaking;
@@ -335,6 +336,18 @@ impl ServerSession {
 
   pub fn set_user_volume(&self, user_id: UserId, volume: i32) {
     self.voice.set_user_volume(user_id, volume);
+  }
+
+  pub fn restart_audio_receiver(&self, user_id: UserId) -> bool {
+    let restarted = self.voice.restart_audio_receiver(user_id);
+    tracing::info!(
+      target: "audio::decode",
+      "[audio:decode] restart audio receiver requested: user={} restarted={} {}",
+      user_id,
+      restarted,
+      self.connection_debug_context()
+    );
+    restarted
   }
 
   pub fn stream_volume(&self, user_id: UserId) -> i32 {
@@ -795,6 +808,16 @@ impl ServerSession {
     }
     if let Some(server) = self.server() {
       server.disconnect();
+    }
+    self.bump_revision();
+  }
+
+  pub fn set_lobby_error_notice(&self, message: impl Into<String>) {
+    let message = message.into();
+    tracing::warn!(target: "lobby", "[lobby] notice: {message}");
+    {
+      let mut lobby = self.lobby.lock();
+      lobby.last_error = Some(message);
     }
     self.bump_revision();
   }

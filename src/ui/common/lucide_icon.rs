@@ -110,6 +110,7 @@ fn name_to_char(name: &str) -> char {
     "shield-check" => '\u{e1ff}',
     "sliders-horizontal" => '\u{e29a}',
     "sprout" => '\u{e1eb}',
+    "terminal" => '\u{e181}',
     "trash-2" => '\u{e18e}',
     "unlock" => '\u{e4a3}',
     "user" => '\u{e19f}',

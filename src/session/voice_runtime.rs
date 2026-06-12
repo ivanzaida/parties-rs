@@ -365,6 +365,15 @@ impl VoiceRuntime {
     volume
   }
 
+  pub(super) fn restart_audio_receiver(&self, user_id: UserId) -> bool {
+    self.voice_audio_counts.lock().remove(&user_id);
+    self
+      .engine
+      .lock()
+      .as_mut()
+      .is_some_and(|engine| engine.restart_audio_receiver(user_id))
+  }
+
   pub(super) fn stream_volume(&self, user_id: UserId) -> i32 {
     self
       .stream_volumes

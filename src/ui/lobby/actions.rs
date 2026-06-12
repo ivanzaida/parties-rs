@@ -9,7 +9,10 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, VideoCodecId},
   services::video::VideoBroadcastConfig,
-  session::{ConnectedServerInfo, ServerSession},
+  session::{
+    ConnectedServerInfo, ServerSession,
+    chat_commands::{ChatCommand, ChatCommandRegistry},
+  },
   storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
@@ -88,6 +91,25 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
       let text = input.text.trim().to_owned();
       if text.is_empty() {
         return Ok(());
+      }
+
+      let registry = ChatCommandRegistry::new();
+      match registry.parse(&text) {
+        Ok(Some(ChatCommand::RestartAudioReceiver { user_id })) => {
+          let restarted = session.restart_audio_receiver(user_id);
+          if !restarted {
+            tracing::warn!(
+              target: "audio::decode",
+              "[audio:decode] restart audio receiver command found no active receiver state for user {user_id}"
+            );
+          }
+          return Ok(());
+        }
+        Ok(None) => {}
+        Err(error) => {
+          session.set_lobby_error_notice(error.clone());
+          return Err(error);
+        }
       }
 
       let server = session.server().ok_or(copy.no_connected_server)?;
