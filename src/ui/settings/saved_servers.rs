@@ -3,7 +3,7 @@ use std::sync::Arc;
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::Ctx,
+    ctx::{Ctx, Modal, Root},
   },
   clipboard,
   components::{Column, Rect, Row, ScrollVertical, Text, TextInput},
@@ -97,6 +97,8 @@ impl Component for SettingsSavedServersScreen {
       }
     }
 
+    let mut modals: Vec<Element> = Vec::new();
+
     if let Some(address) = menu_address
       && let Some(server) = storage
         .as_ref()
@@ -115,7 +117,7 @@ impl Component for SettingsSavedServersScreen {
         self.edit_open.clone(),
         self.edit_address.clone(),
       );
-      ctx.modal(self.menu_open.clone(), move |_| menu);
+      modals.push(Modal::new(menu).open(self.menu_open.clone()).target(Root).into());
     }
 
     if let Some(address) = pending_address {
@@ -142,7 +144,12 @@ impl Component for SettingsSavedServersScreen {
         confirm_label: ctx.t("settings.servers.confirm_forget.confirm"),
         on_confirm,
       };
-      ctx.modal(self.forget_open.clone(), move |ctx| ctx.mount::<ConfirmModal>(props));
+      modals.push(
+        Modal::new(ctx.mount::<ConfirmModal>(props))
+          .open(self.forget_open.clone())
+          .target(Root)
+          .into(),
+      );
     }
 
     if let Some(address) = fingerprint_address
@@ -152,9 +159,12 @@ impl Component for SettingsSavedServersScreen {
         .flatten()
     {
       let open = self.fingerprint_open.clone();
-      ctx.modal(self.fingerprint_open.clone(), move |ctx| {
-        fingerprint_modal(ctx, &server, open.clone())
-      });
+      modals.push(
+        Modal::new(fingerprint_modal(ctx, &server, open.clone()))
+          .open(self.fingerprint_open.clone())
+          .target(Root)
+          .into(),
+      );
     }
 
     if let Some(address) = edit_address
@@ -167,18 +177,24 @@ impl Component for SettingsSavedServersScreen {
         open: self.edit_open.clone(),
         server,
       };
-      ctx.modal(self.edit_open.clone(), move |ctx| {
-        ctx.mount::<EditSavedServerModal>(props.clone())
-      });
+      modals.push(
+        Modal::new(ctx.mount::<EditSavedServerModal>(props))
+          .open(self.edit_open.clone())
+          .target(Root)
+          .into(),
+      );
     }
 
     let notice_title = ctx.t("settings.servers.notice.title");
     let notice_description = ctx.t_args("settings.servers.notice.description", [("count", count.to_string())]);
     let notice = muted_notice(ctx, &notice_title, &notice_description);
-    let content = page_stack(ctx)
+    let mut content = page_stack(ctx)
       .child(servers_header(ctx))
       .child(server_list_view(list, count))
       .child(notice);
+    for modal in modals {
+      content = content.child(modal);
+    }
 
     screen(ctx, SettingsPage::Servers, content)
   }

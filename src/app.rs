@@ -9,7 +9,7 @@ use std::{
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::Ctx,
+    ctx::{Ctx, Modal, Root},
   },
   components::{Column, Row, Stack, Text},
   core::Signal,
@@ -68,7 +68,6 @@ pub struct App {
   storage: Signal<Option<Storage>>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
-  window_affordances_open: Signal<bool>,
   active_toggle_hotkeys: Signal<Vec<String>>,
   update_status: Signal<StartupUpdateStatus>,
   startup_full_screen: bool,
@@ -201,7 +200,6 @@ impl Component for App {
       storage,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
-      window_affordances_open: ctx.signal(true),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
       update_status,
       startup_full_screen: props.startup_full_screen,
@@ -305,22 +303,23 @@ impl Component for App {
 
     let settings_open = self.settings_open.clone();
     let settings_window = ctx.window();
-    ctx.modal(settings_open, move |ctx| {
+    if settings_open.get() {
       let close_settings = settings_popup.clone();
       let window = settings_window.clone();
       ctx.provide(settings_popup.clone());
       let popup = ctx.mount::<SettingsPopup>(());
-      modal_layer(ctx, popup).on_key_down(move |event| {
+      let settings_layer = modal_layer(ctx, popup).on_key_down(move |event| {
         if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
           window.open_devtools();
         } else if hotkeys::is_cancel_key(event) {
           close_settings.close();
         }
-      })
-    });
+      });
+      root = root.child(Modal::new(settings_layer).open(settings_open).target(Root));
+    }
 
     for layer in window_affordance_layers(ctx) {
-      ctx.modal(self.window_affordances_open.clone(), move |_| layer);
+      root = root.child(layer);
     }
 
     if local_hotkeys_enabled {

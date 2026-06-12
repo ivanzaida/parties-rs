@@ -3,7 +3,7 @@ use std::{fs, sync::Arc};
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::Ctx,
+    ctx::{Ctx, Modal, Root},
     events::MouseButton,
   },
   components::{Button, Column, Row, ScrollVertical, Stack, Text, TextOverflow},
@@ -295,19 +295,23 @@ impl Component for NotificationSoundSetting {
       ctx.t("settings.notifications.default").to_string()
     };
 
+    let mut action_modal = None;
     if self.menu_open.get() {
-      let overlay = notification_sound_action_overlay(
-        ctx,
-        props.sound,
-        self.value.clone(),
-        self.menu_open.clone(),
-        self.menu_anchor.clone(),
-        self.menu_anchor.get(),
-        storage.clone(),
-        session.clone(),
-        storage.is_none(),
+      action_modal = Some(
+        Modal::new(notification_sound_action_overlay(
+          ctx,
+          props.sound,
+          self.value.clone(),
+          self.menu_open.clone(),
+          self.menu_anchor.clone(),
+          self.menu_anchor.get(),
+          storage.clone(),
+          session.clone(),
+          storage.is_none(),
+        ))
+        .open(self.menu_open.clone())
+        .target(Root),
       );
-      ctx.modal(self.menu_open.clone(), move |_| overlay);
     }
 
     let row = audio_row(
@@ -323,6 +327,13 @@ impl Component for NotificationSoundSetting {
       ),
       true,
     );
+    if let Some(action_modal) = action_modal {
+      return Column::new()
+        .width(Dimension::Pct(100.0))
+        .child(row)
+        .child(action_modal)
+        .into();
+    }
     row
   }
 }

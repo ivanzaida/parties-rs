@@ -9,7 +9,7 @@ use std::{
 use lurq::{
   app::{
     component::Component,
-    ctx::{Ctx, Interval},
+    ctx::{Ctx, Interval, Modal, Root},
   },
   components::{Column, Row, Text},
   core::Signal,
@@ -239,20 +239,7 @@ impl Component for LobbyScreen {
     let modal_source_index = self.stream_source_index.clone();
     let modal_audio_enabled = self.stream_audio_enabled.clone();
     let modal_stream_codec = stream_modal_codec_label(storage.as_ref());
-    ctx.modal(modal_open.clone(), move |ctx| {
-      start_stream_modal(
-        ctx,
-        modal_open.clone(),
-        modal_source_kind.clone(),
-        modal_source_index.clone(),
-        modal_audio_enabled.clone(),
-        modal_stream_codec.clone(),
-        modal_start_stream.clone(),
-        modal_start_submitted.clone(),
-      )
-    });
-
-    Row::new()
+    let mut body = Row::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
@@ -280,8 +267,26 @@ impl Component for LobbyScreen {
         &stop_stream,
         &watch_stream,
         &stop_watching,
-      ))
-      .into()
+      ));
+
+    if modal_open.get() {
+      body = body.child(
+        Modal::new(start_stream_modal(
+          ctx,
+          modal_open.clone(),
+          modal_source_kind,
+          modal_source_index,
+          modal_audio_enabled,
+          modal_stream_codec,
+          modal_start_stream,
+          modal_start_submitted,
+        ))
+        .open(modal_open)
+        .target(Root),
+      );
+    }
+
+    body.into()
   }
 }
 

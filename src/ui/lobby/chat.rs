@@ -3,15 +3,17 @@ use std::process::Command;
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Weekday};
 use lurq::{
   animation::Transition,
-  app::ctx::Ctx,
-  components::{Column, Row, ScrollVertical, Stack, Text, TextInput},
-  core::Signal,
+  app::ctx::{CollisionStrategy, Ctx, Overlay, Placement},
+  components::{Column, Row, ScrollVertical, Text, TextInput},
+  core::{ElementRef, Signal},
   layout::{
-    Alignment, StackAlignment,
+    Alignment,
     layout_kind::{Justify, ScrollState},
     scrollbar::{ScrollBarPlacement, ScrollBarStyle},
   },
-  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
+  node::{
+    BackgroundColor, CursorIcon, Element, HitTestBehavior, Style, border::Border, color::Color, dimension::Dimension,
+  },
 };
 
 use super::{
@@ -30,8 +32,8 @@ use crate::{
   },
 };
 
-const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
 const CHAT_COMMAND_SUGGESTION_BOTTOM_GAP: f32 = 6.0;
+const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
 
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
@@ -124,8 +126,8 @@ pub(super) fn text_channel_detail(
     messages_column = messages_column.child(error_notice(ctx, error));
   }
 
-  let mut messages_layer = Stack::new()
-    .stack_align(StackAlignment::BottomStart)
+  let composer_ref = ctx.element_ref();
+  let mut body = Column::new()
     .width(Dimension::Pct(100.0))
     .height(Dimension::Pct(100.0))
     .flex(1.0)
@@ -137,19 +139,28 @@ pub(super) fn text_channel_detail(
       channel.id,
       oldest_message_id,
       can_page,
+    ))
+    .child(chat_composer(
+      ctx,
+      channel,
+      message_input.clone(),
+      send_chat,
+      composer_ref.clone(),
     ));
 
-  if let Some((suggestions, suggestions_height)) = chat_command_suggestions(ctx, message_input.clone()) {
-    messages_layer = messages_layer.child(chat_command_suggestion_overlay(suggestions, suggestions_height));
+  if let Some(suggestions) = chat_command_suggestions(ctx, message_input) {
+    body = body.child(
+      Overlay::new(suggestions)
+        .anchor(composer_ref)
+        .placement(Placement::TopStart)
+        .offset(0.0, CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
+        .match_anchor_width(true)
+        .collision(CollisionStrategy::Clamp)
+        .hit_test(HitTestBehavior::ContentOnly),
+    );
   }
 
-  Column::new()
-    .width(Dimension::Pct(100.0))
-    .height(Dimension::Pct(100.0))
-    .flex(1.0)
-    .child(messages_layer)
-    .child(chat_composer(ctx, channel, message_input, send_chat))
-    .into()
+  body.into()
 }
 
 fn chat_messages_scroll(
@@ -637,6 +648,7 @@ fn chat_composer(
   channel: &LobbyTextChannel,
   message_input: Signal<String>,
   send_chat: &SendChatAction,
+  composer_ref: ElementRef,
 ) -> Element {
   let text_style = ctx.theme().typography().description.clone();
   let mut placeholder_style = text_style.clone();
@@ -653,6 +665,7 @@ fn chat_composer(
 
   Row::new()
     .width(Dimension::Pct(100.0))
+    .ref_element(composer_ref)
     .padding_left(24.0)
     .padding_right(24.0)
     .padding_bottom(theme::SpacingSize::Xl)
@@ -705,7 +718,7 @@ fn chat_composer(
     .into()
 }
 
-fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Option<(Element, f32)> {
+fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Option<Element> {
   let input = message_input.get();
   let trimmed = input.trim_start();
   if !trimmed.starts_with('/') {
@@ -746,9 +759,10 @@ fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Opt
     ));
   }
 
-  Some((
+  Some(
     Column::new()
       .width(Dimension::Pct(100.0))
+      .height(suggestions_height)
       .padding_left(24.0)
       .padding_right(24.0)
       .padding_bottom(CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
@@ -768,16 +782,7 @@ fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Opt
           ),
       )
       .into(),
-    suggestions_height,
-  ))
-}
-
-fn chat_command_suggestion_overlay(suggestions: Element, height: f32) -> Element {
-  Column::new()
-    .width(Dimension::Pct(100.0))
-    .height(height)
-    .child(suggestions)
-    .into()
+  )
 }
 
 fn command_suggestion_list_height(command_count: usize) -> f32 {

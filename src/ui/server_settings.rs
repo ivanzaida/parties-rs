@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::Ctx,
+    ctx::{Ctx, Modal, Root},
     events::MouseButton,
     theme::Breakpoint,
   },
@@ -659,8 +659,6 @@ fn channels_page(
   admin_pending: bool,
   channel_state: &ChannelSettingsState,
 ) -> Element {
-  mount_delete_channel_modal(ctx, channel_state, admin_action);
-
   let mut page = page_stack().child(channel_page_header(
     ctx,
     &ctx.t("server_settings.sections.channels"),
@@ -669,6 +667,9 @@ fn channels_page(
 
   if let Some(error) = admin_error {
     page = page.child(admin_error_banner(ctx, error));
+  }
+  if let Some(modal) = delete_channel_modal(ctx, channel_state, admin_action) {
+    page = page.child(modal);
   }
 
   page
@@ -1316,9 +1317,13 @@ fn voice_channel_meta(ctx: &mut Ctx, channel: &LobbyChannel) -> String {
   }
 }
 
-fn mount_delete_channel_modal(ctx: &mut Ctx, channel_state: &ChannelSettingsState, admin_action: &ServerAdminAction) {
+fn delete_channel_modal(
+  ctx: &mut Ctx,
+  channel_state: &ChannelSettingsState,
+  admin_action: &ServerAdminAction,
+) -> Option<Element> {
   let Some(target) = channel_state.pending_delete.get() else {
-    return;
+    return None;
   };
   let (name, title_key, body_key, request) = match target {
     ChannelDeleteTarget::Voice { id, name } => (
@@ -1348,9 +1353,12 @@ fn mount_delete_channel_modal(ctx: &mut Ctx, channel_state: &ChannelSettingsStat
     confirm_label: ctx.t("server_settings.channels.delete"),
     on_confirm,
   };
-  ctx.modal(channel_state.delete_open.clone(), move |ctx| {
-    ctx.mount::<ConfirmModal>(props.clone())
-  });
+  Some(
+    Modal::new(ctx.mount::<ConfirmModal>(props))
+      .open(channel_state.delete_open.clone())
+      .target(Root)
+      .into(),
+  )
 }
 
 fn channel_input(
@@ -1593,8 +1601,8 @@ fn members_card(
     let modal_role_picker_open = role_picker_open.clone();
     let modal_role_picker_anchor = role_picker_anchor.clone();
     let modal_action = admin_action.clone();
-    ctx.modal(role_picker_open.clone(), move |ctx| {
-      member_role_picker_overlay(
+    card = card.child(
+      Modal::new(member_role_picker_overlay(
         ctx,
         member.user.user_id,
         member.user.role,
@@ -1604,8 +1612,10 @@ fn members_card(
         modal_role_picker_open.clone(),
         modal_role_picker_anchor.clone(),
         admin_pending,
-      )
-    });
+      ))
+      .open(role_picker_open.clone())
+      .target(Root),
+    );
   }
 
   if members.is_empty() {

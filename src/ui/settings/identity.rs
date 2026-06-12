@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use lurq::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::Component,
+    ctx::{Ctx, Modal, Root},
+  },
   clipboard,
   components::{Column, Row, Text, TextInput},
   core::Signal,
@@ -183,11 +186,7 @@ impl Component for SettingsIdentityScreen {
       confirm_label: ctx.t("settings.identity.confirm_remove.confirm"),
       on_confirm: on_remove,
     };
-    ctx.modal(self.remove_open.clone(), move |ctx| {
-      ctx.mount::<ConfirmModal>(confirm_props)
-    });
-
-    let content = page_stack(ctx)
+    let mut content = page_stack(ctx)
       .child(header(
         &ctx.t("settings.identity.title"),
         &ctx.t("settings.identity.description"),
@@ -241,6 +240,14 @@ impl Component for SettingsIdentityScreen {
         remove_button,
         true,
       )));
+
+    if self.remove_open.get() {
+      content = content.child(
+        Modal::new(ctx.mount::<ConfirmModal>(confirm_props))
+          .open(self.remove_open.clone())
+          .target(Root),
+      );
+    }
 
     screen(ctx, SettingsPage::Identity, content)
   }

@@ -7,7 +7,7 @@ use std::{
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsInspectable},
-    ctx::{Ctx, Interval},
+    ctx::{Ctx, Interval, Modal, Root},
     events::MouseButton,
   },
   components::{Column, Row, Stack, Text},
@@ -230,8 +230,8 @@ impl Component for VoiceChannels {
       let modal_kick_user = kick_user.clone();
       let local_user_id = props.local_user_id;
       let local_role = props.local_role;
-      ctx.modal(self.context_menu_open.clone(), move |ctx| {
-        user_context_overlay(
+      body = body.child(
+        Modal::new(user_context_overlay(
           ctx,
           &modal_user,
           &modal_channel_name,
@@ -246,8 +246,10 @@ impl Component for VoiceChannels {
           modal_set_user_voice_state,
           modal_disconnect_user,
           modal_kick_user,
-        )
-      });
+        ))
+        .open(self.context_menu_open.clone())
+        .target(Root),
+      );
     }
 
     body

@@ -14,7 +14,7 @@ mod ui;
 mod windows_diagnostics;
 
 #[cfg(target_os = "windows")]
-use std::ffi::{CStr, c_char};
+use std::ffi::{c_char, CStr};
 use std::{
   panic,
   sync::{Arc, Mutex},
@@ -168,7 +168,7 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 fn log_startup_gpu_info() {
-  use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1};
+  use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1, DXGI_ERROR_NOT_FOUND};
 
   let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
     tracing::error!(target: "startup::gpu", "[startup/gpu] failed to create DXGI factory");
