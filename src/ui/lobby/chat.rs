@@ -33,6 +33,7 @@ use crate::{
 };
 
 const CHAT_COMMAND_SUGGESTION_BOTTOM_GAP: f32 = 6.0;
+const CHAT_COMMAND_SUGGESTION_ROW_HEIGHT: f32 = 68.0;
 const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
 
 pub(super) fn text_channel_detail(
@@ -787,7 +788,10 @@ fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Opt
 
 fn command_suggestion_list_height(command_count: usize) -> f32 {
   let visible_rows = command_count.min(7) as f32;
-  (visible_rows * 60.0 + 6.0).clamp(66.0, 426.0)
+  (visible_rows * CHAT_COMMAND_SUGGESTION_ROW_HEIGHT + 6.0).clamp(
+    CHAT_COMMAND_SUGGESTION_ROW_HEIGHT + 6.0,
+    CHAT_COMMAND_SUGGESTION_ROW_HEIGHT * 7.0 + 6.0,
+  )
 }
 
 fn command_suggestion_row(
@@ -806,6 +810,7 @@ fn command_suggestion_row(
 
   Row::new()
     .width(Dimension::Pct(100.0))
+    .height(CHAT_COMMAND_SUGGESTION_ROW_HEIGHT)
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Lg)
     .padding_vertical(10.0)
