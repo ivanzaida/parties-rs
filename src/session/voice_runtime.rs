@@ -21,6 +21,15 @@ use crate::{
 
 const DEFAULT_USER_VOLUME: i32 = 100;
 const VOICE_RECEIVE_GAP_LOG_AFTER: Duration = Duration::from_secs(3);
+const VOICE_RECEIVE_GAP_WARN_AFTER: Duration = Duration::from_secs(10);
+const VOICE_SENDER_SILENCE_WARN_AFTER: Duration = Duration::from_secs(15);
+const VOICE_SENDER_SILENCE_WARN_REPEAT: Duration = Duration::from_secs(30);
+
+struct VoiceSenderReceiveState {
+  sequence: u16,
+  last_at: Instant,
+  last_silence_warn_at: Option<Instant>,
+}
 
 pub(super) trait VoiceReceiverSession: Clone + Send + Sync + 'static {
   fn connection_debug_context(&self) -> String;
@@ -49,38 +58,62 @@ where
   let mut last_packet = "none";
   let mut last_voice_sender = None;
   let mut last_voice_sequence = None;
-  let mut last_voice_by_sender = HashMap::<UserId, (u16, Instant)>::new();
+  let mut last_voice_by_sender = HashMap::<UserId, VoiceSenderReceiveState>::new();
 
   let stop_reason = loop {
     match server.recv_audio().await {
       Ok(ReceivedAudioPacket::Voice(packet)) => {
         session.mark_voice_network_activity();
         let now = Instant::now();
+        warn_stale_voice_senders(
+          &session,
+          &mut last_voice_by_sender,
+          now,
+          voice_packets,
+          Some(packet.sender_id),
+        );
         voice_packets = voice_packets.saturating_add(1);
         last_packet = "voice";
         last_voice_sender = Some(packet.sender_id);
         last_voice_sequence = Some(packet.sequence);
-        if let Some((previous_sequence, previous_at)) =
-          last_voice_by_sender.insert(packet.sender_id, (packet.sequence, now))
-        {
-          let sequence_delta = packet.sequence.wrapping_sub(previous_sequence);
-          let gap = now.duration_since(previous_at);
+        if let Some(previous) = last_voice_by_sender.insert(
+          packet.sender_id,
+          VoiceSenderReceiveState {
+            sequence: packet.sequence,
+            last_at: now,
+            last_silence_warn_at: None,
+          },
+        ) {
+          let sequence_delta = packet.sequence.wrapping_sub(previous.sequence);
+          let gap = now.duration_since(previous.last_at);
           if sequence_delta != 1 {
             tracing::warn!(
               target: "voice",
               "[voice] voice packet sequence gap from user {}: previous_sequence={} current_sequence={} delta={} gap_ms={} total_voice_packets={} {}",
               packet.sender_id,
-              previous_sequence,
+              previous.sequence,
               packet.sequence,
               sequence_delta,
               gap.as_millis(),
               voice_packets,
               session.connection_debug_context()
             );
+          } else if gap >= VOICE_RECEIVE_GAP_WARN_AFTER {
+            tracing::warn!(
+              target: "voice",
+              "[voice] voice packets resumed from user {} after long silence: gap_ms={} previous_sequence={} current_sequence={} delta={} total_voice_packets={} note=\"delta=1 means no packets appear lost; sender likely stopped transmitting or server stopped forwarding\" {}",
+              packet.sender_id,
+              gap.as_millis(),
+              previous.sequence,
+              packet.sequence,
+              sequence_delta,
+              voice_packets,
+              session.connection_debug_context()
+            );
           } else if gap >= VOICE_RECEIVE_GAP_LOG_AFTER {
             tracing::info!(
               target: "voice",
-              "[voice] voice packets resumed from user {} after {}ms: sequence={} total_voice_packets={} {}",
+              "[voice] voice packets resumed from user {} after {}ms: sequence={} total_voice_packets={} note=\"delta=1; no packets appear lost\" {}",
               packet.sender_id,
               gap.as_millis(),
               packet.sequence,
@@ -106,6 +139,7 @@ where
       }
       Ok(ReceivedAudioPacket::Stream(packet)) => {
         session.mark_voice_network_activity();
+        warn_stale_voice_senders(&session, &mut last_voice_by_sender, Instant::now(), voice_packets, None);
         stream_packets = stream_packets.saturating_add(1);
         last_packet = "stream_audio";
         if stream_packets == 1 {
@@ -121,6 +155,7 @@ where
       }
       Ok(ReceivedAudioPacket::VideoControl(control)) => {
         session.mark_voice_network_activity();
+        warn_stale_voice_senders(&session, &mut last_voice_by_sender, Instant::now(), voice_packets, None);
         video_controls = video_controls.saturating_add(1);
         last_packet = "video_control";
         session.handle_video_control_packet(control);
@@ -163,6 +198,42 @@ where
     last_packet,
     session.connection_debug_context()
   );
+}
+
+fn warn_stale_voice_senders<S>(
+  session: &S,
+  last_voice_by_sender: &mut HashMap<UserId, VoiceSenderReceiveState>,
+  now: Instant,
+  voice_packets: u64,
+  skip_sender: Option<UserId>,
+) where
+  S: VoiceReceiverSession,
+{
+  for (sender_id, state) in last_voice_by_sender.iter_mut() {
+    if Some(*sender_id) == skip_sender {
+      continue;
+    }
+    let silence = now.duration_since(state.last_at);
+    if silence < VOICE_SENDER_SILENCE_WARN_AFTER {
+      continue;
+    }
+    if state
+      .last_silence_warn_at
+      .is_some_and(|last_warn| now.duration_since(last_warn) < VOICE_SENDER_SILENCE_WARN_REPEAT)
+    {
+      continue;
+    }
+    state.last_silence_warn_at = Some(now);
+    tracing::warn!(
+      target: "voice",
+      "[voice] no voice packets from user {} for {}ms while audio receiver is still active: last_sequence={} total_voice_packets={} note=\"could be silence/VAD, sender-side capture suppression, or server forwarding gap; wait for resume/sequence-gap log to distinguish packet loss\" {}",
+      sender_id,
+      silence.as_millis(),
+      state.sequence,
+      voice_packets,
+      session.connection_debug_context()
+    );
+  }
 }
 
 pub(super) struct VoiceRuntime {

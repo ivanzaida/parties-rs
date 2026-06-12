@@ -659,14 +659,21 @@ fn normalize_log_filter_directive_alias(directive: &str) -> String {
 }
 
 fn suppress_noisy_log_targets(filter: &str) -> String {
-  const NOISY_TARGETS: [&str; 4] = ["wgpu", "wgpu_core", "wgpu_hal", "naga"];
+  const NOISY_TARGETS: [(&str, &str); 5] = [
+    ("wgpu", "warn"),
+    ("wgpu_core", "warn"),
+    ("wgpu_hal", "warn"),
+    ("naga", "warn"),
+    ("profile", "warn"),
+  ];
 
   let mut directives = filter.to_owned();
-  for target in NOISY_TARGETS {
+  for (target, level) in NOISY_TARGETS {
     if !log_filter_mentions_target(filter, target) {
       directives.push(',');
       directives.push_str(target);
-      directives.push_str("=warn");
+      directives.push('=');
+      directives.push_str(level);
     }
   }
   directives
@@ -683,7 +690,9 @@ fn log_filter_mentions_target(filter: &str, target: &str) -> bool {
         .find_map(|(index, ch)| matches!(ch, '=' | '[').then_some(index))
         .unwrap_or(directive.len());
       let directive_target = &directive[..target_end];
-      directive_target == target || directive_target.starts_with(&format!("{target}::"))
+      directive_target == target
+        || directive_target.starts_with(&format!("{target}::"))
+        || target.starts_with(&format!("{directive_target}::"))
     })
 }
 
@@ -816,15 +825,15 @@ mod tests {
   fn suppress_noisy_log_targets_adds_default_wgpu_suppression() {
     assert_eq!(
       suppress_noisy_log_targets("debug"),
-      "debug,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn"
+      "debug,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,profile=warn"
     );
   }
 
   #[test]
   fn suppress_noisy_log_targets_keeps_explicit_wgpu_directive() {
     assert_eq!(
-      suppress_noisy_log_targets("debug,wgpu=debug,wgpu_core::device=trace"),
-      "debug,wgpu=debug,wgpu_core::device=trace,wgpu_hal=warn,naga=warn"
+      suppress_noisy_log_targets("debug,wgpu=debug,wgpu_core::device=trace,profile=info"),
+      "debug,wgpu=debug,wgpu_core::device=trace,profile=info,wgpu_hal=warn,naga=warn"
     );
   }
 

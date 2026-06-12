@@ -508,7 +508,7 @@ fn run_broadcast_loop(
         );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        tracing::info!(target: "video::encode::macos",
+        tracing::debug!(target: "video::encode::macos",
           "[video:encode/macos] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
           frame_number,
           sample_len,
@@ -606,7 +606,7 @@ fn run_native_broadcast_loop(
         );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        tracing::info!(target: "video::encode::macos",
+        tracing::debug!(target: "video::encode::macos",
           "[video:encode/macos] native encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
           frame_number,
           sample_len,

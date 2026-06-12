@@ -547,7 +547,7 @@ fn run_broadcast_loop(
         );
         logged_first_frame = true;
       } else if frame_number > 0 && frame_number % 120 == 0 {
-        tracing::info!(target: "video::encode::windows",
+        tracing::debug!(target: "video::encode::windows",
           "[video:encode/windows] encoded frame #{} sent: bytes={} keyframe={} transport={:?}",
           frame_number,
           sample_len,

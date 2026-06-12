@@ -2,6 +2,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreAudio/CoreAudioTypes.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cfloat>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -221,6 +223,67 @@ std::string ns_error_string(NSError* error) {
   }
   NSString* description = error.localizedDescription ?: error.description;
   return std::string(description.UTF8String ?: "unknown error");
+}
+
+char* copy_c_string(const std::string& value) {
+  char* out = static_cast<char*>(std::malloc(value.size() + 1));
+  if (!out) {
+    return nullptr;
+  }
+  std::memcpy(out, value.c_str(), value.size() + 1);
+  return out;
+}
+
+void append_json_string(std::string& out, const std::string& value) {
+  out.push_back('"');
+  for (char ch : value) {
+    switch (ch) {
+      case '\\': out += "\\\\"; break;
+      case '"': out += "\\\""; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          out += ' ';
+        } else {
+          out.push_back(ch);
+        }
+        break;
+    }
+  }
+  out.push_back('"');
+}
+
+void append_desktop_source_json(std::string& out,
+                                uint64_t id,
+                                int64_t x,
+                                int64_t y,
+                                uint64_t width,
+                                uint64_t height,
+                                const std::string& name,
+                                const std::string& description) {
+  if (width == 0 || height == 0 || name.empty()) {
+    return;
+  }
+  if (out.back() != '[') {
+    out.push_back(',');
+  }
+  out += "{\"id\":";
+  out += std::to_string(id);
+  out += ",\"x\":";
+  out += std::to_string(x);
+  out += ",\"y\":";
+  out += std::to_string(y);
+  out += ",\"width\":";
+  out += std::to_string(width);
+  out += ",\"height\":";
+  out += std::to_string(height);
+  out += ",\"name\":";
+  append_json_string(out, name);
+  out += ",\"description\":";
+  append_json_string(out, description);
+  out.push_back('}');
 }
 
 id sparkle_updater_controller() {
@@ -864,6 +927,79 @@ bool configure_camera_format(AVCaptureDevice* device, uint16_t width, uint16_t h
 @end
 
 extern "C" {
+
+char* parties_macos_desktop_sources_json(uint8_t source_kind) {
+  set_last_error("");
+  std::string json = "[";
+  if (@available(macOS 12.3, *)) {
+    SCShareableContent* content = copy_shareable_content_sync();
+    if (!content) {
+      set_last_error("failed to list ScreenCaptureKit sources");
+      json += "]";
+      return copy_c_string(json);
+    }
+
+    if (source_kind == 0) {
+      NSUInteger index = 0;
+      for (SCDisplay* display in content.displays) {
+        CGDirectDisplayID display_id = display.displayID;
+        CGRect frame = CGDisplayBounds(display_id);
+        uint64_t width = static_cast<uint64_t>(CGDisplayPixelsWide(display_id));
+        uint64_t height = static_cast<uint64_t>(CGDisplayPixelsHigh(display_id));
+        std::string name = "Display " + std::to_string(static_cast<unsigned long long>(++index));
+        std::string description;
+        append_desktop_source_json(
+          json,
+          display_id,
+          static_cast<int64_t>(std::llround(frame.origin.x)),
+          static_cast<int64_t>(std::llround(frame.origin.y)),
+          width,
+          height,
+          name,
+          description);
+      }
+    } else {
+      for (SCWindow* window in content.windows) {
+        CGRect frame = window.frame;
+        if (!std::isfinite(frame.size.width) || !std::isfinite(frame.size.height) ||
+            frame.size.width <= 0 || frame.size.height <= 0) {
+          continue;
+        }
+        NSString* title = window.title ?: @"";
+        NSString* app_name = window.owningApplication.applicationName ?: @"";
+        std::string title_text(title.UTF8String ?: "");
+        std::string app_text(app_name.UTF8String ?: "");
+        std::string name;
+        if (app_text.empty()) {
+          name = title_text;
+        } else if (title_text.empty() || title_text == app_text) {
+          name = app_text;
+        } else {
+          name = app_text + " - " + title_text;
+        }
+        append_desktop_source_json(
+          json,
+          window.windowID,
+          static_cast<int64_t>(std::llround(frame.origin.x)),
+          static_cast<int64_t>(std::llround(frame.origin.y)),
+          static_cast<uint64_t>(std::llround(frame.size.width)),
+          static_cast<uint64_t>(std::llround(frame.size.height)),
+          name,
+          app_text);
+      }
+    }
+    json += "]";
+    return copy_c_string(json);
+  }
+
+  set_last_error("ScreenCaptureKit requires macOS 12.3 or newer");
+  json += "]";
+  return copy_c_string(json);
+}
+
+void parties_macos_string_free(char* text) {
+  std::free(text);
+}
 
 int parties_macos_microphone_authorize() {
   set_last_error("");

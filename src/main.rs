@@ -353,17 +353,14 @@ fn clamp_window_state_size(mut state: WindowState) -> WindowState {
 }
 
 fn startup_screen_bounds() -> Vec<ScreenBounds> {
-  xcap::Monitor::all()
-    .ok()
+  services::desktop_capture::DesktopCaptureSource::list_screens()
+    .unwrap_or_default()
     .into_iter()
-    .flatten()
-    .filter_map(|monitor| {
-      Some(ScreenBounds {
-        x: monitor.x().ok()?,
-        y: monitor.y().ok()?,
-        width: monitor.width().ok()?,
-        height: monitor.height().ok()?,
-      })
+    .map(|screen| ScreenBounds {
+      x: screen.x,
+      y: screen.y,
+      width: screen.width,
+      height: screen.height,
     })
     .collect()
 }

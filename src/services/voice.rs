@@ -60,6 +60,9 @@ const DEFAULT_AEC_DELAY_MS: i32 = 20;
 const AEC_DELAY_ENV: &str = "PARTIES_AEC_DELAY_MS";
 const MAX_PUSH_TO_TALK_RELEASE_DELAY_MS: i32 = 2_000;
 const VOICE_SEND_LOG_INTERVAL: u64 = 100;
+const LOCAL_VOICE_INPUT_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
+const LOCAL_VOICE_SEND_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
+const LOCAL_VOICE_IDLE_WARN_REPEAT: Duration = Duration::from_secs(30);
 static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -652,15 +655,45 @@ fn spawn_encoder_thread(
       let mut send_errors = 0_u64;
       let mut suppressed_frames = 0_u64;
       let mut encode_errors = 0_u64;
+      let mut input_frames = 0_u64;
+      let mut last_input_frame_at = started_at;
+      let mut last_sent_at = started_at;
+      let mut last_input_idle_warn_at = None;
+      let mut last_send_idle_warn_at = None;
       while !stop.load(Ordering::Relaxed) {
         let mut frame = match frame_rx.recv_timeout(Duration::from_millis(50)) {
           Ok(frame) => frame,
-          Err(mpsc::RecvTimeoutError::Timeout) => continue,
+          Err(mpsc::RecvTimeoutError::Timeout) => {
+            warn_local_voice_input_idle(
+              &control,
+              Instant::now(),
+              last_input_frame_at,
+              input_frames,
+              sent_packets,
+              suppressed_frames,
+              &mut last_input_idle_warn_at,
+            );
+            continue;
+          }
           Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        let now = Instant::now();
+        input_frames = input_frames.saturating_add(1);
+        last_input_frame_at = now;
 
         if !voice_gate.should_transmit(&control, &frame) {
           suppressed_frames = suppressed_frames.saturating_add(1);
+          warn_local_voice_send_idle(
+            &control,
+            now,
+            last_sent_at,
+            input_frames,
+            encoded_packets,
+            sent_packets,
+            suppressed_frames,
+            voice_gate.hold_frames,
+            &mut last_send_idle_warn_at,
+          );
           frame.clear();
           let _ = free_frame_tx.try_send(frame);
           continue;
@@ -690,6 +723,8 @@ fn spawn_encoder_thread(
         match server.send_voice(sequence, &opus[..len]) {
           Ok(()) => {
             sent_packets = sent_packets.saturating_add(1);
+            last_sent_at = Instant::now();
+            last_send_idle_warn_at = None;
             if should_log_voice_send_count(sent_packets) {
               tracing::debug!(
                 target: "audio::encode",
@@ -718,6 +753,78 @@ fn spawn_encoder_thread(
       );
     })
     .map_err(|error| VoiceError::new(format!("Failed to start encoder thread: {error}")))
+}
+
+fn warn_local_voice_input_idle(
+  control: &VoiceControlState,
+  now: Instant,
+  last_input_frame_at: Instant,
+  input_frames: u64,
+  sent_packets: u64,
+  suppressed_frames: u64,
+  last_warn_at: &mut Option<Instant>,
+) {
+  if !control.can_transmit() {
+    return;
+  }
+  let idle = now.duration_since(last_input_frame_at);
+  if idle < LOCAL_VOICE_INPUT_IDLE_WARN_AFTER {
+    return;
+  }
+  if last_warn_at.is_some_and(|warned_at| now.duration_since(warned_at) < LOCAL_VOICE_IDLE_WARN_REPEAT) {
+    return;
+  }
+  *last_warn_at = Some(now);
+  tracing::warn!(
+    target: "audio::encode",
+    "[audio:encode] no local voice input frames reached encoder for {}ms while transmit is allowed: input_frames={} sent_packets={} suppressed_frames={} muted={} deafened={} push_to_talk={} push_to_talk_active={} threshold={:.3}",
+    idle.as_millis(),
+    input_frames,
+    sent_packets,
+    suppressed_frames,
+    control.muted.load(Ordering::Relaxed),
+    control.deafened.load(Ordering::Relaxed),
+    control.push_to_talk,
+    control.push_to_talk_active.load(Ordering::Relaxed),
+    control.voice_activation_threshold()
+  );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warn_local_voice_send_idle(
+  control: &VoiceControlState,
+  now: Instant,
+  last_sent_at: Instant,
+  input_frames: u64,
+  encoded_packets: u64,
+  sent_packets: u64,
+  suppressed_frames: u64,
+  vad_hold_frames: u8,
+  last_warn_at: &mut Option<Instant>,
+) {
+  let idle = now.duration_since(last_sent_at);
+  if idle < LOCAL_VOICE_SEND_IDLE_WARN_AFTER {
+    return;
+  }
+  if last_warn_at.is_some_and(|warned_at| now.duration_since(warned_at) < LOCAL_VOICE_IDLE_WARN_REPEAT) {
+    return;
+  }
+  *last_warn_at = Some(now);
+  tracing::warn!(
+    target: "audio::encode",
+    "[audio:encode] no local voice packets sent for {}ms while input frames are arriving: input_frames={} encoded_packets={} sent_packets={} suppressed_frames={} muted={} deafened={} push_to_talk={} push_to_talk_active={} threshold={:.3} vad_hold_frames={} note=\"frames are being suppressed before Opus encode, usually by voice activation\"",
+    idle.as_millis(),
+    input_frames,
+    encoded_packets,
+    sent_packets,
+    suppressed_frames,
+    control.muted.load(Ordering::Relaxed),
+    control.deafened.load(Ordering::Relaxed),
+    control.push_to_talk,
+    control.push_to_talk_active.load(Ordering::Relaxed),
+    control.voice_activation_threshold(),
+    vad_hold_frames
+  );
 }
 
 struct InputCaptureState {
