@@ -35,7 +35,7 @@ type VoiceControlFuture = lurq::app::ctx::FutureAction<VoiceControlAction, (), S
 pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub lobby: LobbyState,
-  pub debug_chat_enabled: bool,
+  pub debug_mode_enabled: bool,
   pub start_stream_modal_open: Signal<bool>,
   pub stop_stream: StopStreamAction,
   pub watch_stream: WatchStreamAction,
@@ -43,7 +43,7 @@ pub(super) struct LobbyRailProps {
 
 impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
-    self.info == other.info && self.lobby == other.lobby && self.debug_chat_enabled == other.debug_chat_enabled
+    self.info == other.info && self.lobby == other.lobby && self.debug_mode_enabled == other.debug_mode_enabled
   }
 }
 
@@ -99,7 +99,7 @@ impl Component for LobbyRail {
       ctx,
       &props.info,
       &props.lobby,
-      props.debug_chat_enabled,
+      props.debug_mode_enabled,
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
       &props.watch_stream,
@@ -166,7 +166,7 @@ fn rail(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
-  debug_chat_enabled: bool,
+  debug_mode_enabled: bool,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
@@ -184,12 +184,12 @@ fn rail(
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-        .child(rail_header(ctx, info, lobby, debug_chat_enabled))
+        .child(rail_header(ctx, info, lobby, debug_mode_enabled))
         .child(rail_channels(
           ctx,
           info,
           lobby,
-          debug_chat_enabled,
+          debug_mode_enabled,
           join_channel,
           watch_stream,
         ))
@@ -197,7 +197,7 @@ fn rail(
           ctx,
           info,
           lobby,
-          debug_chat_enabled,
+          debug_mode_enabled,
           start_stream_modal_open,
           stop_stream,
           voice_control,
@@ -305,7 +305,7 @@ fn rail_channels(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
-  debug_chat_enabled: bool,
+  debug_mode_enabled: bool,
   join_channel: Option<&JoinChannelAction>,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -330,12 +330,12 @@ fn rail_channels(
     disconnected: lobby.disconnected,
     local_user_id: info.user_id,
     local_role: info.role,
-    debug_user_ids: debug_chat_enabled,
+    debug_user_ids: debug_mode_enabled,
     join_channel: join_channel.cloned(),
     watch_stream: Some(watch_stream.clone()),
   }));
 
-  if debug_chat_enabled {
+  if debug_mode_enabled {
     channels = channels.child(ctx.mount::<DebugChannels>(DebugChannelsProps {
       selected: lobby.debug_chat_selected,
     }));

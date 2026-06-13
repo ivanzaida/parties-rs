@@ -172,6 +172,15 @@ impl Component for App {
     });
     interval.start();
     let update_poll_in_flight = Arc::new(AtomicBool::new(false));
+    let initial_update_status = update_status.clone();
+    let initial_update_tokio = props.tokio.clone();
+    let initial_update_gate = update_poll_in_flight.clone();
+    if !initial_update_gate.swap(true, Ordering::AcqRel) {
+      initial_update_tokio.spawn(async move {
+        let _ = run_startup_update_check(initial_update_status).await;
+        initial_update_gate.store(false, Ordering::Release);
+      });
+    }
     let update_poll_status = update_status.clone();
     let update_poll_tokio = props.tokio.clone();
     let update_poll_gate = update_poll_in_flight.clone();
@@ -296,11 +305,6 @@ impl Component for App {
       root = root.border_inside(1.0, theme::PaletteColor::Border);
     }
 
-    let update_status = self.update_status.get();
-    if let Some(pill) = self.global_update_pill(ctx, &update_status) {
-      root = root.child(pill);
-    }
-
     let settings_open = self.settings_open.clone();
     let settings_window = ctx.window();
     if settings_open.get() {
@@ -362,6 +366,11 @@ impl Component for App {
           window.open_devtools();
         }
       });
+    }
+
+    let update_status = self.update_status.get();
+    if let Some(pill) = self.global_update_pill(ctx, &update_status) {
+      root = root.child(pill);
     }
 
     root

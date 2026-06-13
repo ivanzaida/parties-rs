@@ -9,7 +9,7 @@
   "app": {
     "update_pill": {
       "available": "Update available",
-      "restart": "Restart update",
+      "restart": "Update ready",
       "downloading_percent": "{{version}} downloading {{percent}}%",
       "downloading": "{{version}} downloading",
       "preparing": "{{version}} preparing",
@@ -93,12 +93,12 @@
         "checking": "Checking for updates...",
         "downloading": "Downloading update {{percent}}%...",
         "preparing": "Preparing update...",
-        "ready": "Update ready. Restart to finish."
+        "ready": "Update ready. Restart when you want."
       },
       "panel": {
         "ready": {
-          "title": "Restart to run Parties {{version}}",
-          "description": "The update has been downloaded and staged. Restart now to replace {{current}}; Parties will reopen automatically."
+          "title": "Parties {{version}} is ready",
+          "description": "The update has been downloaded and staged. You can keep using {{current}} and restart whenever you want to switch."
         },
         "staging": {
           "title": "Preparing Parties {{version}}",
@@ -106,11 +106,11 @@
         },
         "downloading": {
           "title": "Parties {{version}} is downloading",
-          "description": "The update downloads automatically before the workspace opens."
+          "description": "The update downloads in the background while you keep using this version."
         },
         "checking": {
           "title": "Looking for a newer version",
-          "description": "Parties checks the release feed before opening your workspace."
+          "description": "Parties checks the release feed in the background."
         }
       },
       "step": {
@@ -127,8 +127,8 @@
           "pending": "Starts automatically when a newer version is found"
         },
         "restart": {
-          "title": "Restart into new version",
-          "description": "Restart appears after the package is staged"
+          "title": "Restart when ready",
+          "description": "Restart is optional after the package is staged"
         }
       },
       "action": {
@@ -453,9 +453,9 @@
           "title": "Launch Parties at login",
           "description": "Start the client automatically when this device signs in."
         },
-        "debug_chat": {
-          "title": "Show debug chat",
-          "description": "Show the local debug command channel in the server rail."
+        "debug_mode": {
+          "title": "Enable debug mode",
+          "description": "Show local debug tools in the server rail."
         }
       }
     },

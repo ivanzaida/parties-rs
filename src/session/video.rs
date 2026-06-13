@@ -25,7 +25,7 @@ use crate::{
   },
 };
 
-pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 3;
+pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
 pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
 pub(super) const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -301,13 +301,13 @@ pub(super) fn run_video_receiver<S>(
     .block_on(server.request_keyframe_stream(user_id))
   {
     Ok(()) => {
-      tracing::debug!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
+      tracing::info!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
     }
     Err(stream_error) => {
       tracing::warn!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
       match server.request_keyframe(user_id) {
         Ok(()) => {
-          tracing::debug!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}");
+          tracing::info!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
         }
         Err(datagram_error) => {
           tracing::warn!(target: "video", "[video] datagram keyframe request failed for user {user_id}: reason={reason} error={datagram_error}");
@@ -377,8 +377,9 @@ pub(super) fn run_video_receiver<S>(
         if decode_pool.has_decoder_failure(*user_id, sample_frame) {
           continue;
         }
-        awaiting_keyframes.insert(*user_id);
-        request_keyframe_for(*user_id, "stale video backlog dropped");
+        if awaiting_keyframes.insert(*user_id) {
+          request_keyframe_for(*user_id, "stale video backlog dropped");
+        }
       }
       tracing::warn!(target: "video",
         "[video] dropping stale video backlog: queued={} dropped={} users={}",
@@ -417,8 +418,9 @@ pub(super) fn run_video_receiver<S>(
         dx12_decode_surfaces.retain(|(user_id, ..), _| *user_id != packet.sender_id);
         awaiting_decoded_output.remove(&packet.sender_id);
         expected_frame_numbers.remove(&packet.sender_id);
-        awaiting_keyframes.insert(packet.sender_id);
-        request_keyframe_for(packet.sender_id, "video decode config changed");
+        if awaiting_keyframes.insert(packet.sender_id) {
+          request_keyframe_for(packet.sender_id, "video decode config changed");
+        }
       }
 
       if awaiting_keyframes.contains(&packet.sender_id) {
@@ -427,7 +429,7 @@ pub(super) fn run_video_receiver<S>(
         }
         awaiting_keyframes.remove(&packet.sender_id);
         decode_pool.clear_user_failures(packet.sender_id);
-        tracing::debug!(target: "video::decode",
+        tracing::info!(target: "video::decode",
           "[video:decode] catch-up keyframe received for user {}: frame={}",
           packet.sender_id,
           packet.frame.frame_number
@@ -445,8 +447,9 @@ pub(super) fn run_video_receiver<S>(
             awaiting_decoded_output.remove(&packet.sender_id);
             expected_frame_numbers.remove(&packet.sender_id);
             decode_pool.reset_user(packet.sender_id);
-            awaiting_keyframes.insert(packet.sender_id);
-            request_keyframe_for(packet.sender_id, "video frame gap detected");
+            if awaiting_keyframes.insert(packet.sender_id) {
+              request_keyframe_for(packet.sender_id, "video frame gap detected");
+            }
             tracing::warn!(target: "video::decode",
               "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
               packet.sender_id,
@@ -458,8 +461,9 @@ pub(super) fn run_video_receiver<S>(
           None => {
             awaiting_decoded_output.remove(&packet.sender_id);
             decode_pool.reset_user(packet.sender_id);
-            awaiting_keyframes.insert(packet.sender_id);
-            request_keyframe_for(packet.sender_id, "missing initial keyframe");
+            if awaiting_keyframes.insert(packet.sender_id) {
+              request_keyframe_for(packet.sender_id, "missing initial keyframe");
+            }
             continue;
           }
         }
@@ -545,8 +549,9 @@ pub(super) fn run_video_receiver<S>(
           } else if native_decoder_unavailable_error(&error) {
             session.set_video_error(sender_id, native_decoder_unavailable_stream_error(error));
           } else {
-            awaiting_keyframes.insert(sender_id);
-            request_keyframe_for(sender_id, "video decode failed");
+            if awaiting_keyframes.insert(sender_id) {
+              request_keyframe_for(sender_id, "video decode failed");
+            }
           }
         }
       }

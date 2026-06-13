@@ -61,7 +61,7 @@ impl From<std::time::SystemTimeError> for StorageError {
 pub struct AppSettings {
   pub start_muted_when_joining: bool,
   pub launch_parties_at_login: bool,
-  pub debug_chat_enabled: bool,
+  pub debug_mode_enabled: bool,
   pub display_name: String,
   pub audio_input_device: String,
   pub audio_output_device: String,
@@ -91,7 +91,7 @@ impl Default for AppSettings {
     Self {
       start_muted_when_joining: true,
       launch_parties_at_login: false,
-      debug_chat_enabled: false,
+      debug_mode_enabled: false,
       display_name: default_display_name(),
       audio_input_device: String::new(),
       audio_output_device: String::new(),
@@ -307,7 +307,7 @@ impl Storage {
         id,
         start_muted_when_joining,
         launch_parties_at_login,
-        debug_chat_enabled,
+        debug_mode_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -336,7 +336,7 @@ impl Storage {
       params![
         bool_to_int(settings.start_muted_when_joining),
         bool_to_int(settings.launch_parties_at_login),
-        bool_to_int(settings.debug_chat_enabled),
+        bool_to_int(settings.debug_mode_enabled),
         &settings.display_name,
         &settings.audio_input_device,
         &settings.audio_output_device,
@@ -371,7 +371,7 @@ impl Storage {
       SELECT
         start_muted_when_joining,
         launch_parties_at_login,
-        debug_chat_enabled,
+        debug_mode_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -407,7 +407,7 @@ impl Storage {
     Ok(AppSettings {
       start_muted_when_joining: int_to_bool(row.get(0)?),
       launch_parties_at_login: int_to_bool(row.get(1)?),
-      debug_chat_enabled: int_to_bool(row.get(2)?),
+      debug_mode_enabled: int_to_bool(row.get(2)?),
       display_name: row.get(3)?,
       audio_input_device: row.get(4)?,
       audio_output_device: row.get(5)?,
@@ -757,7 +757,7 @@ impl Storage {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
         launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
-        debug_chat_enabled INTEGER NOT NULL DEFAULT 0,
+        debug_mode_enabled INTEGER NOT NULL DEFAULT 0,
         display_name TEXT NOT NULL DEFAULT '',
         audio_input_device TEXT NOT NULL DEFAULT '',
         audio_output_device TEXT NOT NULL DEFAULT '',
@@ -850,11 +850,14 @@ impl Storage {
         [],
       )?;
     }
-    if !column_exists(&conn, "app_settings", "debug_chat_enabled")? {
+    if !column_exists(&conn, "app_settings", "debug_mode_enabled")? {
       conn.execute(
-        "ALTER TABLE app_settings ADD COLUMN debug_chat_enabled INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE app_settings ADD COLUMN debug_mode_enabled INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
+      if column_exists(&conn, "app_settings", "debug_chat_enabled")? {
+        conn.execute("UPDATE app_settings SET debug_mode_enabled = debug_chat_enabled", [])?;
+      }
     }
     if !column_exists(&conn, "app_settings", "display_name")? {
       conn.execute(
@@ -1328,7 +1331,7 @@ mod tests {
     let settings = AppSettings {
       start_muted_when_joining: false,
       launch_parties_at_login: true,
-      debug_chat_enabled: true,
+      debug_mode_enabled: true,
       display_name: "alice".to_owned(),
       audio_input_device: "Microphone".to_owned(),
       audio_output_device: "Speakers".to_owned(),
@@ -1354,6 +1357,35 @@ mod tests {
     };
     storage.save_settings(&settings).unwrap();
     assert_eq!(storage.load_settings().unwrap(), settings);
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn settings_migrates_debug_chat_to_debug_mode() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-debug-mode-migration-{nonce}.db"));
+    let conn = Connection::open(&path).unwrap();
+    conn
+      .execute_batch(
+        r#"
+      CREATE TABLE app_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
+        launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
+        debug_chat_enabled INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO app_settings (id, debug_chat_enabled) VALUES (1, 1);
+      "#,
+      )
+      .unwrap();
+    drop(conn);
+
+    let storage = Storage::open(&path).unwrap();
+
+    assert!(storage.load_settings().unwrap().debug_mode_enabled);
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

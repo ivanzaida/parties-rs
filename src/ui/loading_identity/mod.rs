@@ -19,7 +19,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY},
   services::{
     startup::{StartupProgress, StartupProgressLabels, load_startup_data},
-    updater::{StartupUpdateStatus, restart_into_update, run_startup_update_check},
+    updater::{StartupUpdateStatus, restart_into_update},
   },
   session::ServerSession,
   storage::{AppSettings, Storage},
@@ -129,13 +129,11 @@ impl Component for LoadingIdentityScreen {
     let props = ctx.props::<Self::Props>().clone();
     let copy = LoadingIdentityCopy::from_ctx(ctx);
     let retry_nonce = self.retry_nonce.get();
-    let update = ctx
-      .future(retry_nonce, {
-        let update_status = props.update_status.clone();
-        move |_| run_startup_update_check(update_status.clone())
-      })
-      .state()
-      .get();
+    let update_status = props.update_status.get();
+    let update_pending = matches!(
+      update_status,
+      StartupUpdateStatus::Checking | StartupUpdateStatus::Downloading { .. } | StartupUpdateStatus::Staging { .. }
+    );
     let startup = if retry_nonce == 0 && props.startup_error.is_some() {
       None
     } else {
@@ -176,13 +174,9 @@ impl Component for LoadingIdentityScreen {
     } else {
       initial_error.or(startup_error)
     };
-    let update_status = props.update_status.get();
-    let update_blocks_startup = update.is_pending() || matches!(update_status, StartupUpdateStatus::Ready { .. });
-
     if !PREVIEW_LOADING_ERROR
       && let Some(data) = startup.as_ref().and_then(|startup| startup.data.as_ref())
       && self.minimum_visible.get()
-      && !update_blocks_startup
       && !self.navigated.get_untracked()
     {
       if props.storage.get_untracked() != data.storage {
@@ -223,14 +217,14 @@ impl Component for LoadingIdentityScreen {
     let content = if let Some(error) = error {
       self.failure_screen(ctx, &error, self.progress.clone(), &copy)
     } else {
-      let displayed_progress = update_progress(ctx, &update_status, update.is_pending()).unwrap_or(progress);
+      let displayed_progress = update_progress(ctx, &update_status, update_pending).unwrap_or(progress);
       self.loading_screen(
         ctx,
         &displayed_progress,
         &copy,
         &props.update_status,
         &update_status,
-        update.is_pending(),
+        update_pending,
       )
     };
 

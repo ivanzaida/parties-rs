@@ -29,7 +29,7 @@ const LANGUAGE_DROPDOWN_WIDTH: f32 = 220.0;
 pub struct SettingsOverviewScreen {
   start_muted_when_joining: bool,
   launch_parties_at_login: bool,
-  debug_chat_enabled: bool,
+  debug_mode_enabled: bool,
   locale: String,
 }
 
@@ -44,13 +44,13 @@ impl Component for SettingsOverviewScreen {
       .unwrap_or_default();
     let start_muted_when_joining = settings.start_muted_when_joining;
     let launch_parties_at_login = settings.launch_parties_at_login;
-    let debug_chat_enabled = settings.debug_chat_enabled;
+    let debug_mode_enabled = settings.debug_mode_enabled;
     let locale = settings.locale;
 
     Self {
       start_muted_when_joining,
       launch_parties_at_login,
-      debug_chat_enabled,
+      debug_mode_enabled,
       locale,
     }
   }
@@ -173,10 +173,10 @@ impl Component for SettingsOverviewScreen {
                 setting: OverviewBoolSetting::LaunchPartiesAtLogin,
               }))
               .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
-                title_key: "settings.overview.toggle.debug_chat.title",
-                description_key: "settings.overview.toggle.debug_chat.description",
-                initial_enabled: self.debug_chat_enabled,
-                setting: OverviewBoolSetting::DebugChatEnabled,
+                title_key: "settings.overview.toggle.debug_mode.title",
+                description_key: "settings.overview.toggle.debug_mode.description",
+                initial_enabled: self.debug_mode_enabled,
+                setting: OverviewBoolSetting::DebugModeEnabled,
               })),
           ),
       );
@@ -189,7 +189,7 @@ impl Component for SettingsOverviewScreen {
 enum OverviewBoolSetting {
   StartMutedWhenJoining,
   LaunchPartiesAtLogin,
-  DebugChatEnabled,
+  DebugModeEnabled,
 }
 
 #[derive(Clone, lurq::DevtoolsInspectable)]
@@ -226,10 +226,10 @@ impl Component for OverviewToggleSetting {
         match props.setting {
           OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
           OverviewBoolSetting::LaunchPartiesAtLogin => settings.launch_parties_at_login = *enabled,
-          OverviewBoolSetting::DebugChatEnabled => settings.debug_chat_enabled = *enabled,
+          OverviewBoolSetting::DebugModeEnabled => settings.debug_mode_enabled = *enabled,
         }
         let _ = storage.save_settings(&settings);
-        if props.setting == OverviewBoolSetting::DebugChatEnabled
+        if props.setting == OverviewBoolSetting::DebugModeEnabled
           && let Some(session) = session.as_ref()
         {
           session.refresh_lobby();
