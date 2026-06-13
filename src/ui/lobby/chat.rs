@@ -42,6 +42,7 @@ pub(super) fn text_channel_detail(
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   message_input: Signal<String>,
+  command_selected_index: Signal<usize>,
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -145,11 +146,12 @@ pub(super) fn text_channel_detail(
       ctx,
       channel,
       message_input.clone(),
+      command_selected_index.clone(),
       send_chat,
       composer_ref.clone(),
     ));
 
-  if let Some(suggestions) = chat_command_suggestions(ctx, message_input) {
+  if let Some(suggestions) = chat_command_suggestions(ctx, message_input, command_selected_index) {
     body = body.child(
       Overlay::new(suggestions)
         .anchor(composer_ref)
@@ -648,6 +650,7 @@ fn chat_composer(
   ctx: &mut Ctx,
   channel: &LobbyTextChannel,
   message_input: Signal<String>,
+  command_selected_index: Signal<usize>,
   send_chat: &SendChatAction,
   composer_ref: ElementRef,
 ) -> Element {
@@ -659,7 +662,9 @@ fn chat_composer(
     [("channel", channel.name.clone())],
   );
   let channel_id = channel.id;
+  let nav_value = message_input.clone();
   let key_value = message_input.clone();
+  let key_command_selected_index = command_selected_index.clone();
   let key_action = send_chat.clone();
   let click_value = message_input.clone();
   let click_action = send_chat.clone();
@@ -692,6 +697,12 @@ fn chat_composer(
             .flex(1.0)
             .background(BackgroundColor::Color(Color::from_hex("#00000000")))
             .caret_color(theme::PaletteColor::Accent)
+            .on_key_down_capture(move |event| {
+              if handle_chat_command_navigation(&nav_value, &key_command_selected_index, &event.key, &event.code) {
+                return true;
+              }
+              false
+            })
             .on_key_down(move |event| {
               if event.key == "Enter" && !event.shift {
                 submit_chat(channel_id, &key_value, &key_action);
@@ -719,26 +730,93 @@ fn chat_composer(
     .into()
 }
 
-fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Option<Element> {
-  let input = message_input.get();
+fn handle_chat_command_navigation(
+  message_input: &Signal<String>,
+  selected_index: &Signal<usize>,
+  key: &str,
+  code: &str,
+) -> bool {
+  if matches!((key, code), ("Tab", _) | (_, "Tab")) {
+    let input = message_input.get_untracked();
+    let Some(query) = command_suggestion_query(&input) else {
+      selected_index.set(0);
+      return false;
+    };
+    let commands = matching_chat_commands_for_query(&query);
+    let Some(command) = commands.get(selected_index.get_untracked().min(commands.len().saturating_sub(1))) else {
+      selected_index.set(0);
+      return false;
+    };
+    message_input.set(command_fill_text(command));
+    return true;
+  }
+
+  let direction = match (key, code) {
+    ("ArrowDown", _) | (_, "ArrowDown") => 1,
+    ("ArrowUp", _) | (_, "ArrowUp") => -1,
+    _ => return false,
+  };
+  let input = message_input.get_untracked();
+  let Some(query) = command_suggestion_query(&input) else {
+    selected_index.set(0);
+    return false;
+  };
+  let count = matching_chat_commands_for_query(&query).len();
+  if count == 0 {
+    selected_index.set(0);
+    return false;
+  }
+
+  let current = selected_index.get_untracked().min(count - 1);
+  let next = if direction > 0 {
+    (current + 1) % count
+  } else {
+    current.checked_sub(1).unwrap_or(count - 1)
+  };
+  selected_index.set(next);
+  true
+}
+
+fn command_suggestion_query(input: &str) -> Option<String> {
   let trimmed = input.trim_start();
   if !trimmed.starts_with('/') {
     return None;
   }
+  Some(
+    trimmed
+      .split_whitespace()
+      .next()
+      .unwrap_or(trimmed)
+      .to_ascii_lowercase(),
+  )
+}
 
-  let query = trimmed
-    .split_whitespace()
-    .next()
-    .unwrap_or(trimmed)
-    .to_ascii_lowercase();
-  let commands = ChatCommandRegistry::new()
+fn matching_chat_commands_for_query(query: &str) -> Vec<CommandInfo> {
+  ChatCommandRegistry::new()
     .commands()
     .into_iter()
-    .filter(|command| command.name.to_ascii_lowercase().starts_with(&query))
-    .collect::<Vec<_>>();
+    .filter(|command| command.name.to_ascii_lowercase().starts_with(query))
+    .collect()
+}
+
+fn chat_command_suggestions(
+  ctx: &mut Ctx,
+  message_input: Signal<String>,
+  selected_index: Signal<usize>,
+) -> Option<Element> {
+  let input = message_input.get();
+  let query = command_suggestion_query(&input)?;
+  let commands = matching_chat_commands_for_query(&query);
   if commands.is_empty() {
+    selected_index.set(0);
     return None;
   }
+
+  let active_index = selected_index.get().min(commands.len().saturating_sub(1));
+  if active_index != selected_index.get_untracked() {
+    selected_index.set(active_index);
+  }
+
   let list_height = command_suggestion_list_height(commands.len());
   let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + list_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
 
@@ -756,7 +834,9 @@ fn chat_command_suggestions(ctx: &mut Ctx, message_input: Signal<String>) -> Opt
       command,
       input.clone(),
       message_input.clone(),
-      index == 0,
+      selected_index.clone(),
+      index,
+      index == active_index,
     ));
   }
 
@@ -799,6 +879,8 @@ fn command_suggestion_row(
   command: CommandInfo,
   input: String,
   message_input: Signal<String>,
+  selected_index: Signal<usize>,
+  index: usize,
   selected: bool,
 ) -> Element {
   let fill = command_fill_text(&command);
@@ -819,6 +901,7 @@ fn command_suggestion_row(
     .transition(Transition::background_color().duration_ms(120))
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#2B313A"))))
+    .on_mouse_enter(move || selected_index.set(index))
     .on_click(move |_| message_input.set(fill.clone()))
     .child(command_icon(ctx))
     .child(

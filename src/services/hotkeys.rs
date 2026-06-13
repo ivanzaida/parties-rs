@@ -76,15 +76,7 @@ mod tests {
   use super::*;
 
   fn key_event(key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) -> KeyboardEvent {
-    KeyboardEvent {
-      key: key.to_owned(),
-      code: code.to_owned(),
-      ctrl,
-      alt,
-      shift,
-      meta: false,
-      target_id: NodeId::UNASSIGNED,
-    }
+    KeyboardEvent::new(key, code, shift, ctrl, alt, false, NodeId::UNASSIGNED)
   }
 
   #[test]

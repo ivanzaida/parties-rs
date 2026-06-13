@@ -96,6 +96,7 @@ struct ReconnectRequest {
 
 pub struct LobbyScreen {
   message_input: Signal<String>,
+  chat_command_selected_index: Signal<usize>,
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -136,6 +137,7 @@ impl Component for LobbyScreen {
 
     Self {
       message_input: ctx.signal(String::new()),
+      chat_command_selected_index: ctx.signal(0),
       chat_scroll_state: ScrollState::new(),
       chat_bottom_anchor: ctx.signal(None),
       chat_top_anchor: ctx.signal(None),
@@ -256,6 +258,7 @@ impl Component for LobbyScreen {
         &info,
         &lobby,
         self.message_input.clone(),
+        self.chat_command_selected_index.clone(),
         self.chat_scroll_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_top_anchor.clone(),
