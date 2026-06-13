@@ -36,8 +36,8 @@ mod voice_state;
 
 pub use connection::{ConnectedServer, ConnectedServerInfo, TofuWarning};
 pub use lobby::{
-  LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, LobbyScreenShare, LobbyState, LobbyTextChannel,
-  LobbyUser,
+  DEBUG_CHAT_CHANNEL_ID, LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, LobbyScreenShare,
+  LobbyState, LobbyTextChannel, LobbyUser,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,6 +453,14 @@ impl ServerSession {
     self.bump_revision();
   }
 
+  pub fn select_debug_chat(&self) {
+    {
+      let mut lobby = self.lobby.lock();
+      lobby::select_debug_chat(&mut lobby);
+    }
+    self.bump_revision();
+  }
+
   pub fn open_stream_browser(&self, channel_id: ChannelId) {
     {
       let mut lobby = self.lobby.lock();
@@ -818,6 +826,16 @@ impl ServerSession {
     {
       let mut lobby = self.lobby.lock();
       lobby.last_error = Some(message);
+    }
+    self.bump_revision();
+  }
+
+  pub fn push_debug_chat_message(&self, message: impl Into<String>) {
+    let message = message.into();
+    tracing::warn!(target: "debug", "[debug-chat] {message}");
+    {
+      let mut lobby = self.lobby.lock();
+      lobby::push_debug_chat_message(&mut lobby, message);
     }
     self.bump_revision();
   }

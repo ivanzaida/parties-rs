@@ -1037,6 +1037,18 @@
       "title": "TEXT CHANNELS",
       "empty": "No text channels yet"
     },
+    "debug_channels": {
+      "title": "DEBUG",
+      "chat": "debug chat",
+      "topic": "Local commands only",
+      "empty": {
+        "title": "Debug commands",
+        "description": "Use slash commands here; they are not sent to server text channels."
+      },
+      "error": {
+        "command_required": "Debug chat accepts slash commands only."
+      }
+    },
     "text_channel": {
       "topic": "Server announcements & general chatter",
       "composer_placeholder": "Message #{{channel}}",
@@ -1104,8 +1116,9 @@
           "empty": "Command is empty.",
           "unterminated_quote": "Command contains an unterminated quoted argument.",
           "usage": "Usage: {{usage}}",
-          "invalid_user_id": "userId must be a positive numeric user id.",
-          "user_id_positive": "userId must be greater than zero.",
+          "invalid_type": "{{value}} should be {{expected}}.",
+          "invalid_type_number": "a valid number from {{min}} to {{max}}",
+          "invalid_type_text": "non-empty text",
           "not_implemented": "{{command}} is registered for UI preview but is not implemented yet.",
           "unknown": "Unknown command: {{command}}"
         }

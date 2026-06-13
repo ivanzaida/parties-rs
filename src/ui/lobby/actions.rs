@@ -11,7 +11,7 @@ use crate::{
   services::video::VideoBroadcastConfig,
   session::{
     ConnectedServerInfo, ServerSession,
-    chat_commands::{ChatCommand, ChatCommandParseError, ChatCommandRegistry},
+    chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError},
   },
   storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
@@ -31,10 +31,12 @@ struct LobbyActionCopy {
   chat_command_empty: String,
   chat_command_unterminated_quote: String,
   chat_command_usage: String,
-  chat_command_invalid_user_id: String,
-  chat_command_user_id_positive: String,
+  chat_command_invalid_type: String,
+  chat_command_invalid_type_number: String,
+  chat_command_invalid_type_text: String,
   chat_command_not_implemented: String,
   chat_command_unknown: String,
+  chat_command_required: String,
   connect_errors: ConnectErrorCopy,
 }
 
@@ -53,10 +55,14 @@ impl LobbyActionCopy {
         .t("lobby.text_channel.commands.error.unterminated_quote")
         .to_string(),
       chat_command_usage: ctx.t("lobby.text_channel.commands.error.usage").to_string(),
-      chat_command_invalid_user_id: ctx.t("lobby.text_channel.commands.error.invalid_user_id").to_string(),
-      chat_command_user_id_positive: ctx.t("lobby.text_channel.commands.error.user_id_positive").to_string(),
+      chat_command_invalid_type: ctx.t("lobby.text_channel.commands.error.invalid_type").to_string(),
+      chat_command_invalid_type_number: ctx
+        .t("lobby.text_channel.commands.error.invalid_type_number")
+        .to_string(),
+      chat_command_invalid_type_text: ctx.t("lobby.text_channel.commands.error.invalid_type_text").to_string(),
       chat_command_not_implemented: ctx.t("lobby.text_channel.commands.error.not_implemented").to_string(),
       chat_command_unknown: ctx.t("lobby.text_channel.commands.error.unknown").to_string(),
+      chat_command_required: ctx.t("lobby.debug_channels.error.command_required").to_string(),
       connect_errors: ConnectErrorCopy::from_ctx(ctx),
     }
   }
@@ -73,12 +79,21 @@ impl LobbyActionCopy {
       ChatCommandParseError::Empty => self.chat_command_empty.clone(),
       ChatCommandParseError::UnterminatedQuotedArgument => self.chat_command_unterminated_quote.clone(),
       ChatCommandParseError::Usage { usage, .. } => self.chat_command_usage.replace("{{usage}}", usage),
-      ChatCommandParseError::InvalidUserId => self.chat_command_invalid_user_id.clone(),
-      ChatCommandParseError::UserIdMustBeGreaterThanZero => self.chat_command_user_id_positive.clone(),
-      ChatCommandParseError::NotImplemented { command } => {
-        self.chat_command_not_implemented.replace("{{command}}", command)
-      }
+      ChatCommandParseError::InvalidType { value, expected, .. } => self
+        .chat_command_invalid_type
+        .replace("{{value}}", value)
+        .replace("{{expected}}", &self.chat_command_expected_type(expected)),
       ChatCommandParseError::Unknown { command } => self.chat_command_unknown.replace("{{command}}", command),
+    }
+  }
+
+  fn chat_command_expected_type(&self, expected: &ChatCommandExpectedType) -> String {
+    match expected {
+      ChatCommandExpectedType::Number { min, max } => self
+        .chat_command_invalid_type_number
+        .replace("{{min}}", min)
+        .replace("{{max}}", max),
+      ChatCommandExpectedType::Text => self.chat_command_invalid_type_text.clone(),
     }
   }
 }
@@ -123,34 +138,72 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
         return Ok(());
       }
 
-      let registry = ChatCommandRegistry::new();
-      match registry.parse(&text) {
-        Ok(Some(ChatCommand::RestartAudioReceiver { user_id })) => {
-          let restarted = session.restart_audio_receiver(user_id);
-          if !restarted {
-            tracing::warn!(
-              target: "audio::decode",
-              "[audio:decode] restart audio receiver command found no active receiver state for user {user_id}"
-            );
+      if input.command_registry.has_commands() {
+        match input.command_registry.parse(&text) {
+          Ok(Some(invocation)) => {
+            if let Err(message) = execute_chat_command(&session, &copy, invocation) {
+              return Err(report_debug_command_error(&session, message));
+            }
+            return Ok(());
           }
-          return Ok(());
-        }
-        Ok(None) => {}
-        Err(error) => {
-          let message = copy.chat_command_parse_error(&error);
-          session.set_lobby_error_notice(message.clone());
-          return Err(message);
+          Ok(None) => {}
+          Err(error) => {
+            let message = copy.chat_command_parse_error(&error);
+            if matches!(error, ChatCommandParseError::Unknown { .. }) {
+              return Err(report_debug_command_error(&session, message));
+            }
+            session.set_lobby_error_notice(message.clone());
+            return Err(message);
+          }
         }
       }
 
+      let Some(channel_id) = input.channel_id else {
+        let message = copy.chat_command_required.clone();
+        return Err(report_debug_command_error(&session, message));
+      };
       let server = session.server().ok_or(copy.no_connected_server)?;
       server
-        .send_chat_text(input.channel_id, text)
+        .send_chat_text(channel_id, text)
         .await
         .map_err(|error| error.to_string())?;
       Ok(())
     }
   })
+}
+
+fn report_debug_command_error(session: &ServerSession, message: String) -> String {
+  session.push_debug_chat_message(message.clone());
+  message
+}
+
+fn execute_chat_command(
+  session: &ServerSession,
+  copy: &LobbyActionCopy,
+  invocation: ChatCommandInvocation,
+) -> Result<(), String> {
+  match invocation.name.as_ref() {
+    "/restart-audio-receiver" => {
+      let user_id = invocation
+        .arguments
+        .first()
+        .and_then(|value| value.as_ref().parse().ok())
+        .ok_or_else(|| {
+          copy
+            .chat_command_usage
+            .replace("{{usage}}", "/restart-audio-receiver {userId:Number}")
+        })?;
+      let restarted = session.restart_audio_receiver(user_id);
+      if !restarted {
+        tracing::warn!(
+          target: "audio::decode",
+          "[audio:decode] restart audio receiver command found no active receiver state for user {user_id}"
+        );
+      }
+      Ok(())
+    }
+    command => Err(copy.chat_command_not_implemented.replace("{{command}}", command)),
+  }
 }
 
 pub(super) fn start_stream_action(

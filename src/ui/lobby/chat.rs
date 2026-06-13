@@ -1,4 +1,4 @@
-use std::{process::Command, time::Duration};
+use std::{process::Command, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Weekday};
 use lurq::{
@@ -23,8 +23,8 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
   session::{
-    ConnectedServerInfo, LobbyState, LobbyTextChannel, ServerSession,
-    chat_commands::{ChatCommandRegistry, CommandDefinition, CommandInfo},
+    ConnectedServerInfo, DEBUG_CHAT_CHANNEL_ID, LobbyState, LobbyTextChannel, ServerSession,
+    chat_commands::{ChatCommandRegistry, CommandDefinition},
   },
   theme,
   ui::{
@@ -38,6 +38,113 @@ const CHAT_COMMAND_SUGGESTION_ROW_HEIGHT: f32 = 68.0;
 const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
 const CHAT_COMMAND_INVALID_SHAKE_STEP_MS: u64 = 28;
 const CHAT_COMMAND_INVALID_SHAKE_TRANSITION_MS: u64 = 20;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatChannelKind {
+  ServerText,
+  Debug,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ChatChannel {
+  id: ChannelId,
+  name: Arc<str>,
+  topic: Arc<str>,
+  icon: &'static str,
+  kind: ChatChannelKind,
+  command_registry: ChatCommandRegistry,
+}
+
+impl ChatChannel {
+  pub(super) fn server_text(ctx: &mut Ctx, channel: &LobbyTextChannel) -> Self {
+    Self {
+      id: channel.id,
+      name: Arc::from(channel.name.as_str()),
+      topic: ctx.t("lobby.text_channel.topic"),
+      icon: "hash",
+      kind: ChatChannelKind::ServerText,
+      command_registry: ChatCommandRegistry::empty(),
+    }
+  }
+
+  pub(super) fn debug(ctx: &mut Ctx) -> Self {
+    Self {
+      id: DEBUG_CHAT_CHANNEL_ID,
+      name: ctx.t("lobby.debug_channels.chat"),
+      topic: ctx.t("lobby.debug_channels.topic"),
+      icon: "terminal",
+      kind: ChatChannelKind::Debug,
+      command_registry: ChatCommandRegistry::from_definitions([
+        CommandDefinition {
+          name: "/restart-audio-receiver".into(),
+          description_key: "lobby.text_channel.commands.description.restart_audio_receiver".into(),
+          usage: "/restart-audio-receiver {userId:u32}".into(),
+        },
+        CommandDefinition {
+          name: "/audio-status".into(),
+          description_key: "lobby.text_channel.commands.description.audio_status".into(),
+          usage: "/audio-status".into(),
+        },
+        CommandDefinition {
+          name: "/audio-reset-all".into(),
+          description_key: "lobby.text_channel.commands.description.audio_reset_all".into(),
+          usage: "/audio-reset-all".into(),
+        },
+        CommandDefinition {
+          name: "/audio-clear-queue".into(),
+          description_key: "lobby.text_channel.commands.description.audio_clear_queue".into(),
+          usage: "/audio-clear-queue {userId:u32}".into(),
+        },
+      ]),
+    }
+  }
+
+  pub(super) fn id(&self) -> ChannelId {
+    self.id
+  }
+
+  pub(super) fn name(&self) -> &str {
+    &self.name
+  }
+
+  pub(super) fn topic(&self) -> &str {
+    &self.topic
+  }
+
+  pub(super) fn icon(&self) -> &'static str {
+    self.icon
+  }
+
+  pub(super) fn command_registry(&self) -> ChatCommandRegistry {
+    self.command_registry.clone()
+  }
+
+  pub(super) fn server_channel_id(&self) -> Option<ChannelId> {
+    self.is_server_backed().then_some(self.id)
+  }
+
+  pub(super) fn is_server_backed(&self) -> bool {
+    self.kind == ChatChannelKind::ServerText
+  }
+
+  pub(super) fn shows_text_tools(&self) -> bool {
+    self.kind == ChatChannelKind::ServerText
+  }
+
+  fn empty_title_key(&self) -> &'static str {
+    match self.kind {
+      ChatChannelKind::ServerText => "lobby.text_channel.empty.title",
+      ChatChannelKind::Debug => "lobby.debug_channels.empty.title",
+    }
+  }
+
+  fn empty_description_key(&self) -> &'static str {
+    match self.kind {
+      ChatChannelKind::ServerText => "lobby.text_channel.empty.description",
+      ChatChannelKind::Debug => "lobby.debug_channels.empty.description",
+    }
+  }
+}
 
 #[derive(Clone)]
 pub(super) struct ChatCommandInvalidFeedback {
@@ -63,18 +170,30 @@ impl ChatCommandInvalidFeedback {
       step_two: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS), move || {
         step_two_phase.set(2);
       }),
-      step_three: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 2), move || {
-        step_three_phase.set(3);
-      }),
-      step_four: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 3), move || {
-        step_four_phase.set(4);
-      }),
-      step_five: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 4), move || {
-        step_five_phase.set(5);
-      }),
-      reset: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 5), move || {
-        reset_phase.set(0);
-      }),
+      step_three: ctx.create_timeout(
+        Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 2),
+        move || {
+          step_three_phase.set(3);
+        },
+      ),
+      step_four: ctx.create_timeout(
+        Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 3),
+        move || {
+          step_four_phase.set(4);
+        },
+      ),
+      step_five: ctx.create_timeout(
+        Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 4),
+        move || {
+          step_five_phase.set(5);
+        },
+      ),
+      reset: ctx.create_timeout(
+        Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 5),
+        move || {
+          reset_phase.set(0);
+        },
+      ),
     }
   }
 
@@ -94,7 +213,7 @@ impl ChatCommandInvalidFeedback {
 
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
-  channel: &LobbyTextChannel,
+  channel: ChatChannel,
   info: &ConnectedServerInfo,
   lobby: &LobbyState,
   message_input: Signal<String>,
@@ -108,28 +227,36 @@ pub(super) fn text_channel_detail(
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
 ) -> Element {
-  let messages = lobby
-    .chat_messages_by_channel
-    .get(&channel.id)
-    .cloned()
-    .unwrap_or_default();
+  let channel_id = channel.id();
+  let command_registry = channel.command_registry();
+  let commands_enabled = command_registry.has_commands();
+  let messages = if channel.is_server_backed() {
+    lobby
+      .chat_messages_by_channel
+      .get(&channel_id)
+      .cloned()
+      .unwrap_or_default()
+  } else {
+    lobby.debug_chat_messages.clone()
+  };
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
   let newest_message_from_local = messages.last().is_some_and(|message| message.sender_id == info.user_id);
   let initial_history_loading = messages.is_empty()
-    && lobby.chat_history_loading.contains(&channel.id)
-    && lobby.chat_history_has_more.get(&channel.id).copied().unwrap_or(true);
-  let can_page = oldest_message_id != 0
-    && lobby.chat_history_has_more.get(&channel.id).copied().unwrap_or(true)
-    && !lobby.chat_history_loading.contains(&channel.id);
+    && lobby.chat_history_loading.contains(&channel_id)
+    && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true);
+  let can_page = channel.is_server_backed()
+    && oldest_message_id != 0
+    && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true)
+    && !lobby.chat_history_loading.contains(&channel_id);
   preserve_chat_scroll_on_prepend(
-    channel.id,
+    channel_id,
     oldest_message_id,
     chat_scroll_state.clone(),
     chat_top_anchor,
   );
   schedule_chat_scroll_to_bottom(
-    channel.id,
+    channel_id,
     newest_message_id,
     newest_message_from_local,
     chat_scroll_state.clone(),
@@ -159,12 +286,12 @@ pub(super) fn text_channel_detail(
         .justify(Justify::Center)
         .spacing(theme::SpacingSize::Sm)
         .child(
-          Text::new(&ctx.t("lobby.text_channel.empty.title"))
+          Text::new(&ctx.t(channel.empty_title_key()))
             .variant(theme::TypographyStyle::Title)
             .color(theme::PaletteColor::TextPrimary),
         )
         .child(
-          Text::new(&ctx.t("lobby.text_channel.empty.description"))
+          Text::new(&ctx.t(channel.empty_description_key()))
             .variant(theme::TypographyStyle::Description)
             .color(theme::PaletteColor::TextMuted),
         ),
@@ -196,36 +323,40 @@ pub(super) fn text_channel_detail(
       chat_scroll_state,
       session,
       chat_history,
-      channel.id,
+      channel_id,
       oldest_message_id,
       can_page,
     ))
     .child(chat_composer(
       ctx,
-      channel,
+      &channel,
       message_input.clone(),
       command_selected_index.clone(),
       command_invalid_feedback.clone(),
+      command_registry.clone(),
       send_chat,
       composer_ref.clone(),
     ));
 
-  if let Some(suggestions) = chat_command_suggestions(
-    ctx,
-    message_input,
-    command_selected_index,
-    command_scroll_state,
-    command_invalid_feedback,
-  ) {
-    body = body.child(
-      Overlay::new(suggestions)
-        .anchor(composer_ref)
-        .placement(Placement::TopStart)
-        .offset(0.0, CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
-        .match_anchor_width(true)
-        .collision(CollisionStrategy::Clamp)
-        .hit_test(HitTestBehavior::ContentOnly),
-    );
+  if commands_enabled {
+    if let Some(suggestions) = chat_command_suggestions(
+      ctx,
+      message_input,
+      command_selected_index,
+      &command_registry,
+      command_scroll_state,
+      command_invalid_feedback,
+    ) {
+      body = body.child(
+        Overlay::new(suggestions)
+          .anchor(composer_ref)
+          .placement(Placement::TopStart)
+          .offset(0.0, CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
+          .match_anchor_width(true)
+          .collision(CollisionStrategy::Clamp)
+          .hit_test(HitTestBehavior::ContentOnly),
+      );
+    }
   }
 
   body.into()
@@ -713,10 +844,11 @@ fn pinned_badge(ctx: &mut Ctx, pinned: bool) -> Element {
 
 fn chat_composer(
   ctx: &mut Ctx,
-  channel: &LobbyTextChannel,
+  channel: &ChatChannel,
   message_input: Signal<String>,
   command_selected_index: Signal<usize>,
   command_invalid_feedback: ChatCommandInvalidFeedback,
+  command_registry: ChatCommandRegistry,
   send_chat: &SendChatAction,
   composer_ref: ElementRef,
 ) -> Element {
@@ -725,16 +857,18 @@ fn chat_composer(
   placeholder_style.color = theme::palette().text_muted.with_opacity(0.65);
   let placeholder = ctx.t_args(
     "lobby.text_channel.composer_placeholder",
-    [("channel", channel.name.clone())],
+    [("channel", channel.name().to_owned())],
   );
-  let channel_id = channel.id;
+  let channel_id = channel.server_channel_id();
   let key_value = message_input.clone();
   let key_command_selected_index = command_selected_index.clone();
   let key_invalid_feedback = command_invalid_feedback.clone();
+  let key_command_registry = command_registry.clone();
   let key_action = send_chat.clone();
   let click_value = message_input.clone();
   let click_command_selected_index = command_selected_index.clone();
   let click_invalid_feedback = command_invalid_feedback.clone();
+  let click_command_registry = command_registry.clone();
   let click_action = send_chat.clone();
 
   Row::new()
@@ -766,7 +900,13 @@ fn chat_composer(
             .background(BackgroundColor::Color(Color::from_hex("#00000000")))
             .caret_color(theme::PaletteColor::Accent)
             .on_key_down(move |event| {
-              if handle_chat_command_navigation(&key_value, &key_command_selected_index, &event.key, &event.code) {
+              if handle_chat_command_navigation(
+                &key_command_registry,
+                &key_value,
+                &key_command_selected_index,
+                &event.key,
+                &event.code,
+              ) {
                 event.prevent_default();
                 return;
               }
@@ -777,6 +917,7 @@ fn chat_composer(
                   &key_value,
                   &key_command_selected_index,
                   &key_invalid_feedback,
+                  &key_command_registry,
                   &key_action,
                 );
               }
@@ -798,6 +939,7 @@ fn chat_composer(
                 &click_value,
                 &click_command_selected_index,
                 &click_invalid_feedback,
+                &click_command_registry,
                 &click_action,
               )
             })
@@ -812,23 +954,28 @@ fn chat_composer(
 }
 
 fn handle_chat_command_navigation(
+  command_registry: &ChatCommandRegistry,
   message_input: &Signal<String>,
   selected_index: &Signal<usize>,
   key: &str,
   code: &str,
 ) -> bool {
+  if !command_registry.has_commands() {
+    return false;
+  }
+
   if matches!((key, code), ("Tab", _) | (_, "Tab")) {
     let input = message_input.get_untracked();
     let Some(query) = command_suggestion_query(&input) else {
       selected_index.set(0);
       return false;
     };
-    let commands = matching_chat_command_definitions(&query);
+    let commands = matching_chat_command_definitions(command_registry, &query);
     let Some(command) = commands.get(selected_index.get_untracked().min(commands.len().saturating_sub(1))) else {
       selected_index.set(0);
       return false;
     };
-    message_input.set(command_fill_text(command.name));
+    message_input.set(command_fill_text(command.name.as_ref()));
     return true;
   }
 
@@ -842,7 +989,7 @@ fn handle_chat_command_navigation(
     selected_index.set(0);
     return false;
   };
-  let count = matching_chat_command_definitions(&query).len();
+  let count = matching_chat_command_definitions(command_registry, &query).len();
   if count == 0 {
     selected_index.set(0);
     return false;
@@ -872,32 +1019,39 @@ fn command_suggestion_query(input: &str) -> Option<String> {
   )
 }
 
-fn matching_chat_command_definitions(query: &str) -> Vec<&'static CommandDefinition> {
-  ChatCommandRegistry::new()
+fn matching_chat_command_definitions<'a>(
+  command_registry: &'a ChatCommandRegistry,
+  query: &str,
+) -> Vec<&'a CommandDefinition> {
+  command_registry
     .definitions()
     .iter()
     .filter(|command| command.name.to_ascii_lowercase().starts_with(query))
     .collect()
 }
 
-fn localized_chat_command_info(ctx: &mut Ctx, command: &CommandDefinition) -> CommandInfo {
-  CommandInfo {
-    name: command.name.to_owned(),
-    description: ctx.t(command.description_key).to_string(),
-    usage: command.usage.to_owned(),
-  }
+fn exact_chat_command_definition<'a>(
+  command_registry: &'a ChatCommandRegistry,
+  input: &str,
+) -> Option<&'a CommandDefinition> {
+  let command_name = input.trim_start().split_whitespace().next()?;
+  command_registry
+    .definitions()
+    .iter()
+    .find(|command| command.name.as_ref() == command_name)
 }
 
 fn chat_command_suggestions(
   ctx: &mut Ctx,
   message_input: Signal<String>,
   selected_index: Signal<usize>,
+  command_registry: &ChatCommandRegistry,
   scroll_state: ScrollState,
   invalid_feedback: ChatCommandInvalidFeedback,
 ) -> Option<Element> {
   let input = message_input.get();
   let query = command_suggestion_query(&input)?;
-  let commands = matching_chat_command_definitions(&query);
+  let commands = matching_chat_command_definitions(command_registry, &query);
   if commands.is_empty() {
     selected_index.set(0);
     return None;
@@ -911,6 +1065,7 @@ fn chat_command_suggestions(
   let list_height = command_suggestion_list_height(commands.len());
   ensure_command_selection_visible(&scroll_state, active_index, list_height);
   let invalid_feedback_phase = invalid_feedback.phase();
+  let exact_command_name = exact_chat_command_definition(command_registry, &input).map(|command| command.name.as_ref());
   let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + list_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
 
   let title = if query == "/" {
@@ -927,7 +1082,7 @@ fn chat_command_suggestions(
   let mut list = Column::new().width(Dimension::Pct(100.0)).padding_bottom(6.0);
 
   for (index, command) in commands.into_iter().enumerate() {
-    let command = localized_chat_command_info(ctx, command);
+    let validate_arguments = invalid_feedback_phase != 0 && exact_command_name == Some(command.name.as_ref());
     list = list.child(command_suggestion_row(
       ctx,
       command,
@@ -937,6 +1092,7 @@ fn chat_command_suggestions(
       index,
       index == active_index,
       invalid_feedback_phase,
+      validate_arguments,
     ));
   }
 
@@ -994,15 +1150,16 @@ fn ensure_command_selection_visible(scroll_state: &ScrollState, active_index: us
 
 fn command_suggestion_row(
   ctx: &mut Ctx,
-  command: CommandInfo,
+  command: &CommandDefinition,
   input: String,
   message_input: Signal<String>,
   selected_index: Signal<usize>,
   index: usize,
   selected: bool,
   invalid_feedback_phase: u8,
+  validate_arguments: bool,
 ) -> Element {
-  let fill = command_fill_text(&command.name);
+  let fill = command_fill_text(command.name.as_ref());
   let background = if selected {
     BackgroundColor::Color(Color::from_hex("#232830"))
   } else {
@@ -1029,11 +1186,11 @@ fn command_suggestion_row(
         .flex(1.0)
         .spacing(theme::SpacingSize::Xs)
         .child(command_usage_row(
-          command_usage_parts(&command.usage, &input),
+          command_usage_parts(command.usage.as_ref(), &input, validate_arguments),
           invalid_feedback_phase,
         ))
         .child(
-          Text::new(&command.description)
+          Text::new(&ctx.t(&command.description_key))
             .variant(theme::TypographyStyle::Link)
             .color(theme::PaletteColor::TextSecondary),
         ),
@@ -1082,12 +1239,12 @@ fn command_usage_row(parts: Vec<CommandUsagePart>, invalid_feedback_phase: u8) -
 
   for part in parts {
     let child: Element = match part {
-      CommandUsagePart::Name(name) => Text::new(&name)
+      CommandUsagePart::Name(name) => Text::new(name.as_ref())
         .variant(theme::TypographyStyle::Heading)
         .color(theme::PaletteColor::TextPrimary)
         .into(),
       CommandUsagePart::Argument { label, invalid } => {
-        command_argument_pill(&label, invalid, invalid_feedback_phase)
+        command_argument_pill(label.as_ref(), invalid, invalid_feedback_phase)
       }
     };
     row = row.child(child);
@@ -1097,30 +1254,45 @@ fn command_usage_row(parts: Vec<CommandUsagePart>, invalid_feedback_phase: u8) -
 }
 
 enum CommandUsagePart {
-  Name(String),
-  Argument { label: String, invalid: bool },
+  Name(Arc<str>),
+  Argument { label: Arc<str>, invalid: bool },
 }
 
-fn command_usage_parts(usage: &str, input: &str) -> Vec<CommandUsagePart> {
+fn command_usage_parts(usage: &str, input: &str, validate_missing: bool) -> Vec<CommandUsagePart> {
   let input_args = command_preview_input_args(input);
   let mut argument_index = 0usize;
   usage
     .split_whitespace()
     .map(|part| {
       if let Some(argument) = part.strip_prefix('{').and_then(|part| part.strip_suffix('}')) {
-        let invalid = input_args
-          .get(argument_index)
-          .is_some_and(|value| !command_argument_value_valid(argument, value));
+        let invalid = match input_args.get(argument_index) {
+          Some(value) => !command_argument_value_valid(argument, value),
+          None => validate_missing && command_argument_required(argument),
+        };
         argument_index += 1;
         CommandUsagePart::Argument {
-          label: argument.to_owned(),
+          label: command_argument_display_label(argument),
           invalid,
         }
       } else {
-        CommandUsagePart::Name(part.to_owned())
+        CommandUsagePart::Name(Arc::from(part))
       }
     })
     .collect()
+}
+
+fn command_argument_display_label(argument: &str) -> Arc<str> {
+  let Some((name, ty)) = command_argument_parts(argument) else {
+    return Arc::from(argument);
+  };
+  Arc::from(format!("{name}:{}", command_argument_type_label(ty)))
+}
+
+fn command_argument_required(argument: &str) -> bool {
+  let Some((name, ty)) = argument.split_once(':') else {
+    return false;
+  };
+  !name.ends_with('?') && !ty.starts_with('?')
 }
 
 fn command_argument_pill(argument: &str, invalid: bool, invalid_feedback_phase: u8) -> Element {
@@ -1181,16 +1353,14 @@ fn command_preview_input_args(input: &str) -> Vec<String> {
 }
 
 fn command_argument_value_valid(argument: &str, value: &str) -> bool {
-  let Some((name, ty)) = argument.split_once(':') else {
+  let Some((name, ty)) = command_argument_parts(argument) else {
     return true;
   };
-  let ty = ty.strip_prefix('?').unwrap_or(ty);
-  let name = name.strip_suffix('?').unwrap_or(name);
   match ty {
     "u8" => value.parse::<u8>().is_ok_and(|value| name != "volume" || value <= 100),
     "u16" => value.parse::<u16>().is_ok(),
-    "u32" => value.parse::<u32>().is_ok_and(|value| value > 0),
-    "u64" => value.parse::<u64>().is_ok_and(|value| value > 0),
+    "u32" => value.parse::<u32>().is_ok_and(|value| name != "userId" || value > 0),
+    "u64" => value.parse::<u64>().is_ok(),
     "role" => matches!(
       value.to_ascii_lowercase().as_str(),
       "owner" | "admin" | "moderator" | "mod" | "user"
@@ -1200,16 +1370,33 @@ fn command_argument_value_valid(argument: &str, value: &str) -> bool {
   }
 }
 
-fn command_input_has_invalid_argument(input: &str, selected_index: &Signal<usize>) -> bool {
-  let Some(query) = command_suggestion_query(input) else {
-    return false;
-  };
-  let commands = matching_chat_command_definitions(&query);
-  let Some(command) = commands.get(selected_index.get_untracked().min(commands.len().saturating_sub(1))) else {
+fn command_argument_parts(argument: &str) -> Option<(&str, &str)> {
+  let (name, ty) = argument.split_once(':')?;
+  let ty = ty.strip_prefix('?').unwrap_or(ty);
+  let name = name.strip_suffix('?').unwrap_or(name);
+  Some((name, ty))
+}
+
+fn command_argument_type_label(ty: &str) -> &'static str {
+  match ty {
+    "u8" | "u16" | "u32" | "u64" => "Number",
+    "string" => "String",
+    "role" => "Role",
+    "choice" => "Choice",
+    _ => "Value",
+  }
+}
+
+fn command_input_has_invalid_argument(
+  command_registry: &ChatCommandRegistry,
+  input: &str,
+  _selected_index: &Signal<usize>,
+) -> bool {
+  let Some(command) = exact_chat_command_definition(command_registry, input) else {
     return false;
   };
 
-  command_usage_parts(command.usage, input)
+  command_usage_parts(&command.usage, input, true)
     .into_iter()
     .any(|part| matches!(part, CommandUsagePart::Argument { invalid: true, .. }))
 }
@@ -1219,31 +1406,39 @@ fn command_fill_text(command_name: &str) -> String {
 }
 
 fn submit_chat_if_valid(
-  channel_id: ChannelId,
+  channel_id: Option<ChannelId>,
   message_input: &Signal<String>,
   command_selected_index: &Signal<usize>,
   command_invalid_feedback: &ChatCommandInvalidFeedback,
+  command_registry: &ChatCommandRegistry,
   send_chat: &SendChatAction,
 ) {
-  let text = message_input.get_untracked();
-  if command_input_has_invalid_argument(&text, command_selected_index) {
-    command_invalid_feedback.trigger();
-    return;
-  }
-
-  submit_chat(channel_id, message_input, send_chat);
-}
-
-fn submit_chat(channel_id: ChannelId, message_input: &Signal<String>, send_chat: &SendChatAction) {
   let text = message_input.get_untracked();
   let text = text.trim();
   if text.is_empty() {
     return;
   }
 
+  if command_registry.has_commands()
+    && command_input_has_invalid_argument(command_registry, &text, command_selected_index)
+  {
+    command_invalid_feedback.trigger();
+    return;
+  }
+
+  run_chat_submission(channel_id, text, command_registry.clone(), send_chat);
+  message_input.set(String::new());
+}
+
+fn run_chat_submission(
+  channel_id: Option<ChannelId>,
+  text: &str,
+  command_registry: ChatCommandRegistry,
+  send_chat: &SendChatAction,
+) {
   send_chat.run(SendChatInput {
     channel_id,
     text: text.to_owned(),
+    command_registry,
   });
-  message_input.set(String::new());
 }

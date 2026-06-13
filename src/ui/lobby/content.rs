@@ -13,7 +13,7 @@ use lurq::{
 
 use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
-  chat::{ChatCommandInvalidFeedback, text_channel_detail},
+  chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
   shared::error_notice,
   stream_browser::stream_browser,
@@ -93,8 +93,14 @@ fn main_top_bar(
   stop_watching: &StopWatchingAction,
 ) -> Element {
   let metrics = lobby_layout_metrics(ctx);
+  if lobby.debug_chat_selected {
+    let channel = ChatChannel::debug(ctx);
+    return chat_channel_top_bar(ctx, &channel, None);
+  }
+
   if let Some(channel) = selected_text_channel(lobby) {
-    return text_channel_top_bar(ctx, channel, unique_lobby_member_count(lobby));
+    let channel = ChatChannel::server_text(ctx, channel);
+    return chat_channel_top_bar(ctx, &channel, Some(unique_lobby_member_count(lobby)));
   }
 
   if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
@@ -122,18 +128,18 @@ fn main_top_bar(
     .into()
 }
 
-fn text_channel_top_bar(ctx: &mut Ctx, channel: &LobbyTextChannel, member_count: usize) -> Element {
+fn chat_channel_top_bar(ctx: &mut Ctx, channel: &ChatChannel, member_count: Option<usize>) -> Element {
   let metrics = lobby_layout_metrics(ctx);
-  Row::new()
+  let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .height(56.0)
     .align_items(Alignment::Center)
     .spacing(12.0)
     .padding_horizontal(metrics.top_bar_padding_x)
     .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
-    .child(top_bar_plain_icon(ctx, "hash", 18.0))
+    .child(top_bar_plain_icon(ctx, channel.icon(), 18.0))
     .child(top_bar_label(
-      &channel.name,
+      channel.name(),
       theme::TypographyStyle::Heading,
       theme::PaletteColor::TextPrimary,
     ))
@@ -149,26 +155,31 @@ fn text_channel_top_bar(ctx: &mut Ctx, channel: &LobbyTextChannel, member_count:
         ),
     )
     .child(top_bar_label(
-      &ctx.t("lobby.text_channel.topic"),
+      channel.topic(),
       theme::TypographyStyle::Caption,
       theme::PaletteColor::TextMuted,
     ))
-    .child(Row::new().flex(1.0))
-    .child(top_bar_icon(ctx, "search"))
-    .child(top_bar_icon(ctx, "pin"))
-    .child(
-      Row::new()
-        .height(Dimension::Pct(100.0))
-        .align_items(Alignment::Center)
-        .spacing(6.0)
-        .child(top_bar_icon(ctx, "users"))
-        .child(top_bar_label(
-          &member_count.to_string(),
-          theme::TypographyStyle::Mono,
-          theme::PaletteColor::TextMuted,
-        )),
-    )
-    .into()
+    .child(Row::new().flex(1.0));
+
+  if channel.shows_text_tools() {
+    row = row.child(top_bar_icon(ctx, "search")).child(top_bar_icon(ctx, "pin"));
+    if let Some(member_count) = member_count {
+      row = row.child(
+        Row::new()
+          .height(Dimension::Pct(100.0))
+          .align_items(Alignment::Center)
+          .spacing(6.0)
+          .child(top_bar_icon(ctx, "users"))
+          .child(top_bar_label(
+            &member_count.to_string(),
+            theme::TypographyStyle::Mono,
+            theme::PaletteColor::TextMuted,
+          )),
+      );
+    }
+  }
+
+  row.into()
 }
 
 fn voice_stream_top_bar(ctx: &mut Ctx, channel: &LobbyChannel, user_count: usize) -> Element {
@@ -271,7 +282,28 @@ fn main_body(
   watch_stream: &WatchStreamAction,
   stop_watching: &StopWatchingAction,
 ) -> Element {
+  if lobby.debug_chat_selected {
+    let channel = ChatChannel::debug(ctx);
+    return text_channel_detail(
+      ctx,
+      channel,
+      info,
+      lobby,
+      message_input,
+      chat_command_selected_index,
+      chat_command_scroll_state,
+      chat_command_invalid_feedback,
+      chat_scroll_state,
+      chat_bottom_anchor,
+      chat_top_anchor,
+      session,
+      chat_history,
+      send_chat,
+    );
+  }
+
   if let Some(channel) = selected_text_channel(lobby) {
+    let channel = ChatChannel::server_text(ctx, channel);
     return text_channel_detail(
       ctx,
       channel,

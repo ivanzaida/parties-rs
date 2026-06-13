@@ -24,7 +24,7 @@ use crate::{
   network::protocol::{ChannelId, UserId},
   routes::ROUTE_CHOOSE_SERVER,
   services::screen_share_sources::ScreenShareSourceKind,
-  session::{ConnectedServerInfo, ServerSession},
+  session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
   storage::{AppSettings, Storage},
   theme,
   ui::loader::loader,
@@ -34,6 +34,7 @@ mod actions;
 mod channel_section;
 mod chat;
 mod content;
+mod debug_channels;
 mod disconnected;
 mod layout;
 mod rail;
@@ -76,8 +77,9 @@ struct ChatHistoryRequest {
 
 #[derive(Clone)]
 struct SendChatInput {
-  channel_id: ChannelId,
+  channel_id: Option<ChannelId>,
   text: String,
+  command_registry: ChatCommandRegistry,
 }
 
 #[derive(Clone)]

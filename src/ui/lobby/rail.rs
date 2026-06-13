@@ -20,6 +20,7 @@ use crate::{
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     lobby::{
+      debug_channels::{DebugChannels, DebugChannelsProps},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, VoiceChannels, VoiceChannelsProps},
@@ -307,6 +308,9 @@ fn rail_channels(
       channels: lobby.text_channels.clone(),
       selected_channel_id: lobby.selected_text_channel_id,
       unread_channel_ids: lobby.unread_text_channel_ids.clone(),
+    }))
+    .child(ctx.mount::<DebugChannels>(DebugChannelsProps {
+      selected: lobby.debug_chat_selected,
     }))
     .child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
       channels: lobby.channels.clone(),

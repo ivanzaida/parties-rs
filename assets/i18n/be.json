@@ -1037,6 +1037,18 @@
       "title": "ТЭКСТАВЫЯ КАНАЛЫ",
       "empty": "Пакуль няма тэкставых каналаў"
     },
+    "debug_channels": {
+      "title": "DEBUG",
+      "chat": "debug chat",
+      "topic": "Толькі лакальныя каманды",
+      "empty": {
+        "title": "Debug commands",
+        "description": "Выкарыстоўвайце slash-каманды тут; яны не адпраўляюцца ў тэкставыя каналы сервера."
+      },
+      "error": {
+        "command_required": "Debug chat прымае толькі slash-каманды."
+      }
+    },
     "text_channel": {
       "topic": "Аб'явы сервера і агульныя размовы",
       "composer_placeholder": "Паведамленне #{{channel}}",
@@ -1104,8 +1116,9 @@
           "empty": "Каманда пустая.",
           "unterminated_quote": "Каманда змяшчае незакрыты аргумент у двукоссі.",
           "usage": "Выкарыстанне: {{usage}}",
-          "invalid_user_id": "userId павінен быць дадатным лікавым id карыстальніка.",
-          "user_id_positive": "userId павінен быць большым за нуль.",
+          "invalid_type": "{{value}} павінен быць {{expected}}.",
+          "invalid_type_number": "карэктным лікам ад {{min}} да {{max}}",
+          "invalid_type_text": "непустым тэкстам",
           "not_implemented": "{{command}} зарэгістравана для UI-прагляду, але яшчэ не рэалізавана.",
           "unknown": "Невядомая каманда: {{command}}"
         }

@@ -1,6 +1,6 @@
 use std::{
   collections::{HashMap, HashSet},
-  time::Instant,
+  time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -13,6 +13,10 @@ use crate::{
   },
   services::notifications::NotificationSound,
 };
+
+pub const DEBUG_CHAT_CHANNEL_ID: ChannelId = u32::MAX;
+const DEBUG_CHAT_SENDER_ID: UserId = 0;
+const DEBUG_CHAT_SENDER_NAME: &str = "Debug";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LobbyChannel {
@@ -101,7 +105,10 @@ pub struct LobbyState {
   pub stream_browser_channel_id: Option<ChannelId>,
   pub text_channels: Vec<LobbyTextChannel>,
   pub selected_text_channel_id: Option<ChannelId>,
+  pub debug_chat_selected: bool,
   pub chat_messages_by_channel: HashMap<ChannelId, Vec<ProtocolChatMessage>>,
+  pub debug_chat_messages: Vec<ProtocolChatMessage>,
+  pub next_debug_chat_message_id: u64,
   pub unread_text_channel_ids: HashSet<ChannelId>,
   pub chat_history_loading: HashSet<ChannelId>,
   pub chat_history_has_more: HashMap<ChannelId, bool>,
@@ -131,6 +138,7 @@ pub(super) fn select_channel(lobby: &mut LobbyState, channel_id: ChannelId) {
   let previous = lobby.selected_channel_id;
   lobby.selected_channel_id = Some(channel_id);
   lobby.selected_text_channel_id = None;
+  lobby.debug_chat_selected = false;
   lobby.stream_browser_channel_id = None;
   sync_selected_users(lobby);
   tracing::debug!(target: "lobby",
@@ -168,14 +176,45 @@ pub(super) fn leave_channel_locally(lobby: &mut LobbyState, local_user_id: Optio
 pub(super) fn select_text_channel(lobby: &mut LobbyState, channel_id: ChannelId) {
   let previous = lobby.selected_text_channel_id;
   lobby.selected_text_channel_id = Some(channel_id);
+  lobby.debug_chat_selected = false;
   lobby.unread_text_channel_ids.remove(&channel_id);
   lobby.stream_browser_channel_id = None;
   tracing::debug!(target: "lobby", "[lobby] selected text channel: previous={previous:?} current={channel_id}");
 }
 
+pub(super) fn select_debug_chat(lobby: &mut LobbyState) {
+  lobby.selected_text_channel_id = None;
+  lobby.debug_chat_selected = true;
+  lobby.stream_browser_channel_id = None;
+  tracing::debug!(target: "lobby", "[lobby] selected debug chat");
+}
+
+pub(super) fn push_debug_chat_message(lobby: &mut LobbyState, text: String) {
+  let id = lobby.next_debug_chat_message_id.max(1);
+  lobby.next_debug_chat_message_id = id.saturating_add(1);
+  lobby.debug_chat_messages.push(ProtocolChatMessage {
+    id,
+    channel_id: DEBUG_CHAT_CHANNEL_ID,
+    sender_id: DEBUG_CHAT_SENDER_ID,
+    sender_name: DEBUG_CHAT_SENDER_NAME.to_owned(),
+    timestamp: current_timestamp_millis(),
+    text,
+    pinned: false,
+    attachments: Vec::new(),
+  });
+}
+
+fn current_timestamp_millis() -> u64 {
+  SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+    .unwrap_or(0)
+}
+
 pub(super) fn open_stream_browser(lobby: &mut LobbyState, channel_id: ChannelId) {
   if lobby.selected_channel_id == Some(channel_id) && lobby.channels.iter().any(|channel| channel.id == channel_id) {
     lobby.selected_text_channel_id = None;
+    lobby.debug_chat_selected = false;
     lobby.stream_browser_channel_id = Some(channel_id);
     tracing::info!(target: "video", "[video] stream browser opened: channel={channel_id}");
   }
@@ -361,7 +400,9 @@ pub(super) fn apply_server_message(
         .chat_history_has_more
         .retain(|channel_id, _| channel_ids.contains(channel_id));
 
-      if selected.is_some_and(|id| lobby.text_channels.iter().any(|channel| channel.id == id)) {
+      if lobby.debug_chat_selected {
+        lobby.selected_text_channel_id = None;
+      } else if selected.is_some_and(|id| lobby.text_channels.iter().any(|channel| channel.id == id)) {
         lobby.selected_text_channel_id = selected;
       } else {
         lobby.selected_text_channel_id = lobby.text_channels.first().map(|channel| channel.id);

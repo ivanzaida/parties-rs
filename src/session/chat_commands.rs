@@ -1,302 +1,67 @@
-use crate::network::protocol::UserId;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChatCommand {
-  RestartAudioReceiver { user_id: UserId },
+pub struct ChatCommandInvocation {
+  pub name: Arc<str>,
+  pub arguments: Vec<Arc<str>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandInfo {
-  pub name: String,
-  pub description: String,
-  pub usage: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandDefinition {
-  pub name: &'static str,
-  pub description_key: &'static str,
-  pub usage: &'static str,
+  pub name: Arc<str>,
+  pub description_key: Arc<str>,
+  pub usage: Arc<str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatCommandParseError {
   Empty,
   UnterminatedQuotedArgument,
-  Usage { command: String, usage: String },
-  InvalidUserId,
-  UserIdMustBeGreaterThanZero,
-  NotImplemented { command: String },
-  Unknown { command: String },
+  Usage {
+    command: String,
+    usage: String,
+  },
+  InvalidType {
+    argument: String,
+    value: String,
+    expected: ChatCommandExpectedType,
+  },
+  Unknown {
+    command: String,
+  },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatCommandExpectedType {
+  Number { min: String, max: String },
+  Text,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ChatCommandRegistry;
-
-const RESTART_AUDIO_RECEIVER_USAGE: &str = "/restart-audio-receiver {userId:u32}";
-const COMMAND_DEFINITIONS: [CommandDefinition; 50] = [
-  CommandDefinition {
-    name: "/restart-audio-receiver",
-    description_key: "lobby.text_channel.commands.description.restart_audio_receiver",
-    usage: RESTART_AUDIO_RECEIVER_USAGE,
-  },
-  CommandDefinition {
-    name: "/audio-status",
-    description_key: "lobby.text_channel.commands.description.audio_status",
-    usage: "/audio-status",
-  },
-  CommandDefinition {
-    name: "/audio-reset-all",
-    description_key: "lobby.text_channel.commands.description.audio_reset_all",
-    usage: "/audio-reset-all",
-  },
-  CommandDefinition {
-    name: "/audio-clear-queue",
-    description_key: "lobby.text_channel.commands.description.audio_clear_queue",
-    usage: "/audio-clear-queue {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/audio-set-volume",
-    description_key: "lobby.text_channel.commands.description.audio_set_volume",
-    usage: "/audio-set-volume {userId:u32} {volume:u8}",
-  },
-  CommandDefinition {
-    name: "/audio-muted",
-    description_key: "lobby.text_channel.commands.description.audio_muted",
-    usage: "/audio-muted",
-  },
-  CommandDefinition {
-    name: "/voice-join",
-    description_key: "lobby.text_channel.commands.description.voice_join",
-    usage: "/voice-join {channelId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-leave",
-    description_key: "lobby.text_channel.commands.description.voice_leave",
-    usage: "/voice-leave",
-  },
-  CommandDefinition {
-    name: "/voice-mute",
-    description_key: "lobby.text_channel.commands.description.voice_mute",
-    usage: "/voice-mute {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-unmute",
-    description_key: "lobby.text_channel.commands.description.voice_unmute",
-    usage: "/voice-unmute {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-deafen",
-    description_key: "lobby.text_channel.commands.description.voice_deafen",
-    usage: "/voice-deafen {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-undeafen",
-    description_key: "lobby.text_channel.commands.description.voice_undeafen",
-    usage: "/voice-undeafen {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-disconnect",
-    description_key: "lobby.text_channel.commands.description.voice_disconnect",
-    usage: "/voice-disconnect {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/stream-watch",
-    description_key: "lobby.text_channel.commands.description.stream_watch",
-    usage: "/stream-watch {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/stream-stop",
-    description_key: "lobby.text_channel.commands.description.stream_stop",
-    usage: "/stream-stop",
-  },
-  CommandDefinition {
-    name: "/stream-codec",
-    description_key: "lobby.text_channel.commands.description.stream_codec",
-    usage: "/stream-codec {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/stream-volume",
-    description_key: "lobby.text_channel.commands.description.stream_volume",
-    usage: "/stream-volume {userId:u32} {volume:u8}",
-  },
-  CommandDefinition {
-    name: "/chat-pin",
-    description_key: "lobby.text_channel.commands.description.chat_pin",
-    usage: "/chat-pin {messageId:u64}",
-  },
-  CommandDefinition {
-    name: "/chat-unpin",
-    description_key: "lobby.text_channel.commands.description.chat_unpin",
-    usage: "/chat-unpin {messageId:u64}",
-  },
-  CommandDefinition {
-    name: "/chat-delete",
-    description_key: "lobby.text_channel.commands.description.chat_delete",
-    usage: "/chat-delete {messageId:u64}",
-  },
-  CommandDefinition {
-    name: "/chat-search",
-    description_key: "lobby.text_channel.commands.description.chat_search",
-    usage: "/chat-search {query:string}",
-  },
-  CommandDefinition {
-    name: "/chat-history",
-    description_key: "lobby.text_channel.commands.description.chat_history",
-    usage: "/chat-history {beforeId:u64} {limit:u16}",
-  },
-  CommandDefinition {
-    name: "/text-create",
-    description_key: "lobby.text_channel.commands.description.text_create",
-    usage: "/text-create {name:string}",
-  },
-  CommandDefinition {
-    name: "/text-delete",
-    description_key: "lobby.text_channel.commands.description.text_delete",
-    usage: "/text-delete {channelId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-create",
-    description_key: "lobby.text_channel.commands.description.voice_create",
-    usage: "/voice-create {name:string} {maxUsers:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-delete",
-    description_key: "lobby.text_channel.commands.description.voice_delete",
-    usage: "/voice-delete {channelId:u32}",
-  },
-  CommandDefinition {
-    name: "/voice-rename",
-    description_key: "lobby.text_channel.commands.description.voice_rename",
-    usage: "/voice-rename {channelId:u32} {name:string}",
-  },
-  CommandDefinition {
-    name: "/role-set",
-    description_key: "lobby.text_channel.commands.description.role_set",
-    usage: "/role-set {userId:u32} {role:role}",
-  },
-  CommandDefinition {
-    name: "/user-kick",
-    description_key: "lobby.text_channel.commands.description.user_kick",
-    usage: "/user-kick {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/user-info",
-    description_key: "lobby.text_channel.commands.description.user_info",
-    usage: "/user-info {userId:u32}",
-  },
-  CommandDefinition {
-    name: "/server-ping",
-    description_key: "lobby.text_channel.commands.description.server_ping",
-    usage: "/server-ping",
-  },
-  CommandDefinition {
-    name: "/server-reconnect",
-    description_key: "lobby.text_channel.commands.description.server_reconnect",
-    usage: "/server-reconnect",
-  },
-  CommandDefinition {
-    name: "/debug-lobby",
-    description_key: "lobby.text_channel.commands.description.debug_lobby",
-    usage: "/debug-lobby",
-  },
-  CommandDefinition {
-    name: "/debug-connection",
-    description_key: "lobby.text_channel.commands.description.debug_connection",
-    usage: "/debug-connection",
-  },
-  CommandDefinition {
-    name: "/debug-video",
-    description_key: "lobby.text_channel.commands.description.debug_video",
-    usage: "/debug-video",
-  },
-  CommandDefinition {
-    name: "/debug-audio",
-    description_key: "lobby.text_channel.commands.description.debug_audio",
-    usage: "/debug-audio",
-  },
-  CommandDefinition {
-    name: "/settings-audio",
-    description_key: "lobby.text_channel.commands.description.settings_audio",
-    usage: "/settings-audio",
-  },
-  CommandDefinition {
-    name: "/settings-stream",
-    description_key: "lobby.text_channel.commands.description.settings_stream",
-    usage: "/settings-stream",
-  },
-  CommandDefinition {
-    name: "/settings-identity",
-    description_key: "lobby.text_channel.commands.description.settings_identity",
-    usage: "/settings-identity",
-  },
-  CommandDefinition {
-    name: "/settings-notifications",
-    description_key: "lobby.text_channel.commands.description.settings_notifications",
-    usage: "/settings-notifications",
-  },
-  CommandDefinition {
-    name: "/help",
-    description_key: "lobby.text_channel.commands.description.help",
-    usage: "/help {command?:string}",
-  },
-  CommandDefinition {
-    name: "/me",
-    description_key: "lobby.text_channel.commands.description.me",
-    usage: "/me {text:string}",
-  },
-  CommandDefinition {
-    name: "/shrug",
-    description_key: "lobby.text_channel.commands.description.shrug",
-    usage: "/shrug {text?:string}",
-  },
-  CommandDefinition {
-    name: "/tableflip",
-    description_key: "lobby.text_channel.commands.description.tableflip",
-    usage: "/tableflip {text?:string}",
-  },
-  CommandDefinition {
-    name: "/unflip",
-    description_key: "lobby.text_channel.commands.description.unflip",
-    usage: "/unflip {text?:string}",
-  },
-  CommandDefinition {
-    name: "/roll",
-    description_key: "lobby.text_channel.commands.description.roll",
-    usage: "/roll {dice:string}",
-  },
-  CommandDefinition {
-    name: "/coin",
-    description_key: "lobby.text_channel.commands.description.coin",
-    usage: "/coin",
-  },
-  CommandDefinition {
-    name: "/remind",
-    description_key: "lobby.text_channel.commands.description.remind",
-    usage: "/remind {duration:string} {text:string}",
-  },
-  CommandDefinition {
-    name: "/copy-id",
-    description_key: "lobby.text_channel.commands.description.copy_id",
-    usage: "/copy-id {kind:choice} {id:u64}",
-  },
-  CommandDefinition {
-    name: "/about",
-    description_key: "lobby.text_channel.commands.description.about",
-    usage: "/about",
-  },
-];
+pub struct ChatCommandRegistry {
+  definitions: Arc<[CommandDefinition]>,
+}
 
 impl ChatCommandRegistry {
-  pub fn new() -> Self {
-    Self
+  pub fn empty() -> Self {
+    Self::default()
   }
 
-  pub fn definitions(&self) -> &'static [CommandDefinition] {
-    &COMMAND_DEFINITIONS
+  pub fn from_definitions(definitions: impl IntoIterator<Item = CommandDefinition>) -> Self {
+    Self {
+      definitions: definitions.into_iter().collect(),
+    }
   }
 
-  pub fn parse(&self, input: &str) -> Result<Option<ChatCommand>, ChatCommandParseError> {
+  pub fn has_commands(&self) -> bool {
+    !self.definitions.is_empty()
+  }
+
+  pub fn definitions(&self) -> &[CommandDefinition] {
+    &self.definitions
+  }
+
+  pub fn parse(&self, input: &str) -> Result<Option<ChatCommandInvocation>, ChatCommandParseError> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
       return Ok(None);
@@ -308,40 +73,125 @@ impl ChatCommandRegistry {
     }
 
     let command = tokens.remove(0);
-    match command.as_str() {
-      "/restart-audio-receiver" => {
-        if tokens.len() != 1 {
-          return Err(ChatCommandParseError::Usage {
-            usage: self.usage_for(&command),
-            command,
-          });
-        }
-        let user_id = tokens[0]
-          .parse::<UserId>()
-          .map_err(|_| ChatCommandParseError::InvalidUserId)?;
-        if user_id == 0 {
-          return Err(ChatCommandParseError::UserIdMustBeGreaterThanZero);
-        }
-        Ok(Some(ChatCommand::RestartAudioReceiver { user_id }))
-      }
-      _ if self.definitions().iter().any(|info| info.name == command) => {
-        Err(ChatCommandParseError::NotImplemented { command })
-      }
-      _ => Err(ChatCommandParseError::Unknown { command }),
-    }
+    let Some(definition) = self.definition_for(command.as_ref()) else {
+      return Err(ChatCommandParseError::Unknown {
+        command: command.to_string(),
+      });
+    };
+
+    self.validate_usage(definition, command.as_ref(), &tokens)?;
+    Ok(Some(ChatCommandInvocation {
+      name: command,
+      arguments: tokens,
+    }))
   }
 
   fn usage_for(&self, name: &str) -> String {
     self
       .definitions()
       .into_iter()
-      .find(|definition| definition.name == name)
-      .map(|definition| definition.usage.to_owned())
+      .find(|definition| definition.name.as_ref() == name)
+      .map(|definition| definition.usage.to_string())
       .unwrap_or_else(|| name.to_owned())
+  }
+
+  fn definition_for(&self, name: &str) -> Option<&CommandDefinition> {
+    self
+      .definitions()
+      .iter()
+      .find(|definition| definition.name.as_ref() == name)
+  }
+
+  fn validate_usage(
+    &self,
+    definition: &CommandDefinition,
+    command: &str,
+    values: &[Arc<str>],
+  ) -> Result<(), ChatCommandParseError> {
+    let argument_specs: Vec<_> = definition
+      .usage
+      .split_whitespace()
+      .skip(1)
+      .filter_map(command_usage_argument)
+      .collect();
+    let required_count = argument_specs.iter().filter(|argument| argument.required).count();
+    if values.len() < required_count || values.len() > argument_specs.len() {
+      return Err(ChatCommandParseError::Usage {
+        command: command.to_owned(),
+        usage: self.usage_for(command),
+      });
+    }
+
+    for (argument, value) in argument_specs.iter().zip(values) {
+      validate_argument_value(argument, value.as_ref())?;
+    }
+
+    Ok(())
   }
 }
 
-fn command_tokens(input: &str) -> Result<Vec<String>, ChatCommandParseError> {
+#[derive(Clone, Copy)]
+struct CommandArgument<'a> {
+  name: &'a str,
+  ty: &'a str,
+  required: bool,
+}
+
+fn command_usage_argument(part: &str) -> Option<CommandArgument<'_>> {
+  let argument = part.strip_prefix('{')?.strip_suffix('}')?;
+  let (name, ty) = argument.split_once(':')?;
+  let required = !name.ends_with('?') && !ty.starts_with('?');
+  Some(CommandArgument {
+    name: name.strip_suffix('?').unwrap_or(name),
+    ty: ty.strip_prefix('?').unwrap_or(ty),
+    required,
+  })
+}
+
+fn validate_argument_value(argument: &CommandArgument<'_>, value: &str) -> Result<(), ChatCommandParseError> {
+  match argument.ty {
+    "u8" => validate_number_range(argument.name, value, 0, u8::MAX as u64),
+    "u16" => validate_number_range(argument.name, value, 0, u16::MAX as u64),
+    "u32" => {
+      let min = if argument.name == "userId" { 1 } else { 0 };
+      validate_number_range(argument.name, value, min, u32::MAX as u64)
+    }
+    "u64" => validate_number_range(argument.name, value, 0, u64::MAX),
+    "string" | "choice" | "role" => {
+      if value.trim().is_empty() {
+        return Err(invalid_string_value(argument.name, value));
+      }
+      Ok(())
+    }
+    _ => Ok(()),
+  }
+}
+
+fn validate_number_range(argument: &str, value: &str, min: u64, max: u64) -> Result<(), ChatCommandParseError> {
+  let valid = value.parse::<u64>().is_ok_and(|value| value >= min && value <= max);
+  if valid {
+    return Ok(());
+  }
+
+  Err(ChatCommandParseError::InvalidType {
+    argument: argument.to_owned(),
+    value: value.to_owned(),
+    expected: ChatCommandExpectedType::Number {
+      min: min.to_string(),
+      max: max.to_string(),
+    },
+  })
+}
+
+fn invalid_string_value(argument: &str, value: &str) -> ChatCommandParseError {
+  ChatCommandParseError::InvalidType {
+    argument: argument.to_owned(),
+    value: value.to_owned(),
+    expected: ChatCommandExpectedType::Text,
+  }
+}
+
+fn command_tokens(input: &str) -> Result<Vec<Arc<str>>, ChatCommandParseError> {
   let mut tokens = Vec::new();
   let mut current = String::new();
   let mut in_quotes = false;
@@ -359,7 +209,7 @@ fn command_tokens(input: &str) -> Result<Vec<String>, ChatCommandParseError> {
       '"' => in_quotes = !in_quotes,
       ch if ch.is_whitespace() && !in_quotes => {
         if !current.is_empty() {
-          tokens.push(std::mem::take(&mut current));
+          tokens.push(Arc::from(std::mem::take(&mut current)));
         }
       }
       _ => current.push(ch),
@@ -373,7 +223,7 @@ fn command_tokens(input: &str) -> Result<Vec<String>, ChatCommandParseError> {
     return Err(ChatCommandParseError::UnterminatedQuotedArgument);
   }
   if !current.is_empty() {
-    tokens.push(current);
+    tokens.push(Arc::from(current));
   }
 
   Ok(tokens)
@@ -383,23 +233,59 @@ fn command_tokens(input: &str) -> Result<Vec<String>, ChatCommandParseError> {
 mod tests {
   use super::*;
 
+  fn debug_registry() -> ChatCommandRegistry {
+    ChatCommandRegistry::from_definitions([
+      CommandDefinition {
+        name: "/restart-audio-receiver".into(),
+        description_key: "lobby.text_channel.commands.description.restart_audio_receiver".into(),
+        usage: "/restart-audio-receiver {userId:u32}".into(),
+      },
+      CommandDefinition {
+        name: "/audio-status".into(),
+        description_key: "lobby.text_channel.commands.description.audio_status".into(),
+        usage: "/audio-status".into(),
+      },
+    ])
+  }
+
   #[test]
   fn ignores_regular_chat_messages() {
-    assert_eq!(ChatCommandRegistry::new().parse("hello").unwrap(), None);
+    assert_eq!(debug_registry().parse("hello").unwrap(), None);
+  }
+
+  #[test]
+  fn empty_registry_exposes_no_commands() {
+    let registry = ChatCommandRegistry::empty();
+    assert!(!registry.has_commands());
+    assert!(registry.definitions().is_empty());
   }
 
   #[test]
   fn parses_restart_audio_receiver() {
     assert_eq!(
-      ChatCommandRegistry::new().parse("/restart-audio-receiver 42").unwrap(),
-      Some(ChatCommand::RestartAudioReceiver { user_id: 42 })
+      debug_registry().parse("/restart-audio-receiver 42").unwrap(),
+      Some(ChatCommandInvocation {
+        name: Arc::from("/restart-audio-receiver"),
+        arguments: vec![Arc::from("42")],
+      })
+    );
+  }
+
+  #[test]
+  fn parses_registered_unimplemented_command_as_invocation() {
+    assert_eq!(
+      debug_registry().parse("/audio-status").unwrap(),
+      Some(ChatCommandInvocation {
+        name: Arc::from("/audio-status"),
+        arguments: Vec::new(),
+      })
     );
   }
 
   #[test]
   fn restart_audio_receiver_requires_user_id() {
     assert_eq!(
-      ChatCommandRegistry::new().parse("/restart-audio-receiver").unwrap_err(),
+      debug_registry().parse("/restart-audio-receiver").unwrap_err(),
       ChatCommandParseError::Usage {
         command: "/restart-audio-receiver".to_owned(),
         usage: "/restart-audio-receiver {userId:u32}".to_owned(),
@@ -408,26 +294,46 @@ mod tests {
   }
 
   #[test]
-  fn restart_audio_receiver_rejects_invalid_user_id() {
+  fn restart_audio_receiver_rejects_invalid_user_id_as_invalid_type() {
     assert_eq!(
-      ChatCommandRegistry::new()
-        .parse("/restart-audio-receiver abc")
-        .unwrap_err(),
-      ChatCommandParseError::InvalidUserId
+      debug_registry().parse("/restart-audio-receiver abc").unwrap_err(),
+      ChatCommandParseError::InvalidType {
+        argument: "userId".to_owned(),
+        value: "abc".to_owned(),
+        expected: ChatCommandExpectedType::Number {
+          min: "1".to_owned(),
+          max: u32::MAX.to_string(),
+        },
+      }
+    );
+  }
+
+  #[test]
+  fn restart_audio_receiver_rejects_zero_user_id_as_invalid_type() {
+    assert_eq!(
+      debug_registry().parse("/restart-audio-receiver 0").unwrap_err(),
+      ChatCommandParseError::InvalidType {
+        argument: "userId".to_owned(),
+        value: "0".to_owned(),
+        expected: ChatCommandExpectedType::Number {
+          min: "1".to_owned(),
+          max: u32::MAX.to_string(),
+        },
+      }
     );
   }
 
   #[test]
   fn exposes_command_definitions() {
-    let commands = ChatCommandRegistry::new().definitions();
-    assert_eq!(commands.len(), 50);
+    let registry = debug_registry();
+    let commands = registry.definitions();
+    assert_eq!(commands.len(), 2);
+    let first = commands.first().expect("restart command should be registered");
+    assert_eq!(first.name.as_ref(), "/restart-audio-receiver");
     assert_eq!(
-      commands.first(),
-      Some(&CommandDefinition {
-        name: "/restart-audio-receiver",
-        description_key: "lobby.text_channel.commands.description.restart_audio_receiver",
-        usage: "/restart-audio-receiver {userId:u32}",
-      })
+      first.description_key.as_ref(),
+      "lobby.text_channel.commands.description.restart_audio_receiver"
     );
+    assert_eq!(first.usage.as_ref(), "/restart-audio-receiver {userId:u32}");
   }
 }
