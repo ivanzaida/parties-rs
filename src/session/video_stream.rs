@@ -74,6 +74,10 @@ impl StreamRuntime {
     stopped
   }
 
+  pub(super) fn has_broadcast(&self) -> bool {
+    self.broadcast.lock().is_some()
+  }
+
   pub(super) fn request_local_keyframe(&self) -> bool {
     let broadcast = self.broadcast.lock();
     let Some(broadcast) = broadcast.as_ref() else {

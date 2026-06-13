@@ -632,6 +632,10 @@ impl ServerSession {
     self.voice.voice_active()
   }
 
+  pub fn voice_engine_status(&self) -> (bool, bool) {
+    self.voice.engine_status()
+  }
+
   pub fn stop_voice(&self) {
     let stopped = self.voice.stop();
     if stopped {
@@ -667,6 +671,10 @@ impl ServerSession {
     if stopped {
       tracing::info!(target: "video::encode", "[video:encode] local broadcaster stopped");
     }
+  }
+
+  pub fn video_broadcast_active(&self) -> bool {
+    self.streams.has_broadcast()
   }
 
   fn local_voice_callback(&self) -> LocalVoiceCallback {

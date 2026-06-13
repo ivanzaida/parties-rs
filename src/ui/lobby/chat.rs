@@ -83,6 +83,46 @@ impl ChatChannel {
           usage: "/restart-audio-receiver {userId:u32}".into(),
         },
         CommandDefinition {
+          name: "/debug-user".into(),
+          description_key: "lobby.text_channel.commands.description.debug_user".into(),
+          usage: "/debug-user {userId:u32}".into(),
+        },
+        CommandDefinition {
+          name: "/debug-voice".into(),
+          description_key: "lobby.text_channel.commands.description.debug_voice".into(),
+          usage: "/debug-voice {userId:u32}".into(),
+        },
+        CommandDefinition {
+          name: "/debug-my-voice".into(),
+          description_key: "lobby.text_channel.commands.description.debug_my_voice".into(),
+          usage: "/debug-my-voice".into(),
+        },
+        CommandDefinition {
+          name: "/debug-stream".into(),
+          description_key: "lobby.text_channel.commands.description.debug_stream".into(),
+          usage: "/debug-stream {userId:u32}".into(),
+        },
+        CommandDefinition {
+          name: "/debug-my-stream".into(),
+          description_key: "lobby.text_channel.commands.description.debug_my_stream".into(),
+          usage: "/debug-my-stream".into(),
+        },
+        CommandDefinition {
+          name: "/debug-channel".into(),
+          description_key: "lobby.text_channel.commands.description.debug_channel".into(),
+          usage: "/debug-channel".into(),
+        },
+        CommandDefinition {
+          name: "/debug-audio-receivers".into(),
+          description_key: "lobby.text_channel.commands.description.debug_audio_receivers".into(),
+          usage: "/debug-audio-receivers".into(),
+        },
+        CommandDefinition {
+          name: "/debug-video-receivers".into(),
+          description_key: "lobby.text_channel.commands.description.debug_video_receivers".into(),
+          usage: "/debug-video-receivers".into(),
+        },
+        CommandDefinition {
           name: "/audio-status".into(),
           description_key: "lobby.text_channel.commands.description.audio_status".into(),
           usage: "/audio-status".into(),
