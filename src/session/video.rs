@@ -552,25 +552,27 @@ pub(super) fn run_video_receiver<S>(
       }
 
       #[cfg(target_os = "windows")]
-      let native_decode = try_present_windows_native_video_frame(
-        &session,
-        &mut decode_pool,
-        &mut shared_nv12_planes_surfaces,
-        &mut dx12_decode_surfaces,
-        &mut decoded_counts,
-        received_count,
-        &packet,
-      );
-      match native_decode {
-        WindowsNativeVideoDecode::Presented => {
-          awaiting_decoded_output.remove(&packet.sender_id);
-          continue;
+      {
+        let native_decode = try_present_windows_native_video_frame(
+          &session,
+          &mut decode_pool,
+          &mut shared_nv12_planes_surfaces,
+          &mut dx12_decode_surfaces,
+          &mut decoded_counts,
+          received_count,
+          &packet,
+        );
+        match native_decode {
+          WindowsNativeVideoDecode::Presented => {
+            awaiting_decoded_output.remove(&packet.sender_id);
+            continue;
+          }
+          WindowsNativeVideoDecode::Pending => {
+            awaiting_decoded_output.insert(packet.sender_id);
+            continue;
+          }
+          WindowsNativeVideoDecode::Fallback => {}
         }
-        WindowsNativeVideoDecode::Pending => {
-          awaiting_decoded_output.insert(packet.sender_id);
-          continue;
-        }
-        WindowsNativeVideoDecode::Fallback => {}
       }
 
       let missing_initial_image =

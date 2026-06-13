@@ -1,5 +1,6 @@
+#[cfg(target_os = "windows")]
+use std::collections::{HashMap, VecDeque};
 use std::{
-  collections::{HashMap, VecDeque},
   sync::{Arc, atomic::AtomicBool},
   time::{Duration, Instant},
 };

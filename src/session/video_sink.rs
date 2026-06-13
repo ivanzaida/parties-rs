@@ -1,8 +1,6 @@
-use std::{
-  collections::{HashMap, VecDeque},
-  sync::Arc,
-  time::Instant,
-};
+#[cfg(target_os = "windows")]
+use std::collections::VecDeque;
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use lurq::{
   core::Signal,
