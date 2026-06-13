@@ -23,7 +23,7 @@ use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
   session::{
     ConnectedServerInfo, LobbyState, LobbyTextChannel, ServerSession,
-    chat_commands::{ChatCommandRegistry, CommandInfo},
+    chat_commands::{ChatCommandRegistry, CommandDefinition, CommandInfo},
   },
   theme,
   ui::{
@@ -662,7 +662,6 @@ fn chat_composer(
     [("channel", channel.name.clone())],
   );
   let channel_id = channel.id;
-  let nav_value = message_input.clone();
   let key_value = message_input.clone();
   let key_command_selected_index = command_selected_index.clone();
   let key_action = send_chat.clone();
@@ -697,14 +696,13 @@ fn chat_composer(
             .flex(1.0)
             .background(BackgroundColor::Color(Color::from_hex("#00000000")))
             .caret_color(theme::PaletteColor::Accent)
-            .on_key_down_capture(move |event| {
-              if handle_chat_command_navigation(&nav_value, &key_command_selected_index, &event.key, &event.code) {
-                return true;
-              }
-              false
-            })
             .on_key_down(move |event| {
+              if handle_chat_command_navigation(&key_value, &key_command_selected_index, &event.key, &event.code) {
+                event.prevent_default();
+                return;
+              }
               if event.key == "Enter" && !event.shift {
+                event.prevent_default();
                 submit_chat(channel_id, &key_value, &key_action);
               }
             }),
@@ -742,12 +740,12 @@ fn handle_chat_command_navigation(
       selected_index.set(0);
       return false;
     };
-    let commands = matching_chat_commands_for_query(&query);
+    let commands = matching_chat_command_definitions(&query);
     let Some(command) = commands.get(selected_index.get_untracked().min(commands.len().saturating_sub(1))) else {
       selected_index.set(0);
       return false;
     };
-    message_input.set(command_fill_text(command));
+    message_input.set(command_fill_text(command.name));
     return true;
   }
 
@@ -761,7 +759,7 @@ fn handle_chat_command_navigation(
     selected_index.set(0);
     return false;
   };
-  let count = matching_chat_commands_for_query(&query).len();
+  let count = matching_chat_command_definitions(&query).len();
   if count == 0 {
     selected_index.set(0);
     return false;
@@ -791,12 +789,20 @@ fn command_suggestion_query(input: &str) -> Option<String> {
   )
 }
 
-fn matching_chat_commands_for_query(query: &str) -> Vec<CommandInfo> {
+fn matching_chat_command_definitions(query: &str) -> Vec<&'static CommandDefinition> {
   ChatCommandRegistry::new()
-    .commands()
-    .into_iter()
+    .definitions()
+    .iter()
     .filter(|command| command.name.to_ascii_lowercase().starts_with(query))
     .collect()
+}
+
+fn localized_chat_command_info(ctx: &mut Ctx, command: &CommandDefinition) -> CommandInfo {
+  CommandInfo {
+    name: command.name.to_owned(),
+    description: ctx.t(command.description_key).to_string(),
+    usage: command.usage.to_owned(),
+  }
 }
 
 fn chat_command_suggestions(
@@ -806,7 +812,7 @@ fn chat_command_suggestions(
 ) -> Option<Element> {
   let input = message_input.get();
   let query = command_suggestion_query(&input)?;
-  let commands = matching_chat_commands_for_query(&query);
+  let commands = matching_chat_command_definitions(&query);
   if commands.is_empty() {
     selected_index.set(0);
     return None;
@@ -821,14 +827,20 @@ fn chat_command_suggestions(
   let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + list_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
 
   let title = if query == "/" {
-    "COMMANDS".to_owned()
+    ctx.t("lobby.text_channel.commands.title").to_string()
   } else {
-    format!("COMMANDS MATCHING {}", query.to_ascii_uppercase())
+    ctx
+      .t_args(
+        "lobby.text_channel.commands.matching",
+        [("query", query.to_ascii_uppercase())],
+      )
+      .to_string()
   };
 
   let mut list = Column::new().width(Dimension::Pct(100.0)).padding_bottom(6.0);
 
   for (index, command) in commands.into_iter().enumerate() {
+    let command = localized_chat_command_info(ctx, command);
     list = list.child(command_suggestion_row(
       ctx,
       command,
@@ -883,7 +895,7 @@ fn command_suggestion_row(
   index: usize,
   selected: bool,
 ) -> Element {
-  let fill = command_fill_text(&command);
+  let fill = command_fill_text(&command.name);
   let background = if selected {
     BackgroundColor::Color(Color::from_hex("#232830"))
   } else {
@@ -1058,8 +1070,8 @@ fn command_argument_value_valid(argument: &str, value: &str) -> bool {
   }
 }
 
-fn command_fill_text(command: &CommandInfo) -> String {
-  format!("{} ", command.name)
+fn command_fill_text(command_name: &str) -> String {
+  format!("{command_name} ")
 }
 
 fn submit_chat(channel_id: ChannelId, message_input: &Signal<String>, send_chat: &SendChatAction) {

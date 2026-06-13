@@ -11,7 +11,7 @@ use crate::{
   services::video::VideoBroadcastConfig,
   session::{
     ConnectedServerInfo, ServerSession,
-    chat_commands::{ChatCommand, ChatCommandRegistry},
+    chat_commands::{ChatCommand, ChatCommandParseError, ChatCommandRegistry},
   },
   storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
@@ -28,6 +28,13 @@ struct LobbyActionCopy {
   stream_too_small: String,
   storage_unavailable: String,
   saved_credentials_missing: String,
+  chat_command_empty: String,
+  chat_command_unterminated_quote: String,
+  chat_command_usage: String,
+  chat_command_invalid_user_id: String,
+  chat_command_user_id_positive: String,
+  chat_command_not_implemented: String,
+  chat_command_unknown: String,
   connect_errors: ConnectErrorCopy,
 }
 
@@ -41,6 +48,15 @@ impl LobbyActionCopy {
       stream_too_small: ctx.t("lobby.error.stream_too_small").to_string(),
       storage_unavailable: ctx.t("lobby.error.storage_unavailable").to_string(),
       saved_credentials_missing: ctx.t("lobby.error.saved_credentials_missing").to_string(),
+      chat_command_empty: ctx.t("lobby.text_channel.commands.error.empty").to_string(),
+      chat_command_unterminated_quote: ctx
+        .t("lobby.text_channel.commands.error.unterminated_quote")
+        .to_string(),
+      chat_command_usage: ctx.t("lobby.text_channel.commands.error.usage").to_string(),
+      chat_command_invalid_user_id: ctx.t("lobby.text_channel.commands.error.invalid_user_id").to_string(),
+      chat_command_user_id_positive: ctx.t("lobby.text_channel.commands.error.user_id_positive").to_string(),
+      chat_command_not_implemented: ctx.t("lobby.text_channel.commands.error.not_implemented").to_string(),
+      chat_command_unknown: ctx.t("lobby.text_channel.commands.error.unknown").to_string(),
       connect_errors: ConnectErrorCopy::from_ctx(ctx),
     }
   }
@@ -50,6 +66,20 @@ impl LobbyActionCopy {
       .stream_too_small
       .replace("{{width}}", &width.to_string())
       .replace("{{height}}", &height.to_string())
+  }
+
+  fn chat_command_parse_error(&self, error: &ChatCommandParseError) -> String {
+    match error {
+      ChatCommandParseError::Empty => self.chat_command_empty.clone(),
+      ChatCommandParseError::UnterminatedQuotedArgument => self.chat_command_unterminated_quote.clone(),
+      ChatCommandParseError::Usage { usage, .. } => self.chat_command_usage.replace("{{usage}}", usage),
+      ChatCommandParseError::InvalidUserId => self.chat_command_invalid_user_id.clone(),
+      ChatCommandParseError::UserIdMustBeGreaterThanZero => self.chat_command_user_id_positive.clone(),
+      ChatCommandParseError::NotImplemented { command } => {
+        self.chat_command_not_implemented.replace("{{command}}", command)
+      }
+      ChatCommandParseError::Unknown { command } => self.chat_command_unknown.replace("{{command}}", command),
+    }
   }
 }
 
@@ -107,8 +137,9 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
         }
         Ok(None) => {}
         Err(error) => {
-          session.set_lobby_error_notice(error.clone());
-          return Err(error);
+          let message = copy.chat_command_parse_error(&error);
+          session.set_lobby_error_notice(message.clone());
+          return Err(message);
         }
       }
 
