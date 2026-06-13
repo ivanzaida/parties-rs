@@ -33,9 +33,6 @@ sentry = { version = "0.48.2", default-features = false, features = ["backtrace"
 sentry-tracing = "0.48.2"
 parking_lot = "0.12.5"
 
-[patch.crates-io]
-lurq = { path = "../lurq/crates/lurq" }
-
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8.7"
 core-media-sys = "0.1.2"
