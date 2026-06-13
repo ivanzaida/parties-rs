@@ -1,8 +1,11 @@
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Row, Stack, Text, TextOverflow},
+  core::ElementRef,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
-  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
+  node::{
+    BackgroundColor, CursorIcon, Element, HitTestBehavior, Style, border::Border, color::Color, dimension::Dimension,
+  },
 };
 
 use super::stream_shared::{
@@ -36,10 +39,17 @@ pub(super) fn floating_stream_preview(
 
   Some(
     preview_card(ctx, watched, debug_user_ids, session.clone())
-      .absolute_position(preview_x(ctx), preview_y())
       .on_click(move |_| session.open_stream_browser(channel_id))
       .into(),
   )
+}
+
+pub(super) fn stream_preview_anchor(ctx: &Ctx, anchor: ElementRef) -> Element {
+  Row::new()
+    .absolute(preview_x(ctx) + PREVIEW_WIDTH - 1.0, preview_y() - 1.0, 1.0, 1.0)
+    .hit_test(HitTestBehavior::None)
+    .ref_element(anchor)
+    .into()
 }
 
 fn preview_x(ctx: &Ctx) -> f32 {

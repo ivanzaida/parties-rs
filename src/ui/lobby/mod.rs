@@ -9,15 +9,15 @@ use std::{
 use lurq::{
   app::{
     component::Component,
-    ctx::{Ctx, Interval, Modal, Root},
+    ctx::{CollisionStrategy, Ctx, Interval, Modal, Overlay, Placement, Root},
   },
   components::{Column, Row, Text},
-  core::Signal,
+  core::{ElementRef, Signal},
   layout::{
     Alignment,
     layout_kind::{Justify, ScrollState},
   },
-  node::{BackgroundColor, Element, dimension::Dimension},
+  node::{BackgroundColor, Element, HitTestBehavior, dimension::Dimension},
 };
 
 use crate::{
@@ -56,7 +56,7 @@ use content::main;
 use disconnected::disconnected_lobby;
 use rail::{LobbyRail, LobbyRailProps};
 use stream_modal::start_stream_modal;
-use stream_preview::floating_stream_preview;
+use stream_preview::{floating_stream_preview, stream_preview_anchor};
 use stream_shared::watched_stream;
 
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
@@ -118,6 +118,7 @@ pub struct LobbyScreen {
   revision_source: Arc<Mutex<Option<Signal<u64>>>>,
   revision_seen: Arc<AtomicU64>,
   revision_interval: Interval,
+  stream_preview_anchor: ElementRef,
 }
 
 impl Component for LobbyScreen {
@@ -160,6 +161,7 @@ impl Component for LobbyScreen {
       revision_source,
       revision_seen,
       revision_interval,
+      stream_preview_anchor: ElementRef::new(),
     }
   }
 
@@ -310,7 +312,15 @@ impl Component for LobbyScreen {
     if let Some(watched) = watched_stream(&lobby)
       && let Some(preview) = floating_stream_preview(ctx, &lobby, watched, debug_mode_enabled, session.clone())
     {
-      body = body.child(preview);
+      body = body
+        .child(stream_preview_anchor(ctx, self.stream_preview_anchor.clone()))
+        .child(
+          Overlay::new(preview)
+            .anchor(self.stream_preview_anchor.clone())
+            .placement(Placement::BottomEnd)
+            .collision(CollisionStrategy::None)
+            .hit_test(HitTestBehavior::ContentOnly),
+        );
     }
 
     body.into()
