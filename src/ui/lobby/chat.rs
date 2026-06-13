@@ -123,6 +123,11 @@ impl ChatChannel {
           usage: "/debug-video-receivers".into(),
         },
         CommandDefinition {
+          name: "/video-status".into(),
+          description_key: "lobby.text_channel.commands.description.video_status".into(),
+          usage: "/video-status".into(),
+        },
+        CommandDefinition {
           name: "/audio-status".into(),
           description_key: "lobby.text_channel.commands.description.audio_status".into(),
           usage: "/audio-status".into(),

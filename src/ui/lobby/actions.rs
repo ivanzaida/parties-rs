@@ -235,7 +235,7 @@ fn execute_chat_command(
       session.push_debug_chat_message(debug_audio_receivers_report(session));
       Ok(())
     }
-    "/debug-video-receivers" => {
+    "/debug-video-receivers" | "/video-status" => {
       session.push_debug_chat_message(debug_video_receivers_report(session));
       Ok(())
     }
@@ -491,12 +491,52 @@ fn debug_audio_receivers_report(session: &ServerSession) -> String {
 
 fn debug_video_receivers_report(session: &ServerSession) -> String {
   let lobby = session.lobby();
+  let receiver = session.video_receiver_debug_snapshot();
   let mut lines = vec![
     "Debug video receivers".to_owned(),
     format!("watching_user_id: {}", optional_id(lobby.watching_user_id)),
     format!(
       "local_broadcast_active: {}",
       status_bool(session.video_broadcast_active())
+    ),
+    format!(
+      "receiver: watched={} queue_limit={} last_batch_queued={} last_batch_dropped={}",
+      optional_id(receiver.watched_user_id),
+      receiver.queue_limit,
+      receiver.last_batch_queued,
+      receiver.last_batch_dropped
+    ),
+    format!(
+      "receiver_dropped_senders: {}",
+      debug_user_count_pairs(&receiver.last_dropped_senders)
+    ),
+    format!(
+      "receiver_awaiting_keyframes: {}",
+      debug_user_ids(&receiver.awaiting_keyframes)
+    ),
+    format!(
+      "receiver_awaiting_decoded_output: {}",
+      debug_user_ids(&receiver.awaiting_decoded_output)
+    ),
+    format!(
+      "receiver_expected_frames: {}",
+      debug_user_u32_pairs(&receiver.expected_frame_numbers)
+    ),
+    format!(
+      "receiver_received_frames: {}",
+      debug_user_count_pairs(&receiver.received_counts)
+    ),
+    format!(
+      "receiver_decoded_frames: {}",
+      debug_user_count_pairs(&receiver.decoded_counts)
+    ),
+    format!(
+      "receiver_keyframe_request_age_ms: {}",
+      debug_user_u128_pairs(&receiver.keyframe_request_ages_ms)
+    ),
+    format!(
+      "receiver_view_refresh_age_ms: {}",
+      debug_user_u128_pairs(&receiver.keyframe_request_ages_ms)
     ),
   ];
 
@@ -520,6 +560,50 @@ fn debug_video_receivers_report(session: &ServerSession) -> String {
   }
 
   lines.join("\n")
+}
+
+fn debug_user_ids(ids: &[UserId]) -> String {
+  if ids.is_empty() {
+    return "none".to_owned();
+  }
+  ids
+    .iter()
+    .map(|user_id| user_id.to_string())
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn debug_user_count_pairs(pairs: &[(UserId, u64)]) -> String {
+  if pairs.is_empty() {
+    return "none".to_owned();
+  }
+  pairs
+    .iter()
+    .map(|(user_id, value)| format!("{user_id}={value}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn debug_user_u32_pairs(pairs: &[(UserId, u32)]) -> String {
+  if pairs.is_empty() {
+    return "none".to_owned();
+  }
+  pairs
+    .iter()
+    .map(|(user_id, value)| format!("{user_id}={value}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn debug_user_u128_pairs(pairs: &[(UserId, u128)]) -> String {
+  if pairs.is_empty() {
+    return "none".to_owned();
+  }
+  pairs
+    .iter()
+    .map(|(user_id, value)| format!("{user_id}={value}"))
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 fn find_lobby_user(lobby: &LobbyState, user_id: UserId) -> Option<&LobbyUser> {

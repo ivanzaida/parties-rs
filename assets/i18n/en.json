@@ -1074,6 +1074,7 @@
           "debug_channel": "Show selected channel and lobby state.",
           "debug_audio_receivers": "List local audio receiver candidates and state.",
           "debug_video_receivers": "List advertised streams and local video receiver state.",
+          "video_status": "Show local video receiver recovery state.",
           "audio_status": "Show local audio engine status.",
           "audio_reset_all": "Restart all local voice audio receivers.",
           "audio_clear_queue": "Clear queued voice audio for a user.",

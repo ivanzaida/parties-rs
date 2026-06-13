@@ -5,7 +5,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use super::video::VideoPacketQueue;
+use super::video::{VideoPacketQueue, VideoReceiverDebugSnapshot};
 use crate::{
   network::{
     protocol::{
@@ -29,6 +29,7 @@ pub(super) struct StreamRuntime {
   broadcast: Mutex<Option<VideoBroadcast>>,
   packet_queue: Mutex<Arc<VideoPacketQueue>>,
   pending_reconnect_watch_user_id: Mutex<Option<UserId>>,
+  receiver_debug: Mutex<VideoReceiverDebugSnapshot>,
 }
 
 impl StreamRuntime {
@@ -37,12 +38,14 @@ impl StreamRuntime {
       broadcast: Mutex::new(None),
       packet_queue: Mutex::new(Arc::new(VideoPacketQueue::new())),
       pending_reconnect_watch_user_id: Mutex::new(None),
+      receiver_debug: Mutex::new(VideoReceiverDebugSnapshot::default()),
     }
   }
 
   pub(super) fn reset_packet_queue(&self) -> Arc<VideoPacketQueue> {
     let queue = Arc::new(VideoPacketQueue::new());
     *self.packet_queue.lock() = queue.clone();
+    *self.receiver_debug.lock() = VideoReceiverDebugSnapshot::default();
     queue
   }
 
@@ -54,6 +57,14 @@ impl StreamRuntime {
     self
       .current_packet_queue()
       .push(ForwardedVideoFrame { sender_id, frame });
+  }
+
+  pub(super) fn set_receiver_debug_snapshot(&self, snapshot: VideoReceiverDebugSnapshot) {
+    *self.receiver_debug.lock() = snapshot;
+  }
+
+  pub(super) fn receiver_debug_snapshot(&self) -> VideoReceiverDebugSnapshot {
+    self.receiver_debug.lock().clone()
   }
 
   pub(super) fn start_broadcast(

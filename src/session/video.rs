@@ -2,10 +2,10 @@ use std::{
   collections::{HashMap, HashSet, VecDeque},
   sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
   },
   thread,
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use parking_lot::{Condvar, Mutex};
@@ -28,6 +28,7 @@ use crate::{
 pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
 pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
 pub(super) const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
+const KEYFRAME_REQUEST_RETRY_INTERVAL: Duration = Duration::from_millis(750);
 
 #[cfg(target_os = "windows")]
 pub(super) const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 8;
@@ -43,6 +44,21 @@ const WINDOWS_AMD_VENDOR_ID: u32 = 0x1002;
 #[cfg(target_os = "windows")]
 static WINDOWS_DEFAULT_DXGI_ADAPTER_VENDOR_ID: std::sync::LazyLock<Option<u32>> =
   std::sync::LazyLock::new(windows_default_dxgi_adapter_vendor_id);
+
+#[derive(Clone, Debug, Default)]
+pub struct VideoReceiverDebugSnapshot {
+  pub watched_user_id: Option<UserId>,
+  pub queue_limit: usize,
+  pub last_batch_queued: usize,
+  pub last_batch_dropped: u64,
+  pub last_dropped_senders: Vec<(UserId, u64)>,
+  pub awaiting_keyframes: Vec<UserId>,
+  pub awaiting_decoded_output: Vec<UserId>,
+  pub expected_frame_numbers: Vec<(UserId, u32)>,
+  pub received_counts: Vec<(UserId, u64)>,
+  pub decoded_counts: Vec<(UserId, u64)>,
+  pub keyframe_request_ages_ms: Vec<(UserId, u128)>,
+}
 
 #[cfg(target_os = "windows")]
 pub(super) static DX12_NATIVE_STREAM_DECODE_SUPPORTED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
@@ -94,18 +110,24 @@ fn windows_default_dxgi_adapter_vendor_id() -> Option<u32> {
 }
 
 pub(super) struct VideoPacketQueue {
-  packets: Mutex<VecDeque<ForwardedVideoFrame>>,
+  state: Mutex<VideoPacketQueueState>,
   notify: Condvar,
-  dropped: AtomicU64,
   closed: AtomicBool,
+}
+
+struct VideoPacketQueueState {
+  packets: VecDeque<ForwardedVideoFrame>,
+  dropped_senders: HashMap<UserId, u64>,
 }
 
 impl VideoPacketQueue {
   pub(super) fn new() -> Self {
     Self {
-      packets: Mutex::new(VecDeque::new()),
+      state: Mutex::new(VideoPacketQueueState {
+        packets: VecDeque::new(),
+        dropped_senders: HashMap::new(),
+      }),
       notify: Condvar::new(),
-      dropped: AtomicU64::new(0),
       closed: AtomicBool::new(false),
     }
   }
@@ -115,16 +137,17 @@ impl VideoPacketQueue {
       return;
     }
     {
-      let mut packets = self.packets.lock();
+      let mut state = self.state.lock();
       if self.closed.load(Ordering::Relaxed) {
         return;
       }
-      if packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
-        packets.pop_front();
-        self.dropped.fetch_add(1, Ordering::Relaxed);
+      if state.packets.len() >= MAX_QUEUED_VIDEO_PACKETS {
+        if let Some(dropped) = state.packets.pop_front() {
+          *state.dropped_senders.entry(dropped.sender_id).or_insert(0) += 1;
+        }
         tracing::debug!(target: "video", "[video] dropped queued stale video packet to preserve latency: max_queue={MAX_QUEUED_VIDEO_PACKETS}");
       }
-      packets.push_back(packet);
+      state.packets.push_back(packet);
     }
     self.notify.notify_one();
   }
@@ -134,19 +157,26 @@ impl VideoPacketQueue {
     self.notify.notify_all();
   }
 
-  pub(super) fn pop_batch_into(&self, stop: &AtomicBool, batch: &mut Vec<ForwardedVideoFrame>) -> Option<u64> {
-    let mut packets = self.packets.lock();
-    while packets.is_empty() && !self.closed.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
-      self.notify.wait_for(&mut packets, Duration::from_millis(100));
+  pub(super) fn pop_batch_into(
+    &self,
+    stop: &AtomicBool,
+    batch: &mut Vec<ForwardedVideoFrame>,
+    dropped_senders: &mut HashMap<UserId, u64>,
+  ) -> Option<u64> {
+    let mut state = self.state.lock();
+    while state.packets.is_empty() && !self.closed.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+      self.notify.wait_for(&mut state, Duration::from_millis(100));
     }
 
-    if packets.is_empty() {
+    if state.packets.is_empty() {
       return None;
     }
 
     batch.clear();
-    batch.extend(packets.drain(..));
-    let dropped = self.dropped.swap(0, Ordering::Relaxed);
+    batch.extend(state.packets.drain(..));
+    dropped_senders.clear();
+    dropped_senders.extend(state.dropped_senders.drain());
+    let dropped = dropped_senders.values().sum();
     Some(dropped)
   }
 }
@@ -156,6 +186,7 @@ pub(super) trait VideoReceiverSession: Clone + Send + Sync + 'static {
   fn reset_video_packet_queue(&self) -> Arc<VideoPacketQueue>;
   fn handle_video_control_packet(&self, control: VideoControl);
   fn set_video_connection_warning(&self, kind: LobbyConnectionWarningKind, message: String);
+  fn set_video_receiver_debug_snapshot(&self, snapshot: VideoReceiverDebugSnapshot);
   fn watching_user_id(&self) -> Option<UserId>;
   fn video_decode_config_for_share(&self, user_id: UserId) -> Option<VideoDecodeConfig>;
   fn set_video_error(&self, user_id: UserId, error: VideoStreamError);
@@ -295,31 +326,15 @@ pub(super) fn run_video_receiver<S>(
   let mut expected_frame_numbers = HashMap::<UserId, u32>::new();
   let mut received_counts = HashMap::<UserId, u64>::new();
   let mut decoded_counts = HashMap::<UserId, u64>::new();
+  let mut dropped_senders = HashMap::<UserId, u64>::new();
+  let mut last_keyframe_requests = HashMap::<UserId, Instant>::new();
   let mut last_watched_user = session.watching_user_id();
   let mut batch = Vec::<ForwardedVideoFrame>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
-  let request_keyframe_for = |user_id: UserId, reason: &str| match runtime
-    .block_on(server.request_keyframe_stream(user_id))
-  {
-    Ok(()) => {
-      tracing::info!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
-    }
-    Err(stream_error) => {
-      tracing::warn!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
-      match server.request_keyframe(user_id) {
-        Ok(()) => {
-          tracing::info!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
-        }
-        Err(datagram_error) => {
-          tracing::warn!(target: "video", "[video] datagram keyframe request failed for user {user_id}: reason={reason} error={datagram_error}");
-        }
-      }
-    }
-  };
 
   while !stop.load(Ordering::Relaxed) {
     let Some(dropped_count) = ({
       let _span = profiler::span("video.receive.pop_batch");
-      queue.pop_batch_into(&stop, &mut batch)
+      queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders)
     }) else {
       break;
     };
@@ -330,6 +345,7 @@ pub(super) fn run_video_receiver<S>(
       decode_pool.retain_watched(watched_user);
       awaiting_decoded_output.retain(|user_id| Some(*user_id) == watched_user);
       expected_frame_numbers.retain(|user_id, _| Some(*user_id) == watched_user);
+      last_keyframe_requests.retain(|user_id, _| Some(*user_id) == watched_user);
       #[cfg(target_os = "windows")]
       shared_nv12_planes_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
       #[cfg(target_os = "windows")]
@@ -337,7 +353,13 @@ pub(super) fn run_video_receiver<S>(
       awaiting_keyframes.retain(|user_id| Some(*user_id) == watched_user);
       if let Some(user_id) = watched_user {
         awaiting_keyframes.insert(user_id);
-        request_keyframe_for(user_id, "watch target changed");
+        request_keyframe_for(
+          &runtime,
+          &server,
+          &mut last_keyframe_requests,
+          user_id,
+          "watch target changed",
+        );
         if let Some(config) = session.video_decode_config_for_share(user_id) {
           if let Err(error) = decode_pool.prewarm(user_id, config) {
             let error = error.to_string();
@@ -361,24 +383,39 @@ pub(super) fn run_video_receiver<S>(
     }
 
     if dropped_count > 0 {
-      let affected_users = batch
-        .iter()
-        .filter(|packet| Some(packet.sender_id) == watched_user)
-        .map(|packet| packet.sender_id)
-        .collect::<HashSet<_>>();
-      for user_id in &affected_users {
-        let Some(sample_frame) = batch
+      let affected_users = dropped_senders.keys().copied().collect::<HashSet<_>>();
+      if let Some(user_id) = watched_user
+        && dropped_senders.contains_key(&user_id)
+      {
+        let sample_frame = batch
           .iter()
-          .find(|packet| packet.sender_id == *user_id)
-          .map(|packet| &packet.frame)
-        else {
-          continue;
-        };
-        if decode_pool.has_decoder_failure(*user_id, sample_frame) {
-          continue;
+          .find(|packet| packet.sender_id == user_id)
+          .map(|packet| &packet.frame);
+        if sample_frame.is_none() {
+          tracing::warn!(target: "video",
+            "[video] watched stream packet dropped but no replacement packet was queued: user={user_id} dropped={}",
+            dropped_senders.get(&user_id).copied().unwrap_or_default()
+          );
+          if awaiting_keyframes.insert(user_id) {
+            request_keyframe_for(
+              &runtime,
+              &server,
+              &mut last_keyframe_requests,
+              user_id,
+              "watched video backlog dropped",
+            );
+          }
         }
-        if awaiting_keyframes.insert(*user_id) {
-          request_keyframe_for(*user_id, "stale video backlog dropped");
+        if sample_frame.is_some_and(|frame| !decode_pool.has_decoder_failure(user_id, frame))
+          && awaiting_keyframes.insert(user_id)
+        {
+          request_keyframe_for(
+            &runtime,
+            &server,
+            &mut last_keyframe_requests,
+            user_id,
+            "watched video backlog dropped",
+          );
         }
       }
       tracing::warn!(target: "video",
@@ -389,6 +426,7 @@ pub(super) fn run_video_receiver<S>(
       );
     }
 
+    let last_batch_queued = batch.len();
     let latest_watched_packet_index = batch
       .iter()
       .enumerate()
@@ -419,15 +457,29 @@ pub(super) fn run_video_receiver<S>(
         awaiting_decoded_output.remove(&packet.sender_id);
         expected_frame_numbers.remove(&packet.sender_id);
         if awaiting_keyframes.insert(packet.sender_id) {
-          request_keyframe_for(packet.sender_id, "video decode config changed");
+          request_keyframe_for(
+            &runtime,
+            &server,
+            &mut last_keyframe_requests,
+            packet.sender_id,
+            "video decode config changed",
+          );
         }
       }
 
       if awaiting_keyframes.contains(&packet.sender_id) {
         if !packet.frame.keyframe {
+          request_keyframe_if_due(
+            &runtime,
+            &server,
+            &mut last_keyframe_requests,
+            packet.sender_id,
+            "still waiting for video keyframe",
+          );
           continue;
         }
         awaiting_keyframes.remove(&packet.sender_id);
+        last_keyframe_requests.remove(&packet.sender_id);
         decode_pool.clear_user_failures(packet.sender_id);
         tracing::info!(target: "video::decode",
           "[video:decode] catch-up keyframe received for user {}: frame={}",
@@ -448,7 +500,13 @@ pub(super) fn run_video_receiver<S>(
             expected_frame_numbers.remove(&packet.sender_id);
             decode_pool.reset_user(packet.sender_id);
             if awaiting_keyframes.insert(packet.sender_id) {
-              request_keyframe_for(packet.sender_id, "video frame gap detected");
+              request_keyframe_for(
+                &runtime,
+                &server,
+                &mut last_keyframe_requests,
+                packet.sender_id,
+                "video frame gap detected",
+              );
             }
             tracing::warn!(target: "video::decode",
               "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
@@ -462,7 +520,13 @@ pub(super) fn run_video_receiver<S>(
             awaiting_decoded_output.remove(&packet.sender_id);
             decode_pool.reset_user(packet.sender_id);
             if awaiting_keyframes.insert(packet.sender_id) {
-              request_keyframe_for(packet.sender_id, "missing initial keyframe");
+              request_keyframe_for(
+                &runtime,
+                &server,
+                &mut last_keyframe_requests,
+                packet.sender_id,
+                "missing initial keyframe",
+              );
             }
             continue;
           }
@@ -488,7 +552,7 @@ pub(super) fn run_video_receiver<S>(
       }
 
       #[cfg(target_os = "windows")]
-      if try_present_windows_native_video_frame(
+      let native_decode = try_present_windows_native_video_frame(
         &session,
         &mut decode_pool,
         &mut shared_nv12_planes_surfaces,
@@ -496,9 +560,17 @@ pub(super) fn run_video_receiver<S>(
         &mut decoded_counts,
         received_count,
         &packet,
-      ) != WindowsNativeVideoDecode::Fallback
-      {
-        continue;
+      );
+      match native_decode {
+        WindowsNativeVideoDecode::Presented => {
+          awaiting_decoded_output.remove(&packet.sender_id);
+          continue;
+        }
+        WindowsNativeVideoDecode::Pending => {
+          awaiting_decoded_output.insert(packet.sender_id);
+          continue;
+        }
+        WindowsNativeVideoDecode::Fallback => {}
       }
 
       let missing_initial_image =
@@ -550,12 +622,31 @@ pub(super) fn run_video_receiver<S>(
             session.set_video_error(sender_id, native_decoder_unavailable_stream_error(error));
           } else {
             if awaiting_keyframes.insert(sender_id) {
-              request_keyframe_for(sender_id, "video decode failed");
+              request_keyframe_for(
+                &runtime,
+                &server,
+                &mut last_keyframe_requests,
+                sender_id,
+                "video decode failed",
+              );
             }
           }
         }
       }
     }
+
+    session.set_video_receiver_debug_snapshot(video_receiver_debug_snapshot(
+      watched_user,
+      last_batch_queued,
+      dropped_count,
+      &dropped_senders,
+      &awaiting_keyframes,
+      &awaiting_decoded_output,
+      &expected_frame_numbers,
+      &received_counts,
+      &decoded_counts,
+      &last_keyframe_requests,
+    ));
   }
 
   queue.close();
@@ -674,6 +765,105 @@ fn windows_dx12_surface_decode_allowed(codec: VideoCodecId) -> bool {
     Some(WINDOWS_NVIDIA_VENDOR_ID) => true,
     Some(WINDOWS_AMD_VENDOR_ID) => codec == VideoCodecId::H264,
     _ => false,
+  }
+}
+
+fn video_receiver_debug_snapshot(
+  watched_user_id: Option<UserId>,
+  last_batch_queued: usize,
+  last_batch_dropped: u64,
+  dropped_senders: &HashMap<UserId, u64>,
+  awaiting_keyframes: &HashSet<UserId>,
+  awaiting_decoded_output: &HashSet<UserId>,
+  expected_frame_numbers: &HashMap<UserId, u32>,
+  received_counts: &HashMap<UserId, u64>,
+  decoded_counts: &HashMap<UserId, u64>,
+  last_keyframe_requests: &HashMap<UserId, Instant>,
+) -> VideoReceiverDebugSnapshot {
+  let now = Instant::now();
+  let keyframe_request_ages = last_keyframe_requests
+    .iter()
+    .map(|(user_id, requested_at)| (*user_id, now.duration_since(*requested_at).as_millis()))
+    .collect::<HashMap<_, _>>();
+  VideoReceiverDebugSnapshot {
+    watched_user_id,
+    queue_limit: MAX_QUEUED_VIDEO_PACKETS,
+    last_batch_queued,
+    last_batch_dropped,
+    last_dropped_senders: sorted_pairs(dropped_senders),
+    awaiting_keyframes: sorted_user_ids(awaiting_keyframes),
+    awaiting_decoded_output: sorted_user_ids(awaiting_decoded_output),
+    expected_frame_numbers: sorted_pairs(expected_frame_numbers),
+    received_counts: sorted_pairs(received_counts),
+    decoded_counts: sorted_pairs(decoded_counts),
+    keyframe_request_ages_ms: sorted_pairs(&keyframe_request_ages),
+  }
+}
+
+fn sorted_user_ids(ids: &HashSet<UserId>) -> Vec<UserId> {
+  let mut ids = ids.iter().copied().collect::<Vec<_>>();
+  ids.sort_unstable();
+  ids
+}
+
+fn sorted_pairs<T: Copy>(map: &HashMap<UserId, T>) -> Vec<(UserId, T)> {
+  let mut pairs = map
+    .iter()
+    .map(|(user_id, value)| (*user_id, *value))
+    .collect::<Vec<_>>();
+  pairs.sort_unstable_by_key(|(user_id, _)| *user_id);
+  pairs
+}
+
+fn request_keyframe_if_due(
+  runtime: &tokio::runtime::Handle,
+  server: &Arc<Server>,
+  last_keyframe_requests: &mut HashMap<UserId, Instant>,
+  user_id: UserId,
+  reason: &str,
+) {
+  let now = Instant::now();
+  if last_keyframe_requests
+    .get(&user_id)
+    .is_some_and(|last| now.duration_since(*last) < KEYFRAME_REQUEST_RETRY_INTERVAL)
+  {
+    return;
+  }
+
+  request_keyframe_for(runtime, server, last_keyframe_requests, user_id, reason);
+}
+
+fn request_keyframe_for(
+  runtime: &tokio::runtime::Handle,
+  server: &Arc<Server>,
+  last_keyframe_requests: &mut HashMap<UserId, Instant>,
+  user_id: UserId,
+  reason: &str,
+) {
+  last_keyframe_requests.insert(user_id, Instant::now());
+  match runtime.block_on(server.view_screen_share(user_id)) {
+    Ok(()) => {
+      tracing::debug!(target: "video", "[video] stream view refreshed for keyframe recovery: user={user_id} reason={reason}");
+    }
+    Err(error) => {
+      tracing::warn!(target: "video", "[video] stream view refresh failed during keyframe recovery: user={user_id} reason={reason} error={error}");
+    }
+  }
+  match runtime.block_on(server.request_keyframe_stream(user_id)) {
+    Ok(()) => {
+      tracing::info!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
+    }
+    Err(stream_error) => {
+      tracing::warn!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
+      match server.request_keyframe(user_id) {
+        Ok(()) => {
+          tracing::info!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
+        }
+        Err(datagram_error) => {
+          tracing::warn!(target: "video", "[video] datagram keyframe request failed for user {user_id}: reason={reason} error={datagram_error}");
+        }
+      }
+    }
   }
 }
 

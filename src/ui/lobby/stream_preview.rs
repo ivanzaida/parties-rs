@@ -12,10 +12,7 @@ use crate::{
   network::protocol::ChannelId,
   session::{LobbyState, ServerSession},
   theme,
-  ui::{
-    app_chrome::{CHROME_HEIGHT, CUSTOM_WINDOW_CHROME},
-    common::lucide_icon::{LucideIcon, LucideIconProps},
-  },
+  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
 
 const PREVIEW_WIDTH: f32 = 324.0;
@@ -35,21 +32,23 @@ pub(super) fn floating_stream_preview(
     return None;
   }
 
-  let window = ctx.window();
-  let x = (window.logical_width() - PREVIEW_WIDTH - PREVIEW_MARGIN).max(PREVIEW_MARGIN);
-  let y = if CUSTOM_WINDOW_CHROME {
-    CHROME_HEIGHT + PREVIEW_TOP_GAP
-  } else {
-    PREVIEW_TOP_GAP
-  };
   let channel_id = watched.channel.id;
 
   Some(
     preview_card(ctx, watched, debug_user_ids, session.clone())
-      .absolute(x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+      .absolute_position(preview_x(ctx), preview_y())
       .on_click(move |_| session.open_stream_browser(channel_id))
       .into(),
   )
+}
+
+fn preview_x(ctx: &Ctx) -> f32 {
+  let window = ctx.window();
+  (window.logical_width() - PREVIEW_WIDTH - PREVIEW_MARGIN).max(PREVIEW_MARGIN)
+}
+
+fn preview_y() -> f32 {
+  (PREVIEW_TOP_GAP - 1.0).max(0.0)
 }
 
 fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: ChannelId) -> bool {

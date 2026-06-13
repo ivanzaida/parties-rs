@@ -310,7 +310,7 @@ impl Component for LobbyScreen {
     if let Some(watched) = watched_stream(&lobby)
       && let Some(preview) = floating_stream_preview(ctx, &lobby, watched, debug_mode_enabled, session.clone())
     {
-      body = body.child(Modal::new(preview).target(Root).dismiss_on_escape(false));
+      body = body.child(preview);
     }
 
     body.into()

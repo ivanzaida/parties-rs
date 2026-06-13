@@ -39,6 +39,7 @@ pub use lobby::{
   DEBUG_CHAT_CHANNEL_ID, LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, LobbyScreenShare,
   LobbyState, LobbyTextChannel, LobbyUser,
 };
+pub use video::VideoReceiverDebugSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VideoStreamError {
@@ -93,6 +94,14 @@ impl ServerSession {
 
   fn reset_video_packet_queue(&self) -> Arc<video::VideoPacketQueue> {
     self.streams.reset_packet_queue()
+  }
+
+  fn set_video_receiver_debug_snapshot(&self, snapshot: VideoReceiverDebugSnapshot) {
+    self.streams.set_receiver_debug_snapshot(snapshot);
+  }
+
+  pub fn video_receiver_debug_snapshot(&self) -> VideoReceiverDebugSnapshot {
+    self.streams.receiver_debug_snapshot()
   }
 
   fn push_local_video_frame(&self, sender_id: UserId, frame: VideoFrame) {
@@ -1006,6 +1015,10 @@ impl video::VideoReceiverSession for ServerSession {
 
   fn set_video_connection_warning(&self, kind: LobbyConnectionWarningKind, message: String) {
     ServerSession::set_connection_warning(self, kind, message);
+  }
+
+  fn set_video_receiver_debug_snapshot(&self, snapshot: VideoReceiverDebugSnapshot) {
+    ServerSession::set_video_receiver_debug_snapshot(self, snapshot);
   }
 
   fn watching_user_id(&self) -> Option<UserId> {
