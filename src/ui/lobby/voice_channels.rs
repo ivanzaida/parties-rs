@@ -29,7 +29,10 @@ use crate::{
   ui::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
     common::percent_slider::{PercentSliderSaveAction, percent_slider_control},
-    lobby::channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
+    lobby::{
+      channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
+      shared::user_display_name,
+    },
   },
 };
 
@@ -56,6 +59,7 @@ pub(super) struct VoiceChannelsProps {
   pub disconnected: bool,
   pub local_user_id: UserId,
   pub local_role: Role,
+  pub debug_user_ids: bool,
   pub join_channel: Option<JoinChannelAction>,
   pub watch_stream: Option<WatchStreamAction>,
 }
@@ -69,6 +73,7 @@ impl PartialEq for VoiceChannelsProps {
       && self.disconnected == other.disconnected
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
+      && self.debug_user_ids == other.debug_user_ids
       && self.join_channel.is_some() == other.join_channel.is_some()
       && self.watch_stream.is_some() == other.watch_stream.is_some()
   }
@@ -184,6 +189,7 @@ impl Component for VoiceChannels {
       let join_channel = props.join_channel.clone();
       let watch_stream = props.watch_stream.clone();
       let streaming_user_ids = props.streaming_user_ids.clone();
+      let debug_user_ids = props.debug_user_ids;
       let context_user_id = self.context_user_id.clone();
       let context_menu_open = self.context_menu_open.clone();
       let context_menu_anchor = self.context_menu_anchor.clone();
@@ -208,6 +214,7 @@ impl Component for VoiceChannels {
             context_menu_open.clone(),
             context_menu_anchor.clone(),
             role_menu_user_id.clone(),
+            debug_user_ids,
           )
         },
       );
@@ -246,6 +253,7 @@ impl Component for VoiceChannels {
           modal_set_user_voice_state,
           modal_disconnect_user,
           modal_kick_user,
+          props.debug_user_ids,
         ))
         .open(self.context_menu_open.clone())
         .target(Root),
@@ -359,6 +367,7 @@ fn channel_group(
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
   role_menu_user_id: Signal<Option<UserId>>,
+  debug_user_ids: bool,
 ) -> Element {
   users.sort_by(|left, right| {
     left
@@ -384,6 +393,7 @@ fn channel_group(
         context_menu_open.clone(),
         context_menu_anchor.clone(),
         role_menu_user_id.clone(),
+        debug_user_ids,
       )
     },
   );
@@ -478,6 +488,7 @@ fn channel_user_row(
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
   role_menu_user_id: Signal<Option<UserId>>,
+  debug_user_ids: bool,
 ) -> Element {
   let speaking = user.speaking && !user.muted && !user.deafened;
   let user_id = user.user_id;
@@ -496,6 +507,7 @@ fn channel_user_row(
   let close_role_menu = role_menu_user_id.clone();
   let menu_open = context_user_id.get() == Some(user.user_id);
   let scale = ctx.window().scale_factor.max(f32::EPSILON);
+  let username = user_display_name(user.user_id, &user.username, debug_user_ids);
 
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
@@ -538,7 +550,7 @@ fn channel_user_row(
     })
     .child(user_avatar(&user.username, speaking))
     .child(
-      Text::new(&user.username)
+      Text::new(&username)
         .flex(1.0)
         .variant(if speaking {
           theme::TypographyStyle::Button
@@ -571,6 +583,7 @@ fn user_context_overlay(
   set_user_voice_state: Option<SetUserVoiceStateAction>,
   disconnect_user: Option<DisconnectUserAction>,
   kick_user: Option<KickUserAction>,
+  debug_user_ids: bool,
 ) -> Element {
   let window = ctx.window();
   let window_width = window.logical_width();
@@ -642,6 +655,7 @@ fn user_context_overlay(
         set_user_voice_state,
         disconnect_user,
         kick_user,
+        debug_user_ids,
       )
       .absolute_position(menu_left, menu_top),
     )
@@ -663,6 +677,7 @@ fn user_context_menu(
   set_user_voice_state: Option<SetUserVoiceStateAction>,
   disconnect_user: Option<DisconnectUserAction>,
   kick_user: Option<KickUserAction>,
+  debug_user_ids: bool,
 ) -> Column {
   let target_user_id = user.user_id;
   let can_moderate = target_user_id != local_user_id && local_role.can_moderate(user.role);
@@ -682,7 +697,7 @@ fn user_context_menu(
     .rounded(6.0)
     .background(BackgroundColor::Color(Color::from_hex("#15171A")))
     .border_inside(1.0, BackgroundColor::Color(Color::from_hex("#3A4047")))
-    .child(user_context_header(ctx, user, channel_name))
+    .child(user_context_header(ctx, user, channel_name, debug_user_ids))
     .child(menu_separator())
     .child(ctx.mount_keyed::<UserVolumeControl>(
       &volume_control_key,
@@ -853,8 +868,9 @@ fn can_assign_role(actor_role: Role, target_role: Role) -> bool {
   target_role != Role::Owner && (actor_role == Role::Owner || (target_role as u8) > actor_role as u8)
 }
 
-fn user_context_header(ctx: &mut Ctx, user: &LobbyUser, channel_name: &str) -> Element {
+fn user_context_header(ctx: &mut Ctx, user: &LobbyUser, channel_name: &str, debug_user_ids: bool) -> Element {
   let role = ctx.t(role_meta_label_key(user.role));
+  let username = user_display_name(user.user_id, &user.username, debug_user_ids);
   let meta = ctx.t_args(
     "lobby.voice_menu.user_meta",
     [("role", role.to_string()), ("channel", channel_name.to_owned())],
@@ -876,7 +892,7 @@ fn user_context_header(ctx: &mut Ctx, user: &LobbyUser, channel_name: &str) -> E
         .flex(1.0)
         .spacing(2.0)
         .child(
-          Text::new(&user.username)
+          Text::new(&username)
             .variant(theme::TypographyStyle::Button)
             .color(theme::PaletteColor::TextPrimary),
         )

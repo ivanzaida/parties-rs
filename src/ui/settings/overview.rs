@@ -8,6 +8,7 @@ use lurq::{
 
 use crate::{
   routes::{ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS},
+  session::ServerSession,
   storage::Storage,
   theme,
   ui::{
@@ -28,6 +29,7 @@ const LANGUAGE_DROPDOWN_WIDTH: f32 = 220.0;
 pub struct SettingsOverviewScreen {
   start_muted_when_joining: bool,
   launch_parties_at_login: bool,
+  debug_chat_enabled: bool,
   locale: String,
 }
 
@@ -42,11 +44,13 @@ impl Component for SettingsOverviewScreen {
       .unwrap_or_default();
     let start_muted_when_joining = settings.start_muted_when_joining;
     let launch_parties_at_login = settings.launch_parties_at_login;
+    let debug_chat_enabled = settings.debug_chat_enabled;
     let locale = settings.locale;
 
     Self {
       start_muted_when_joining,
       launch_parties_at_login,
+      debug_chat_enabled,
       locale,
     }
   }
@@ -167,6 +171,12 @@ impl Component for SettingsOverviewScreen {
                 description_key: "settings.overview.toggle.login.description",
                 initial_enabled: self.launch_parties_at_login,
                 setting: OverviewBoolSetting::LaunchPartiesAtLogin,
+              }))
+              .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
+                title_key: "settings.overview.toggle.debug_chat.title",
+                description_key: "settings.overview.toggle.debug_chat.description",
+                initial_enabled: self.debug_chat_enabled,
+                setting: OverviewBoolSetting::DebugChatEnabled,
               })),
           ),
       );
@@ -179,6 +189,7 @@ impl Component for SettingsOverviewScreen {
 enum OverviewBoolSetting {
   StartMutedWhenJoining,
   LaunchPartiesAtLogin,
+  DebugChatEnabled,
 }
 
 #[derive(Clone, lurq::DevtoolsInspectable)]
@@ -208,14 +219,21 @@ impl Component for OverviewToggleSetting {
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
     let enabled = ctx.signal(props.initial_enabled);
+    let session = ctx.use_context::<ServerSession>();
     if let Some(storage) = ctx.use_context::<Storage>() {
       ctx.watch(&enabled, move |enabled| {
         let mut settings = storage.load_settings().unwrap_or_default();
         match props.setting {
           OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
           OverviewBoolSetting::LaunchPartiesAtLogin => settings.launch_parties_at_login = *enabled,
+          OverviewBoolSetting::DebugChatEnabled => settings.debug_chat_enabled = *enabled,
         }
         let _ = storage.save_settings(&settings);
+        if props.setting == OverviewBoolSetting::DebugChatEnabled
+          && let Some(session) = session.as_ref()
+        {
+          session.refresh_lobby();
+        }
       });
     }
     Self { enabled }

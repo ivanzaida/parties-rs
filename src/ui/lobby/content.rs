@@ -39,6 +39,7 @@ pub(super) fn main(
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  debug_chat_enabled: bool,
   storage: Option<Storage>,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
@@ -57,6 +58,7 @@ pub(super) fn main(
       ctx,
       info.user_id,
       lobby,
+      debug_chat_enabled,
       start_stream_modal_open.clone(),
       stop_stream,
       stop_watching,
@@ -72,6 +74,7 @@ pub(super) fn main(
       chat_scroll_state,
       chat_bottom_anchor,
       chat_top_anchor,
+      debug_chat_enabled,
       storage,
       session,
       chat_history,
@@ -88,12 +91,13 @@ fn main_top_bar(
   ctx: &mut Ctx,
   _local_user_id: UserId,
   lobby: &LobbyState,
+  debug_chat_enabled: bool,
   start_stream_modal_open: Signal<bool>,
   _stop_stream: &StopStreamAction,
   stop_watching: &StopWatchingAction,
 ) -> Element {
   let metrics = lobby_layout_metrics(ctx);
-  if lobby.debug_chat_selected {
+  if debug_chat_enabled && lobby.debug_chat_selected {
     let channel = ChatChannel::debug(ctx);
     return chat_channel_top_bar(ctx, &channel, None);
   }
@@ -105,7 +109,7 @@ fn main_top_bar(
 
   if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
     if let Some(stream) = watched_stream_for_channel(lobby, channel.id) {
-      return stream_watching_top_bar(ctx, stream, start_stream_modal_open, stop_watching);
+      return stream_watching_top_bar(ctx, stream, debug_chat_enabled, start_stream_modal_open, stop_watching);
     }
 
     let user_count = lobby.users_by_channel.get(&channel.id).map(Vec::len).unwrap_or(0);
@@ -273,6 +277,7 @@ fn main_body(
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  debug_chat_enabled: bool,
   storage: Option<Storage>,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
@@ -282,7 +287,7 @@ fn main_body(
   watch_stream: &WatchStreamAction,
   stop_watching: &StopWatchingAction,
 ) -> Element {
-  if lobby.debug_chat_selected {
+  if debug_chat_enabled && lobby.debug_chat_selected {
     let channel = ChatChannel::debug(ctx);
     return text_channel_detail(
       ctx,
@@ -296,6 +301,7 @@ fn main_body(
       chat_scroll_state,
       chat_bottom_anchor,
       chat_top_anchor,
+      debug_chat_enabled,
       session,
       chat_history,
       send_chat,
@@ -316,6 +322,7 @@ fn main_body(
       chat_scroll_state,
       chat_bottom_anchor,
       chat_top_anchor,
+      debug_chat_enabled,
       session,
       chat_history,
       send_chat,
@@ -329,6 +336,7 @@ fn main_body(
         stream,
         screen_shares_for_channel(lobby, channel.id),
         lobby.last_error.as_deref(),
+        debug_chat_enabled,
         storage,
         session,
         watch_stream,
@@ -340,6 +348,7 @@ fn main_body(
       channel,
       info.user_id,
       lobby,
+      debug_chat_enabled,
       start_stream_modal_open,
       stop_stream,
       watch_stream,

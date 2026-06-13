@@ -194,6 +194,11 @@ impl Component for LobbyScreen {
       }
       return empty_lobby(ctx);
     };
+    let debug_chat_enabled = storage
+      .as_ref()
+      .and_then(|storage| storage.load_settings().ok())
+      .unwrap_or_else(AppSettings::default)
+      .debug_chat_enabled;
 
     let mut lobby = session.lobby();
     if lobby.disconnected {
@@ -255,6 +260,7 @@ impl Component for LobbyScreen {
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         lobby: lobby.clone(),
+        debug_chat_enabled,
         start_stream_modal_open: self.start_stream_modal_open.clone(),
         stop_stream: stop_stream.clone(),
         watch_stream: watch_stream.clone(),
@@ -270,6 +276,7 @@ impl Component for LobbyScreen {
         self.chat_scroll_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_top_anchor.clone(),
+        debug_chat_enabled,
         storage,
         session,
         &chat_history,

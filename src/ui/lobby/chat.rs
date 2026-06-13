@@ -18,7 +18,9 @@ use lurq::{
 };
 
 use super::{
-  ChatHistoryAction, ChatHistoryRequest, SendChatAction, SendChatInput, rail::server_avatar, shared::error_notice,
+  ChatHistoryAction, ChatHistoryRequest, SendChatAction, SendChatInput,
+  rail::server_avatar,
+  shared::{error_notice, user_display_name},
 };
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
@@ -223,6 +225,7 @@ pub(super) fn text_channel_detail(
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  debug_user_ids: bool,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
@@ -305,7 +308,7 @@ pub(super) fn text_channel_detail(
         messages_column = messages_column.child(chat_day_divider(ctx, message_day, today));
         last_day = Some(message_day);
       }
-      messages_column = messages_column.child(chat_message_row(ctx, message, info.user_id));
+      messages_column = messages_column.child(chat_message_row(ctx, message, info.user_id, debug_user_ids));
     }
   }
 
@@ -450,9 +453,10 @@ fn chat_scrollbar_style() -> ScrollBarStyle {
   }
 }
 
-fn chat_message_row(ctx: &mut Ctx, message: &ProtocolChatMessage, local_user_id: u32) -> Element {
+fn chat_message_row(ctx: &mut Ctx, message: &ProtocolChatMessage, local_user_id: u32, debug_user_ids: bool) -> Element {
   let local = message.sender_id == local_user_id;
   let timestamp = format_chat_time(message.timestamp);
+  let sender_name = user_display_name(message.sender_id, &message.sender_name, debug_user_ids);
 
   Row::new()
     .width(Dimension::Pct(100.0))
@@ -469,7 +473,7 @@ fn chat_message_row(ctx: &mut Ctx, message: &ProtocolChatMessage, local_user_id:
             .align_items(Alignment::Center)
             .spacing(theme::SpacingSize::Sm)
             .child(
-              Text::new(&message.sender_name)
+              Text::new(&sender_name)
                 .variant(theme::TypographyStyle::Button)
                 .color(theme::PaletteColor::TextPrimary)
                 .selectable(true),

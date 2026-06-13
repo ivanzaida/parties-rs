@@ -61,6 +61,7 @@ impl From<std::time::SystemTimeError> for StorageError {
 pub struct AppSettings {
   pub start_muted_when_joining: bool,
   pub launch_parties_at_login: bool,
+  pub debug_chat_enabled: bool,
   pub display_name: String,
   pub audio_input_device: String,
   pub audio_output_device: String,
@@ -90,6 +91,7 @@ impl Default for AppSettings {
     Self {
       start_muted_when_joining: true,
       launch_parties_at_login: false,
+      debug_chat_enabled: false,
       display_name: default_display_name(),
       audio_input_device: String::new(),
       audio_output_device: String::new(),
@@ -305,6 +307,7 @@ impl Storage {
         id,
         start_muted_when_joining,
         launch_parties_at_login,
+        debug_chat_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -328,11 +331,12 @@ impl Storage {
         video_bitrate_mbps,
         locale
       )
-      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
         bool_to_int(settings.launch_parties_at_login),
+        bool_to_int(settings.debug_chat_enabled),
         &settings.display_name,
         &settings.audio_input_device,
         &settings.audio_output_device,
@@ -367,6 +371,7 @@ impl Storage {
       SELECT
         start_muted_when_joining,
         launch_parties_at_login,
+        debug_chat_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -402,28 +407,29 @@ impl Storage {
     Ok(AppSettings {
       start_muted_when_joining: int_to_bool(row.get(0)?),
       launch_parties_at_login: int_to_bool(row.get(1)?),
-      display_name: row.get(2)?,
-      audio_input_device: row.get(3)?,
-      audio_output_device: row.get(4)?,
-      notification_volume: row.get(5)?,
-      notification_sound_overrides: row.get(6)?,
-      noise_cancellation: int_to_bool(row.get(7)?),
-      voice_normalization: int_to_bool(row.get(8)?),
-      voice_normalization_target_level: row.get(9)?,
-      echo_cancellation: int_to_bool(row.get(10)?),
-      voice_activation: int_to_bool(row.get(11)?),
-      voice_activation_threshold: row.get(12)?,
-      push_to_talk: int_to_bool(row.get(13)?),
-      push_to_talk_release_delay_ms: row.get::<_, i32>(14)?.clamp(0, 2000),
-      hotkey_push_to_talk: row.get(15)?,
-      hotkey_toggle_mute: row.get(16)?,
-      hotkey_toggle_deafen: row.get(17)?,
-      video_webcam_device: row.get(18)?,
-      video_codec: row.get(19)?,
-      video_scale_percent: row.get(20)?,
-      video_fps: row.get(21)?,
-      video_bitrate_mbps: row.get(22)?,
-      locale: row.get(23)?,
+      debug_chat_enabled: int_to_bool(row.get(2)?),
+      display_name: row.get(3)?,
+      audio_input_device: row.get(4)?,
+      audio_output_device: row.get(5)?,
+      notification_volume: row.get(6)?,
+      notification_sound_overrides: row.get(7)?,
+      noise_cancellation: int_to_bool(row.get(8)?),
+      voice_normalization: int_to_bool(row.get(9)?),
+      voice_normalization_target_level: row.get(10)?,
+      echo_cancellation: int_to_bool(row.get(11)?),
+      voice_activation: int_to_bool(row.get(12)?),
+      voice_activation_threshold: row.get(13)?,
+      push_to_talk: int_to_bool(row.get(14)?),
+      push_to_talk_release_delay_ms: row.get::<_, i32>(15)?.clamp(0, 2000),
+      hotkey_push_to_talk: row.get(16)?,
+      hotkey_toggle_mute: row.get(17)?,
+      hotkey_toggle_deafen: row.get(18)?,
+      video_webcam_device: row.get(19)?,
+      video_codec: row.get(20)?,
+      video_scale_percent: row.get(21)?,
+      video_fps: row.get(22)?,
+      video_bitrate_mbps: row.get(23)?,
+      locale: row.get(24)?,
     })
   }
 
@@ -751,6 +757,7 @@ impl Storage {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
         launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
+        debug_chat_enabled INTEGER NOT NULL DEFAULT 0,
         display_name TEXT NOT NULL DEFAULT '',
         audio_input_device TEXT NOT NULL DEFAULT '',
         audio_output_device TEXT NOT NULL DEFAULT '',
@@ -840,6 +847,12 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "launch_parties_at_login")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN launch_parties_at_login INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "debug_chat_enabled")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN debug_chat_enabled INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
     }
@@ -1315,6 +1328,7 @@ mod tests {
     let settings = AppSettings {
       start_muted_when_joining: false,
       launch_parties_at_login: true,
+      debug_chat_enabled: true,
       display_name: "alice".to_owned(),
       audio_input_device: "Microphone".to_owned(),
       audio_output_device: "Speakers".to_owned(),

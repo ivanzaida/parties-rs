@@ -47,10 +47,11 @@ pub(super) fn watched_stream_for_channel(lobby: &LobbyState, channel_id: Channel
 pub(super) fn stream_watching_top_bar(
   ctx: &mut Ctx,
   stream: ChannelScreenShare<'_>,
+  debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
   stop_watching: &StopWatchingAction,
 ) -> Element {
-  let name = stream_name(ctx, &stream);
+  let name = stream_name(ctx, &stream, debug_user_ids);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name)]);
 
   Row::new()
@@ -81,6 +82,7 @@ pub(super) fn stream_watching(
   stream: ChannelScreenShare<'_>,
   streams: Vec<ChannelScreenShare<'_>>,
   error: Option<&str>,
+  debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
@@ -92,8 +94,14 @@ pub(super) fn stream_watching(
     .flex(1.0)
     .spacing(16.0)
     .padding(20.0)
-    .child(stage(ctx, &stream, storage, &session))
-    .child(stream_switcher(ctx, watched_user_id, streams, watch_stream));
+    .child(stage(ctx, &stream, debug_user_ids, storage, &session))
+    .child(stream_switcher(
+      ctx,
+      watched_user_id,
+      streams,
+      debug_user_ids,
+      watch_stream,
+    ));
 
   if let Some(error) = error {
     body = body.child(super::shared::error_notice(ctx, error));
@@ -102,8 +110,15 @@ pub(super) fn stream_watching(
   body.into()
 }
 
-fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage>, session: &ServerSession) -> Element {
-  let name = stream_name(ctx, stream);
+fn stage(
+  ctx: &mut Ctx,
+  stream: &ChannelScreenShare<'_>,
+  debug_user_ids: bool,
+  storage: Option<Storage>,
+  session: &ServerSession,
+) -> Element {
+  let name = stream_name(ctx, stream, debug_user_ids);
+  let avatar_name = stream_name(ctx, stream, false);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let meta = stream_footer_meta(ctx, &name, stream.share);
   let speaking = stream_speaking(stream);
@@ -152,7 +167,7 @@ fn stage(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, storage: Option<Storage
             .width(Dimension::Pct(100.0))
             .align_items(Alignment::End)
             .justify(Justify::SpaceBetween)
-            .child(streamer_label(&name, &title, &meta, speaking))
+            .child(streamer_label(&avatar_name, &title, &meta, speaking))
             .child(stage_controls(ctx, session, storage, stream.share.sharer_user_id)),
         ),
     )
@@ -210,6 +225,7 @@ fn stream_switcher(
   ctx: &mut Ctx,
   watched_user_id: UserId,
   streams: Vec<ChannelScreenShare<'_>>,
+  debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
   let mut row = Row::new()
@@ -219,7 +235,13 @@ fn stream_switcher(
     .spacing(10.0);
 
   for stream in streams {
-    row = row.child(switcher_card(ctx, stream, watched_user_id, watch_stream));
+    row = row.child(switcher_card(
+      ctx,
+      stream,
+      watched_user_id,
+      debug_user_ids,
+      watch_stream,
+    ));
   }
 
   row.into()
@@ -229,11 +251,13 @@ fn switcher_card(
   ctx: &mut Ctx,
   stream: ChannelScreenShare<'_>,
   watched_user_id: UserId,
+  debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
   let sharer_id = stream.share.sharer_user_id;
   let watching = sharer_id == watched_user_id;
-  let name = stream_name(ctx, &stream);
+  let name = stream_name(ctx, &stream, debug_user_ids);
+  let avatar_name = stream_name(ctx, &stream, false);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let speaking = stream_speaking(&stream);
   let action = watch_stream.clone();
@@ -264,7 +288,7 @@ fn switcher_card(
         .padding_vertical(8.0)
         .padding_horizontal(10.0)
         .spacing(8.0)
-        .child(stream_avatar(&name, 22.0, speaking))
+        .child(stream_avatar(&avatar_name, 22.0, speaking))
         .child(
           Text::new(&title)
             .width(Dimension::Pct(100.0))

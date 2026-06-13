@@ -38,6 +38,7 @@ pub(super) fn stream_browser(
   channel: &LobbyChannel,
   local_user_id: UserId,
   lobby: &LobbyState,
+  debug_user_ids: bool,
   _start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
@@ -60,6 +61,7 @@ pub(super) fn stream_browser(
       streams,
       local_user_id,
       lobby.watching_user_id,
+      debug_user_ids,
       stop_stream,
       watch_stream,
     ));
@@ -104,6 +106,7 @@ fn merged_lobby_grid(
   streams: Vec<ChannelScreenShare<'_>>,
   local_user_id: UserId,
   watching_user_id: Option<UserId>,
+  debug_user_ids: bool,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -122,12 +125,19 @@ fn merged_lobby_grid(
         channel,
         stream,
         watching_user_id,
+        debug_user_ids,
         stop_stream,
         watch_stream,
         card_width,
       ));
     } else {
-      cards.push(merged_user_card(ctx, user, user.user_id == local_user_id, card_width));
+      cards.push(merged_user_card(
+        ctx,
+        user,
+        user.user_id == local_user_id,
+        debug_user_ids,
+        card_width,
+      ));
     }
   }
 
@@ -137,6 +147,7 @@ fn merged_lobby_grid(
       channel,
       stream,
       watching_user_id,
+      debug_user_ids,
       stop_stream,
       watch_stream,
       card_width,
@@ -197,12 +208,14 @@ fn merged_stream_card(
   _channel: &LobbyChannel,
   stream: ChannelScreenShare<'_>,
   watching_user_id: Option<UserId>,
+  debug_user_ids: bool,
   _stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
   card_width: f32,
 ) -> Element {
   let sharer_id = stream.share.sharer_user_id;
-  let name = stream_name(ctx, &stream);
+  let name = stream_name(ctx, &stream, debug_user_ids);
+  let avatar_name = stream_name(ctx, &stream, false);
   let watching = watching_user_id == Some(sharer_id);
   let speaking = stream_speaking(&stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
@@ -240,7 +253,7 @@ fn merged_stream_card(
         .padding_vertical(10.0)
         .padding_horizontal(14.0)
         .spacing(10.0)
-        .child(stream_avatar(&name, 28.0, speaking))
+        .child(stream_avatar(&avatar_name, 28.0, speaking))
         .child(
           Column::new()
             .width(Dimension::Pct(100.0))
@@ -302,9 +315,10 @@ fn stream_thumbnail(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
     .into()
 }
 
-fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, card_width: f32) -> Element {
+fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, debug_user_ids: bool, card_width: f32) -> Element {
   let active = user.speaking && !user.muted && !user.deafened;
   let name_max_width = (card_width - 74.0).max(60.0);
+  let username = super::shared::user_display_name(user.user_id, &user.username, debug_user_ids);
 
   Column::new()
     .width(card_width)
@@ -343,7 +357,7 @@ fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, card_width: f
             .justify(Justify::Center)
             .spacing(6.0)
             .child(
-              Text::new(&user.username)
+              Text::new(&username)
                 .max_width(name_max_width)
                 .variant(theme::TypographyStyle::Button)
                 .color(theme::PaletteColor::TextPrimary)

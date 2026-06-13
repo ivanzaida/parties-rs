@@ -11,6 +11,7 @@ use crate::{
   network::protocol::{ChannelId, UserId, VideoCodecId},
   session::{LobbyScreenShare, LobbyState, LobbyUser},
   theme,
+  ui::lobby::shared::user_display_name,
 };
 
 pub(super) struct ChannelScreenShare<'a> {
@@ -35,10 +36,10 @@ pub(super) fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelI
     .collect()
 }
 
-pub(super) fn stream_name(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>) -> String {
+pub(super) fn stream_name(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, debug_user_ids: bool) -> String {
   stream
     .user
-    .map(|user| user.username.clone())
+    .map(|user| user_display_name(user.user_id, &user.username, debug_user_ids))
     .unwrap_or_else(|| fallback_user_name(ctx, stream.share.sharer_user_id))
 }
 

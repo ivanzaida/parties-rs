@@ -407,6 +407,10 @@ impl ServerSession {
     self.revision.clone()
   }
 
+  pub fn refresh_lobby(&self) {
+    self.bump_revision();
+  }
+
   fn bump_revision(&self) {
     self.revision.update(|revision| *revision = revision.wrapping_add(1));
   }

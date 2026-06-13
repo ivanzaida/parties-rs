@@ -7,9 +7,18 @@ use lurq::{
 
 use super::layout::lobby_layout_metrics;
 use crate::{
+  network::protocol::UserId,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
+
+pub(super) fn user_display_name(user_id: UserId, name: &str, debug_user_ids: bool) -> String {
+  if debug_user_ids {
+    format!("[id:{user_id}] {name}")
+  } else {
+    name.to_owned()
+  }
+}
 
 pub(super) fn error_notice(ctx: &mut Ctx, message: &str) -> Element {
   let metrics = lobby_layout_metrics(ctx);

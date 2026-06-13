@@ -452,6 +452,10 @@
         "login": {
           "title": "Launch Parties at login",
           "description": "Start the client automatically when this device signs in."
+        },
+        "debug_chat": {
+          "title": "Show debug chat",
+          "description": "Show the local debug command channel in the server rail."
         }
       }
     },
