@@ -1,9 +1,9 @@
-use std::process::Command;
+use std::{process::Command, time::Duration};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Weekday};
 use lurq::{
   animation::Transition,
-  app::ctx::{CollisionStrategy, Ctx, Overlay, Placement},
+  app::ctx::{CollisionStrategy, Ctx, Overlay, Placement, Timeout},
   components::{Column, Row, ScrollVertical, Text, TextInput},
   core::{ElementRef, Signal},
   layout::{
@@ -13,6 +13,7 @@ use lurq::{
   },
   node::{
     BackgroundColor, CursorIcon, Element, HitTestBehavior, Style, border::Border, color::Color, dimension::Dimension,
+    transform::Transform2D,
   },
 };
 
@@ -35,6 +36,61 @@ use crate::{
 const CHAT_COMMAND_SUGGESTION_BOTTOM_GAP: f32 = 6.0;
 const CHAT_COMMAND_SUGGESTION_ROW_HEIGHT: f32 = 68.0;
 const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
+const CHAT_COMMAND_INVALID_SHAKE_STEP_MS: u64 = 28;
+const CHAT_COMMAND_INVALID_SHAKE_TRANSITION_MS: u64 = 20;
+
+#[derive(Clone)]
+pub(super) struct ChatCommandInvalidFeedback {
+  phase: Signal<u8>,
+  step_two: Timeout,
+  step_three: Timeout,
+  step_four: Timeout,
+  step_five: Timeout,
+  reset: Timeout,
+}
+
+impl ChatCommandInvalidFeedback {
+  pub(super) fn new(ctx: &mut Ctx) -> Self {
+    let phase = ctx.signal(0_u8);
+    let step_two_phase = phase.clone();
+    let step_three_phase = phase.clone();
+    let step_four_phase = phase.clone();
+    let step_five_phase = phase.clone();
+    let reset_phase = phase.clone();
+
+    Self {
+      phase,
+      step_two: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS), move || {
+        step_two_phase.set(2);
+      }),
+      step_three: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 2), move || {
+        step_three_phase.set(3);
+      }),
+      step_four: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 3), move || {
+        step_four_phase.set(4);
+      }),
+      step_five: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 4), move || {
+        step_five_phase.set(5);
+      }),
+      reset: ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_INVALID_SHAKE_STEP_MS * 5), move || {
+        reset_phase.set(0);
+      }),
+    }
+  }
+
+  fn phase(&self) -> u8 {
+    self.phase.get()
+  }
+
+  fn trigger(&self) {
+    self.phase.set(1);
+    self.step_two.restart();
+    self.step_three.restart();
+    self.step_four.restart();
+    self.step_five.restart();
+    self.reset.restart();
+  }
+}
 
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
@@ -43,6 +99,8 @@ pub(super) fn text_channel_detail(
   lobby: &LobbyState,
   message_input: Signal<String>,
   command_selected_index: Signal<usize>,
+  command_scroll_state: ScrollState,
+  command_invalid_feedback: ChatCommandInvalidFeedback,
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -147,11 +205,18 @@ pub(super) fn text_channel_detail(
       channel,
       message_input.clone(),
       command_selected_index.clone(),
+      command_invalid_feedback.clone(),
       send_chat,
       composer_ref.clone(),
     ));
 
-  if let Some(suggestions) = chat_command_suggestions(ctx, message_input, command_selected_index) {
+  if let Some(suggestions) = chat_command_suggestions(
+    ctx,
+    message_input,
+    command_selected_index,
+    command_scroll_state,
+    command_invalid_feedback,
+  ) {
     body = body.child(
       Overlay::new(suggestions)
         .anchor(composer_ref)
@@ -651,6 +716,7 @@ fn chat_composer(
   channel: &LobbyTextChannel,
   message_input: Signal<String>,
   command_selected_index: Signal<usize>,
+  command_invalid_feedback: ChatCommandInvalidFeedback,
   send_chat: &SendChatAction,
   composer_ref: ElementRef,
 ) -> Element {
@@ -664,8 +730,11 @@ fn chat_composer(
   let channel_id = channel.id;
   let key_value = message_input.clone();
   let key_command_selected_index = command_selected_index.clone();
+  let key_invalid_feedback = command_invalid_feedback.clone();
   let key_action = send_chat.clone();
   let click_value = message_input.clone();
+  let click_command_selected_index = command_selected_index.clone();
+  let click_invalid_feedback = command_invalid_feedback.clone();
   let click_action = send_chat.clone();
 
   Row::new()
@@ -703,7 +772,13 @@ fn chat_composer(
               }
               if event.key == "Enter" && !event.shift {
                 event.prevent_default();
-                submit_chat(channel_id, &key_value, &key_action);
+                submit_chat_if_valid(
+                  channel_id,
+                  &key_value,
+                  &key_command_selected_index,
+                  &key_invalid_feedback,
+                  &key_action,
+                );
               }
             }),
         )
@@ -717,7 +792,15 @@ fn chat_composer(
             .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
             .cursor(CursorIcon::Pointer)
             .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::AccentHover)))
-            .on_click(move |_| submit_chat(channel_id, &click_value, &click_action))
+            .on_click(move |_| {
+              submit_chat_if_valid(
+                channel_id,
+                &click_value,
+                &click_command_selected_index,
+                &click_invalid_feedback,
+                &click_action,
+              )
+            })
             .child(ctx.mount::<LucideIcon>(LucideIconProps {
               icon: "send-horizontal",
               size: 15.0,
@@ -809,6 +892,8 @@ fn chat_command_suggestions(
   ctx: &mut Ctx,
   message_input: Signal<String>,
   selected_index: Signal<usize>,
+  scroll_state: ScrollState,
+  invalid_feedback: ChatCommandInvalidFeedback,
 ) -> Option<Element> {
   let input = message_input.get();
   let query = command_suggestion_query(&input)?;
@@ -824,6 +909,8 @@ fn chat_command_suggestions(
   }
 
   let list_height = command_suggestion_list_height(commands.len());
+  ensure_command_selection_visible(&scroll_state, active_index, list_height);
+  let invalid_feedback_phase = invalid_feedback.phase();
   let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + list_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
 
   let title = if query == "/" {
@@ -849,6 +936,7 @@ fn chat_command_suggestions(
       selected_index.clone(),
       index,
       index == active_index,
+      invalid_feedback_phase,
     ));
   }
 
@@ -871,6 +959,7 @@ fn chat_command_suggestions(
             ScrollVertical::new(list)
               .width(Dimension::Pct(100.0))
               .height(list_height)
+              .with_scroll_state(scroll_state)
               .scrollbar(chat_scrollbar_style()),
           ),
       )
@@ -886,6 +975,23 @@ fn command_suggestion_list_height(command_count: usize) -> f32 {
   )
 }
 
+fn ensure_command_selection_visible(scroll_state: &ScrollState, active_index: usize, fallback_viewport_height: f32) {
+  let viewport_height = scroll_state.viewport_height().max(fallback_viewport_height);
+  let current_scroll = scroll_state.scroll_y();
+  let row_top = active_index as f32 * CHAT_COMMAND_SUGGESTION_ROW_HEIGHT;
+  let row_bottom = row_top + CHAT_COMMAND_SUGGESTION_ROW_HEIGHT;
+  let viewport_bottom = current_scroll + viewport_height;
+  let next_scroll = if row_top < current_scroll {
+    row_top
+  } else if row_bottom > viewport_bottom {
+    row_bottom - viewport_height
+  } else {
+    return;
+  };
+
+  scroll_state.set_scroll_pending(scroll_state.scroll_x(), next_scroll);
+}
+
 fn command_suggestion_row(
   ctx: &mut Ctx,
   command: CommandInfo,
@@ -894,6 +1000,7 @@ fn command_suggestion_row(
   selected_index: Signal<usize>,
   index: usize,
   selected: bool,
+  invalid_feedback_phase: u8,
 ) -> Element {
   let fill = command_fill_text(&command.name);
   let background = if selected {
@@ -921,7 +1028,10 @@ fn command_suggestion_row(
         .width(Dimension::Pct(100.0))
         .flex(1.0)
         .spacing(theme::SpacingSize::Xs)
-        .child(command_usage_row(command_usage_parts(&command.usage, &input)))
+        .child(command_usage_row(
+          command_usage_parts(&command.usage, &input),
+          invalid_feedback_phase,
+        ))
         .child(
           Text::new(&command.description)
             .variant(theme::TypographyStyle::Link)
@@ -963,7 +1073,7 @@ fn command_suggestion_title(title: &str) -> Element {
     .into()
 }
 
-fn command_usage_row(parts: Vec<CommandUsagePart>) -> Element {
+fn command_usage_row(parts: Vec<CommandUsagePart>, invalid_feedback_phase: u8) -> Element {
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -976,7 +1086,9 @@ fn command_usage_row(parts: Vec<CommandUsagePart>) -> Element {
         .variant(theme::TypographyStyle::Heading)
         .color(theme::PaletteColor::TextPrimary)
         .into(),
-      CommandUsagePart::Argument { label, invalid } => command_argument_pill(&label, invalid),
+      CommandUsagePart::Argument { label, invalid } => {
+        command_argument_pill(&label, invalid, invalid_feedback_phase)
+      }
     };
     row = row.child(child);
   }
@@ -1011,7 +1123,7 @@ fn command_usage_parts(usage: &str, input: &str) -> Vec<CommandUsagePart> {
     .collect()
 }
 
-fn command_argument_pill(argument: &str, invalid: bool) -> Element {
+fn command_argument_pill(argument: &str, invalid: bool, invalid_feedback_phase: u8) -> Element {
   let (background, border, text_color) = if invalid {
     (
       BackgroundColor::Palette(theme::PaletteColor::DangerMuted),
@@ -1025,6 +1137,11 @@ fn command_argument_pill(argument: &str, invalid: bool) -> Element {
       theme::PaletteColor::TextSecondary,
     )
   };
+  let shake_x = if invalid {
+    command_invalid_shake_offset(invalid_feedback_phase)
+  } else {
+    0.0
+  };
 
   Row::new()
     .height(22.0)
@@ -1033,12 +1150,25 @@ fn command_argument_pill(argument: &str, invalid: bool) -> Element {
     .rounded(theme::RadiusSize::Md)
     .background(background)
     .border_inside(1.0, border)
+    .transform(Transform2D::translate(shake_x, 0.0))
+    .transition(Transition::transform().duration_ms(CHAT_COMMAND_INVALID_SHAKE_TRANSITION_MS))
     .child(
       Text::new(argument)
         .variant(theme::TypographyStyle::Button)
         .color(text_color),
     )
     .into()
+}
+
+fn command_invalid_shake_offset(phase: u8) -> f32 {
+  match phase {
+    1 => -8.0,
+    2 => 7.0,
+    3 => -5.0,
+    4 => 4.0,
+    5 => -2.0,
+    _ => 0.0,
+  }
 }
 
 fn command_preview_input_args(input: &str) -> Vec<String> {
@@ -1070,8 +1200,38 @@ fn command_argument_value_valid(argument: &str, value: &str) -> bool {
   }
 }
 
+fn command_input_has_invalid_argument(input: &str, selected_index: &Signal<usize>) -> bool {
+  let Some(query) = command_suggestion_query(input) else {
+    return false;
+  };
+  let commands = matching_chat_command_definitions(&query);
+  let Some(command) = commands.get(selected_index.get_untracked().min(commands.len().saturating_sub(1))) else {
+    return false;
+  };
+
+  command_usage_parts(command.usage, input)
+    .into_iter()
+    .any(|part| matches!(part, CommandUsagePart::Argument { invalid: true, .. }))
+}
+
 fn command_fill_text(command_name: &str) -> String {
   format!("{command_name} ")
+}
+
+fn submit_chat_if_valid(
+  channel_id: ChannelId,
+  message_input: &Signal<String>,
+  command_selected_index: &Signal<usize>,
+  command_invalid_feedback: &ChatCommandInvalidFeedback,
+  send_chat: &SendChatAction,
+) {
+  let text = message_input.get_untracked();
+  if command_input_has_invalid_argument(&text, command_selected_index) {
+    command_invalid_feedback.trigger();
+    return;
+  }
+
+  submit_chat(channel_id, message_input, send_chat);
 }
 
 fn submit_chat(channel_id: ChannelId, message_input: &Signal<String>, send_chat: &SendChatAction) {

@@ -49,6 +49,7 @@ use actions::{
   chat_history_action, receiver_action, reconnect_action, send_chat_action, start_stream_action, stop_stream_action,
   stop_watching_action, watch_stream_action,
 };
+use chat::ChatCommandInvalidFeedback;
 use content::main;
 use disconnected::disconnected_lobby;
 use rail::{LobbyRail, LobbyRailProps};
@@ -97,6 +98,8 @@ struct ReconnectRequest {
 pub struct LobbyScreen {
   message_input: Signal<String>,
   chat_command_selected_index: Signal<usize>,
+  chat_command_scroll_state: ScrollState,
+  chat_command_invalid_feedback: ChatCommandInvalidFeedback,
   chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -134,10 +137,11 @@ impl Component for LobbyScreen {
         interval_wake.set(current);
       }
     });
-
     Self {
       message_input: ctx.signal(String::new()),
       chat_command_selected_index: ctx.signal(0),
+      chat_command_scroll_state: ScrollState::new(),
+      chat_command_invalid_feedback: ChatCommandInvalidFeedback::new(ctx),
       chat_scroll_state: ScrollState::new(),
       chat_bottom_anchor: ctx.signal(None),
       chat_top_anchor: ctx.signal(None),
@@ -259,6 +263,8 @@ impl Component for LobbyScreen {
         &lobby,
         self.message_input.clone(),
         self.chat_command_selected_index.clone(),
+        self.chat_command_scroll_state.clone(),
+        self.chat_command_invalid_feedback.clone(),
         self.chat_scroll_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_top_anchor.clone(),
