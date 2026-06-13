@@ -322,26 +322,26 @@ fn rail_channels(
       unread_channel_ids: lobby.unread_text_channel_ids.clone(),
     }));
 
+  channels = channels.child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
+    channels: lobby.channels.clone(),
+    users_by_channel: lobby.users_by_channel.clone(),
+    streaming_user_ids: lobby.screen_shares.iter().map(|share| share.sharer_user_id).collect(),
+    selected_channel_id: lobby.selected_channel_id,
+    disconnected: lobby.disconnected,
+    local_user_id: info.user_id,
+    local_role: info.role,
+    debug_user_ids: debug_chat_enabled,
+    join_channel: join_channel.cloned(),
+    watch_stream: Some(watch_stream.clone()),
+  }));
+
   if debug_chat_enabled {
     channels = channels.child(ctx.mount::<DebugChannels>(DebugChannelsProps {
       selected: lobby.debug_chat_selected,
     }));
   }
 
-  channels
-    .child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
-      channels: lobby.channels.clone(),
-      users_by_channel: lobby.users_by_channel.clone(),
-      streaming_user_ids: lobby.screen_shares.iter().map(|share| share.sharer_user_id).collect(),
-      selected_channel_id: lobby.selected_channel_id,
-      disconnected: lobby.disconnected,
-      local_user_id: info.user_id,
-      local_role: info.role,
-      debug_user_ids: debug_chat_enabled,
-      join_channel: join_channel.cloned(),
-      watch_stream: Some(watch_stream.clone()),
-    }))
-    .into()
+  channels.into()
 }
 
 fn rail_bottom(
