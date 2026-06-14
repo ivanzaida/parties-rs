@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lurq::app::ctx::Ctx;
 
@@ -11,7 +11,7 @@ use crate::{
   services::video::VideoBroadcastConfig,
   session::{
     ConnectedServerInfo, LobbyScreenShare, LobbyState, LobbyUser, ServerSession,
-    chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError},
+    chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError, ChatCommandSource},
   },
   storage::{AppSettings, Storage, StoredServer},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
@@ -141,12 +141,20 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
       if input.command_registry.has_commands() {
         match input.command_registry.parse(&text) {
           Ok(Some(invocation)) => {
-            if let Err(message) = execute_chat_command(&session, &copy, invocation) {
-              return Err(report_debug_command_error(&session, message));
+            if invocation.source == ChatCommandSource::Local {
+              if let Err(message) = execute_chat_command(&session, &copy, invocation) {
+                return Err(report_debug_command_error(&session, message));
+              }
+              return Ok(());
             }
-            return Ok(());
           }
           Ok(None) => {}
+          Err(ChatCommandParseError::Unknown { .. })
+            if input
+              .command_registry
+              .definitions()
+              .iter()
+              .any(|definition| definition.source == ChatCommandSource::Server) => {}
           Err(error) => {
             let message = copy.chat_command_parse_error(&error);
             if matches!(error, ChatCommandParseError::Unknown { .. }) {
@@ -331,6 +339,7 @@ fn debug_voice_report(session: &ServerSession, user_id: UserId) -> String {
   let same_channel = local_channel.is_some() && local_channel == target_channel;
   let local_state = session.local_voice_state().unwrap_or((false, false));
   let (engine, captures_voice) = session.voice_engine_status();
+  let (voice_received, voice_queued, last_played_packet_at) = session.voice_audio_debug_counts(user_id);
   let mut lines = vec![format!("Debug voice {user_id}")];
 
   lines.push(format!(
@@ -358,6 +367,12 @@ fn debug_voice_report(session: &ServerSession, user_id: UserId) -> String {
   ));
   lines.push(format!("target_volume: {}%", session.user_volume(user_id)));
   lines.push(format!(
+    "target_voice_packets: received={} queued={} last_played_packet={}",
+    voice_received,
+    voice_queued,
+    packet_timestamp_label(last_played_packet_at)
+  ));
+  lines.push(format!(
     "can_hear_target_in_principle: {}",
     status_bool(engine && same_channel && !local_state.1 && user.is_some_and(|user| !user.muted && !user.deafened))
   ));
@@ -374,6 +389,7 @@ fn debug_stream_report(session: &ServerSession, user_id: UserId) -> String {
   let watching = lobby.watching_user_id == Some(user_id);
   let frame_present = session.video_frame(user_id).is_some();
   let video_error = session.video_error(user_id);
+  let (stream_audio_received, stream_audio_queued, last_stream_audio_at) = session.stream_audio_debug_counts(user_id);
   let mut lines = vec![format!("Debug stream {user_id}")];
 
   lines.push(format!(
@@ -397,6 +413,12 @@ fn debug_stream_report(session: &ServerSession, user_id: UserId) -> String {
       .unwrap_or_else(|| "OK none".to_owned())
   ));
   lines.push(format!("stream_audio_volume: {}%", session.stream_volume(user_id)));
+  lines.push(format!(
+    "stream_audio_packets: received={} queued={} last_played_packet={}",
+    stream_audio_received,
+    stream_audio_queued,
+    packet_timestamp_label(last_stream_audio_at)
+  ));
   lines.push(format!(
     "voice_channel: {}",
     user_voice_channel(&lobby, user_id).unwrap_or_else(|| "WARN none".to_owned())
@@ -474,14 +496,18 @@ fn debug_audio_receivers_report(session: &ServerSession) -> String {
     lines.push("receivers: WARN no users in voice channels".to_owned());
   } else {
     for user in users {
+      let (received, queued, last_played_packet_at) = session.voice_audio_debug_counts(user.user_id);
       lines.push(format!(
-        "user {} {}: muted={} deafened={} speaking={} volume={}%",
+        "user {} {}: muted={} deafened={} speaking={} volume={}% voice_packets_received={} queued={} last_played_packet={}",
         user.user_id,
         user.username,
         yes_no(user.muted),
         yes_no(user.deafened),
         yes_no(user.speaking),
-        session.user_volume(user.user_id)
+        session.user_volume(user.user_id),
+        received,
+        queued,
+        packet_timestamp_label(last_played_packet_at)
       ));
     }
   }
@@ -695,6 +721,22 @@ fn optional_id(value: Option<u32>) -> String {
 
 fn yes_no(value: bool) -> &'static str {
   if value { "yes" } else { "no" }
+}
+
+fn packet_timestamp_label(timestamp: Option<SystemTime>) -> String {
+  let Some(timestamp) = timestamp else {
+    return "none".to_owned();
+  };
+
+  let unix_ms = timestamp
+    .duration_since(UNIX_EPOCH)
+    .map(|duration| duration.as_millis())
+    .unwrap_or(0);
+  let age_ms = SystemTime::now()
+    .duration_since(timestamp)
+    .map(|duration| duration.as_millis())
+    .unwrap_or(0);
+  format!("unix_ms={unix_ms} age_ms={age_ms}")
 }
 
 fn status_bool(value: bool) -> &'static str {

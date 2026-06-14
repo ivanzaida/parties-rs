@@ -4,13 +4,51 @@ use std::sync::Arc;
 pub struct ChatCommandInvocation {
   pub name: Arc<str>,
   pub arguments: Vec<Arc<str>>,
+  pub source: ChatCommandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandDefinition {
   pub name: Arc<str>,
   pub description_key: Arc<str>,
+  pub description_is_i18n_key: bool,
   pub usage: Arc<str>,
+  pub source: ChatCommandSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatCommandSource {
+  Local,
+  Server,
+}
+
+impl CommandDefinition {
+  pub fn local_i18n(name: &'static str, description_key: &'static str, usage: &'static str) -> Self {
+    Self {
+      name: Arc::from(name),
+      description_key: Arc::from(description_key),
+      description_is_i18n_key: true,
+      usage: Arc::from(usage),
+      source: ChatCommandSource::Local,
+    }
+  }
+
+  pub fn server_advertised(name: String, description: String, usage: String) -> Self {
+    let name = if name.starts_with('/') {
+      name
+    } else {
+      format!("/{name}")
+    };
+    let usage = if usage.trim().is_empty() { name.clone() } else { usage };
+
+    Self {
+      name: Arc::from(name),
+      description_key: Arc::from(description),
+      description_is_i18n_key: false,
+      usage: Arc::from(usage),
+      source: ChatCommandSource::Server,
+    }
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +75,7 @@ pub enum ChatCommandExpectedType {
   Text,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatCommandRegistry {
   definitions: Arc<[CommandDefinition]>,
 }
@@ -79,10 +117,13 @@ impl ChatCommandRegistry {
       });
     };
 
-    self.validate_usage(definition, command.as_ref(), &tokens)?;
+    if definition.source == ChatCommandSource::Local {
+      self.validate_usage(definition, command.as_ref(), &tokens)?;
+    }
     Ok(Some(ChatCommandInvocation {
       name: command,
       arguments: tokens,
+      source: definition.source,
     }))
   }
 
@@ -235,16 +276,16 @@ mod tests {
 
   fn debug_registry() -> ChatCommandRegistry {
     ChatCommandRegistry::from_definitions([
-      CommandDefinition {
-        name: "/restart-audio-receiver".into(),
-        description_key: "lobby.text_channel.commands.description.restart_audio_receiver".into(),
-        usage: "/restart-audio-receiver {userId:u32}".into(),
-      },
-      CommandDefinition {
-        name: "/audio-status".into(),
-        description_key: "lobby.text_channel.commands.description.audio_status".into(),
-        usage: "/audio-status".into(),
-      },
+      CommandDefinition::local_i18n(
+        "/restart-audio-receiver",
+        "lobby.text_channel.commands.description.restart_audio_receiver",
+        "/restart-audio-receiver {userId:u32}",
+      ),
+      CommandDefinition::local_i18n(
+        "/audio-status",
+        "lobby.text_channel.commands.description.audio_status",
+        "/audio-status",
+      ),
     ])
   }
 
@@ -267,6 +308,7 @@ mod tests {
       Some(ChatCommandInvocation {
         name: Arc::from("/restart-audio-receiver"),
         arguments: vec![Arc::from("42")],
+        source: ChatCommandSource::Local,
       })
     );
   }
@@ -278,6 +320,7 @@ mod tests {
       Some(ChatCommandInvocation {
         name: Arc::from("/audio-status"),
         arguments: Vec::new(),
+        source: ChatCommandSource::Local,
       })
     );
   }
@@ -334,6 +377,31 @@ mod tests {
       first.description_key.as_ref(),
       "lobby.text_channel.commands.description.restart_audio_receiver"
     );
+    assert!(first.description_is_i18n_key);
     assert_eq!(first.usage.as_ref(), "/restart-audio-receiver {userId:u32}");
+    assert_eq!(first.source, ChatCommandSource::Local);
+  }
+
+  #[test]
+  fn server_advertised_commands_are_normalized_for_slash_input() {
+    let registry = ChatCommandRegistry::from_definitions([CommandDefinition::server_advertised(
+      "botping".to_owned(),
+      "Ping the bot".to_owned(),
+      "/botping [text]".to_owned(),
+    )]);
+
+    assert_eq!(
+      registry.parse("/botping hello").unwrap(),
+      Some(ChatCommandInvocation {
+        name: Arc::from("/botping"),
+        arguments: vec![Arc::from("hello")],
+        source: ChatCommandSource::Server,
+      })
+    );
+    let command = registry.definitions().first().unwrap();
+    assert_eq!(command.name.as_ref(), "/botping");
+    assert_eq!(command.description_key.as_ref(), "Ping the bot");
+    assert!(!command.description_is_i18n_key);
+    assert_eq!(command.source, ChatCommandSource::Server);
   }
 }

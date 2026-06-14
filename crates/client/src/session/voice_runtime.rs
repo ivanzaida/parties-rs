@@ -1,7 +1,7 @@
 use std::{
   collections::HashMap,
   sync::Arc,
-  time::{Duration, Instant},
+  time::{Duration, Instant, SystemTime},
 };
 
 use parking_lot::Mutex;
@@ -239,9 +239,27 @@ fn warn_stale_voice_senders<S>(
 pub(super) struct VoiceRuntime {
   engine: Mutex<Option<VoiceEngine>>,
   voice_audio_counts: Mutex<HashMap<UserId, u64>>,
+  voice_audio_queued_counts: Mutex<HashMap<UserId, u64>>,
+  voice_audio_last_played_packet_at: Mutex<HashMap<UserId, SystemTime>>,
   stream_audio_counts: Mutex<HashMap<UserId, u64>>,
+  stream_audio_queued_counts: Mutex<HashMap<UserId, u64>>,
+  stream_audio_last_played_packet_at: Mutex<HashMap<UserId, SystemTime>>,
   user_volumes: Mutex<HashMap<UserId, i32>>,
   stream_volumes: Mutex<HashMap<UserId, i32>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VoiceAudioDebugCounts {
+  pub received: u64,
+  pub queued: u64,
+  pub last_played_packet_at: Option<SystemTime>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamAudioDebugCounts {
+  pub received: u64,
+  pub queued: u64,
+  pub last_played_packet_at: Option<SystemTime>,
 }
 
 impl VoiceRuntime {
@@ -249,7 +267,11 @@ impl VoiceRuntime {
     Self {
       engine: Mutex::new(None),
       voice_audio_counts: Mutex::new(HashMap::new()),
+      voice_audio_queued_counts: Mutex::new(HashMap::new()),
+      voice_audio_last_played_packet_at: Mutex::new(HashMap::new()),
       stream_audio_counts: Mutex::new(HashMap::new()),
+      stream_audio_queued_counts: Mutex::new(HashMap::new()),
+      stream_audio_last_played_packet_at: Mutex::new(HashMap::new()),
       user_volumes: Mutex::new(HashMap::new()),
       stream_volumes: Mutex::new(HashMap::new()),
     }
@@ -257,7 +279,11 @@ impl VoiceRuntime {
 
   pub(super) fn clear_counts(&self) {
     self.voice_audio_counts.lock().clear();
+    self.voice_audio_queued_counts.lock().clear();
+    self.voice_audio_last_played_packet_at.lock().clear();
     self.stream_audio_counts.lock().clear();
+    self.stream_audio_queued_counts.lock().clear();
+    self.stream_audio_last_played_packet_at.lock().clear();
   }
 
   pub(super) fn clear_volumes(&self) {
@@ -271,6 +297,32 @@ impl VoiceRuntime {
       engine.is_some(),
       engine.as_ref().is_some_and(VoiceEngine::captures_voice),
     )
+  }
+
+  pub(super) fn voice_audio_debug_counts(&self, user_id: UserId) -> VoiceAudioDebugCounts {
+    VoiceAudioDebugCounts {
+      received: self.voice_audio_counts.lock().get(&user_id).copied().unwrap_or(0),
+      queued: self
+        .voice_audio_queued_counts
+        .lock()
+        .get(&user_id)
+        .copied()
+        .unwrap_or(0),
+      last_played_packet_at: self.voice_audio_last_played_packet_at.lock().get(&user_id).copied(),
+    }
+  }
+
+  pub(super) fn stream_audio_debug_counts(&self, user_id: UserId) -> StreamAudioDebugCounts {
+    StreamAudioDebugCounts {
+      received: self.stream_audio_counts.lock().get(&user_id).copied().unwrap_or(0),
+      queued: self
+        .stream_audio_queued_counts
+        .lock()
+        .get(&user_id)
+        .copied()
+        .unwrap_or(0),
+      last_played_packet_at: self.stream_audio_last_played_packet_at.lock().get(&user_id).copied(),
+    }
   }
 
   pub(super) fn has_engine(&self) -> bool {
@@ -379,6 +431,8 @@ impl VoiceRuntime {
 
   pub(super) fn restart_audio_receiver(&self, user_id: UserId) -> bool {
     self.voice_audio_counts.lock().remove(&user_id);
+    self.voice_audio_queued_counts.lock().remove(&user_id);
+    self.voice_audio_last_played_packet_at.lock().remove(&user_id);
     self
       .engine
       .lock()
@@ -429,6 +483,14 @@ impl VoiceRuntime {
     }
 
     let status = self.engine.lock().as_mut().map(|engine| engine.push_packet(packet));
+    if status.is_some_and(|status| status.queued) {
+      let mut counts = self.voice_audio_queued_counts.lock();
+      increment_counter(&mut counts, sender_id);
+      self
+        .voice_audio_last_played_packet_at
+        .lock()
+        .insert(sender_id, SystemTime::now());
+    }
     if should_log_audio_count(received_count) {
       tracing::debug!(target: "audio::decode",
         "[audio:decode] voice audio {} for user {} speaking={}",
@@ -445,18 +507,19 @@ impl VoiceRuntime {
   }
 
   pub(super) fn handle_stream_audio_packet(&self, packet: ForwardedStreamAudioPacket, watched_user_id: Option<UserId>) {
+    let sender_id = packet.sender_id;
     let received_count = {
       let mut counts = self.stream_audio_counts.lock();
-      increment_counter(&mut counts, packet.sender_id)
+      increment_counter(&mut counts, sender_id)
     };
     if should_log_audio_count(received_count) {
       tracing::debug!(target: "audio::decode",
         "[audio:decode] received stream audio #{received_count} from user {}: watched={watched_user_id:?} bytes={}",
-        packet.sender_id,
+        sender_id,
         packet.opus.len()
       );
     }
-    if watched_user_id != Some(packet.sender_id) {
+    if watched_user_id != Some(sender_id) {
       return;
     }
 
@@ -465,6 +528,14 @@ impl VoiceRuntime {
       .lock()
       .as_mut()
       .is_some_and(|engine| engine.push_stream_audio_packet(packet));
+    if queued {
+      let mut counts = self.stream_audio_queued_counts.lock();
+      increment_counter(&mut counts, sender_id);
+      self
+        .stream_audio_last_played_packet_at
+        .lock()
+        .insert(sender_id, SystemTime::now());
+    }
     if should_log_audio_count(received_count) {
       tracing::debug!(target: "audio::decode",
         "[audio:decode] stream audio {} for watched user {}",
@@ -481,8 +552,12 @@ impl VoiceRuntime {
     };
 
     if let Some(user_id) = user_id {
+      self.stream_audio_queued_counts.lock().remove(&user_id);
+      self.stream_audio_last_played_packet_at.lock().remove(&user_id);
       engine.clear_stream_audio(user_id);
     } else {
+      self.stream_audio_queued_counts.lock().clear();
+      self.stream_audio_last_played_packet_at.lock().clear();
       engine.clear_all_stream_audio();
     }
   }

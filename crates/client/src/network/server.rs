@@ -236,32 +236,43 @@ impl Server {
   pub async fn recv(&self) -> Result<S2C, ServerError> {
     let mut recv = self.control_recv.lock().await;
 
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await?;
-    let msg_len = u32::from_le_bytes(len_buf) as usize;
+    loop {
+      let mut len_buf = [0u8; 4];
+      recv.read_exact(&mut len_buf).await?;
+      let msg_len = u32::from_le_bytes(len_buf) as usize;
 
-    if !(2..=MAX_CONTROL_MESSAGE_LEN).contains(&msg_len) {
-      return Err(
-        DecodeError::InvalidLength {
-          len: msg_len,
-          max: MAX_CONTROL_MESSAGE_LEN,
+      if !(2..=MAX_CONTROL_MESSAGE_LEN).contains(&msg_len) {
+        return Err(
+          DecodeError::InvalidLength {
+            len: msg_len,
+            max: MAX_CONTROL_MESSAGE_LEN,
+          }
+          .into(),
+        );
+      }
+
+      let mut msg_buf = vec![0u8; msg_len];
+      recv.read_exact(&mut msg_buf).await?;
+
+      let raw_ty = u16::from_le_bytes([msg_buf[0], msg_buf[1]]);
+      let Some(ty) = ControlMessageType::from_u16(raw_ty) else {
+        tracing::warn!(target: "network", "[network] ignoring unknown control message type 0x{raw_ty:04x}: payload_bytes={}", msg_len - 2);
+        continue;
+      };
+
+      let frame = ControlFrame {
+        ty,
+        payload: msg_buf[2..].to_vec(),
+      };
+
+      match S2C::decode(&frame) {
+        Ok(message) => return Ok(message),
+        Err(DecodeError::InvalidMessageType(value)) => {
+          tracing::warn!(target: "network", "[network] ignoring unsupported server control message type 0x{value:04x}: payload_bytes={}", msg_len - 2);
         }
-        .into(),
-      );
+        Err(error) => return Err(error.into()),
+      }
     }
-
-    let mut msg_buf = vec![0u8; msg_len];
-    recv.read_exact(&mut msg_buf).await?;
-
-    let raw_ty = u16::from_le_bytes([msg_buf[0], msg_buf[1]]);
-    let ty = ControlMessageType::from_u16(raw_ty).ok_or(DecodeError::InvalidMessageType(raw_ty))?;
-
-    let frame = ControlFrame {
-      ty,
-      payload: msg_buf[2..].to_vec(),
-    };
-
-    Ok(S2C::decode(&frame)?)
   }
 
   // -- auth --

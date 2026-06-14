@@ -103,7 +103,7 @@ fn main_top_bar(
   }
 
   if let Some(channel) = selected_text_channel(lobby) {
-    let channel = ChatChannel::server_text(ctx, channel);
+    let channel = ChatChannel::server_text(ctx, channel, lobby.chat_command_registry.clone());
     return chat_channel_top_bar(ctx, &channel, Some(unique_lobby_member_count(lobby)));
   }
 
@@ -309,7 +309,7 @@ fn main_body(
   }
 
   if let Some(channel) = selected_text_channel(lobby) {
-    let channel = ChatChannel::server_text(ctx, channel);
+    let channel = ChatChannel::server_text(ctx, channel, lobby.chat_command_registry.clone());
     return text_channel_detail(
       ctx,
       channel,

@@ -58,14 +58,14 @@ pub(super) struct ChatChannel {
 }
 
 impl ChatChannel {
-  pub(super) fn server_text(ctx: &mut Ctx, channel: &LobbyTextChannel) -> Self {
+  pub(super) fn server_text(ctx: &mut Ctx, channel: &LobbyTextChannel, command_registry: ChatCommandRegistry) -> Self {
     Self {
       id: channel.id,
       name: Arc::from(channel.name.as_str()),
       topic: ctx.t("lobby.text_channel.topic"),
       icon: "hash",
       kind: ChatChannelKind::ServerText,
-      command_registry: ChatCommandRegistry::empty(),
+      command_registry,
     }
   }
 
@@ -77,71 +77,71 @@ impl ChatChannel {
       icon: "terminal",
       kind: ChatChannelKind::Debug,
       command_registry: ChatCommandRegistry::from_definitions([
-        CommandDefinition {
-          name: "/restart-audio-receiver".into(),
-          description_key: "lobby.text_channel.commands.description.restart_audio_receiver".into(),
-          usage: "/restart-audio-receiver {userId:u32}".into(),
-        },
-        CommandDefinition {
-          name: "/debug-user".into(),
-          description_key: "lobby.text_channel.commands.description.debug_user".into(),
-          usage: "/debug-user {userId:u32}".into(),
-        },
-        CommandDefinition {
-          name: "/debug-voice".into(),
-          description_key: "lobby.text_channel.commands.description.debug_voice".into(),
-          usage: "/debug-voice {userId:u32}".into(),
-        },
-        CommandDefinition {
-          name: "/debug-my-voice".into(),
-          description_key: "lobby.text_channel.commands.description.debug_my_voice".into(),
-          usage: "/debug-my-voice".into(),
-        },
-        CommandDefinition {
-          name: "/debug-stream".into(),
-          description_key: "lobby.text_channel.commands.description.debug_stream".into(),
-          usage: "/debug-stream {userId:u32}".into(),
-        },
-        CommandDefinition {
-          name: "/debug-my-stream".into(),
-          description_key: "lobby.text_channel.commands.description.debug_my_stream".into(),
-          usage: "/debug-my-stream".into(),
-        },
-        CommandDefinition {
-          name: "/debug-channel".into(),
-          description_key: "lobby.text_channel.commands.description.debug_channel".into(),
-          usage: "/debug-channel".into(),
-        },
-        CommandDefinition {
-          name: "/debug-audio-receivers".into(),
-          description_key: "lobby.text_channel.commands.description.debug_audio_receivers".into(),
-          usage: "/debug-audio-receivers".into(),
-        },
-        CommandDefinition {
-          name: "/debug-video-receivers".into(),
-          description_key: "lobby.text_channel.commands.description.debug_video_receivers".into(),
-          usage: "/debug-video-receivers".into(),
-        },
-        CommandDefinition {
-          name: "/video-status".into(),
-          description_key: "lobby.text_channel.commands.description.video_status".into(),
-          usage: "/video-status".into(),
-        },
-        CommandDefinition {
-          name: "/audio-status".into(),
-          description_key: "lobby.text_channel.commands.description.audio_status".into(),
-          usage: "/audio-status".into(),
-        },
-        CommandDefinition {
-          name: "/audio-reset-all".into(),
-          description_key: "lobby.text_channel.commands.description.audio_reset_all".into(),
-          usage: "/audio-reset-all".into(),
-        },
-        CommandDefinition {
-          name: "/audio-clear-queue".into(),
-          description_key: "lobby.text_channel.commands.description.audio_clear_queue".into(),
-          usage: "/audio-clear-queue {userId:u32}".into(),
-        },
+        CommandDefinition::local_i18n(
+          "/restart-audio-receiver",
+          "lobby.text_channel.commands.description.restart_audio_receiver",
+          "/restart-audio-receiver {userId:u32}",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-user",
+          "lobby.text_channel.commands.description.debug_user",
+          "/debug-user {userId:u32}",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-voice",
+          "lobby.text_channel.commands.description.debug_voice",
+          "/debug-voice {userId:u32}",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-my-voice",
+          "lobby.text_channel.commands.description.debug_my_voice",
+          "/debug-my-voice",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-stream",
+          "lobby.text_channel.commands.description.debug_stream",
+          "/debug-stream {userId:u32}",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-my-stream",
+          "lobby.text_channel.commands.description.debug_my_stream",
+          "/debug-my-stream",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-channel",
+          "lobby.text_channel.commands.description.debug_channel",
+          "/debug-channel",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-audio-receivers",
+          "lobby.text_channel.commands.description.debug_audio_receivers",
+          "/debug-audio-receivers",
+        ),
+        CommandDefinition::local_i18n(
+          "/debug-video-receivers",
+          "lobby.text_channel.commands.description.debug_video_receivers",
+          "/debug-video-receivers",
+        ),
+        CommandDefinition::local_i18n(
+          "/video-status",
+          "lobby.text_channel.commands.description.video_status",
+          "/video-status",
+        ),
+        CommandDefinition::local_i18n(
+          "/audio-status",
+          "lobby.text_channel.commands.description.audio_status",
+          "/audio-status",
+        ),
+        CommandDefinition::local_i18n(
+          "/audio-reset-all",
+          "lobby.text_channel.commands.description.audio_reset_all",
+          "/audio-reset-all",
+        ),
+        CommandDefinition::local_i18n(
+          "/audio-clear-queue",
+          "lobby.text_channel.commands.description.audio_clear_queue",
+          "/audio-clear-queue {userId:u32}",
+        ),
       ]),
     }
   }
@@ -1209,6 +1209,11 @@ fn command_suggestion_row(
   validate_arguments: bool,
 ) -> Element {
   let fill = command_fill_text(command.name.as_ref());
+  let description = if command.description_is_i18n_key {
+    ctx.t(&command.description_key).to_string()
+  } else {
+    command.description_key.to_string()
+  };
   let background = if selected {
     BackgroundColor::Color(Color::from_hex("#232830"))
   } else {
@@ -1239,7 +1244,7 @@ fn command_suggestion_row(
           invalid_feedback_phase,
         ))
         .child(
-          Text::new(&ctx.t(&command.description_key))
+          Text::new(&description)
             .variant(theme::TypographyStyle::Link)
             .color(theme::PaletteColor::TextSecondary),
         ),

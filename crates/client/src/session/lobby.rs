@@ -3,6 +3,7 @@ use std::{
   time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use super::chat_commands::{ChatCommandRegistry, CommandDefinition};
 use crate::{
   network::protocol::{
     ChannelId, Role, S2C, ServerErrorCode, UserId,
@@ -112,6 +113,7 @@ pub struct LobbyState {
   pub unread_text_channel_ids: HashSet<ChannelId>,
   pub chat_history_loading: HashSet<ChannelId>,
   pub chat_history_has_more: HashMap<ChannelId, bool>,
+  pub chat_command_registry: ChatCommandRegistry,
   pub users: Vec<LobbyUser>,
   pub users_by_channel: HashMap<ChannelId, Vec<LobbyUser>>,
   pub screen_shares: Vec<LobbyScreenShare>,
@@ -407,6 +409,15 @@ pub(super) fn apply_server_message(
       } else {
         lobby.selected_text_channel_id = lobby.text_channels.first().map(|channel| channel.id);
       }
+    }
+    S2C::ChatCommandList(list) => {
+      tracing::debug!(target: "lobby", "[lobby] received chat command list: commands={}", list.commands.len());
+      lobby.chat_command_registry = ChatCommandRegistry::from_definitions(
+        list
+          .commands
+          .into_iter()
+          .map(|command| CommandDefinition::server_advertised(command.name, command.description, command.usage)),
+      );
     }
     S2C::ChatMessage(message) => {
       let should_notify = local_user_id != Some(message.sender_id);
@@ -725,6 +736,15 @@ pub(super) fn apply_server_message(
 mod tests {
   use super::*;
 
+  fn test_context() -> ServerMessageContext {
+    ServerMessageContext {
+      local_user_id: Some(4),
+      local_display_name: "local".to_owned(),
+      local_voice_state: (false, false),
+      pending_keepalive_ping: None,
+    }
+  }
+
   #[test]
   fn mention_detection_matches_at_display_name() {
     assert!(message_mentions_display_name("hey @Lurk", "lurk"));
@@ -741,6 +761,37 @@ mod tests {
   }
 
   #[test]
+  fn chat_command_list_updates_server_command_registry() {
+    let mut lobby = LobbyState::default();
+
+    apply_server_message(
+      &mut lobby,
+      S2C::ChatCommandList(crate::network::protocol::control::ChatCommandList {
+        commands: vec![crate::network::protocol::control::ChatCommandInfo {
+          name: "botping".to_owned(),
+          description: "Ping the bot".to_owned(),
+          usage: "/botping [text]".to_owned(),
+        }],
+      }),
+      test_context(),
+    );
+
+    let definitions = lobby.chat_command_registry.definitions();
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].name.as_ref(), "/botping");
+    assert_eq!(definitions[0].description_key.as_ref(), "Ping the bot");
+    assert!(!definitions[0].description_is_i18n_key);
+    assert_eq!(
+      lobby.chat_command_registry.parse("/botping hello").unwrap(),
+      Some(super::super::chat_commands::ChatCommandInvocation {
+        name: "/botping".into(),
+        arguments: vec!["hello".into()],
+        source: super::super::chat_commands::ChatCommandSource::Server,
+      })
+    );
+  }
+
+  #[test]
   fn kicked_server_error_marks_disconnect_without_auto_reconnect() {
     let mut lobby = LobbyState {
       selected_channel_id: Some(1),
@@ -754,12 +805,7 @@ mod tests {
         code: ServerErrorCode::Kicked,
         message: "kicked by admin".to_owned(),
       },
-      ServerMessageContext {
-        local_user_id: Some(4),
-        local_display_name: "local".to_owned(),
-        local_voice_state: (false, false),
-        pending_keepalive_ping: None,
-      },
+      test_context(),
     );
 
     assert!(lobby.disconnected);

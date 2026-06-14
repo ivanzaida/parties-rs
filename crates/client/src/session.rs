@@ -654,6 +654,16 @@ impl ServerSession {
     self.voice.engine_status()
   }
 
+  pub fn voice_audio_debug_counts(&self, user_id: UserId) -> (u64, u64, Option<std::time::SystemTime>) {
+    let counts = self.voice.voice_audio_debug_counts(user_id);
+    (counts.received, counts.queued, counts.last_played_packet_at)
+  }
+
+  pub fn stream_audio_debug_counts(&self, user_id: UserId) -> (u64, u64, Option<std::time::SystemTime>) {
+    let counts = self.voice.stream_audio_debug_counts(user_id);
+    (counts.received, counts.queued, counts.last_played_packet_at)
+  }
+
   pub fn stop_voice(&self) {
     let stopped = self.voice.stop();
     if stopped {

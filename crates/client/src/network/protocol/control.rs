@@ -56,6 +56,7 @@ pub enum ControlMessageType {
   ChatSearchResp = 0x0506,
   ChatPinnedResp = 0x0507,
   ChatChannelList = 0x0508,
+  ChatCommandList = 0x0509,
 }
 
 impl ControlMessageType {
@@ -110,6 +111,7 @@ impl ControlMessageType {
       0x0506 => ChatSearchResp,
       0x0507 => ChatPinnedResp,
       0x0508 => ChatChannelList,
+      0x0509 => ChatCommandList,
       _ => return None,
     })
   }
@@ -582,6 +584,35 @@ impl ChatHistoryResponse {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandInfo {
+  pub name: String,
+  pub description: String,
+  pub usage: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandList {
+  pub commands: Vec<ChatCommandInfo>,
+}
+
+impl ChatCommandList {
+  pub fn decode_payload(bytes: &[u8]) -> DecodeResult<Self> {
+    let mut r = BinaryReader::new(bytes);
+    let count = r.read_u16()? as usize;
+    let mut commands = Vec::with_capacity(count);
+    for _ in 0..count {
+      commands.push(ChatCommandInfo {
+        name: r.read_string()?,
+        description: r.read_string()?,
+        usage: r.read_string()?,
+      });
+    }
+    r.finish()?;
+    Ok(Self { commands })
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -657,6 +688,26 @@ mod tests {
       DecodeError::InvalidEnumValue {
         field: "video codec",
         value: 0xff,
+      }
+    );
+  }
+
+  #[test]
+  fn chat_command_list_decodes_upstream_shape() {
+    let mut w = BinaryWriter::new();
+    w.write_u16(1);
+    w.write_string("botping").unwrap();
+    w.write_string("Send a test message as a server bot.").unwrap();
+    w.write_string("/botping [text]").unwrap();
+
+    assert_eq!(
+      ChatCommandList::decode_payload(w.as_slice()).unwrap(),
+      ChatCommandList {
+        commands: vec![ChatCommandInfo {
+          name: "botping".to_owned(),
+          description: "Send a test message as a server bot.".to_owned(),
+          usage: "/botping [text]".to_owned(),
+        }]
       }
     );
   }

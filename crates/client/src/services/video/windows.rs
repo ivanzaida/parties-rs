@@ -668,42 +668,89 @@ fn spawn_stream_audio_thread(
   stop: Arc<AtomicBool>,
   target: StreamAudioCaptureTarget,
 ) -> Result<thread::JoinHandle<()>, VideoError> {
-  thread::Builder::new()
+  let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+  let thread_stop = Arc::clone(&stop);
+  let thread = thread::Builder::new()
     .name("parties-stream-audio-windows".to_owned())
     .spawn(move || {
-      if let Err(error) = run_stream_audio_loop(server, stop, target) {
+      if let Err(error) = run_stream_audio_loop(server, thread_stop, target, ready_tx) {
         tracing::warn!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture disabled: {error}");
       }
     })
-    .map_err(|error| VideoError::new(format!("Failed to start stream audio capture thread: {error}")))
+    .map_err(|error| VideoError::new(format!("Failed to start stream audio capture thread: {error}")))?;
+
+  match ready_rx.recv_timeout(Duration::from_secs(5)) {
+    Ok(Ok(())) => Ok(thread),
+    Ok(Err(error)) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      Err(VideoError::new(error))
+    }
+    Err(error) => {
+      stop.store(true, Ordering::Relaxed);
+      let _ = thread.join();
+      Err(VideoError::new(format!(
+        "Timed out waiting for stream audio capture to start: {error}"
+      )))
+    }
+  }
 }
 
 fn run_stream_audio_loop(
   server: Arc<Server>,
   stop: Arc<AtomicBool>,
   target: StreamAudioCaptureTarget,
+  ready_tx: mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), VideoError> {
   tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] opening {}", target.label());
-  let _com = ComSession::start("stream audio")?;
-  let capture = WasapiLoopbackCapture::open(target)?;
-  let mut encoder = OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
-    .map_err(|error| VideoError::new(format!("Failed to create stream audio Opus encoder: {error}")))?;
-  encoder
+  let _com = match ComSession::start("stream audio") {
+    Ok(com) => com,
+    Err(error) => {
+      let _ = ready_tx.send(Err(error.to_string()));
+      return Err(error);
+    }
+  };
+  let capture = match WasapiLoopbackCapture::open(target) {
+    Ok(capture) => capture,
+    Err(error) => {
+      let _ = ready_tx.send(Err(error.to_string()));
+      return Err(error);
+    }
+  };
+  let mut encoder = match OpusEncoder::new(STREAM_AUDIO_SAMPLE_RATE, OpusChannels::Stereo, OpusApplication::Audio)
+    .map_err(|error| VideoError::new(format!("Failed to create stream audio Opus encoder: {error}")))
+  {
+    Ok(encoder) => encoder,
+    Err(error) => {
+      let _ = ready_tx.send(Err(error.to_string()));
+      return Err(error);
+    }
+  };
+  if let Err(error) = encoder
     .set_bitrate(OpusBitrate::Bits(STREAM_AUDIO_BITRATE))
-    .map_err(|error| VideoError::new(format!("Failed to configure stream audio Opus bitrate: {error}")))?;
+    .map_err(|error| VideoError::new(format!("Failed to configure stream audio Opus bitrate: {error}")))
+  {
+    let _ = ready_tx.send(Err(error.to_string()));
+    return Err(error);
+  }
 
   let mut pcm_frame = Vec::with_capacity(STREAM_AUDIO_FRAME_SAMPLES);
   let mut opus_packet = vec![0u8; STREAM_AUDIO_MAX_PACKET_BYTES];
   let mut logged_first_packet = false;
 
   unsafe {
-    capture
+    if let Err(error) = capture
       .audio_client
       .Start()
-      .map_err(|error| VideoError::new(format!("Failed to start stream audio capture: {error}")))?;
+      .map_err(|error| VideoError::new(format!("Failed to start stream audio capture: {error}")))
+    {
+      let _ = ready_tx.send(Err(error.to_string()));
+      return Err(error);
+    }
   }
 
   tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] stream audio capture started");
+  let _ = ready_tx.send(Ok(()));
   while !stop.load(Ordering::Relaxed) {
     let wait = unsafe { WaitForSingleObject(capture.event, 100) };
     if wait == WAIT_TIMEOUT {

@@ -2,9 +2,9 @@ use super::{
   BinaryReader, ChannelId, ControlFrame, ControlMessageType, DecodeError, DecodeResult, Role, ServerErrorCode, UserId,
   VideoCodecId,
   control::{
-    AdminResult, AuthResponse, ChannelList, ChannelUserList, ChatFileUploadResponse, ChatHistoryResponse, ChatMessage,
-    ScreenShareMetadata, ScreenShareStarted, TextChannelInfo, UserJoinedChannel, UserLeftChannel, UserRoleChanged,
-    UserVoiceState,
+    AdminResult, AuthResponse, ChannelList, ChannelUserList, ChatCommandList, ChatFileUploadResponse,
+    ChatHistoryResponse, ChatMessage, ScreenShareMetadata, ScreenShareStarted, TextChannelInfo, UserJoinedChannel,
+    UserLeftChannel, UserRoleChanged, UserVoiceState,
   },
 };
 
@@ -52,6 +52,7 @@ pub enum S2C {
   ChatChannelList {
     channels: Vec<TextChannelInfo>,
   },
+  ChatCommandList(ChatCommandList),
 }
 
 impl S2C {
@@ -150,6 +151,7 @@ impl S2C {
         r.finish()?;
         Ok(Self::ChatChannelList { channels })
       }
+      M::ChatCommandList => Ok(Self::ChatCommandList(ChatCommandList::decode_payload(bytes)?)),
 
       M::AuthIdentity
       | M::ChannelJoin
@@ -228,6 +230,30 @@ mod tests {
         message_id: 42,
         attachment_id: 7,
       }
+    );
+  }
+
+  #[test]
+  fn chat_command_list_decodes() {
+    let mut w = super::super::BinaryWriter::new();
+    w.write_u16(1);
+    w.write_string("botping").unwrap();
+    w.write_string("Ping the bot").unwrap();
+    w.write_string("/botping [text]").unwrap();
+    let frame = ControlFrame {
+      ty: ControlMessageType::ChatCommandList,
+      payload: w.into_bytes(),
+    };
+
+    assert_eq!(
+      S2C::decode(&frame).unwrap(),
+      S2C::ChatCommandList(ChatCommandList {
+        commands: vec![crate::network::protocol::control::ChatCommandInfo {
+          name: "botping".to_owned(),
+          description: "Ping the bot".to_owned(),
+          usage: "/botping [text]".to_owned(),
+        }]
+      })
     );
   }
 
