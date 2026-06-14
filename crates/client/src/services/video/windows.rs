@@ -1,5 +1,6 @@
 use std::{
-  ffi::{CStr, c_char, c_void},
+  ffi::{CStr, c_char},
+  mem::ManuallyDrop,
   ptr::{self, NonNull},
   sync::{
     Arc, Once,
@@ -21,18 +22,18 @@ use ::windows::{
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
         IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
-        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
+        IAudioClient, PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
       },
       Multimedia::WAVE_FORMAT_IEEE_FLOAT,
     },
     System::{
       Com::{
-        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
-        StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
+        BLOB, COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoUninitialize,
+        StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0},
       },
       Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
+      Variant::VT_BLOB,
     },
   },
   core::{IUnknown, Interface, PCWSTR},
@@ -632,10 +633,10 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
         let current_process_id = unsafe { GetCurrentProcessId() };
         if process_id == current_process_id {
           tracing::warn!(target: "audio::encode::windows",
-            "[audio:encode/windows] selected window belongs to current process; using output loopback excluding current process: window={} pid={process_id}",
+            "[audio:encode/windows] selected window belongs to current process; capturing Parties process audio: window={} pid={process_id}",
             config.source_id
           );
-          return StreamAudioCaptureTarget::ExcludeProcess(current_process_id);
+          return StreamAudioCaptureTarget::IncludeProcess(current_process_id);
         }
         tracing::info!(target: "audio::encode::windows",
           "[audio:encode/windows] selected window audio target: window={} pid={process_id}",
@@ -958,37 +959,12 @@ fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioCl
     }
     Err(error) => {
       tracing::warn!(target: "audio::encode::windows",
-        "[audio:encode/windows] process loopback unavailable; falling back to default output loopback, which may capture Parties playback too: mode={mode_label} pid={process_id} error={error}"
+        "[audio:encode/windows] process loopback unavailable; no default output fallback because stream audio must not capture unrelated app audio: mode={mode_label} pid={process_id} error={error}"
       );
-      match activate_default_output_loopback_client() {
-        Ok(audio_client) => {
-          tracing::warn!(target: "audio::encode::windows",
-            "[audio:encode/windows] default output loopback fallback activated for stream audio: original_mode={mode_label} original_pid={process_id}"
-          );
-          Ok(audio_client)
-        }
-        Err(fallback_error) => Err(VideoError::new(format!(
-          "Process loopback unavailable for stream audio ({mode_label} pid {process_id}) and default output fallback failed: {fallback_error}; process loopback error: {error}"
-        ))),
-      }
+      Err(VideoError::new(format!(
+        "Process loopback unavailable for stream audio ({mode_label} pid {process_id}); refusing default output fallback because stream audio must not capture unrelated app audio: {error}"
+      )))
     }
-  }
-}
-
-fn activate_default_output_loopback_client() -> Result<IAudioClient, VideoError> {
-  let enumerator: IMMDeviceEnumerator = unsafe {
-    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-      .map_err(|error| VideoError::new(format!("Failed to create audio endpoint enumerator: {error}")))?
-  };
-  let device = unsafe {
-    enumerator
-      .GetDefaultAudioEndpoint(eRender, eConsole)
-      .map_err(|error| VideoError::new(format!("Failed to get default output audio endpoint: {error}")))?
-  };
-  unsafe {
-    device
-      .Activate::<IAudioClient>(CLSCTX_ALL, None)
-      .map_err(|error| VideoError::new(format!("Failed to activate default output loopback capture: {error}")))
   }
 }
 
@@ -1002,15 +978,39 @@ fn activate_process_loopback_client(process_id: u32, mode: PROCESS_LOOPBACK_MODE
       },
     },
   };
-  let propvariant = unsafe {
-    InitPropVariantFromBuffer(
-      (&activation_params as *const AUDIOCLIENT_ACTIVATION_PARAMS).cast::<c_void>(),
-      std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-    )
-    .map_err(|error| VideoError::new(format!("Failed to build process loopback activation params: {error}")))?
-  };
+  let blob_size = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>();
+  let blob_data = unsafe { CoTaskMemAlloc(blob_size) };
+  if blob_data.is_null() {
+    return Err(VideoError::new(
+      "Failed to allocate process loopback activation params.",
+    ));
+  }
+  unsafe {
+    blob_data
+      .cast::<AUDIOCLIENT_ACTIVATION_PARAMS>()
+      .write(activation_params);
+  }
+  let propvariant = Box::leak(Box::new(PROPVARIANT {
+    Anonymous: PROPVARIANT_0 {
+      Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+        vt: VT_BLOB,
+        wReserved1: 0,
+        wReserved2: 0,
+        wReserved3: 0,
+        Anonymous: PROPVARIANT_0_0_0 {
+          blob: BLOB {
+            cbSize: blob_size as u32,
+            pBlobData: blob_data.cast::<u8>(),
+          },
+        },
+      }),
+    },
+  }));
 
-  unsafe { activate_audio_interface_sync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, Some(&propvariant)) }
+  // The process-loopback activation path may retain this blob beyond the
+  // completion callback. Keep the PROPVARIANT and payload alive for the process
+  // lifetime; this is one small allocation per stream-audio start.
+  unsafe { activate_audio_interface_sync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, Some(propvariant)) }
     .map_err(|error| VideoError::new(format!("Failed to activate process loopback capture: {error}")))
 }
 
