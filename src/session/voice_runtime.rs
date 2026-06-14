@@ -324,6 +324,18 @@ impl VoiceRuntime {
     }
   }
 
+  pub(super) fn set_voice_normalization(&self, value: bool) {
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_voice_normalization(value);
+    }
+  }
+
+  pub(super) fn set_voice_normalization_target_level(&self, value: i32) {
+    if let Some(engine) = self.engine.lock().as_ref() {
+      engine.set_voice_normalization_target_level(value);
+    }
+  }
+
   pub(super) fn set_push_to_talk_release_delay_ms(&self, value: i32) {
     if let Some(engine) = self.engine.lock().as_ref() {
       engine.set_push_to_talk_release_delay_ms(value);

@@ -1,21 +1,24 @@
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Row, Stack, Text, TextOverflow},
-  core::ElementRef,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
-  node::{
-    BackgroundColor, CursorIcon, Element, HitTestBehavior, Style, border::Border, color::Color, dimension::Dimension,
-  },
+  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
-use super::stream_shared::{
-  WatchedChannelScreenShare, live_badge, resolution_badge, stream_avatar, stream_name, stream_speaking,
+use super::{
+  StopWatchingAction,
+  stream_shared::{
+    WatchedChannelScreenShare, live_badge, resolution_badge, stream_avatar, stream_name, stream_speaking,
+  },
 };
 use crate::{
   network::protocol::ChannelId,
   session::{LobbyState, ServerSession},
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    app_chrome::{CHROME_HEIGHT, CUSTOM_WINDOW_CHROME},
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
 const PREVIEW_WIDTH: f32 = 324.0;
@@ -30,26 +33,22 @@ pub(super) fn floating_stream_preview(
   watched: WatchedChannelScreenShare<'_>,
   debug_user_ids: bool,
   session: ServerSession,
+  stop_watching: &StopWatchingAction,
 ) -> Option<Element> {
   if main_pane_shows_watched_stream(lobby, watched.channel.id) {
     return None;
   }
 
+  let x = preview_x(ctx);
+  let y = preview_y();
   let channel_id = watched.channel.id;
 
   Some(
-    preview_card(ctx, watched, debug_user_ids, session.clone())
+    preview_card(ctx, watched, debug_user_ids, session.clone(), stop_watching)
+      .absolute(x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
       .on_click(move |_| session.open_stream_browser(channel_id))
       .into(),
   )
-}
-
-pub(super) fn stream_preview_anchor(ctx: &Ctx, anchor: ElementRef) -> Element {
-  Row::new()
-    .absolute(preview_x(ctx) + PREVIEW_WIDTH - 1.0, preview_y() - 1.0, 1.0, 1.0)
-    .hit_test(HitTestBehavior::None)
-    .ref_element(anchor)
-    .into()
 }
 
 fn preview_x(ctx: &Ctx) -> f32 {
@@ -58,7 +57,11 @@ fn preview_x(ctx: &Ctx) -> f32 {
 }
 
 fn preview_y() -> f32 {
-  (PREVIEW_TOP_GAP - 1.0).max(0.0)
+  if CUSTOM_WINDOW_CHROME {
+    CHROME_HEIGHT + PREVIEW_TOP_GAP
+  } else {
+    PREVIEW_TOP_GAP
+  }
 }
 
 fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: ChannelId) -> bool {
@@ -75,6 +78,7 @@ fn preview_card(
   watched: WatchedChannelScreenShare<'_>,
   debug_user_ids: bool,
   session: ServerSession,
+  stop_watching: &StopWatchingAction,
 ) -> Row {
   let name = stream_name(ctx, &watched.stream, debug_user_ids);
   let avatar_name = stream_name(ctx, &watched.stream, false);
@@ -108,12 +112,17 @@ fn preview_card(
       Column::new()
         .width(Dimension::Pct(100.0))
         .height(Dimension::Pct(100.0))
-        .child(preview_image(ctx, &watched, &session))
+        .child(preview_image(ctx, &watched, &session, stop_watching))
         .child(preview_footer(&avatar_name, &title, &watched.channel.name, speaking)),
     )
 }
 
-fn preview_image(ctx: &mut Ctx, watched: &WatchedChannelScreenShare<'_>, session: &ServerSession) -> Element {
+fn preview_image(
+  ctx: &mut Ctx,
+  watched: &WatchedChannelScreenShare<'_>,
+  session: &ServerSession,
+  stop_watching: &StopWatchingAction,
+) -> Element {
   let image = session.video_frame(watched.stream.share.sharer_user_id);
   let video_error = session.video_error(watched.stream.share.sharer_user_id);
   let mut stage = Stack::new()
@@ -153,10 +162,46 @@ fn preview_image(ctx: &mut Ctx, watched: &WatchedChannelScreenShare<'_>, session
             .justify(Justify::SpaceBetween)
             .align_items(Alignment::Center)
             .child(live_badge(ctx))
-            .child(resolution_badge(ctx, watched.stream.share)),
+            .child(
+              Row::new()
+                .align_items(Alignment::Center)
+                .spacing(8.0)
+                .child(resolution_badge(ctx, watched.stream.share))
+                .child(close_preview_button(ctx, stop_watching)),
+            ),
         ),
     )
     .into()
+}
+
+fn close_preview_button(ctx: &mut Ctx, stop_watching: &StopWatchingAction) -> Element {
+  let pending = stop_watching.state().get().is_pending();
+  let action = stop_watching.clone();
+  let mut button = Row::new()
+    .width(26.0)
+    .height(26.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::Center)
+    .rounded(13.0)
+    .background(BackgroundColor::Color(Color::from_hex("#000000A6")))
+    .border_inside(1.0, theme::PaletteColor::BorderStrong)
+    .child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "x",
+      size: 15.0,
+      color: theme::palette().text_primary,
+    }));
+
+  if !pending {
+    button = button
+      .cursor(CursorIcon::Pointer)
+      .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#1F232BCC"))))
+      .on_click(move |event| {
+        event.stop_immediate_propagation();
+        action.run(());
+      });
+  }
+
+  button.into()
 }
 
 fn preview_footer(avatar_name: &str, title: &str, channel_name: &str, speaking: bool) -> Element {

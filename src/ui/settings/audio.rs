@@ -508,7 +508,13 @@ impl Component for AudioToggleSetting {
       let session = ctx.use_context::<ServerSession>();
       ctx.watch(&enabled, move |enabled| {
         save_audio_bool_setting(&storage, props.setting, *enabled);
-        restart_voice_for_audio_setting(&storage, session.as_ref());
+        if matches!(props.setting, AudioBoolSetting::VoiceNormalization) {
+          if let Some(session) = session.as_ref() {
+            session.set_voice_normalization(*enabled);
+          }
+        } else {
+          restart_voice_for_audio_setting(&storage, session.as_ref());
+        }
       });
     }
     Self { enabled }
@@ -1073,7 +1079,9 @@ fn audio_slider_save_action(
     if let Some(storage) = storage.as_ref() {
       let _ = save_slider_setting(storage, setting, value);
       if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
-        restart_voice_for_audio_setting(storage, session.as_ref());
+        if let Some(session) = session.as_ref() {
+          session.set_voice_normalization_target_level(value);
+        }
       } else if matches!(setting, AudioSliderSetting::PushToTalkReleaseDelay)
         && let Some(session) = session.as_ref()
       {

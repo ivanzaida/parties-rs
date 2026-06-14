@@ -193,6 +193,14 @@ impl VoiceEngine {
     self.control.set_voice_activation_threshold(value);
   }
 
+  pub fn set_voice_normalization(&self, value: bool) {
+    self.control.set_voice_normalization(value);
+  }
+
+  pub fn set_voice_normalization_target_level(&self, value: i32) {
+    self.control.set_voice_normalization_target_level(value);
+  }
+
   pub fn set_push_to_talk_active(&self, active: bool) {
     self.control.set_push_to_talk_active(active);
   }
@@ -253,8 +261,9 @@ impl VoiceEngine {
       return VoicePacketStatus::default();
     }
 
-    if self.control.voice_normalization {
-      stream.apply_normalization(&mut pcm, self.control.voice_normalization_target);
+    if self.control.voice_normalization.load(Ordering::Relaxed) {
+      let target = f32::from_bits(self.control.voice_normalization_target.load(Ordering::Relaxed));
+      stream.apply_normalization(&mut pcm, target);
     }
 
     let speaking = rms(&pcm) > 0.001;
@@ -348,8 +357,8 @@ impl Drop for VoiceEngine {
 struct VoiceControlState {
   muted: AtomicBool,
   deafened: AtomicBool,
-  voice_normalization: bool,
-  voice_normalization_target: f32,
+  voice_normalization: AtomicBool,
+  voice_normalization_target: AtomicU32,
   voice_activation_threshold: AtomicU32,
   push_to_talk: bool,
   push_to_talk_release_delay_ms: AtomicU64,
@@ -363,8 +372,8 @@ impl VoiceControlState {
     Self {
       muted: AtomicBool::new(muted),
       deafened: AtomicBool::new(deafened),
-      voice_normalization: settings.voice_normalization,
-      voice_normalization_target: normalize_target(settings.voice_normalization_target_level),
+      voice_normalization: AtomicBool::new(settings.voice_normalization),
+      voice_normalization_target: AtomicU32::new(normalize_target(settings.voice_normalization_target_level).to_bits()),
       voice_activation_threshold: AtomicU32::new(activation_threshold(settings.voice_activation_threshold).to_bits()),
       push_to_talk: settings.push_to_talk,
       push_to_talk_release_delay_ms: AtomicU64::new(push_to_talk_release_delay_ms(
@@ -401,6 +410,16 @@ impl VoiceControlState {
     self
       .voice_activation_threshold
       .store(activation_threshold(value).to_bits(), Ordering::Relaxed);
+  }
+
+  fn set_voice_normalization(&self, value: bool) {
+    self.voice_normalization.store(value, Ordering::Relaxed);
+  }
+
+  fn set_voice_normalization_target_level(&self, value: i32) {
+    self
+      .voice_normalization_target
+      .store(normalize_target(value).to_bits(), Ordering::Relaxed);
   }
 
   fn set_push_to_talk_active(&self, active: bool) {

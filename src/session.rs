@@ -302,6 +302,14 @@ impl ServerSession {
     self.voice.set_voice_activation_threshold(value);
   }
 
+  pub fn set_voice_normalization(&self, value: bool) {
+    self.voice.set_voice_normalization(value);
+  }
+
+  pub fn set_voice_normalization_target_level(&self, value: i32) {
+    self.voice.set_voice_normalization_target_level(value);
+  }
+
   pub fn set_push_to_talk_release_delay_ms(&self, value: i32) {
     self.voice.set_push_to_talk_release_delay_ms(value);
   }
