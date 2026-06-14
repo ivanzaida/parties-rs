@@ -21,14 +21,15 @@ use ::windows::{
         AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
         IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-        IAudioClient, PROCESS_LOOPBACK_MODE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
+        IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator, PROCESS_LOOPBACK_MODE,
+        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, eConsole, eRender,
       },
       Multimedia::WAVE_FORMAT_IEEE_FLOAT,
     },
     System::{
       Com::{
-        COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize,
+        CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
         StructuredStorage::{InitPropVariantFromBuffer, PROPVARIANT},
       },
       Threading::{CreateEventW, GetCurrentProcessId, WaitForSingleObject},
@@ -957,12 +958,37 @@ fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioCl
     }
     Err(error) => {
       tracing::warn!(target: "audio::encode::windows",
-        "[audio:encode/windows] process loopback unavailable; refusing default output loopback because it would capture Parties audio: mode={mode_label} pid={process_id} error={error}"
+        "[audio:encode/windows] process loopback unavailable; falling back to default output loopback, which may capture Parties playback too: mode={mode_label} pid={process_id} error={error}"
       );
-      Err(VideoError::new(format!(
-        "Process loopback unavailable for stream audio ({mode_label} pid {process_id}); default output fallback disabled to avoid capturing Parties audio: {error}"
-      )))
+      match activate_default_output_loopback_client() {
+        Ok(audio_client) => {
+          tracing::warn!(target: "audio::encode::windows",
+            "[audio:encode/windows] default output loopback fallback activated for stream audio: original_mode={mode_label} original_pid={process_id}"
+          );
+          Ok(audio_client)
+        }
+        Err(fallback_error) => Err(VideoError::new(format!(
+          "Process loopback unavailable for stream audio ({mode_label} pid {process_id}) and default output fallback failed: {fallback_error}; process loopback error: {error}"
+        ))),
+      }
     }
+  }
+}
+
+fn activate_default_output_loopback_client() -> Result<IAudioClient, VideoError> {
+  let enumerator: IMMDeviceEnumerator = unsafe {
+    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+      .map_err(|error| VideoError::new(format!("Failed to create audio endpoint enumerator: {error}")))?
+  };
+  let device = unsafe {
+    enumerator
+      .GetDefaultAudioEndpoint(eRender, eConsole)
+      .map_err(|error| VideoError::new(format!("Failed to get default output audio endpoint: {error}")))?
+  };
+  unsafe {
+    device
+      .Activate::<IAudioClient>(CLSCTX_ALL, None)
+      .map_err(|error| VideoError::new(format!("Failed to activate default output loopback capture: {error}")))
   }
 }
 

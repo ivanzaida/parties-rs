@@ -81,10 +81,6 @@ pub struct ChatCommandRegistry {
 }
 
 impl ChatCommandRegistry {
-  pub fn empty() -> Self {
-    Self::default()
-  }
-
   pub fn from_definitions(definitions: impl IntoIterator<Item = CommandDefinition>) -> Self {
     Self {
       definitions: definitions.into_iter().collect(),
@@ -296,7 +292,7 @@ mod tests {
 
   #[test]
   fn empty_registry_exposes_no_commands() {
-    let registry = ChatCommandRegistry::empty();
+    let registry = ChatCommandRegistry::default();
     assert!(!registry.has_commands());
     assert!(registry.definitions().is_empty());
   }
