@@ -1,2 +1,2 @@
 [alias]
-parties = ["run", "--"]
+parties = ["run", "--package", "parties-rs", "--"]

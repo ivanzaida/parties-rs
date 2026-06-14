@@ -29,7 +29,7 @@ jobs:
 
           read -r current_name current_version < <(python3 - <<'PY'
           import tomllib
-          with open("Cargo.toml", "rb") as f:
+          with open("crates/client/Cargo.toml", "rb") as f:
               package = tomllib.load(f)["package"]
           print(package["name"], package["version"])
           PY
@@ -39,8 +39,8 @@ jobs:
           previous_version=""
           before="${{ github.event.before }}"
           if [[ "${{ github.event_name }}" == "push" && "$before" != "0000000000000000000000000000000000000000" ]] \
-            && git cat-file -e "$before:Cargo.toml" 2>/dev/null; then
-            git show "$before:Cargo.toml" > "$RUNNER_TEMP/Cargo.previous.toml"
+            && git cat-file -e "$before:crates/client/Cargo.toml" 2>/dev/null; then
+            git show "$before:crates/client/Cargo.toml" > "$RUNNER_TEMP/Cargo.previous.toml"
             read -r previous_name previous_version < <(python3 - "$RUNNER_TEMP/Cargo.previous.toml" <<'PY'
           import sys
           import tomllib
@@ -119,13 +119,13 @@ jobs:
             ~/.cargo/git
             target/release
             target/${{ matrix.rust_target }}/release
-          key: ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('build.rs', 'src/native/windows_video/**') }}
+          key: ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/client/build.rs', 'crates/client/src/native/windows_video/**') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-${{ hashFiles('Cargo.lock') }}-
             ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-
 
       - name: Build release client
-        run: cargo build --release --target ${{ matrix.rust_target }}
+        run: cargo build --release --target ${{ matrix.rust_target }} --package ${{ env.PACKAGE_NAME }}
 
       - name: Download Sparkle
         if: runner.os == 'macOS'
@@ -182,7 +182,7 @@ jobs:
           cp "$BINARY_PATH" "$app/Contents/MacOS/$BINARY_NAME"
           chmod +x "$app/Contents/MacOS/$BINARY_NAME"
           cp -R "$SPARKLE_ROOT/Sparkle.framework" "$app/Contents/Frameworks/"
-          cp "assets/icons/$MACOS_ICON_FILE" "$app/Contents/Resources/$MACOS_ICON_FILE"
+          cp "crates/client/assets/icons/$MACOS_ICON_FILE" "$app/Contents/Resources/$MACOS_ICON_FILE"
 
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>

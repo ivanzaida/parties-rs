@@ -11,11 +11,11 @@ The stream protocol supports these codec IDs:
 | H.265 / HEVC | `0x02` | `H265` |
 | H.264 / AVC | `0x03` | `H264` |
 
-Only AV1, H.265, and H.264 are valid stream codecs. `src/services/video/mod.rs` validates this for both broadcast and decode configs.
+Only AV1, H.265, and H.264 are valid stream codecs. `crates/client/src/services/video/mod.rs` validates this for both broadcast and decode configs.
 
 ## Main Rust Surface
 
-The public-ish service layer lives in `src/services/video/mod.rs`:
+The public-ish service layer lives in `crates/client/src/services/video/mod.rs`:
 
 - `VideoBroadcastConfig`: capture source, output size, codec, FPS, bitrate, and audio flag.
 - `VideoDecodeConfig`: codec and frame dimensions for one remote stream.
@@ -25,9 +25,9 @@ The public-ish service layer lives in `src/services/video/mod.rs`:
 
 Session code now consumes that surface through the split session modules:
 
-- `src/session/video_stream.rs` starts and stops local broadcast with `VideoBroadcast::start_with_loopback`.
-- `src/session/video.rs` receives remote video packets, owns the decode worker loop, and keeps a per-user `VideoDecodePool`.
-- `src/session/video_sink.rs` owns decoded frame presentation, image cache state, and DX12 surface cache plumbing.
+- `crates/client/src/session/video_stream.rs` starts and stops local broadcast with `VideoBroadcast::start_with_loopback`.
+- `crates/client/src/session/video.rs` receives remote video packets, owns the decode worker loop, and keeps a per-user `VideoDecodePool`.
+- `crates/client/src/session/video_sink.rs` owns decoded frame presentation, image cache state, and DX12 surface cache plumbing.
 
 The desired high-level flow already mostly exists in pieces, but the real API should be allocation-aware. This shape is conceptual, not a request to clone packet or pixel buffers:
 
@@ -44,8 +44,8 @@ The current implementation is optimized around batching and avoiding avoidable a
 
 `VideoBroadcast::start_with_loopback(server, config, loopback)` validates config and dispatches to the platform encoder:
 
-- Windows: `src/services/video/windows.rs::encode`
-- macOS: `src/services/video/macos.rs::encode`
+- Windows: `crates/client/src/services/video/windows.rs::encode`
+- macOS: `crates/client/src/services/video/macos.rs::encode`
 
 There is no software video encoder path today. AV1 encode is implemented, but only through native/hardware APIs.
 
@@ -87,10 +87,10 @@ This means AV1 encode is wired on macOS through VideoToolbox, subject to OS and 
 
 `VideoDecoder::start(config)` validates codec and dimensions, then dispatches to the platform decoder:
 
-- Windows: `src/services/video/windows.rs::decode`
-- macOS: `src/services/video/macos.rs::decode`
+- Windows: `crates/client/src/services/video/windows.rs::decode`
+- macOS: `crates/client/src/services/video/macos.rs::decode`
 
-`src/session/video.rs` keeps decoder instances in `VideoDecodePool`, keyed by user/config. That avoids recreating decoders for every packet and lets stream changes replace the decoder only when codec or dimensions change.
+`crates/client/src/session/video.rs` keeps decoder instances in `VideoDecodePool`, keyed by user/config. That avoids recreating decoders for every packet and lets stream changes replace the decoder only when codec or dimensions change.
 
 ### Windows Decode
 
