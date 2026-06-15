@@ -48,6 +48,8 @@ pub(super) fn disconnected_lobby(
     auto_attempt
   };
   let reconnecting = reconnect_state.is_pending() || should_auto_reconnect;
+  let reconnect_exhausted =
+    !lobby.auto_reconnect_disabled && !reconnecting && display_attempt >= AUTO_RECONNECT_MAX_ATTEMPTS;
   let reconnect_address = info.address.clone();
   let reconnect_action = reconnect.clone();
   let manual_attempt = reconnect_attempt.clone();
@@ -64,6 +66,8 @@ pub(super) fn disconnected_lobby(
         [("attempt", display_attempt.max(1).to_string())],
       )
       .to_string()
+  } else if reconnect_exhausted {
+    ctx.t("lobby.disconnected.status.inaccessible").to_string()
   } else if reconnect_state.error.is_some() {
     ctx.t("lobby.disconnected.status.failed").to_string()
   } else {

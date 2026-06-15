@@ -1026,8 +1026,9 @@
       "description": "З’єднання з {{server}} втрачено. Перепідключіться, щоб відновити лобі й голосовий стан, або залиште цей сервер.",
       "status": {
         "ready": "З’єднання недоступне",
-        "reconnecting": "Перепідключення... спроба {{attempt}}",
-        "failed": "Перепідключення не вдалося"
+        "reconnecting": "Reconnect #{{attempt}}",
+        "failed": "Перепідключення не вдалося",
+        "inaccessible": "Server isnt accessible"
       },
       "action": {
         "reconnect": "Перепідключитися",

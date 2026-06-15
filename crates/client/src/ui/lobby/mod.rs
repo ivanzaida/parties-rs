@@ -68,7 +68,7 @@ type WatchStreamAction = lurq::app::ctx::FutureAction<UserId, (), String>;
 type StopWatchingAction = lurq::app::ctx::FutureAction<(), (), String>;
 type ReconnectAction = lurq::app::ctx::FutureAction<ReconnectRequest, ConnectedServerInfo, String>;
 
-const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
+const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 5;
 const AUTO_RECONNECT_RETRY_DELAY_MS: u64 = 1_500;
 const LOBBY_REVISION_WAKE_INTERVAL: Duration = Duration::from_millis(50);
 

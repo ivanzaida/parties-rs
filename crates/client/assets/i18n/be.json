@@ -1026,8 +1026,9 @@
       "description": "Злучэнне з {{server}} страчана. Перападключыцеся, каб аднавіць лобі і стан голасу, або пакіньце гэты сервер.",
       "status": {
         "ready": "Злучэнне недаступнае",
-        "reconnecting": "Перападключэнне... спроба {{attempt}}",
-        "failed": "Перападключэнне не ўдалося"
+        "reconnecting": "Reconnect #{{attempt}}",
+        "failed": "Перападключэнне не ўдалося",
+        "inaccessible": "Server isnt accessible"
       },
       "action": {
         "reconnect": "Перападключыцца",

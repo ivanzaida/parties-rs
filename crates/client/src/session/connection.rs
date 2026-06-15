@@ -275,8 +275,8 @@ impl Default for ConnectionRuntime {
   }
 }
 
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
-const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(super) trait ConnectionSession:
   Clone + Send + Sync + 'static + video::VideoReceiverSession + voice_runtime::VoiceReceiverSession
@@ -380,6 +380,12 @@ where
   S: ConnectionSession,
 {
   loop {
+    if let Some(error) = server.connection().close_reason() {
+      tracing::warn!(target: "network", "[network] connection closed; forcing reconnect: {error}");
+      session.mark_lobby_error(format!("connection closed: {error}"));
+      break;
+    }
+
     let now = Instant::now();
     let keepalive_timed_out = session.pending_keepalive_timed_out(now, KEEPALIVE_TIMEOUT);
     if keepalive_timed_out {

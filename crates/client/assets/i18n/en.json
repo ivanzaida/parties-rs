@@ -1026,8 +1026,9 @@
       "description": "We lost the connection to {{server}}. Reconnect to restore the lobby and voice state, or leave this server.",
       "status": {
         "ready": "Connection unavailable",
-        "reconnecting": "Reconnecting... attempt {{attempt}}",
-        "failed": "Reconnect failed"
+        "reconnecting": "Reconnect #{{attempt}}",
+        "failed": "Reconnect failed",
+        "inaccessible": "Server isnt accessible"
       },
       "action": {
         "reconnect": "Reconnect now",
