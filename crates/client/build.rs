@@ -1,6 +1,8 @@
 fn main() {
   #[cfg(target_os = "macos")]
   {
+    compile_macos_libhevc();
+
     cc::Build::new()
       .cpp(true)
       .std("c++17")
@@ -10,6 +12,15 @@ fn main() {
       .warnings(false)
       .compile("parties_macos_stream_bridge");
 
+    cc::Build::new()
+      .cpp(true)
+      .std("c++17")
+      .file("src/native/windows_video/software/libhevc_decoder_bridge.cpp")
+      .include("../../third_party/libhevc/common")
+      .include("../../third_party/libhevc/decoder")
+      .warnings(false)
+      .compile("parties_libhevc_decoder_bridge");
+
     println!("cargo:rustc-link-lib=framework=ScreenCaptureKit");
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     println!("cargo:rustc-link-lib=framework=Foundation");
@@ -18,6 +29,7 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=CoreVideo");
     println!("cargo:rustc-link-lib=framework=CoreFoundation");
     println!("cargo:rerun-if-changed=src/native/macos_video/bridge/macos_stream_bridge.mm");
+    println!("cargo:rerun-if-changed=src/native/windows_video/software/libhevc_decoder_bridge.cpp");
   }
 
   #[cfg(target_os = "windows")]
@@ -101,6 +113,93 @@ fn main() {
     resource.set_icon("assets/icons/parties_icon.ico");
     resource.compile().expect("failed to compile Windows app resources");
   }
+}
+
+#[cfg(target_os = "macos")]
+fn compile_macos_libhevc() {
+  let root = "../../third_party/libhevc";
+  let mut build = cc::Build::new();
+  build
+    .include(format!("{root}/common"))
+    .include(format!("{root}/common/x86"))
+    .include(format!("{root}/decoder"))
+    .include(format!("{root}/decoder/x86"))
+    .define("MEM_ALIGN8", Some("__attribute__((aligned(8)))"))
+    .define("MEM_ALIGN16", Some("__attribute__((aligned(16)))"))
+    .define("MEM_ALIGN32", Some("__attribute__((aligned(32)))"))
+    .warnings(false);
+
+  for file in [
+    "common/ithread_posix.c",
+    "common/ihevc_quant_tables.c",
+    "common/ihevc_inter_pred_filters.c",
+    "common/ihevc_weighted_pred.c",
+    "common/ihevc_padding.c",
+    "common/ihevc_deblk_edge_filter.c",
+    "common/ihevc_deblk_tables.c",
+    "common/ihevc_cabac_tables.c",
+    "common/ihevc_common_tables.c",
+    "common/ihevc_intra_pred_filters.c",
+    "common/ihevc_chroma_intra_pred_filters.c",
+    "common/ihevc_mem_fns.c",
+    "common/ihevc_sao.c",
+    "common/ihevc_trans_tables.c",
+    "common/ihevc_recon.c",
+    "common/ihevc_itrans.c",
+    "common/ihevc_itrans_recon.c",
+    "common/ihevc_iquant_recon.c",
+    "common/ihevc_iquant_itrans_recon.c",
+    "common/ihevc_itrans_recon_32x32.c",
+    "common/ihevc_itrans_recon_16x16.c",
+    "common/ihevc_itrans_recon_8x8.c",
+    "common/ihevc_chroma_itrans_recon.c",
+    "common/ihevc_chroma_iquant_recon.c",
+    "common/ihevc_chroma_iquant_itrans_recon.c",
+    "common/ihevc_chroma_recon.c",
+    "common/ihevc_chroma_itrans_recon_16x16.c",
+    "common/ihevc_chroma_itrans_recon_8x8.c",
+    "common/ihevc_buf_mgr.c",
+    "common/ihevc_disp_mgr.c",
+    "common/ihevc_dpb_mgr.c",
+    "common/ihevc_hbd_deblk_edge_filter.c",
+    "common/ihevc_quant_iquant_ssd.c",
+    "common/ihevc_resi_trans.c",
+    "decoder/ihevcd_version.c",
+    "decoder/ihevcd_api.c",
+    "decoder/ihevcd_decode.c",
+    "decoder/ihevcd_nal.c",
+    "decoder/ihevcd_bitstream.c",
+    "decoder/ihevcd_parse_headers.c",
+    "decoder/ihevcd_parse_slice_header.c",
+    "decoder/ihevcd_parse_slice.c",
+    "decoder/ihevcd_parse_residual.c",
+    "decoder/ihevcd_cabac.c",
+    "decoder/ihevcd_intra_pred_mode_prediction.c",
+    "decoder/ihevcd_process_slice.c",
+    "decoder/ihevcd_utils.c",
+    "decoder/ihevcd_job_queue.c",
+    "decoder/ihevcd_ref_list.c",
+    "decoder/ihevcd_get_mv.c",
+    "decoder/ihevcd_mv_pred.c",
+    "decoder/ihevcd_mv_merge.c",
+    "decoder/ihevcd_iquant_itrans_recon_ctb.c",
+    "decoder/ihevcd_itrans_recon_dc.c",
+    "decoder/ihevcd_common_tables.c",
+    "decoder/ihevcd_boundary_strength.c",
+    "decoder/ihevcd_deblk.c",
+    "decoder/ihevcd_inter_pred.c",
+    "decoder/ihevcd_sao.c",
+    "decoder/ihevcd_ilf_padding.c",
+    "decoder/ihevcd_fmt_conv.c",
+    "decoder/x86/ihevcd_function_selector_generic.c",
+    "decoder/ihevcd_function_selector_portable.c",
+  ] {
+    build.file(format!("{root}/{file}"));
+    println!("cargo:rerun-if-changed={root}/{file}");
+  }
+
+  build.compile("parties_libhevc");
+  println!("cargo:rerun-if-changed={root}/common/x86/ihevc_platform_macros.h");
 }
 
 #[cfg(target_os = "windows")]

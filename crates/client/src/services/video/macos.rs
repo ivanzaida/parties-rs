@@ -43,7 +43,7 @@ use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as O
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameDecoder, VideoFrameLoopback,
+  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameDecoder, VideoFrameLoopback, software::SoftwareVideoDecoder,
 };
 use crate::{
   network::{
@@ -1583,7 +1583,7 @@ fn set_vt_property_string(session: VTCompressionSessionRef, key: &str, value: &s
   Ok(())
 }
 
-pub(super) struct NativeVideoDecoder {
+pub(super) struct VideoToolboxVideoDecoder {
   config: VideoDecodeConfig,
   session: Option<VTSession>,
   av1_videotoolbox_unavailable: bool,
@@ -1591,7 +1591,12 @@ pub(super) struct NativeVideoDecoder {
   output_tx: mpsc::Sender<DecodedCallbackFrame>,
 }
 
-unsafe impl Send for NativeVideoDecoder {}
+pub(super) enum NativeVideoDecoder {
+  VideoToolbox(VideoToolboxVideoDecoder),
+  Software(SoftwareVideoDecoder),
+}
+
+unsafe impl Send for VideoToolboxVideoDecoder {}
 
 struct VTSession {
   session: VTDecompressionSessionRef,
@@ -1609,29 +1614,121 @@ struct DecodedCallbackFrame {
 unsafe impl Send for DecodedCallbackFrame {}
 
 pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
-  let (output_tx, output_rx) = mpsc::channel();
-  let decoder = NativeVideoDecoder {
-    config: config.clone(),
-    session: None,
-    av1_videotoolbox_unavailable: false,
-    output_rx,
-    output_tx,
-  };
-  tracing::warn!(target: "video::decode::macos",
-    "[video:decode/macos] decoder ready: codec={:?} size={}x{} av1_videotoolbox_unavailable={}",
-    config.codec,
-    config.width,
-    config.height,
-    decoder.av1_videotoolbox_unavailable
-  );
+  let provider = macos_decoder_provider(&config);
+  let build = provider.create(&config)?;
+  log_macos_decoder_ready(&config, &build);
   Ok(VideoDecoder::from_decoder(
-    Box::new(decoder),
+    Box::new(build.decoder),
     config,
-    NativeVideoBackend::AppleVideoToolbox,
+    build.backend,
   ))
 }
 
+struct MacosDecoderBuild {
+  decoder: NativeVideoDecoder,
+  backend: NativeVideoBackend,
+  ready_path: MacosDecoderReadyPath,
+}
+
+enum MacosDecoderReadyPath {
+  VideoToolbox { av1_videotoolbox_unavailable: bool },
+  Software,
+}
+
+trait MacosDecoderProvider {
+  fn create(&self, config: &VideoDecodeConfig) -> Result<MacosDecoderBuild, VideoError>;
+}
+
+struct VideoToolboxDecoderProvider;
+struct SoftwareDecoderProvider;
+
+fn macos_decoder_provider(config: &VideoDecodeConfig) -> &'static dyn MacosDecoderProvider {
+  if config.hardware_decoding {
+    &VideoToolboxDecoderProvider
+  } else {
+    &SoftwareDecoderProvider
+  }
+}
+
+impl MacosDecoderProvider for VideoToolboxDecoderProvider {
+  fn create(&self, config: &VideoDecodeConfig) -> Result<MacosDecoderBuild, VideoError> {
+    let decoder = VideoToolboxVideoDecoder::new(config);
+    let av1_videotoolbox_unavailable = decoder.av1_videotoolbox_unavailable;
+    Ok(MacosDecoderBuild {
+      decoder: NativeVideoDecoder::VideoToolbox(decoder),
+      backend: NativeVideoBackend::AppleVideoToolbox,
+      ready_path: MacosDecoderReadyPath::VideoToolbox {
+        av1_videotoolbox_unavailable,
+      },
+    })
+  }
+}
+
+impl MacosDecoderProvider for SoftwareDecoderProvider {
+  fn create(&self, config: &VideoDecodeConfig) -> Result<MacosDecoderBuild, VideoError> {
+    let decoder = SoftwareVideoDecoder::new(config)?;
+    let backend = decoder.backend();
+    Ok(MacosDecoderBuild {
+      decoder: NativeVideoDecoder::Software(decoder),
+      backend,
+      ready_path: MacosDecoderReadyPath::Software,
+    })
+  }
+}
+
+impl VideoToolboxVideoDecoder {
+  fn new(config: &VideoDecodeConfig) -> Self {
+    let (output_tx, output_rx) = mpsc::channel();
+    Self {
+      config: config.clone(),
+      session: None,
+      av1_videotoolbox_unavailable: false,
+      output_rx,
+      output_tx,
+    }
+  }
+}
+
+fn log_macos_decoder_ready(config: &VideoDecodeConfig, build: &MacosDecoderBuild) {
+  match build.ready_path {
+    MacosDecoderReadyPath::VideoToolbox {
+      av1_videotoolbox_unavailable,
+    } => {
+      tracing::warn!(target: "video::decode::macos",
+        "[video:decode/macos] decoder ready through VideoToolbox: codec={:?} size={}x{} av1_videotoolbox_unavailable={}",
+        config.codec,
+        config.width,
+        config.height,
+        av1_videotoolbox_unavailable
+      );
+    }
+    MacosDecoderReadyPath::Software => {
+      tracing::info!(target: "video::decode::macos",
+        "[video:decode/macos] decoder ready through software: backend={:?} codec={:?} size={}x{}",
+        build.backend,
+        config.codec,
+        config.width,
+        config.height
+      );
+    }
+  }
+}
+
 impl VideoFrameDecoder for NativeVideoDecoder {
+  fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    match self {
+      Self::VideoToolbox(decoder) => decoder.decode_frame(frame, output, output_buffer),
+      Self::Software(decoder) => decoder.decode_frame(frame, output, output_buffer),
+    }
+  }
+}
+
+impl VideoFrameDecoder for VideoToolboxVideoDecoder {
   fn decode_frame(
     &mut self,
     frame: &VideoFrame,

@@ -42,9 +42,6 @@ core-video-sys = "0.1.4"
 flate2 = "1"
 tar = "0.4"
 
-[target.'cfg(not(windows))'.dependencies]
-libde265 = { version = "0.2.0", default-features = false, features = ["static"] }
-
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1.2"
 
