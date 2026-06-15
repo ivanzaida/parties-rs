@@ -42,7 +42,7 @@ use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as O
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameLoopback, software::SoftwareVideoDecoder,
+  VideoDecodeConfig, VideoError, VideoFrameDecoder, VideoFrameLoopback, software::SoftwareVideoDecoder,
   webcam::WebcamCapture,
 };
 use crate::{
@@ -58,6 +58,10 @@ use crate::{
     screen_share_sources::ScreenShareSourceKind,
   },
 };
+
+mod decode;
+
+pub(super) use decode::decode;
 
 #[allow(dead_code)]
 const BACKEND_ORDER: [NativeVideoBackend; 3] = [
@@ -331,97 +335,6 @@ pub(super) struct AmdAmfVideoDecoder {
 
 pub(super) struct MftH264VideoDecoder {
   handle: NonNull<MftH264DecoderBridge>,
-}
-
-pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
-  install_native_logger();
-  if !config.hardware_decoding {
-    if config.codec == VideoCodecId::H264 {
-      let decoder = MftH264VideoDecoder::new(&config)?;
-      tracing::info!(target: "video::decode::windows",
-        "[video:decode/windows] decoder ready through Media Foundation: codec={:?} size={}x{}",
-        config.codec,
-        config.width,
-        config.height
-      );
-      return Ok(VideoDecoder::from_windows(
-        NativeVideoDecoder::MftH264(decoder),
-        config,
-        NativeVideoBackend::WindowsMediaFoundation,
-      ));
-    }
-    return software_decode(config);
-  }
-
-  match windows_output_dxgi_adapter_vendor_id() {
-    Some(NVIDIA_VENDOR_ID) => {
-      let decoder = NvdecVideoDecoder::new(&config).map_err(|error| {
-        tracing::warn!(target: "video::decode::windows", "[video:decode/windows] NVDEC decoder unavailable and software decoding is disabled by setting: {error}");
-        error
-      })?;
-      tracing::info!(target: "video::decode::windows",
-        "[video:decode/windows] decoder ready through NVDEC: codec={:?} size={}x{}",
-        config.codec,
-        config.width,
-        config.height
-      );
-      Ok(VideoDecoder::from_windows(
-        NativeVideoDecoder::Nvdec(decoder),
-        config,
-        NativeVideoBackend::NvidiaNvdec,
-      ))
-    }
-    Some(AMD_VENDOR_ID) => {
-      let decoder = AmdAmfVideoDecoder::new(&config).map_err(|error| {
-        tracing::warn!(target: "video::decode::windows", "[video:decode/windows] AMF decoder unavailable and software decoding is disabled by setting: {error}");
-        error
-      })?;
-      tracing::info!(target: "video::decode::windows",
-        "[video:decode/windows] decoder ready through AMF: codec={:?} size={}x{}",
-        config.codec,
-        config.width,
-        config.height
-      );
-      Ok(VideoDecoder::from_windows(
-        NativeVideoDecoder::AmdAmf(decoder),
-        config,
-        NativeVideoBackend::AmdAmf,
-      ))
-    }
-    Some(vendor_id) => {
-      let error = VideoError::new(format!(
-        "Selected Windows GPU vendor_id=0x{vendor_id:04x} has no hardware decoder wired for {}.",
-        codec_label(config.codec)
-      ));
-      tracing::warn!(target: "video::decode::windows", "[video:decode/windows] {error}");
-      Err(error)
-    }
-    None => {
-      let error = VideoError::new(format!(
-        "Failed to resolve selected Windows GPU; software decoding is disabled by setting for {}.",
-        codec_label(config.codec)
-      ));
-      tracing::warn!(target: "video::decode::windows", "[video:decode/windows] {error}");
-      Err(error)
-    }
-  }
-}
-
-fn software_decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
-  let decoder = SoftwareVideoDecoder::new(&config)?;
-  let backend = decoder.backend();
-  tracing::info!(target: "video::decode::windows",
-    "[video:decode/windows] decoder ready through software: backend={:?} codec={:?} size={}x{}",
-    backend,
-    config.codec,
-    config.width,
-    config.height
-  );
-  Ok(VideoDecoder::from_windows(
-    NativeVideoDecoder::Software(decoder),
-    config,
-    backend,
-  ))
 }
 
 #[allow(dead_code)]
@@ -1771,8 +1684,8 @@ impl Drop for AmdAmfVideoEncoder {
   }
 }
 
-impl NativeVideoDecoder {
-  pub(super) fn decode_frame(
+impl VideoFrameDecoder for NativeVideoDecoder {
+  fn decode_frame(
     &mut self,
     frame: &VideoFrame,
     output: bool,
@@ -1786,7 +1699,7 @@ impl NativeVideoDecoder {
     }
   }
 
-  pub(super) fn decode_frame_to_dx12(
+  fn decode_frame_to_dx12(
     &mut self,
     frame: &VideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
@@ -1799,10 +1712,7 @@ impl NativeVideoDecoder {
     }
   }
 
-  pub(super) fn decode_frame_to_shared_nv12_planes(
-    &mut self,
-    frame: &VideoFrame,
-  ) -> Result<Option<(usize, usize)>, VideoError> {
+  fn decode_frame_to_shared_nv12_planes(&mut self, frame: &VideoFrame) -> Result<Option<(usize, usize)>, VideoError> {
     match self {
       Self::Nvdec(_) => Ok(None),
       Self::AmdAmf(decoder) => decoder.decode_frame_to_shared_nv12_planes(frame),

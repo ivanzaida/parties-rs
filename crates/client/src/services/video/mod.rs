@@ -79,6 +79,29 @@ pub(super) struct NativeDecodedVideoFrame {
   pub native_image: Option<lurq::images::ImageData>,
 }
 
+pub(super) trait VideoFrameDecoder {
+  fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError>;
+
+  #[cfg(target_os = "windows")]
+  fn decode_frame_to_dx12(
+    &mut self,
+    _frame: &VideoFrame,
+    _surface: &lurq::app::dx12_render::Dx12Nv12Surface,
+  ) -> Result<bool, VideoError> {
+    Ok(false)
+  }
+
+  #[cfg(target_os = "windows")]
+  fn decode_frame_to_shared_nv12_planes(&mut self, _frame: &VideoFrame) -> Result<Option<(usize, usize)>, VideoError> {
+    Ok(None)
+  }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeVideoBackend {
@@ -123,10 +146,7 @@ pub struct VideoBroadcast {
 
 #[allow(dead_code)]
 pub struct VideoDecoder {
-  #[cfg(target_os = "windows")]
-  inner: windows::NativeVideoDecoder,
-  #[cfg(target_os = "macos")]
-  inner: macos::NativeVideoDecoder,
+  inner: Box<dyn VideoFrameDecoder>,
   config: VideoDecodeConfig,
   backend: NativeVideoBackend,
 }
@@ -242,7 +262,7 @@ impl VideoDecoder {
       ));
     }
 
-    let decoded = decode_native_frame(self, frame, output, output_buffer)?;
+    let decoded = self.inner.decode_frame(&frame.frame, output, output_buffer)?;
     Ok(decoded.map(|decoded| DecodedVideoFrame {
       sender_id: frame.sender_id,
       codec: frame.frame.codec,
@@ -295,19 +315,12 @@ impl VideoDecoder {
     self.inner.decode_frame_to_shared_nv12_planes(&frame.frame)
   }
 
-  #[cfg(target_os = "windows")]
-  fn from_windows(inner: windows::NativeVideoDecoder, config: VideoDecodeConfig, backend: NativeVideoBackend) -> Self {
+  pub(super) fn from_decoder(
+    inner: Box<dyn VideoFrameDecoder>,
+    config: VideoDecodeConfig,
+    backend: NativeVideoBackend,
+  ) -> Self {
     Self { inner, config, backend }
-  }
-
-  #[cfg(target_os = "macos")]
-  fn from_macos(inner: macos::NativeVideoDecoder, config: VideoDecodeConfig, backend: NativeVideoBackend) -> Self {
-    Self { inner, config, backend }
-  }
-
-  #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-  fn from_backend(backend: NativeVideoBackend, config: VideoDecodeConfig) -> Self {
-    Self { config, backend }
   }
 }
 
@@ -406,39 +419,6 @@ fn start_native_decoder(config: VideoDecodeConfig) -> Result<VideoDecoder, Video
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[allow(dead_code)]
 fn start_native_decoder(_config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
-  Err(VideoError::new(
-    "Native video decoder is not implemented for this platform yet.",
-  ))
-}
-
-#[cfg(target_os = "windows")]
-fn decode_native_frame(
-  decoder: &mut VideoDecoder,
-  frame: &ForwardedVideoFrame,
-  output: bool,
-  output_buffer: Option<Vec<u8>>,
-) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-  decoder.inner.decode_frame(&frame.frame, output, output_buffer)
-}
-
-#[cfg(not(target_os = "windows"))]
-#[cfg(target_os = "macos")]
-fn decode_native_frame(
-  decoder: &mut VideoDecoder,
-  frame: &ForwardedVideoFrame,
-  output: bool,
-  output_buffer: Option<Vec<u8>>,
-) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-  decoder.inner.decode_frame(&frame.frame, output, output_buffer)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn decode_native_frame(
-  _decoder: &mut VideoDecoder,
-  _frame: &ForwardedVideoFrame,
-  _output: bool,
-  _output_buffer: Option<Vec<u8>>,
-) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
   Err(VideoError::new(
     "Native video decoder is not implemented for this platform yet.",
   ))

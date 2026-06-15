@@ -43,7 +43,7 @@ use opus::{Application as OpusApplication, Bitrate as OpusBitrate, Channels as O
 
 use super::{
   DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig,
-  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameLoopback,
+  VideoDecodeConfig, VideoDecoder, VideoError, VideoFrameDecoder, VideoFrameLoopback,
 };
 use crate::{
   network::{
@@ -1624,15 +1624,15 @@ pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoErr
     config.height,
     decoder.av1_videotoolbox_unavailable
   );
-  Ok(VideoDecoder::from_macos(
-    decoder,
+  Ok(VideoDecoder::from_decoder(
+    Box::new(decoder),
     config,
     NativeVideoBackend::AppleVideoToolbox,
   ))
 }
 
-impl NativeVideoDecoder {
-  pub(super) fn decode_frame(
+impl VideoFrameDecoder for NativeVideoDecoder {
+  fn decode_frame(
     &mut self,
     frame: &VideoFrame,
     output: bool,
