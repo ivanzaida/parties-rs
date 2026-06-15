@@ -7,6 +7,7 @@ pub(crate) enum SourceKind {
 pub(crate) struct SourceRequest {
   pub(crate) kind: SourceKind,
   pub(crate) url: String,
+  pub(crate) provider_id: Option<String>,
   pub(crate) loading_title: String,
 }
 

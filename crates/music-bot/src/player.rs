@@ -31,11 +31,11 @@ pub(crate) struct PlaybackWorker {
 }
 
 impl PlaybackWorker {
-  pub(crate) fn spawn(host: HostHandle, bot: BotUser, sources: SourceRegistry) -> Self {
+  pub(crate) fn spawn(host: HostHandle, bot: BotUser, sources: SourceRegistry, voice_channel_id: ChannelId) -> Self {
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(PlayerState::default()));
     let worker_state = Arc::clone(&state);
-    let join_handle = thread::spawn(move || run_player(host, bot, sources, rx, worker_state));
+    let join_handle = thread::spawn(move || run_player(host, bot, sources, voice_channel_id, rx, worker_state));
 
     Self {
       tx,
@@ -96,12 +96,22 @@ fn run_player(
   host: HostHandle,
   bot: BotUser,
   sources: SourceRegistry,
+  voice_channel_id: ChannelId,
   rx: Receiver<PlayerCommand>,
   state: Arc<Mutex<PlayerState>>,
 ) {
   let mut sequence = 0u16;
   while let NextTrack::Track(queued) = next_track(&host, &bot, &rx, &state) {
-    match play_track(&host, &bot, &sources, &rx, &state, &mut sequence, queued) {
+    match play_track(
+      &host,
+      &bot,
+      &sources,
+      voice_channel_id,
+      &rx,
+      &state,
+      &mut sequence,
+      queued,
+    ) {
       PlaybackControl::Continue => {}
       PlaybackControl::Shutdown => break,
     }
@@ -148,6 +158,7 @@ fn play_track(
   host: &HostHandle,
   bot: &BotUser,
   sources: &SourceRegistry,
+  voice_channel_id: ChannelId,
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
   sequence: &mut u16,
@@ -158,6 +169,11 @@ fn play_track(
   host
     .send_bot_chat(bot, text_channel_id, &format!("Loading: {}", track.title))
     .ok();
+
+  if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
+    stop_after_voice_disconnect(host, bot, state, text_channel_id);
+    return PlaybackControl::Shutdown;
+  }
 
   let mut frames = match AudioFrames::open(&mut track, sources) {
     Ok(frames) => frames,
@@ -198,6 +214,11 @@ fn play_track(
       CommandDrain::Shutdown => return PlaybackControl::Shutdown,
     }
 
+    if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
+      stop_after_voice_disconnect(host, bot, state, text_channel_id);
+      return PlaybackControl::Shutdown;
+    }
+
     let opus_payload = match encoder.encode(&frame) {
       Ok(payload) => payload,
       Err(error) => {
@@ -221,6 +242,26 @@ fn play_track(
 
   clear_current_track(state);
   PlaybackControl::Continue
+}
+
+fn bot_is_still_in_expected_voice(host: &HostHandle, bot: &BotUser, expected: ChannelId) -> bool {
+  matches!(host.bot_voice_channel(bot), Ok(Some(channel_id)) if channel_id == expected)
+}
+
+fn stop_after_voice_disconnect(
+  host: &HostHandle,
+  bot: &BotUser,
+  state: &Arc<Mutex<PlayerState>>,
+  text_channel_id: ChannelId,
+) {
+  clear_playback_state(state);
+  host
+    .send_bot_chat(
+      bot,
+      text_channel_id,
+      "I was removed from voice; stopped playback and cleared the queue.",
+    )
+    .ok();
 }
 
 fn drain_commands_while_playing(

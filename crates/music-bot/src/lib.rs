@@ -8,7 +8,7 @@ mod queue;
 mod sources;
 
 use bot::MusicBot;
-pub use probe::{SoundCloudProbe, probe_soundcloud_url};
+pub use probe::{SoundCloudProbe, SoundCloudQueueProbe, probe_soundcloud_queue, probe_soundcloud_url};
 use server_plugin::plugin;
 
 plugin::register!(MusicBot);

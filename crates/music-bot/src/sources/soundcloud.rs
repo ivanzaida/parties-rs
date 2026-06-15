@@ -9,6 +9,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{
   config::SoundCloudConfig,
@@ -25,6 +26,8 @@ const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 const TOKEN_REFRESH_RETRY_DELAY: Duration = Duration::from_secs(30);
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 60);
 const MAX_HLS_PLAYLIST_DEPTH: usize = 4;
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub(crate) struct SoundCloudTokenProvider {
@@ -57,6 +60,8 @@ impl SoundCloudTokenProvider {
   pub(crate) fn new(config: SoundCloudConfig) -> Result<Self, String> {
     let client = reqwest::blocking::Client::builder()
       .user_agent("parties-music-bot/0.1")
+      .connect_timeout(HTTP_CONNECT_TIMEOUT)
+      .timeout(HTTP_REQUEST_TIMEOUT)
       .build()
       .map_err(|error| format!("failed to initialize SoundCloud HTTP client: {error}"))?;
     let provider = Self {
@@ -227,13 +232,26 @@ impl SourceResolver for SoundCloudResolver {
     self.supports(input).then(|| SourceRequest {
       kind: SourceKind::SoundCloud,
       url: input.to_owned(),
+      provider_id: None,
       loading_title: "SoundCloud URL".to_owned(),
     })
+  }
+
+  fn requests(&self, input: &str) -> Result<Vec<SourceRequest>, String> {
+    if !self.supports(input) {
+      return Err("SoundCloud URL could not be parsed.".to_owned());
+    }
+
+    resolve_requests(input, &self.token_provider)
   }
 
   fn resolve(&self, request: &SourceRequest) -> Result<ResolvedAudio, String> {
     if request.kind != SourceKind::SoundCloud {
       return Err("SoundCloud resolver received a non-SoundCloud source.".to_owned());
+    }
+
+    if let Some(track_id) = request.provider_id.as_deref().and_then(|id| id.parse::<u64>().ok()) {
+      return resolve_audio_from_track_id(&request.url, track_id, &request.loading_title, &self.token_provider);
     }
 
     resolve_audio(&request.url, &self.token_provider)
@@ -252,6 +270,22 @@ struct SoundCloudTrack {
   title: Option<String>,
   kind: Option<String>,
   streamable: Option<bool>,
+  permalink_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SoundCloudPlaylist {
+  title: Option<String>,
+  tracks: Vec<SoundCloudPlaylistTrack>,
+}
+
+#[derive(Deserialize)]
+struct SoundCloudPlaylistTrack {
+  id: Option<u64>,
+  title: Option<String>,
+  kind: Option<String>,
+  streamable: Option<bool>,
+  permalink_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -278,12 +312,34 @@ struct SoundCloudTokenResponse {
 }
 
 pub(crate) fn resolve_audio(url: &str, token_provider: &SoundCloudTokenProvider) -> Result<ResolvedAudio, String> {
-  let client = reqwest::blocking::Client::builder()
-    .user_agent("parties-music-bot/0.1")
-    .build()
-    .map_err(|error| format!("failed to initialize SoundCloud HTTP client: {error}"))?;
-
+  let client = soundcloud_client()?;
   let track = resolve_track(&client, token_provider, url)?;
+  resolve_audio_from_track(&client, token_provider, url, track)
+}
+
+fn resolve_audio_from_track_id(
+  source_url: &str,
+  track_id: u64,
+  title: &str,
+  token_provider: &SoundCloudTokenProvider,
+) -> Result<ResolvedAudio, String> {
+  let client = soundcloud_client()?;
+  let track = SoundCloudTrack {
+    id: track_id,
+    title: Some(title.to_owned()),
+    kind: Some("track".to_owned()),
+    streamable: None,
+    permalink_url: Some(source_url.to_owned()),
+  };
+  resolve_audio_from_track(&client, token_provider, source_url, track)
+}
+
+fn resolve_audio_from_track(
+  client: &reqwest::blocking::Client,
+  token_provider: &SoundCloudTokenProvider,
+  source_url: &str,
+  track: SoundCloudTrack,
+) -> Result<ResolvedAudio, String> {
   if track.kind.as_deref().is_some_and(|kind| kind != "track") {
     return Err("Only SoundCloud track URLs are supported right now.".to_owned());
   }
@@ -291,18 +347,18 @@ pub(crate) fn resolve_audio(url: &str, token_provider: &SoundCloudTokenProvider)
     return Err("This SoundCloud track is not streamable through the API.".to_owned());
   }
 
-  let candidate = resolve_stream_candidate(&client, token_provider, track.id)?;
+  let candidate = resolve_stream_candidate(client, token_provider, track.id)?;
   let is_hls_candidate = is_hls_url(&candidate.url) || candidate.key.contains("hls");
   let stream_url = if is_hls_candidate {
     candidate.url.clone()
   } else {
-    resolve_stream_url(&client, token_provider, &candidate.url)?
+    resolve_stream_url(client, token_provider, &candidate.url)?
   };
   let audio = if is_hls_candidate || is_hls_url(&stream_url) {
-    download_hls_audio(&client, token_provider, &stream_url)?
+    download_hls_audio(client, token_provider, &stream_url)?
   } else {
     DownloadedAudio {
-      bytes: download_remote_audio(&client, &stream_url)?,
+      bytes: download_remote_audio(client, &stream_url)?,
       container_hint: infer_audio_extension(&stream_url).or_else(|| infer_audio_extension(&candidate.key)),
     }
   };
@@ -310,12 +366,87 @@ pub(crate) fn resolve_audio(url: &str, token_provider: &SoundCloudTokenProvider)
   Ok(ResolvedAudio {
     title: track.title.unwrap_or_else(|| "SoundCloud track".to_owned()),
     source_kind: SourceKind::SoundCloud,
-    source_url: url.to_owned(),
+    source_url: source_url.to_owned(),
     payload: ResolvedAudioPayload::Buffered {
       bytes: audio.bytes,
       container_hint: audio.container_hint,
     },
   })
+}
+
+fn resolve_requests(url: &str, token_provider: &SoundCloudTokenProvider) -> Result<Vec<SourceRequest>, String> {
+  let client = soundcloud_client()?;
+  let value = resolve_url_value(&client, token_provider, url)?;
+  requests_from_resolved_value(url, value)
+}
+
+fn requests_from_resolved_value(url: &str, value: Value) -> Result<Vec<SourceRequest>, String> {
+  if resolved_value_is_playlist(&value) {
+    let playlist: SoundCloudPlaylist = serde_json::from_value(value)
+      .map_err(|error| format!("failed to parse SoundCloud playlist response: {error}"))?;
+    let playlist_title = playlist.title.unwrap_or_else(|| "SoundCloud playlist".to_owned());
+    let requests = playlist
+      .tracks
+      .into_iter()
+      .filter_map(|track| request_from_playlist_track(url, &playlist_title, track))
+      .collect::<Vec<_>>();
+
+    if requests.is_empty() {
+      return Err("SoundCloud playlist did not contain queueable tracks.".to_owned());
+    }
+
+    return Ok(requests);
+  }
+
+  let track: SoundCloudTrack =
+    serde_json::from_value(value).map_err(|error| format!("failed to parse SoundCloud track response: {error}"))?;
+  Ok(vec![request_from_track(url, track)])
+}
+
+fn resolved_value_is_playlist(value: &Value) -> bool {
+  value
+    .get("kind")
+    .and_then(Value::as_str)
+    .is_some_and(|kind| kind == "playlist" || kind == "system-playlist")
+    || value.get("tracks").is_some_and(Value::is_array)
+}
+
+fn request_from_track(fallback_url: &str, track: SoundCloudTrack) -> SourceRequest {
+  let title = track.title.unwrap_or_else(|| "SoundCloud track".to_owned());
+  SourceRequest {
+    kind: SourceKind::SoundCloud,
+    url: track.permalink_url.unwrap_or_else(|| fallback_url.to_owned()),
+    provider_id: Some(track.id.to_string()),
+    loading_title: title,
+  }
+}
+
+fn request_from_playlist_track(
+  fallback_url: &str,
+  playlist_title: &str,
+  track: SoundCloudPlaylistTrack,
+) -> Option<SourceRequest> {
+  if track.kind.as_deref().is_some_and(|kind| kind != "track") || track.streamable == Some(false) {
+    return None;
+  }
+
+  let track_id = track.id?;
+  let title = track.title.unwrap_or_else(|| "SoundCloud track".to_owned());
+  Some(SourceRequest {
+    kind: SourceKind::SoundCloud,
+    url: track.permalink_url.unwrap_or_else(|| fallback_url.to_owned()),
+    provider_id: Some(track_id.to_string()),
+    loading_title: format!("{playlist_title} - {title}"),
+  })
+}
+
+fn soundcloud_client() -> Result<reqwest::blocking::Client, String> {
+  reqwest::blocking::Client::builder()
+    .user_agent("parties-music-bot/0.1")
+    .connect_timeout(HTTP_CONNECT_TIMEOUT)
+    .timeout(HTTP_REQUEST_TIMEOUT)
+    .build()
+    .map_err(|error| format!("failed to initialize SoundCloud HTTP client: {error}"))
 }
 
 fn request_access_token(
@@ -395,6 +526,15 @@ fn resolve_track(
   token_provider: &SoundCloudTokenProvider,
   url: &str,
 ) -> Result<SoundCloudTrack, String> {
+  let value = resolve_url_value(client, token_provider, url)?;
+  serde_json::from_value(value).map_err(|error| format!("failed to parse SoundCloud track response: {error}"))
+}
+
+fn resolve_url_value(
+  client: &reqwest::blocking::Client,
+  token_provider: &SoundCloudTokenProvider,
+  url: &str,
+) -> Result<Value, String> {
   let endpoint = reqwest::Url::parse_with_params(&format!("{SOUNDCLOUD_API_BASE_URL}/resolve"), [("url", url)])
     .map_err(|error| format!("failed to build SoundCloud resolve URL: {error}"))?;
   soundcloud_get_json(client, token_provider, endpoint)

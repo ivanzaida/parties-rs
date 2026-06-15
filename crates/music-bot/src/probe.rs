@@ -3,6 +3,7 @@ use crate::{
   config::SoundCloudConfig,
   sources::{
     model::ResolvedAudioPayload,
+    registry::SourceRegistry,
     soundcloud::{self, SoundCloudTokenProvider},
   },
 };
@@ -13,6 +14,11 @@ pub struct SoundCloudProbe {
   pub container_hint: Option<String>,
   pub byte_len: usize,
   pub decoded_samples: usize,
+}
+
+pub struct SoundCloudQueueProbe {
+  pub title: String,
+  pub url: String,
 }
 
 pub fn probe_soundcloud_url(url: &str, client_id: &str, client_secret: &str) -> Result<SoundCloudProbe, String> {
@@ -33,5 +39,29 @@ pub fn probe_soundcloud_url(url: &str, client_id: &str, client_secret: &str) -> 
     container_hint,
     byte_len,
     decoded_samples,
+  })
+}
+
+pub fn probe_soundcloud_queue(
+  url: &str,
+  client_id: &str,
+  client_secret: &str,
+) -> Result<Vec<SoundCloudQueueProbe>, String> {
+  let token_provider = SoundCloudTokenProvider::new(SoundCloudConfig {
+    client_id: client_id.to_owned(),
+    client_secret: client_secret.to_owned(),
+  })?;
+  let sources = SourceRegistry::new(token_provider);
+  let requests = sources.parse_many(url);
+  sources.shutdown();
+
+  requests.map(|requests| {
+    requests
+      .into_iter()
+      .map(|request| SoundCloudQueueProbe {
+        title: request.loading_title,
+        url: request.url,
+      })
+      .collect()
   })
 }

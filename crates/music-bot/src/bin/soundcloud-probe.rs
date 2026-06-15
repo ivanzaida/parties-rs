@@ -18,7 +18,28 @@ fn main() {
     }
   };
 
-  match music_bot::probe_soundcloud_url(&url, &client_id, &client_secret) {
+  let queue_probe = match music_bot::probe_soundcloud_queue(&url, &client_id, &client_secret) {
+    Ok(queue_probe) => queue_probe,
+    Err(error) => {
+      eprintln!("error: {error}");
+      std::process::exit(1);
+    }
+  };
+
+  if queue_probe.len() > 1 {
+    println!("playlist_tracks: {}", queue_probe.len());
+    for (index, track) in queue_probe.iter().take(20).enumerate() {
+      println!("{}. {}", index + 1, track.title);
+      println!("   {}", track.url);
+    }
+    if queue_probe.len() > 20 {
+      println!("... {} more", queue_probe.len() - 20);
+    }
+    return;
+  }
+
+  let audio_url = queue_probe.first().map(|track| track.url.as_str()).unwrap_or(&url);
+  match music_bot::probe_soundcloud_url(audio_url, &client_id, &client_secret) {
     Ok(probe) => {
       println!("title: {}", probe.title);
       println!("source_url: {}", probe.source_url);

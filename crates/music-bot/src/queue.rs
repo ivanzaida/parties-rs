@@ -11,12 +11,27 @@ pub(crate) struct Track {
 }
 
 impl Track {
+  #[cfg(test)]
   pub(crate) fn parse(input: &str, sources: &SourceRegistry) -> Result<Self, String> {
     let source = sources.parse(input)?;
-    Ok(Self {
+    Ok(Self::from_source(source))
+  }
+
+  pub(crate) fn parse_many(input: &str, sources: &SourceRegistry) -> Result<Vec<Self>, String> {
+    Ok(
+      sources
+        .parse_many(input)?
+        .into_iter()
+        .map(Self::from_source)
+        .collect::<Vec<_>>(),
+    )
+  }
+
+  fn from_source(source: SourceRequest) -> Self {
+    Self {
       title: source.loading_title.clone(),
       source,
-    })
+    }
   }
 }
 

@@ -16,6 +16,7 @@ impl SourceRegistry {
     }
   }
 
+  #[cfg(test)]
   pub(crate) fn parse(&self, input: &str) -> Result<SourceRequest, String> {
     let input = input.trim();
     if self.soundcloud.supports(input) {
@@ -23,6 +24,15 @@ impl SourceRegistry {
         .soundcloud
         .request(input)
         .ok_or_else(|| "SoundCloud URL could not be parsed.".to_owned());
+    }
+
+    Err("Only SoundCloud URLs are supported right now.".to_owned())
+  }
+
+  pub(crate) fn parse_many(&self, input: &str) -> Result<Vec<SourceRequest>, String> {
+    let input = input.trim();
+    if self.soundcloud.supports(input) {
+      return self.soundcloud.requests(input);
     }
 
     Err("Only SoundCloud URLs are supported right now.".to_owned())

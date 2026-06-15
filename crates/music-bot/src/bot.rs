@@ -116,6 +116,8 @@ impl Plugin for MusicBot {
 
 impl MusicBot {
   fn handle_play(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
+    self.sync_voice_state(host);
+
     let Some(url_arg) = invocation.arg("url").filter(|arg| arg.present) else {
       self.send_reply(host, invocation.text_channel_id, "Usage: /play {url:string}");
       return;
@@ -125,13 +127,14 @@ impl MusicBot {
       return;
     };
 
-    let track = match Track::parse(url_arg.string_value, sources) {
-      Ok(track) => track,
+    let tracks = match Track::parse_many(url_arg.string_value, sources) {
+      Ok(tracks) => tracks,
       Err(error) => {
         self.send_reply(host, invocation.text_channel_id, &error);
         return;
       }
     };
+    self.sync_voice_state(host);
 
     let voice_channel_id = match host.user_voice_channel(invocation.user_id) {
       Ok(Some(channel_id)) => channel_id,
@@ -152,6 +155,9 @@ impl MusicBot {
     };
 
     if self.voice_channel_id != Some(voice_channel_id) {
+      if let Some(worker) = self.worker.take() {
+        worker.shutdown();
+      }
       if let Err(error) = host.join_bot_voice(bot, voice_channel_id) {
         let message = format!("failed to join voice channel {voice_channel_id}: {error}");
         host.log(LogLevel::Warn, &message).ok();
@@ -160,16 +166,28 @@ impl MusicBot {
       self.voice_channel_id = Some(voice_channel_id);
     }
 
-    if !self.ensure_worker(host) {
+    if !self.ensure_worker(host, voice_channel_id) {
       return;
     }
 
+    let track_count = tracks.len();
     if let Some(worker) = self.worker.as_ref() {
-      worker.enqueue(track, invocation.text_channel_id);
+      for track in tracks {
+        worker.enqueue(track, invocation.text_channel_id);
+      }
+    }
+    if track_count > 1 {
+      self.send_reply(
+        host,
+        invocation.text_channel_id,
+        &format!("Queued {track_count} tracks."),
+      );
     }
   }
 
   fn handle_stop(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
+    self.sync_voice_state(host);
+
     if let Some(worker) = self.worker.as_ref() {
       worker.stop(invocation.text_channel_id);
     } else {
@@ -186,6 +204,8 @@ impl MusicBot {
   }
 
   fn handle_queue(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
+    self.sync_voice_state(host);
+
     let message = self
       .worker
       .as_ref()
@@ -197,6 +217,8 @@ impl MusicBot {
   }
 
   fn handle_nowplaying(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
+    self.sync_voice_state(host);
+
     let message = self
       .worker
       .as_ref()
@@ -208,6 +230,8 @@ impl MusicBot {
   }
 
   fn handle_skip(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
+    self.sync_voice_state(host);
+
     if let Some(worker) = self.worker.as_ref() {
       worker.skip(invocation.text_channel_id);
     } else {
@@ -222,7 +246,7 @@ impl MusicBot {
     Ok(())
   }
 
-  fn ensure_worker(&mut self, host: HostHandle) -> bool {
+  fn ensure_worker(&mut self, host: HostHandle, voice_channel_id: ChannelId) -> bool {
     if self.worker.is_none() {
       let Some(bot) = self.bot.as_ref() else {
         host.log(LogLevel::Warn, "music bot user is not initialized").ok();
@@ -232,9 +256,45 @@ impl MusicBot {
         host.log(LogLevel::Warn, "music bot sources are not initialized").ok();
         return false;
       };
-      self.worker = Some(PlaybackWorker::spawn(host, bot.clone(), sources.clone()));
+      self.worker = Some(PlaybackWorker::spawn(
+        host,
+        bot.clone(),
+        sources.clone(),
+        voice_channel_id,
+      ));
     }
     true
+  }
+
+  fn sync_voice_state(&mut self, host: HostHandle) {
+    let Some(expected_channel_id) = self.voice_channel_id else {
+      return;
+    };
+    let Some(bot) = self.bot.as_ref() else {
+      self.voice_channel_id = None;
+      if let Some(worker) = self.worker.take() {
+        worker.shutdown();
+      }
+      return;
+    };
+
+    match host.bot_voice_channel(bot) {
+      Ok(Some(actual_channel_id)) if actual_channel_id == expected_channel_id => {}
+      Ok(_) => {
+        if let Some(worker) = self.worker.take() {
+          worker.shutdown();
+        }
+        self.voice_channel_id = None;
+      }
+      Err(error) => {
+        host
+          .log(
+            LogLevel::Warn,
+            &format!("failed to sync music bot voice state: {error}"),
+          )
+          .ok();
+      }
+    }
   }
 
   fn send_reply(&mut self, host: HostHandle, text_channel_id: ChannelId, message: &str) {
