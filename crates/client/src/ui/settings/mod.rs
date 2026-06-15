@@ -19,6 +19,7 @@ pub use overview::SettingsOverviewScreen;
 pub use saved_servers::SettingsSavedServersScreen;
 pub use shell::{SettingsPage, SettingsPopupHandle};
 pub use stream::SettingsStreamScreen;
+pub(crate) use toggle::settings_toggle_track;
 
 pub struct SettingsPopup;
 

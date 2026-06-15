@@ -8,6 +8,7 @@ pub(crate) struct SourceRequest {
   pub(crate) kind: SourceKind,
   pub(crate) url: String,
   pub(crate) provider_id: Option<String>,
+  pub(crate) duration_ms: Option<u64>,
   pub(crate) loading_title: String,
 }
 

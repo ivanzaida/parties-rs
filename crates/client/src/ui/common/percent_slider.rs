@@ -119,7 +119,8 @@ pub fn percent_slider_control(
       Text::new(&value_label)
         .variant(theme::TypographyStyle::Mono)
         .color(theme::PaletteColor::TextPrimary)
-        .width(Dimension::Px(value_width)),
+        .width(Dimension::Px(value_width))
+        .text_align(Alignment::End),
     )
     .into()
 }

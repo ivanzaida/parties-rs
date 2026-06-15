@@ -1,5 +1,5 @@
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   env,
   error::Error,
   fmt, fs,
@@ -649,6 +649,10 @@ impl Storage {
       "DELETE FROM stream_volume_overrides WHERE server_id = ?1",
       params![address],
     )?;
+    conn.execute(
+      "DELETE FROM voice_normalization_overrides WHERE server_id = ?1",
+      params![address],
+    )?;
     conn.execute("DELETE FROM servers WHERE address = ?1", params![address])?;
     Ok(())
   }
@@ -702,6 +706,52 @@ impl Storage {
 
   pub fn save_stream_volume_override(&self, server_id: &str, user_id: UserId, volume: i32) -> Result<(), StorageError> {
     self.save_volume_override_in_table("stream_volume_overrides", server_id, user_id, volume)
+  }
+
+  pub fn load_user_normalization(&self, server_id: &str, user_id: UserId) -> Result<bool, StorageError> {
+    let conn = self.connection()?;
+    let enabled = conn
+      .query_row(
+        "SELECT 1 FROM voice_normalization_overrides WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id as i64],
+        |_| Ok(true),
+      )
+      .optional()?
+      .unwrap_or(false);
+    Ok(enabled)
+  }
+
+  pub fn load_user_normalizations(&self, server_id: &str) -> Result<HashSet<UserId>, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare("SELECT user_id FROM voice_normalization_overrides WHERE server_id = ?1")?;
+    let rows = stmt.query_map(params![server_id], |row| Ok(row.get::<_, i64>(0)? as UserId))?;
+
+    let mut users = HashSet::new();
+    for row in rows {
+      users.insert(row?);
+    }
+    Ok(users)
+  }
+
+  pub fn save_user_normalization(&self, server_id: &str, user_id: UserId, enabled: bool) -> Result<(), StorageError> {
+    let conn = self.connection()?;
+    if !enabled {
+      conn.execute(
+        "DELETE FROM voice_normalization_overrides WHERE server_id = ?1 AND user_id = ?2",
+        params![server_id, user_id as i64],
+      )?;
+      return Ok(());
+    }
+
+    conn.execute(
+      r#"
+      INSERT INTO voice_normalization_overrides (server_id, user_id)
+      VALUES (?1, ?2)
+      ON CONFLICT(server_id, user_id) DO NOTHING
+      "#,
+      params![server_id, user_id as i64],
+    )?;
+    Ok(())
   }
 
   fn save_volume_override_in_table(
@@ -823,6 +873,12 @@ impl Storage {
         server_id TEXT NOT NULL,
         user_id INTEGER NOT NULL,
         volume INTEGER NOT NULL,
+        PRIMARY KEY (server_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS voice_normalization_overrides (
+        server_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
         PRIMARY KEY (server_id, user_id)
       );
       "#,
@@ -1475,6 +1531,17 @@ mod tests {
     assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
     storage.save_stream_volume_override("server-a", 7, 100).unwrap();
     assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), None);
+
+    assert!(!storage.load_user_normalization("server-a", 7).unwrap());
+    storage.save_user_normalization("server-a", 7, true).unwrap();
+    storage.save_user_normalization("server-a", 9, true).unwrap();
+    storage.save_user_normalization("server-b", 7, true).unwrap();
+    assert!(storage.load_user_normalization("server-a", 7).unwrap());
+    assert!(storage.load_user_normalization("server-b", 7).unwrap());
+    assert_eq!(storage.load_user_normalizations("server-a").unwrap().len(), 2);
+    storage.save_user_normalization("server-a", 7, false).unwrap();
+    assert!(!storage.load_user_normalization("server-a", 7).unwrap());
+    assert!(storage.load_user_normalization("server-a", 9).unwrap());
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

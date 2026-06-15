@@ -1,5 +1,5 @@
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   sync::Arc,
   time::{Duration, Instant, SystemTime},
 };
@@ -246,6 +246,7 @@ pub(super) struct VoiceRuntime {
   stream_audio_last_played_packet_at: Mutex<HashMap<UserId, SystemTime>>,
   user_volumes: Mutex<HashMap<UserId, i32>>,
   stream_volumes: Mutex<HashMap<UserId, i32>>,
+  normalized_users: Mutex<HashSet<UserId>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -274,6 +275,7 @@ impl VoiceRuntime {
       stream_audio_last_played_packet_at: Mutex::new(HashMap::new()),
       user_volumes: Mutex::new(HashMap::new()),
       stream_volumes: Mutex::new(HashMap::new()),
+      normalized_users: Mutex::new(HashSet::new()),
     }
   }
 
@@ -289,6 +291,7 @@ impl VoiceRuntime {
   pub(super) fn clear_volumes(&self) {
     self.user_volumes.lock().clear();
     self.stream_volumes.lock().clear();
+    self.normalized_users.lock().clear();
   }
 
   pub(super) fn engine_status(&self) -> (bool, bool) {
@@ -337,9 +340,9 @@ impl VoiceRuntime {
     deafened: bool,
     on_local_voice: LocalVoiceCallback,
   ) -> Result<bool, String> {
-    let engine =
+    let mut engine =
       VoiceEngine::start(server, settings, muted, deafened, on_local_voice).map_err(|error| error.to_string())?;
-    self.apply_stored_volumes(&engine);
+    self.apply_stored_audio_preferences(&mut engine);
     let captures_voice = engine.captures_voice();
     *self.engine.lock() = Some(engine);
     Ok(captures_voice)
@@ -350,8 +353,8 @@ impl VoiceRuntime {
       return Ok(false);
     }
 
-    let engine = VoiceEngine::start_playback(settings, deafened).map_err(|error| error.to_string())?;
-    self.apply_stored_volumes(&engine);
+    let mut engine = VoiceEngine::start_playback(settings, deafened).map_err(|error| error.to_string())?;
+    self.apply_stored_audio_preferences(&mut engine);
     *self.engine.lock() = Some(engine);
     Ok(true)
   }
@@ -386,6 +389,25 @@ impl VoiceRuntime {
     if let Some(engine) = self.engine.lock().as_ref() {
       engine.set_voice_normalization_target_level(value);
     }
+  }
+
+  pub(super) fn user_normalization(&self, user_id: UserId) -> bool {
+    self.normalized_users.lock().contains(&user_id)
+  }
+
+  pub(super) fn set_user_normalization(&self, user_id: UserId, enabled: bool) -> bool {
+    {
+      let mut normalized_users = self.normalized_users.lock();
+      if enabled {
+        normalized_users.insert(user_id);
+      } else {
+        normalized_users.remove(&user_id);
+      }
+    }
+    if let Some(engine) = self.engine.lock().as_mut() {
+      engine.set_user_normalization(user_id, enabled);
+    }
+    enabled
   }
 
   pub(super) fn set_push_to_talk_release_delay_ms(&self, value: i32) {
@@ -562,7 +584,7 @@ impl VoiceRuntime {
     }
   }
 
-  fn apply_stored_volumes(&self, engine: &VoiceEngine) {
+  fn apply_stored_audio_preferences(&self, engine: &mut VoiceEngine) {
     let user_volumes = self.user_volumes.lock();
     for (user_id, volume) in user_volumes.iter() {
       engine.set_user_volume(*user_id, *volume);
@@ -572,6 +594,12 @@ impl VoiceRuntime {
     let stream_volumes = self.stream_volumes.lock();
     for (user_id, volume) in stream_volumes.iter() {
       engine.set_stream_volume(*user_id, *volume);
+    }
+    drop(stream_volumes);
+
+    let normalized_users = self.normalized_users.lock();
+    for user_id in normalized_users.iter() {
+      engine.set_user_normalization(*user_id, true);
     }
   }
 }

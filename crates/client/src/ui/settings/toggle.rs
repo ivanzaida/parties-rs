@@ -10,6 +10,13 @@ use crate::theme;
 const TOGGLE_TRANSITION_MS: u64 = 240;
 
 pub(super) fn settings_toggle(enabled: bool, on_toggle: impl Fn() + Send + Sync + 'static) -> Element {
+  settings_toggle_track(enabled)
+    .cursor(CursorIcon::Pointer)
+    .on_click(move |_| on_toggle())
+    .into()
+}
+
+pub(crate) fn settings_toggle_track(enabled: bool) -> Row {
   let palette = theme::palette();
   let knob_translate = if enabled { 18.0 } else { 0.0 };
   let mut track = Row::new()
@@ -43,5 +50,5 @@ pub(super) fn settings_toggle(enabled: bool, on_toggle: impl Fn() + Send + Sync 
     track = track.border_inside(1.0, palette.surface_raised);
   }
 
-  track.cursor(CursorIcon::Pointer).on_click(move |_| on_toggle()).into()
+  track
 }

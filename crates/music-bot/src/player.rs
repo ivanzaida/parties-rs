@@ -18,9 +18,20 @@ use crate::{
 const PACER_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
 
 enum PlayerCommand {
-  Enqueue { track: Track, text_channel_id: ChannelId },
-  Skip { text_channel_id: ChannelId },
-  Stop { text_channel_id: ChannelId },
+  Enqueue {
+    track: Track,
+    text_channel_id: ChannelId,
+  },
+  EnqueueMany {
+    tracks: Vec<Track>,
+    text_channel_id: ChannelId,
+  },
+  Skip {
+    text_channel_id: ChannelId,
+  },
+  Stop {
+    text_channel_id: ChannelId,
+  },
   Shutdown,
 }
 
@@ -46,6 +57,16 @@ impl PlaybackWorker {
 
   pub(crate) fn enqueue(&self, track: Track, text_channel_id: ChannelId) {
     self.tx.send(PlayerCommand::Enqueue { track, text_channel_id }).ok();
+  }
+
+  pub(crate) fn enqueue_many(&self, tracks: Vec<Track>, text_channel_id: ChannelId) {
+    self
+      .tx
+      .send(PlayerCommand::EnqueueMany {
+        tracks,
+        text_channel_id,
+      })
+      .ok();
   }
 
   pub(crate) fn skip(&self, text_channel_id: ChannelId) {
@@ -139,6 +160,14 @@ fn next_track(
         let queued = QueuedTrack { track, text_channel_id };
         set_current_track(state, queued.clone());
         return NextTrack::Track(queued);
+      }
+      PlayerCommand::EnqueueMany {
+        tracks,
+        text_channel_id,
+      } => {
+        if let Some(queued) = enqueue_many_from_idle(state, tracks, text_channel_id) {
+          return NextTrack::Track(queued);
+        }
       }
       PlayerCommand::Skip { text_channel_id } => {
         host.send_bot_chat(bot, text_channel_id, "Nothing to skip.").ok();
@@ -284,6 +313,15 @@ fn drain_commands_while_playing(
         };
         host.send_bot_chat(bot, text_channel_id, &response).ok();
       }
+      PlayerCommand::EnqueueMany {
+        tracks,
+        text_channel_id,
+      } => {
+        let mut state = state.lock().expect("playback state mutex poisoned");
+        state
+          .queue
+          .extend(tracks.into_iter().map(|track| QueuedTrack { track, text_channel_id }));
+      }
       PlayerCommand::Skip { text_channel_id } => {
         clear_current_track(state);
         let response = format!("Skipped: {}", current.title);
@@ -306,6 +344,24 @@ fn drain_commands_while_playing(
 
 fn set_current_track(state: &Arc<Mutex<PlayerState>>, queued: QueuedTrack) {
   state.lock().expect("playback state mutex poisoned").current = Some(queued);
+}
+
+fn enqueue_many_from_idle(
+  state: &Arc<Mutex<PlayerState>>,
+  tracks: Vec<Track>,
+  text_channel_id: ChannelId,
+) -> Option<QueuedTrack> {
+  let mut tracks = tracks.into_iter();
+  let queued = QueuedTrack {
+    track: tracks.next()?,
+    text_channel_id,
+  };
+  let mut state = state.lock().expect("playback state mutex poisoned");
+  state.current = Some(queued.clone());
+  state
+    .queue
+    .extend(tracks.map(|track| QueuedTrack { track, text_channel_id }));
+  Some(queued)
 }
 
 fn update_current_track_title(state: &Arc<Mutex<PlayerState>>, title: &str) {

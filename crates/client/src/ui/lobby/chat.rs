@@ -30,11 +30,18 @@ use crate::{
   },
   theme,
   ui::{
-    common::lucide_icon::{LucideIcon, LucideIconProps},
+    common::{
+      lucide_icon::{LucideIcon, LucideIconProps},
+      virtual_scroll::{VirtualScrollConfig, VirtualScrollItem, virtual_scroll_column},
+    },
     loader::loader,
   },
 };
 
+const CHAT_VIRTUAL_OVERSCAN_PX: f32 = 900.0;
+const CHAT_VIRTUAL_INITIAL_VIEWPORT_HEIGHT: f32 = 760.0;
+const CHAT_MESSAGE_ROW_GAP: f32 = 18.0;
+const CHAT_DAY_DIVIDER_ESTIMATED_HEIGHT: f32 = 42.0;
 const CHAT_COMMAND_SUGGESTION_BOTTOM_GAP: f32 = 6.0;
 const CHAT_COMMAND_SUGGESTION_ROW_HEIGHT: f32 = 68.0;
 const CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT: f32 = 32.0;
@@ -268,13 +275,16 @@ pub(super) fn text_channel_detail(
   command_scroll_state: ScrollState,
   command_invalid_feedback: ChatCommandInvalidFeedback,
   chat_scroll_state: ScrollState,
+  chat_scroll_revision: Signal<u64>,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
   debug_user_ids: bool,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
 ) -> Element {
+  let _chat_scroll_revision = chat_scroll_revision.get();
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
@@ -303,12 +313,23 @@ pub(super) fn text_channel_detail(
     chat_scroll_state.clone(),
     chat_top_anchor,
   );
+  let chat_bottom_settle_for_paging = chat_bottom_settle_anchor.clone();
   schedule_chat_scroll_to_bottom(
     channel_id,
     newest_message_id,
     newest_message_from_local,
     chat_scroll_state.clone(),
     chat_bottom_anchor,
+    chat_bottom_settle_anchor,
+  );
+  request_chat_history_if_at_top(
+    chat_scroll_state.clone(),
+    chat_bottom_settle_for_paging,
+    session.clone(),
+    chat_history,
+    channel_id,
+    oldest_message_id,
+    can_page,
   );
   let mut messages_column = Column::new()
     .width(Dimension::Pct(100.0))
@@ -345,16 +366,7 @@ pub(super) fn text_channel_detail(
         ),
     );
   } else {
-    let today = Local::now().date_naive();
-    let mut last_day = None;
-    for message in &messages {
-      let message_day = local_chat_date(message.timestamp);
-      if last_day != Some(message_day) {
-        messages_column = messages_column.child(chat_day_divider(ctx, message_day, today));
-        last_day = Some(message_day);
-      }
-      messages_column = messages_column.child(chat_message_row(ctx, message, info.user_id, debug_user_ids));
-    }
+    messages_column = virtual_chat_messages_column(ctx, &messages, info.user_id, debug_user_ids, &chat_scroll_state);
   }
 
   if let Some(error) = lobby.last_error.as_deref() {
@@ -369,6 +381,7 @@ pub(super) fn text_channel_detail(
     .child(chat_messages_scroll(
       messages_column,
       chat_scroll_state,
+      chat_scroll_revision,
       session,
       chat_history,
       channel_id,
@@ -410,9 +423,76 @@ pub(super) fn text_channel_detail(
   body.into()
 }
 
+#[derive(Clone, Copy)]
+enum ChatTimelineItem<'a> {
+  Day(NaiveDate),
+  Message(&'a ProtocolChatMessage),
+}
+
+fn virtual_chat_messages_column(
+  ctx: &mut Ctx,
+  messages: &[ProtocolChatMessage],
+  local_user_id: u32,
+  debug_user_ids: bool,
+  scroll_state: &ScrollState,
+) -> Column {
+  let today = Local::now().date_naive();
+  let viewport_width = scroll_state.viewport_width();
+  let mut last_day = None;
+  let mut items = Vec::with_capacity(messages.len().saturating_mul(2));
+
+  for message in messages {
+    let message_day = local_chat_date(message.timestamp);
+    if last_day != Some(message_day) {
+      items.push(VirtualScrollItem {
+        key: format!("day-{message_day}"),
+        estimated_height: CHAT_DAY_DIVIDER_ESTIMATED_HEIGHT + CHAT_MESSAGE_ROW_GAP,
+        data: ChatTimelineItem::Day(message_day),
+      });
+      last_day = Some(message_day);
+    }
+
+    items.push(VirtualScrollItem {
+      key: format!("message-{}", message.id),
+      estimated_height: estimated_chat_message_height(message, viewport_width) + CHAT_MESSAGE_ROW_GAP,
+      data: ChatTimelineItem::Message(message),
+    });
+  }
+
+  virtual_scroll_column(
+    ctx,
+    scroll_state,
+    items,
+    VirtualScrollConfig {
+      overscan: CHAT_VIRTUAL_OVERSCAN_PX,
+      initial_viewport_height: CHAT_VIRTUAL_INITIAL_VIEWPORT_HEIGHT,
+      align_end_when_unmeasured: true,
+    },
+    move |ctx, item| match item {
+      ChatTimelineItem::Day(day) => chat_day_divider(ctx, day, today),
+      ChatTimelineItem::Message(message) => chat_message_row(ctx, message, local_user_id, debug_user_ids),
+    },
+  )
+  .width(Dimension::Pct(100.0))
+  .padding_vertical(theme::SpacingSize::Xl)
+  .padding_horizontal(24.0)
+}
+
+fn estimated_chat_message_height(message: &ProtocolChatMessage, viewport_width: f32) -> f32 {
+  let content_width = (viewport_width - 24.0 * 2.0 - 36.0 - 16.0 - 8.0).max(180.0);
+  let chars_per_line = (content_width / 7.5).floor().max(18.0) as usize;
+  let text_chars = message.text.chars().count().max(1);
+  let text_lines = text_chars.div_ceil(chars_per_line).max(1);
+  let text_height = text_lines as f32 * 21.0;
+  let header_height = 20.0;
+  let body_height = header_height + 4.0 + text_height;
+  body_height.max(36.0)
+}
+
 fn chat_messages_scroll(
   messages: Column,
   scroll_state: ScrollState,
+  scroll_revision: Signal<u64>,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   channel_id: ChannelId,
@@ -420,6 +500,8 @@ fn chat_messages_scroll(
   can_page: bool,
 ) -> Element {
   let history = chat_history.clone();
+  let scroll = scroll_state.clone();
+  let revision = scroll_revision.clone();
   ScrollVertical::new(messages)
     .width(Dimension::Pct(100.0))
     .height(Dimension::Pct(100.0))
@@ -433,11 +515,32 @@ fn chat_messages_scroll(
       style
     })
     .on_scroll(move |event| {
-      if can_page && event.y <= 48.0 && session.begin_chat_history_request(channel_id) {
+      revision.set(revision.get_untracked().wrapping_add(1));
+      if can_page && (event.y <= 48.0 || scroll.scroll_y() <= 48.0) && session.begin_chat_history_request(channel_id) {
         history.run(ChatHistoryRequest { channel_id, before_id });
       }
     })
     .into()
+}
+
+fn request_chat_history_if_at_top(
+  scroll_state: ScrollState,
+  bottom_settle_anchor: Signal<Option<(ChannelId, u64)>>,
+  session: ServerSession,
+  chat_history: &ChatHistoryAction,
+  channel_id: ChannelId,
+  before_id: u64,
+  can_page: bool,
+) {
+  if !can_page || bottom_settle_anchor.get_untracked().is_some() || scroll_state.viewport_height() <= 0.0 {
+    return;
+  }
+
+  let near_top = scroll_state.scroll_y() <= 48.0;
+  let scrollable = scroll_state.content_height() > scroll_state.viewport_height();
+  if near_top && scrollable && session.begin_chat_history_request(channel_id) {
+    chat_history.run(ChatHistoryRequest { channel_id, before_id });
+  }
 }
 
 fn schedule_chat_scroll_to_bottom(
@@ -446,21 +549,50 @@ fn schedule_chat_scroll_to_bottom(
   force_bottom: bool,
   scroll_state: ScrollState,
   bottom_anchor: Signal<Option<(ChannelId, u64)>>,
+  bottom_settle_anchor: Signal<Option<(ChannelId, u64)>>,
 ) {
-  if newest_message_id == 0 || bottom_anchor.get_untracked() == Some((channel_id, newest_message_id)) {
+  if newest_message_id == 0 {
+    bottom_anchor.set(None);
+    bottom_settle_anchor.set(None);
+    return;
+  }
+
+  let anchor = (channel_id, newest_message_id);
+  if bottom_settle_anchor.get_untracked() == Some(anchor) {
+    if chat_scroll_is_at_bottom(&scroll_state) {
+      bottom_settle_anchor.set(None);
+    } else {
+      scroll_state.scroll_to_bottom_pending();
+      return;
+    }
+  }
+
+  if bottom_anchor.get_untracked() == Some(anchor) {
     return;
   }
 
   let previous_anchor = bottom_anchor.get_untracked();
   let should_scroll_to_bottom =
     previous_anchor.is_none() || previous_anchor.is_some_and(|(anchor_channel_id, _)| anchor_channel_id != channel_id);
-  bottom_anchor.set(Some((channel_id, newest_message_id)));
+  bottom_anchor.set(Some(anchor));
 
   if should_scroll_to_bottom || force_bottom {
+    bottom_settle_anchor.set(Some(anchor));
     scroll_state.scroll_to_bottom_pending();
   } else {
     scroll_state.stick_to_bottom_if_near_end(64.0);
   }
+}
+
+fn chat_scroll_is_at_bottom(scroll_state: &ScrollState) -> bool {
+  let viewport_height = scroll_state.viewport_height();
+  let content_height = scroll_state.content_height();
+  if viewport_height <= 0.0 || content_height <= viewport_height {
+    return false;
+  }
+
+  let max_scroll_y = content_height - viewport_height;
+  max_scroll_y - scroll_state.scroll_y() <= 2.0
 }
 
 fn preserve_chat_scroll_on_prepend(

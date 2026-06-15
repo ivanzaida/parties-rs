@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use minimp3::{Decoder as Mp3Decoder, Error as Mp3Error};
 use opus::{Application, Bitrate, Channels, Encoder};
 use server_plugin::{
   BOT_VOICE_BITRATE_BPS, BOT_VOICE_FRAME_SAMPLES, BOT_VOICE_MAX_OPUS_PACKET_BYTES, BOT_VOICE_SAMPLE_RATE_HZ,
@@ -88,6 +89,10 @@ struct DecodedAudio {
 }
 
 fn decode_audio_bytes(bytes: Vec<u8>, extension: Option<&str>) -> Result<DecodedAudio, String> {
+  if extension.is_some_and(|extension| extension.eq_ignore_ascii_case("mp3")) {
+    return decode_mp3_bytes(bytes);
+  }
+
   let cursor = Cursor::new(bytes);
   let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
   let mut hint = Hint::new();
@@ -140,6 +145,52 @@ fn decode_audio_bytes(bytes: Vec<u8>, extension: Option<&str>) -> Result<Decoded
     samples: output,
     sample_rate,
   })
+}
+
+fn decode_mp3_bytes(bytes: Vec<u8>) -> Result<DecodedAudio, String> {
+  let mut decoder = Mp3Decoder::new(Cursor::new(bytes));
+  let mut output = Vec::new();
+  let mut sample_rate = None;
+
+  loop {
+    match decoder.next_frame() {
+      Ok(frame) => append_mp3_frame(frame, &mut output, &mut sample_rate)?,
+      Err(Mp3Error::Eof) => break,
+      Err(error) => return Err(format!("failed to decode MP3 frame: {error}")),
+    }
+  }
+
+  let sample_rate = sample_rate.ok_or_else(|| "MP3 stream did not produce decoded samples.".to_owned())?;
+  Ok(DecodedAudio {
+    samples: output,
+    sample_rate,
+  })
+}
+
+fn append_mp3_frame(frame: minimp3::Frame, output: &mut Vec<f32>, sample_rate: &mut Option<u32>) -> Result<(), String> {
+  let frame_sample_rate = u32::try_from(frame.sample_rate).map_err(|_| "MP3 frame reported an invalid sample rate.")?;
+  if let Some(existing_sample_rate) = *sample_rate {
+    if frame_sample_rate != existing_sample_rate {
+      return Err("MP3 stream changed sample rate mid-track.".to_owned());
+    }
+  } else {
+    *sample_rate = Some(frame_sample_rate);
+  }
+
+  if frame_sample_rate == 0 {
+    return Err("MP3 stream did not report a sample rate.".to_owned());
+  }
+
+  let channels = frame.channels.max(1);
+  output.extend(frame.data.chunks(channels).map(|frame| {
+    frame
+      .iter()
+      .copied()
+      .map(|sample| sample as f32 / i16::MAX as f32)
+      .sum::<f32>()
+      / frame.len() as f32
+  }));
+  Ok(())
 }
 
 pub(crate) fn probe_decoded_sample_count(bytes: Vec<u8>, extension: Option<&str>) -> Result<usize, String> {

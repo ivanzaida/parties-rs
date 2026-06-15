@@ -55,7 +55,6 @@ use crate::{
   },
 };
 
-const DEVTOOLS_HOTKEY: &str = "Ctrl+Shift+F12";
 const MACOS_WINDOW_CORNER_RADIUS: f32 = 10.0;
 const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const UPDATE_PILL_MARGIN: f32 = 16.0;
@@ -309,16 +308,12 @@ impl Component for App {
     }
 
     let settings_open = self.settings_open.clone();
-    let settings_window = ctx.window();
     if settings_open.get() {
       let close_settings = settings_popup.clone();
-      let window = settings_window.clone();
       ctx.provide(settings_popup.clone());
       let popup = ctx.mount::<SettingsPopup>(());
       let settings_layer = modal_layer(ctx, popup).on_key_down(move |event| {
-        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
-          window.open_devtools();
-        } else if hotkeys::is_cancel_key(event) {
+        if hotkeys::is_cancel_key(event) {
           close_settings.close();
         }
       });
@@ -330,7 +325,6 @@ impl Component for App {
     }
 
     if local_hotkeys_enabled {
-      let window = ctx.window();
       let voice_hotkey = voice_hotkey.clone();
       let ptt_session = self.session.clone();
       let ptt_down_hotkey = push_to_talk_hotkey.clone();
@@ -338,9 +332,7 @@ impl Component for App {
       let deafen_down_hotkey = deafen_hotkey.clone();
       let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
       root = root.on_key_down(move |event| {
-        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
-          window.open_devtools();
-        } else if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
+        if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
           ptt_session.set_push_to_talk_active(true);
         } else if hotkeys::event_matches_hotkey(&mute_down_hotkey, event) {
           if activate_toggle_hotkey(&active_toggle_hotkeys, &mute_down_hotkey) {
@@ -361,13 +353,6 @@ impl Component for App {
         }
         release_toggle_hotkey(&active_toggle_hotkeys, &mute_hotkey, event);
         release_toggle_hotkey(&active_toggle_hotkeys, &deafen_hotkey, event);
-      });
-    } else {
-      let window = ctx.window();
-      root = root.on_key_down(move |event| {
-        if hotkeys::event_matches_hotkey(DEVTOOLS_HOTKEY, event) {
-          window.open_devtools();
-        }
       });
     }
 

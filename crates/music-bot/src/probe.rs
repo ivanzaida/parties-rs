@@ -19,6 +19,7 @@ pub struct SoundCloudProbe {
 pub struct SoundCloudQueueProbe {
   pub title: String,
   pub url: String,
+  pub duration_ms: Option<u64>,
 }
 
 pub fn probe_soundcloud_url(url: &str, client_id: &str, client_secret: &str) -> Result<SoundCloudProbe, String> {
@@ -61,6 +62,7 @@ pub fn probe_soundcloud_queue(
       .map(|request| SoundCloudQueueProbe {
         title: request.loading_title,
         url: request.url,
+        duration_ms: request.duration_ms,
       })
       .collect()
   })

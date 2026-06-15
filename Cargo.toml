@@ -9,3 +9,4 @@ resolver = "3"
 
 [patch.crates-io]
 libde265-sys = { path = "third_party/libde265-sys" }
+lurq = { path = "../lurq/crates/lurq" }

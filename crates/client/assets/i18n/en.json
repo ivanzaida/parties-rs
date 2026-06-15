@@ -1303,6 +1303,7 @@
     },
     "voice_menu": {
       "user_volume": "User volume",
+      "normalize_voice": "Normalize voice",
       "admin_actions": "Admin actions",
       "set_role": "Set role...",
       "mute": "Mute user",

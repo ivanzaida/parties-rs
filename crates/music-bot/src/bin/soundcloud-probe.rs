@@ -29,7 +29,12 @@ fn main() {
   if queue_probe.len() > 1 {
     println!("playlist_tracks: {}", queue_probe.len());
     for (index, track) in queue_probe.iter().take(20).enumerate() {
-      println!("{}. {}", index + 1, track.title);
+      println!(
+        "{}. {} : {}",
+        index + 1,
+        track.title,
+        format_duration(track.duration_ms)
+      );
       println!("   {}", track.url);
     }
     if queue_probe.len() > 20 {
@@ -62,6 +67,22 @@ fn read_var(name: &str, dotenv: &HashMap<String, String>) -> Option<String> {
     .ok()
     .filter(|value| !value.trim().is_empty())
     .or_else(|| dotenv.get(name).cloned().filter(|value| !value.trim().is_empty()))
+}
+
+fn format_duration(duration_ms: Option<u64>) -> String {
+  let Some(duration_ms) = duration_ms else {
+    return "unknown".to_owned();
+  };
+  let total_seconds = duration_ms / 1_000;
+  let seconds = total_seconds % 60;
+  let total_minutes = total_seconds / 60;
+  let minutes = total_minutes % 60;
+  let hours = total_minutes / 60;
+  if hours > 0 {
+    format!("{hours}:{minutes:02}:{seconds:02}")
+  } else {
+    format!("{minutes}:{seconds:02}")
+  }
 }
 
 fn read_dotenv() -> HashMap<String, String> {

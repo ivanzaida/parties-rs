@@ -367,6 +367,14 @@ impl ServerSession {
     self.voice.set_user_volume(user_id, volume);
   }
 
+  pub fn user_normalization(&self, user_id: UserId) -> bool {
+    self.voice.user_normalization(user_id)
+  }
+
+  pub fn set_user_normalization(&self, user_id: UserId, enabled: bool) {
+    self.voice.set_user_normalization(user_id, enabled);
+  }
+
   pub fn restart_audio_receiver(&self, user_id: UserId) -> bool {
     let restarted = self.voice.restart_audio_receiver(user_id);
     tracing::info!(

@@ -233,6 +233,7 @@ impl SourceResolver for SoundCloudResolver {
       kind: SourceKind::SoundCloud,
       url: input.to_owned(),
       provider_id: None,
+      duration_ms: None,
       loading_title: "SoundCloud URL".to_owned(),
     })
   }
@@ -270,12 +271,12 @@ struct SoundCloudTrack {
   title: Option<String>,
   kind: Option<String>,
   streamable: Option<bool>,
+  duration: Option<u64>,
   permalink_url: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct SoundCloudPlaylist {
-  title: Option<String>,
   tracks: Vec<SoundCloudPlaylistTrack>,
 }
 
@@ -285,6 +286,7 @@ struct SoundCloudPlaylistTrack {
   title: Option<String>,
   kind: Option<String>,
   streamable: Option<bool>,
+  duration: Option<u64>,
   permalink_url: Option<String>,
 }
 
@@ -329,6 +331,7 @@ fn resolve_audio_from_track_id(
     title: Some(title.to_owned()),
     kind: Some("track".to_owned()),
     streamable: None,
+    duration: None,
     permalink_url: Some(source_url.to_owned()),
   };
   resolve_audio_from_track(&client, token_provider, source_url, track)
@@ -349,7 +352,8 @@ fn resolve_audio_from_track(
 
   let candidate = resolve_stream_candidate(client, token_provider, track.id)?;
   let is_hls_candidate = is_hls_url(&candidate.url) || candidate.key.contains("hls");
-  let stream_url = if is_hls_candidate {
+  let is_direct_api_audio_candidate = candidate.key.contains("mp3");
+  let stream_url = if is_hls_candidate || is_direct_api_audio_candidate {
     candidate.url.clone()
   } else {
     resolve_stream_url(client, token_provider, &candidate.url)?
@@ -358,7 +362,7 @@ fn resolve_audio_from_track(
     download_hls_audio(client, token_provider, &stream_url)?
   } else {
     DownloadedAudio {
-      bytes: download_remote_audio(client, &stream_url)?,
+      bytes: download_remote_audio(client, token_provider, &stream_url)?,
       container_hint: infer_audio_extension(&stream_url).or_else(|| infer_audio_extension(&candidate.key)),
     }
   };
@@ -384,11 +388,10 @@ fn requests_from_resolved_value(url: &str, value: Value) -> Result<Vec<SourceReq
   if resolved_value_is_playlist(&value) {
     let playlist: SoundCloudPlaylist = serde_json::from_value(value)
       .map_err(|error| format!("failed to parse SoundCloud playlist response: {error}"))?;
-    let playlist_title = playlist.title.unwrap_or_else(|| "SoundCloud playlist".to_owned());
     let requests = playlist
       .tracks
       .into_iter()
-      .filter_map(|track| request_from_playlist_track(url, &playlist_title, track))
+      .filter_map(|track| request_from_playlist_track(url, track))
       .collect::<Vec<_>>();
 
     if requests.is_empty() {
@@ -417,15 +420,12 @@ fn request_from_track(fallback_url: &str, track: SoundCloudTrack) -> SourceReque
     kind: SourceKind::SoundCloud,
     url: track.permalink_url.unwrap_or_else(|| fallback_url.to_owned()),
     provider_id: Some(track.id.to_string()),
+    duration_ms: track.duration,
     loading_title: title,
   }
 }
 
-fn request_from_playlist_track(
-  fallback_url: &str,
-  playlist_title: &str,
-  track: SoundCloudPlaylistTrack,
-) -> Option<SourceRequest> {
+fn request_from_playlist_track(fallback_url: &str, track: SoundCloudPlaylistTrack) -> Option<SourceRequest> {
   if track.kind.as_deref().is_some_and(|kind| kind != "track") || track.streamable == Some(false) {
     return None;
   }
@@ -436,7 +436,8 @@ fn request_from_playlist_track(
     kind: SourceKind::SoundCloud,
     url: track.permalink_url.unwrap_or_else(|| fallback_url.to_owned()),
     provider_id: Some(track_id.to_string()),
-    loading_title: format!("{playlist_title} - {title}"),
+    duration_ms: track.duration,
+    loading_title: title,
   })
 }
 
@@ -556,11 +557,19 @@ fn select_stream(streams: HashMap<String, Option<String>>) -> Result<SoundCloudS
     .filter_map(|(key, url)| url.map(|url| SoundCloudStreamCandidate { key, url }))
     .collect::<Vec<_>>();
   candidates.sort_by_key(|candidate| stream_rank(&candidate.key, &candidate.url));
+  let available_streams = candidates
+    .iter()
+    .map(|candidate| candidate.key.as_str())
+    .collect::<Vec<_>>()
+    .join(", ");
 
-  candidates
-    .into_iter()
-    .find(is_supported_stream)
-    .ok_or_else(|| "SoundCloud did not return a non-HLS AAC/M4A stream for this track.".to_owned())
+  candidates.into_iter().find(is_supported_stream).ok_or_else(|| {
+    if available_streams.is_empty() {
+      "SoundCloud did not return any stream URLs for this track.".to_owned()
+    } else {
+      format!("SoundCloud did not return a supported AAC/M4A/HLS stream. Available streams: {available_streams}")
+    }
+  })
 }
 
 fn stream_rank(key: &str, url: &str) -> usize {
@@ -568,10 +577,12 @@ fn stream_rank(key: &str, url: &str) -> usize {
   let extension = infer_audio_extension(url);
   if !key.contains("hls") && (key.contains("aac") || extension.as_deref() == Some("m4a")) {
     0
-  } else if key.contains("hls") && (key.contains("aac") || is_hls_url(url)) {
+  } else if !key.contains("hls") && (key.contains("mp3") || extension.as_deref() == Some("mp3")) {
     1
-  } else {
+  } else if key.contains("hls") && (key.contains("aac") || key.contains("mp3") || is_hls_url(url)) {
     2
+  } else {
+    3
   }
 }
 
@@ -579,10 +590,10 @@ fn is_supported_stream(candidate: &SoundCloudStreamCandidate) -> bool {
   let key = candidate.key.to_ascii_lowercase();
   let extension = infer_audio_extension(&candidate.url);
   if is_hls_url(&candidate.url) || key.contains("hls") {
-    return key.contains("aac") || is_hls_url(&candidate.url);
+    return key.contains("aac") || key.contains("mp3") || is_hls_url(&candidate.url);
   }
 
-  key.contains("aac") || matches!(extension.as_deref(), Some("m4a"))
+  key.contains("aac") || key.contains("mp3") || matches!(extension.as_deref(), Some("m4a") | Some("mp3"))
 }
 
 fn resolve_stream_url(
@@ -640,6 +651,29 @@ where
       token_provider.refresh_now()?;
       let auth_header = token_provider.authorization_header()?;
       send_soundcloud_get_text(client, &auth_header, url).map_err(SoundCloudApiError::into_message)
+    }
+    Err(error) => Err(error.into_message()),
+  }
+}
+
+fn soundcloud_get_bytes<U>(
+  client: &reqwest::blocking::Client,
+  token_provider: &SoundCloudTokenProvider,
+  url: U,
+) -> Result<Vec<u8>, String>
+where
+  U: reqwest::IntoUrl,
+{
+  let url = url
+    .into_url()
+    .map_err(|error| format!("failed to build SoundCloud API URL: {error}"))?;
+  let auth_header = token_provider.authorization_header()?;
+  match send_soundcloud_get_bytes(client, &auth_header, url.clone()) {
+    Ok(value) => Ok(value),
+    Err(SoundCloudApiError::Unauthorized) => {
+      token_provider.refresh_now()?;
+      let auth_header = token_provider.authorization_header()?;
+      send_soundcloud_get_bytes(client, &auth_header, url).map_err(SoundCloudApiError::into_message)
     }
     Err(error) => Err(error.into_message()),
   }
@@ -715,6 +749,46 @@ fn send_soundcloud_get_text(
     .map_err(|error| SoundCloudApiError::Other(format!("failed to read SoundCloud API response: {error}")))
 }
 
+fn send_soundcloud_get_bytes(
+  client: &reqwest::blocking::Client,
+  auth_header: &str,
+  url: reqwest::Url,
+) -> Result<Vec<u8>, SoundCloudApiError> {
+  let response = client
+    .get(url)
+    .header(reqwest::header::AUTHORIZATION, auth_header)
+    .send()
+    .map_err(|error| SoundCloudApiError::Other(format!("failed to call SoundCloud API: {error}")))?;
+
+  if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    return Err(SoundCloudApiError::Unauthorized);
+  }
+
+  let response = response
+    .error_for_status()
+    .map_err(|error| SoundCloudApiError::Other(format!("SoundCloud API returned an error: {error}")))?;
+
+  if response
+    .content_length()
+    .is_some_and(|length| length > MAX_REMOTE_AUDIO_BYTES)
+  {
+    return Err(SoundCloudApiError::Other(
+      "audio stream is too large for the in-memory decoder.".to_owned(),
+    ));
+  }
+
+  let bytes = response
+    .bytes()
+    .map_err(|error| SoundCloudApiError::Other(format!("failed to read SoundCloud API response: {error}")))?;
+  if bytes.len() > MAX_REMOTE_AUDIO_BYTES as usize {
+    return Err(SoundCloudApiError::Other(
+      "audio stream is too large for the in-memory decoder.".to_owned(),
+    ));
+  }
+
+  Ok(bytes.to_vec())
+}
+
 fn response_snippet(body: &str) -> String {
   const MAX_SNIPPET_LEN: usize = 160;
   body
@@ -729,8 +803,16 @@ fn soundcloud_auth_header(token_type: Option<&str>, access_token: &str) -> Strin
   format!("OAuth {access_token}")
 }
 
-fn download_remote_audio(client: &reqwest::blocking::Client, url: &str) -> Result<Vec<u8>, String> {
-  download_remote_bytes(client, url)
+fn download_remote_audio(
+  client: &reqwest::blocking::Client,
+  token_provider: &SoundCloudTokenProvider,
+  url: &str,
+) -> Result<Vec<u8>, String> {
+  if is_soundcloud_api_url(url) {
+    soundcloud_get_bytes(client, token_provider, url)
+  } else {
+    download_remote_bytes(client, url)
+  }
 }
 
 fn download_hls_audio(

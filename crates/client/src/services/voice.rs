@@ -1,5 +1,5 @@
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{HashMap, HashSet, VecDeque},
   env, fmt,
   panic::{AssertUnwindSafe, catch_unwind},
   sync::{
@@ -103,6 +103,7 @@ pub struct VoiceEngine {
   mixer: Arc<Mutex<VoiceMixer>>,
   decoders: HashMap<UserId, DecodeStream>,
   stream_decoders: HashMap<UserId, DecodeStream>,
+  normalized_users: HashSet<UserId>,
   captures_voice: bool,
 }
 
@@ -153,6 +154,7 @@ impl VoiceEngine {
       mixer,
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
+      normalized_users: HashSet::new(),
       captures_voice,
     })
   }
@@ -172,6 +174,7 @@ impl VoiceEngine {
       mixer,
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
+      normalized_users: HashSet::new(),
       captures_voice: false,
     })
   }
@@ -201,6 +204,17 @@ impl VoiceEngine {
 
   pub fn set_voice_normalization_target_level(&self, value: i32) {
     self.control.set_voice_normalization_target_level(value);
+  }
+
+  pub fn set_user_normalization(&mut self, user_id: UserId, enabled: bool) {
+    if enabled {
+      self.normalized_users.insert(user_id);
+    } else {
+      self.normalized_users.remove(&user_id);
+      if let Some(stream) = self.decoders.get_mut(&user_id) {
+        stream.reset_normalization();
+      }
+    }
   }
 
   pub fn set_push_to_talk_active(&self, active: bool) {
@@ -263,7 +277,7 @@ impl VoiceEngine {
       return VoicePacketStatus::default();
     }
 
-    if self.control.voice_normalization.load(Ordering::Relaxed) {
+    if self.control.voice_normalization.load(Ordering::Relaxed) && self.normalized_users.contains(&packet.sender_id) {
       let target = f32::from_bits(self.control.voice_normalization_target.load(Ordering::Relaxed));
       stream.apply_normalization(&mut pcm, target);
     }
@@ -1570,6 +1584,10 @@ impl DecodeStream {
 
   fn apply_normalization(&mut self, pcm: &mut [f32], target: f32) {
     self.normalizer.apply(pcm, target);
+  }
+
+  fn reset_normalization(&mut self) {
+    self.normalizer = NormalizationState::default();
   }
 }
 

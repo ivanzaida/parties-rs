@@ -73,7 +73,6 @@ fn main() {
   lurq_app.register_font("Inter", "Inter");
   lurq_app.register_font("JetBrains Mono", "JetBrains Mono");
   lurq_app.register_font("Lucide", "Lucide");
-  lurq::app::devtools::load_fonts(&mut lurq_app);
   theme::setup(lurq_app.theme());
   i18n::setup(lurq_app.i18n());
 
@@ -98,7 +97,6 @@ fn main() {
       window_state_tracker: window_state_tracker.clone(),
     },
   );
-  tree.mount_devtools(&mut lurq_app);
 
   let mut window = lurq::app::winit_shell::WinitWindow::new(lurq_app, tree)
     .with_title("Parties")

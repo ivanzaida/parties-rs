@@ -7,6 +7,7 @@ use crate::sources::{model::SourceRequest, registry::SourceRegistry};
 #[derive(Clone)]
 pub(crate) struct Track {
   pub(crate) title: String,
+  pub(crate) duration_ms: Option<u64>,
   pub(crate) source: SourceRequest,
 }
 
@@ -30,6 +31,7 @@ impl Track {
   fn from_source(source: SourceRequest) -> Self {
     Self {
       title: source.loading_title.clone(),
+      duration_ms: source.duration_ms,
       source,
     }
   }

@@ -171,17 +171,16 @@ impl MusicBot {
     }
 
     let track_count = tracks.len();
+    let playlist_message = (track_count > 1).then(|| playlist_queue_message(&tracks));
     if let Some(worker) = self.worker.as_ref() {
-      for track in tracks {
+      if track_count > 1 {
+        worker.enqueue_many(tracks, invocation.text_channel_id);
+      } else if let Some(track) = tracks.into_iter().next() {
         worker.enqueue(track, invocation.text_channel_id);
       }
     }
-    if track_count > 1 {
-      self.send_reply(
-        host,
-        invocation.text_channel_id,
-        &format!("Queued {track_count} tracks."),
-      );
+    if let Some(message) = playlist_message {
+      self.send_reply(host, invocation.text_channel_id, &message);
     }
   }
 
@@ -310,5 +309,31 @@ impl MusicBot {
       let log_message = format!("failed to send music bot reply: {error}");
       host.log(LogLevel::Warn, &log_message).ok();
     }
+  }
+}
+
+fn playlist_queue_message(tracks: &[Track]) -> String {
+  let mut lines = vec![format!("Queued playlist: {} tracks", tracks.len())];
+  lines.extend(
+    tracks
+      .iter()
+      .map(|track| format!("{} : {}", track.title, format_duration(track.duration_ms))),
+  );
+  lines.join("\n")
+}
+
+fn format_duration(duration_ms: Option<u64>) -> String {
+  let Some(duration_ms) = duration_ms else {
+    return "unknown".to_owned();
+  };
+  let total_seconds = duration_ms / 1_000;
+  let seconds = total_seconds % 60;
+  let total_minutes = total_seconds / 60;
+  let minutes = total_minutes % 60;
+  let hours = total_minutes / 60;
+  if hours > 0 {
+    format!("{hours}:{minutes:02}:{seconds:02}")
+  } else {
+    format!("{minutes}:{seconds:02}")
   }
 }

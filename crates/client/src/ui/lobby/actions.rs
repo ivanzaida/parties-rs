@@ -367,6 +367,10 @@ fn debug_voice_report(session: &ServerSession, user_id: UserId) -> String {
   ));
   lines.push(format!("target_volume: {}%", session.user_volume(user_id)));
   lines.push(format!(
+    "target_normalization: {}",
+    status_bool(session.user_normalization(user_id))
+  ));
+  lines.push(format!(
     "target_voice_packets: received={} queued={} last_played_packet={}",
     voice_received,
     voice_queued,

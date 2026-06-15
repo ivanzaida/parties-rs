@@ -33,6 +33,7 @@ use crate::{
       channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
       shared::user_display_name,
     },
+    settings::settings_toggle_track,
   },
 };
 
@@ -42,12 +43,13 @@ type SetUserVoiceStateAction = lurq::app::ctx::FutureAction<(UserId, bool, bool)
 type DisconnectUserAction = lurq::app::ctx::FutureAction<UserId, (), String>;
 type KickUserAction = lurq::app::ctx::FutureAction<UserId, (), String>;
 
-const USER_VOLUME_SLIDER_WIDTH: f32 = 262.0;
+const USER_CONTEXT_MENU_WIDTH: f32 = 286.0;
+const USER_CONTEXT_MENU_HORIZONTAL_PADDING: f32 = 10.0;
+const USER_VOLUME_SLIDER_WIDTH: f32 = USER_CONTEXT_MENU_WIDTH - USER_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0;
 const USER_VOLUME_VALUE_WIDTH: f32 = 42.0;
 const USER_VOLUME_VALUE_SPACING: f32 = 10.0;
 const USER_VOLUME_TRACK_WIDTH: f32 = USER_VOLUME_SLIDER_WIDTH - USER_VOLUME_VALUE_WIDTH - USER_VOLUME_VALUE_SPACING;
 const DEFAULT_USER_VOLUME: i32 = 100;
-const USER_CONTEXT_MENU_WIDTH: f32 = 286.0;
 const ASSIGNABLE_ROLES: [Role; 3] = [Role::Admin, Role::Moderator, Role::User];
 
 #[derive(Clone)]
@@ -438,7 +440,6 @@ fn channel_row(
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .child(
       Row::new()
-        .width(Dimension::Pct(100.0))
         .flex(1.0)
         .align_items(Alignment::Center)
         .spacing(theme::SpacingSize::Sm)
@@ -690,6 +691,8 @@ fn user_context_menu(
   let can_kick = can_moderate && local_role.has_permission(Permission::KickFromServer) && kick_user.is_some();
   let role_menu_open = role_menu_user_id.get() == Some(target_user_id);
   let volume_control_key = format!("user-volume-{target_user_id}");
+  let normalization_control_key = format!("user-normalization-{target_user_id}");
+  let session_for_volume = session.clone();
   let mut menu = Column::new()
     .width(USER_CONTEXT_MENU_WIDTH)
     .spacing(0.0)
@@ -702,6 +705,13 @@ fn user_context_menu(
     .child(ctx.mount_keyed::<UserVolumeControl>(
       &volume_control_key,
       UserVolumeControlProps {
+        user_id: target_user_id,
+        session: session_for_volume,
+      },
+    ))
+    .child(ctx.mount_keyed::<UserNormalizationToggle>(
+      &normalization_control_key,
+      UserNormalizationToggleProps {
         user_id: target_user_id,
         session,
       },
@@ -952,6 +962,95 @@ struct UserVolumeControl {
   apply_interval: Interval,
 }
 
+#[derive(Clone)]
+struct UserNormalizationToggleProps {
+  user_id: UserId,
+  session: Option<ServerSession>,
+}
+
+impl PartialEq for UserNormalizationToggleProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.user_id == other.user_id && self.session.is_some() == other.session.is_some()
+  }
+}
+
+impl DevtoolsInspectable for UserNormalizationToggleProps {
+  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
+    buffer.push(ComponentInfo::with_value(
+      "user_id",
+      std::any::type_name::<UserId>(),
+      self.user_id.to_string(),
+    ));
+  }
+}
+
+struct UserNormalizationToggle {
+  user_id: Signal<UserId>,
+  server_id: Signal<Option<String>>,
+  enabled: Signal<bool>,
+}
+
+impl Component for UserNormalizationToggle {
+  type Props = UserNormalizationToggleProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let storage = ctx.use_context::<Storage>();
+    let server_id = props
+      .session
+      .as_ref()
+      .and_then(|session| session.info().map(|info| info.address));
+    let initial = load_user_normalization(
+      storage.as_ref(),
+      props.session.as_ref(),
+      server_id.as_deref(),
+      props.user_id,
+    );
+    if let Some(session) = props.session.as_ref() {
+      session.set_user_normalization(props.user_id, initial);
+    }
+
+    Self {
+      user_id: ctx.signal(props.user_id),
+      server_id: ctx.signal(server_id),
+      enabled: ctx.signal(initial),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let storage = ctx.use_context::<Storage>();
+    let server_id = props
+      .session
+      .as_ref()
+      .and_then(|session| session.info().map(|info| info.address));
+
+    if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
+      let enabled = load_user_normalization(
+        storage.as_ref(),
+        props.session.as_ref(),
+        server_id.as_deref(),
+        props.user_id,
+      );
+      self.user_id.set(props.user_id);
+      self.server_id.set(server_id.clone());
+      self.enabled.set(enabled);
+      if let Some(session) = props.session.as_ref() {
+        session.set_user_normalization(props.user_id, enabled);
+      }
+    }
+
+    user_normalization_toggle(
+      ctx,
+      self.enabled.clone(),
+      props.session.clone(),
+      storage,
+      server_id,
+      props.user_id,
+    )
+  }
+}
+
 impl Component for UserVolumeControl {
   type Props = UserVolumeControlProps;
 
@@ -1077,6 +1176,77 @@ fn load_user_volume(
     .unwrap_or(DEFAULT_USER_VOLUME)
 }
 
+fn load_user_normalization(
+  storage: Option<&Storage>,
+  session: Option<&ServerSession>,
+  server_id: Option<&str>,
+  user_id: UserId,
+) -> bool {
+  storage
+    .zip(server_id)
+    .and_then(|(storage, server_id)| storage.load_user_normalization(server_id, user_id).ok())
+    .or_else(|| session.map(|session| session.user_normalization(user_id)))
+    .unwrap_or(false)
+}
+
+fn user_normalization_toggle(
+  ctx: &mut Ctx,
+  enabled: Signal<bool>,
+  session: Option<ServerSession>,
+  storage: Option<Storage>,
+  server_id: Option<String>,
+  user_id: UserId,
+) -> Element {
+  let label = ctx.t("lobby.voice_menu.normalize_voice");
+  let currently_enabled = enabled.get();
+  let toggle_enabled = enabled.clone();
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(38.0)
+    .align_items(Alignment::Center)
+    .justify(Justify::SpaceBetween)
+    .spacing(8.0)
+    .padding_horizontal(USER_CONTEXT_MENU_HORIZONTAL_PADDING)
+    .rounded(5.0)
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#232830"))))
+    .on_click(move |_| {
+      let next = !toggle_enabled.get_untracked();
+      toggle_enabled.set(next);
+      if let Some(session) = session.as_ref() {
+        session.set_user_normalization(user_id, next);
+      }
+      if let (Some(storage), Some(server_id)) = (storage.as_ref(), server_id.as_deref()) {
+        let _ = storage.save_user_normalization(server_id, user_id, next);
+      }
+    })
+    .child(
+      Row::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .align_items(Alignment::Center)
+        .spacing(8.0)
+        .child(aligned_channel_icon_with_color(
+          ctx,
+          "waves",
+          14.0,
+          if currently_enabled {
+            theme::palette().accent
+          } else {
+            theme::palette().text_secondary
+          },
+        ))
+        .child(
+          Text::new(&label)
+            .variant(theme::TypographyStyle::Caption)
+            .color(theme::PaletteColor::TextSecondary),
+        ),
+    )
+    .child(settings_toggle_track(currently_enabled))
+    .into()
+}
+
 fn user_volume_control(ctx: &mut Ctx, value: Signal<i32>, on_blur: PercentSliderSaveAction) -> Element {
   let label = ctx.t("lobby.voice_menu.user_volume");
 
@@ -1084,7 +1254,7 @@ fn user_volume_control(ctx: &mut Ctx, value: Signal<i32>, on_blur: PercentSlider
     .width(Dimension::Pct(100.0))
     .spacing(8.0)
     .padding_vertical(8.0)
-    .padding_horizontal(10.0)
+    .padding_horizontal(USER_CONTEXT_MENU_HORIZONTAL_PADDING)
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))

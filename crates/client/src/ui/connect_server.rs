@@ -408,6 +408,10 @@ pub async fn connect_and_store(
     .as_ref()
     .and_then(|storage| storage.load_volume_overrides(&info.address).ok())
     .unwrap_or_default();
+  let normalized_users = storage
+    .as_ref()
+    .and_then(|storage| storage.load_user_normalizations(&info.address).ok())
+    .unwrap_or_default();
 
   if let Some(storage) = storage.as_ref() {
     storage
@@ -436,6 +440,9 @@ pub async fn connect_and_store(
     });
     for (user_id, volume) in volume_overrides {
       session.set_user_volume(user_id, volume);
+    }
+    for user_id in normalized_users {
+      session.set_user_normalization(user_id, true);
     }
   }
 

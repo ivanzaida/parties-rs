@@ -18,6 +18,7 @@ use crate::{
 pub const DEBUG_CHAT_CHANNEL_ID: ChannelId = u32::MAX;
 const DEBUG_CHAT_SENDER_ID: UserId = 0;
 const DEBUG_CHAT_SENDER_NAME: &str = "Debug";
+const MAX_CACHED_MESSAGES_PER_CHANNEL: usize = 250;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LobbyChannel {
@@ -297,6 +298,37 @@ pub(super) fn merge_chat_messages(
   messages: &mut Vec<ProtocolChatMessage>,
   incoming: impl IntoIterator<Item = ProtocolChatMessage>,
 ) {
+  merge_chat_messages_with_trim(messages, incoming, ChatMessageTrimSide::Oldest);
+}
+
+pub(super) fn merge_chat_history_messages(
+  messages: &mut Vec<ProtocolChatMessage>,
+  incoming: impl IntoIterator<Item = ProtocolChatMessage>,
+) {
+  let previous_oldest_id = messages.iter().map(|message| message.id).min();
+  let incoming = incoming.into_iter().collect::<Vec<_>>();
+  let prepending_older_history = previous_oldest_id
+    .is_some_and(|oldest_id| incoming.iter().any(|message| message.id != 0 && message.id < oldest_id));
+  let trim_side = if prepending_older_history {
+    ChatMessageTrimSide::Newest
+  } else {
+    ChatMessageTrimSide::Oldest
+  };
+
+  merge_chat_messages_with_trim(messages, incoming, trim_side);
+}
+
+#[derive(Clone, Copy)]
+enum ChatMessageTrimSide {
+  Oldest,
+  Newest,
+}
+
+fn merge_chat_messages_with_trim(
+  messages: &mut Vec<ProtocolChatMessage>,
+  incoming: impl IntoIterator<Item = ProtocolChatMessage>,
+  trim_side: ChatMessageTrimSide,
+) {
   for message in incoming {
     if let Some(existing) = messages.iter_mut().find(|existing| existing.id == message.id) {
       *existing = message;
@@ -307,10 +339,16 @@ pub(super) fn merge_chat_messages(
 
   messages.sort_by_key(|message| (message.timestamp, message.id));
 
-  const MAX_CACHED_MESSAGES_PER_CHANNEL: usize = 250;
   if messages.len() > MAX_CACHED_MESSAGES_PER_CHANNEL {
     let trim = messages.len() - MAX_CACHED_MESSAGES_PER_CHANNEL;
-    messages.drain(..trim);
+    match trim_side {
+      ChatMessageTrimSide::Oldest => {
+        messages.drain(..trim);
+      }
+      ChatMessageTrimSide::Newest => {
+        messages.truncate(MAX_CACHED_MESSAGES_PER_CHANNEL);
+      }
+    }
   }
 }
 
@@ -466,7 +504,7 @@ pub(super) fn apply_server_message(
       lobby
         .chat_history_has_more
         .insert(response.channel_id, response.has_more);
-      merge_chat_messages(
+      merge_chat_history_messages(
         lobby.chat_messages_by_channel.entry(response.channel_id).or_default(),
         response.messages,
       );
@@ -752,6 +790,41 @@ mod tests {
       local_voice_state: (false, false),
       pending_keepalive_ping: None,
     }
+  }
+
+  fn test_chat_message(id: u64) -> ProtocolChatMessage {
+    ProtocolChatMessage {
+      id,
+      channel_id: 10,
+      sender_id: 1,
+      sender_name: "user".to_owned(),
+      timestamp: id,
+      text: format!("message {id}"),
+      pinned: false,
+      attachments: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn prepended_history_is_not_trimmed_back_out_of_cache() {
+    let mut messages = (51..=300).map(test_chat_message).collect::<Vec<_>>();
+
+    merge_chat_history_messages(&mut messages, (1..=50).map(test_chat_message));
+
+    assert_eq!(messages.len(), MAX_CACHED_MESSAGES_PER_CHANNEL);
+    assert_eq!(messages.first().map(|message| message.id), Some(1));
+    assert_eq!(messages.last().map(|message| message.id), Some(250));
+  }
+
+  #[test]
+  fn live_chat_messages_keep_newest_cache_window() {
+    let mut messages = (1..=250).map(test_chat_message).collect::<Vec<_>>();
+
+    merge_chat_messages(&mut messages, [test_chat_message(251)]);
+
+    assert_eq!(messages.len(), MAX_CACHED_MESSAGES_PER_CHANNEL);
+    assert_eq!(messages.first().map(|message| message.id), Some(2));
+    assert_eq!(messages.last().map(|message| message.id), Some(251));
   }
 
   #[test]
