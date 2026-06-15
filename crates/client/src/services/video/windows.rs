@@ -59,9 +59,10 @@ use crate::{
   },
 };
 
-mod decode;
+#[path = "windows/decode.rs"]
+mod decoder_factory;
 
-pub(super) use decode::decode;
+pub(super) use decoder_factory::decode;
 
 #[allow(dead_code)]
 const BACKEND_ORDER: [NativeVideoBackend; 3] = [

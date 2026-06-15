@@ -1,0 +1,8 @@
+[package]
+name = "server-plugin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "server_plugin"
+path = "src/lib.rs"

@@ -1,0 +1,18 @@
+id = "parties.music_bot"
+name = "Music Bot"
+version = "0.1.0"
+api_version = "1.0"
+library = "music_bot.dll"
+
+[variables]
+soundcloud_client_id = "env:SOUNDCLOUD_CLIENT_ID"
+soundcloud_client_secret = "env:SOUNDCLOUD_CLIENT_SECRET"
+
+permissions = [
+    "read_sessions",
+    "create_chat_commands",
+    "create_bot_users",
+    "send_bot_chat",
+    "join_bot_voice",
+    "send_bot_audio"
+]
