@@ -29,6 +29,8 @@ pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
 pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
 pub(super) const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 const KEYFRAME_REQUEST_RETRY_INTERVAL: Duration = Duration::from_millis(750);
+const SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
+const SLOW_VIDEO_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
 
 #[cfg(target_os = "windows")]
 pub(super) const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 8;
@@ -419,6 +421,7 @@ pub(super) fn run_video_receiver<S>(
         if sample_config
           .as_ref()
           .is_some_and(|config| !decode_pool.has_decoder_failure(user_id, config))
+          && sample_config.as_ref().is_none_or(|config| config.hardware_decoding)
           && awaiting_keyframes.insert(user_id)
         {
           request_keyframe_for(
@@ -485,17 +488,22 @@ pub(super) fn run_video_receiver<S>(
 
       if awaiting_keyframes.contains(&packet.sender_id) {
         if !packet.frame.keyframe {
-          request_keyframe_if_due(
+          let interval = if packet_config.hardware_decoding {
+            KEYFRAME_REQUEST_RETRY_INTERVAL
+          } else {
+            SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL
+          };
+          request_keyframe_if_due_after(
             &runtime,
             &server,
             &mut last_keyframe_requests,
             packet.sender_id,
             "still waiting for video keyframe",
+            interval,
           );
           continue;
         }
         awaiting_keyframes.remove(&packet.sender_id);
-        last_keyframe_requests.remove(&packet.sender_id);
         decode_pool.clear_user_failures(packet.sender_id);
         tracing::info!(target: "video::decode",
           "[video:decode] catch-up keyframe received for user {}: frame={}",
@@ -512,25 +520,48 @@ pub(super) fn run_video_receiver<S>(
             expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
           }
           Some(expected_frame_number) => {
-            awaiting_decoded_output.remove(&packet.sender_id);
-            expected_frame_numbers.remove(&packet.sender_id);
-            decode_pool.reset_user(packet.sender_id);
-            if awaiting_keyframes.insert(packet.sender_id) {
-              request_keyframe_for(
-                &runtime,
-                &server,
-                &mut last_keyframe_requests,
+            if !packet_config.hardware_decoding {
+              awaiting_decoded_output.remove(&packet.sender_id);
+              expected_frame_numbers.remove(&packet.sender_id);
+              decode_pool.reset_user(packet.sender_id);
+              if awaiting_keyframes.insert(packet.sender_id) {
+                request_keyframe_if_due_after(
+                  &runtime,
+                  &server,
+                  &mut last_keyframe_requests,
+                  packet.sender_id,
+                  "software video frame gap detected",
+                  SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL,
+                );
+              }
+              tracing::warn!(target: "video::decode",
+                "[video:decode] software video frame gap for user {}: expected={} actual={}; waiting for keyframe",
                 packet.sender_id,
-                "video frame gap detected",
+                expected_frame_number,
+                packet.frame.frame_number
               );
+              continue;
+            } else {
+              awaiting_decoded_output.remove(&packet.sender_id);
+              expected_frame_numbers.remove(&packet.sender_id);
+              decode_pool.reset_user(packet.sender_id);
+              if awaiting_keyframes.insert(packet.sender_id) {
+                request_keyframe_for(
+                  &runtime,
+                  &server,
+                  &mut last_keyframe_requests,
+                  packet.sender_id,
+                  "video frame gap detected",
+                );
+              }
+              tracing::warn!(target: "video::decode",
+                "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
+                packet.sender_id,
+                expected_frame_number,
+                packet.frame.frame_number
+              );
+              continue;
             }
-            tracing::warn!(target: "video::decode",
-              "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
-              packet.sender_id,
-              expected_frame_number,
-              packet.frame.frame_number
-            );
-            continue;
           }
           None => {
             awaiting_decoded_output.remove(&packet.sender_id);
@@ -629,7 +660,9 @@ pub(super) fn run_video_receiver<S>(
             awaiting_decoded_output.insert(sender_id);
           }
           if !had_known_decoder_failure && should_log_video_count(received_count) {
-            tracing::info!(target: "video::decode", "[video:decode] received frame produced no decoded output yet");
+            tracing::info!(target: "video::decode",
+              "[video:decode] received frame produced no decoded output: output_requested={output}"
+            );
           }
         }
         Err(error) => {
@@ -693,6 +726,10 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
   packet: &ForwardedVideoFrame,
   packet_config: &VideoDecodeConfig,
 ) -> WindowsNativeVideoDecode {
+  if !packet_config.hardware_decoding {
+    return WindowsNativeVideoDecode::Fallback;
+  }
+
   if let Some(shared_planes_result) = decode_pool.decode_to_shared_nv12_planes(packet, packet_config) {
     match shared_planes_result {
       Ok(Some((y_shared_handle, uv_shared_handle))) => {
@@ -835,17 +872,18 @@ fn sorted_pairs<T: Copy>(map: &HashMap<UserId, T>) -> Vec<(UserId, T)> {
   pairs
 }
 
-fn request_keyframe_if_due(
+fn request_keyframe_if_due_after(
   runtime: &tokio::runtime::Handle,
   server: &Arc<Server>,
   last_keyframe_requests: &mut HashMap<UserId, Instant>,
   user_id: UserId,
   reason: &str,
+  interval: Duration,
 ) {
   let now = Instant::now();
   if last_keyframe_requests
     .get(&user_id)
-    .is_some_and(|last| now.duration_since(*last) < KEYFRAME_REQUEST_RETRY_INTERVAL)
+    .is_some_and(|last| now.duration_since(*last) < interval)
   {
     return;
   }
@@ -981,14 +1019,17 @@ impl VideoDecodePool {
     }
 
     self.decoders.remove(&user_id);
+    let start = Instant::now();
     let decoder = VideoDecoder::start(config.clone())?;
+    let start_elapsed = start.elapsed();
     let backend = decoder.backend();
     tracing::info!(target: "video::decode",
-      "[video:decode] decoder backend prewarmed for user {user_id}: backend={} codec={:?} size={}x{}",
+      "[video:decode] decoder backend prewarmed for user {user_id}: backend={} codec={:?} size={}x{} init_ms={:.1}",
       native_video_backend_label(backend),
       config.codec,
       config.width,
-      config.height
+      config.height,
+      duration_ms(start_elapsed)
     );
     self.decoders.insert(user_id, decoder);
     Ok(())
@@ -1017,16 +1058,19 @@ impl VideoDecodePool {
       .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
+      let start = Instant::now();
       match VideoDecoder::start(config.clone()) {
         Ok(decoder) => {
+          let start_elapsed = start.elapsed();
           let backend = decoder.backend();
           tracing::info!(target: "video::decode",
-            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{}",
+            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
             config.codec,
             config.width,
-            config.height
+            config.height,
+            duration_ms(start_elapsed)
           );
           self.decoders.insert(packet.sender_id, decoder);
         }
@@ -1041,9 +1085,15 @@ impl VideoDecodePool {
     let Some(decoder) = self.decoders.get_mut(&packet.sender_id) else {
       return Ok(None);
     };
+    let backend = decoder.backend();
+    let decode_start = Instant::now();
     match decoder.decode_with_output_buffer(&packet, output, output_buffer) {
-      Ok(frame) => Ok(frame),
+      Ok(frame) => {
+        log_decode_timing(&packet, backend, output, frame.is_some(), decode_start.elapsed());
+        Ok(frame)
+      }
       Err(error) => {
+        log_decode_timing(&packet, backend, output, false, decode_start.elapsed());
         tracing::warn!(target: "video::decode", "[video:decode] failed to decode frame from user {}: {error}", packet.sender_id);
         self.decoders.remove(&packet.sender_id);
         self.decoder_failures.insert(failure_key);
@@ -1074,16 +1124,19 @@ impl VideoDecodePool {
       .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
+      let start = Instant::now();
       match VideoDecoder::start(config.clone()) {
         Ok(decoder) => {
+          let start_elapsed = start.elapsed();
           let backend = decoder.backend();
           tracing::info!(target: "video::decode",
-            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} dx12_prepath=true",
+            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} dx12_prepath=true init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
             config.codec,
             config.width,
-            config.height
+            config.height,
+            duration_ms(start_elapsed)
           );
           self.decoders.insert(packet.sender_id, decoder);
         }
@@ -1140,17 +1193,20 @@ impl VideoDecodePool {
       .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
+      let start = Instant::now();
       match VideoDecoder::start(config.clone()) {
         Ok(decoder) => {
+          let start_elapsed = start.elapsed();
           let backend = decoder.backend();
           tracing::info!(target: "video::decode",
-            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} shared_nv12_planes_prepath={}",
+            "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} shared_nv12_planes_prepath={} init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
             config.codec,
             config.width,
             config.height,
-            backend == NativeVideoBackend::AmdAmf
+            backend == NativeVideoBackend::AmdAmf,
+            duration_ms(start_elapsed)
           );
           self.decoders.insert(packet.sender_id, decoder);
         }
@@ -1184,6 +1240,36 @@ impl VideoDecodePool {
     self.shared_nv12_planes_failures.insert((user_id, config.to_owned()));
     self.decoders.remove(&user_id);
   }
+}
+
+fn log_decode_timing(
+  packet: &ForwardedVideoFrame,
+  backend: NativeVideoBackend,
+  output: bool,
+  produced_frame: bool,
+  elapsed: Duration,
+) {
+  if elapsed < SLOW_VIDEO_DECODE_LOG_THRESHOLD {
+    return;
+  }
+
+  tracing::warn!(target: "video::decode",
+    "[video:decode] slow frame decode: user={} backend={} codec={:?} size={}x{} frame={} keyframe={} output={} produced_frame={} decode_ms={:.1}",
+    packet.sender_id,
+    native_video_backend_label(backend),
+    packet.frame.codec,
+    packet.frame.width,
+    packet.frame.height,
+    packet.frame.frame_number,
+    packet.frame.keyframe,
+    output,
+    produced_frame,
+    duration_ms(elapsed)
+  );
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }
 
 pub(super) fn unsupported_av1_decode_error(codec: VideoCodecId, error: &str) -> bool {
