@@ -13,6 +13,7 @@ use lurq::{
 
 use crate::{
   services::webcam_devices::{self, WebcamDevice},
+  session::ServerSession,
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -27,6 +28,7 @@ use crate::{
       },
       refresh_button::{REFRESH_BUTTON_SIZE, REFRESH_BUTTON_SPACING, refresh_button},
       shell::{SettingsPage, header, page_stack, screen_full, settings_content_padding, settings_section_spacing},
+      toggle::settings_toggle,
     },
   },
 };
@@ -43,6 +45,7 @@ pub struct SettingsStreamScreen {
   scale_percent: String,
   fps: String,
   bitrate_mbps: f32,
+  hardware_decoding: bool,
   webcam_devices: Signal<Vec<WebcamDevice>>,
 }
 
@@ -61,6 +64,7 @@ impl Component for SettingsStreamScreen {
     let scale_percent = settings.video_scale_percent.clamp(25, 100).to_string();
     let fps = settings.video_fps.clamp(15, 120).to_string();
     let bitrate_mbps = settings.video_bitrate_mbps.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
+    let hardware_decoding = settings.video_hardware_decoding;
     let webcam_default_label = ctx.t("settings.video.webcam.fallback").to_string();
     let webcam_indexed_label = ctx.t("settings.video.webcam.fallback_indexed").to_string();
     let webcam_devices = ctx.signal(localized_webcam_devices(&webcam_default_label, &webcam_indexed_label));
@@ -71,6 +75,7 @@ impl Component for SettingsStreamScreen {
       scale_percent,
       fps,
       bitrate_mbps,
+      hardware_decoding,
       webcam_devices,
     }
   }
@@ -106,6 +111,11 @@ impl Component for SettingsStreamScreen {
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.video.section.screen_sharing")))
+                .child(
+                  ctx.mount::<VideoHardwareDecodingSetting>(VideoHardwareDecodingSettingProps {
+                    initial_enabled: self.hardware_decoding,
+                  }),
+                )
                 .child(ctx.mount::<VideoDropdownSetting>(VideoDropdownSettingProps {
                   kind: VideoDropdownKind::Codec,
                   initial_value: self.codec.clone(),
@@ -195,6 +205,56 @@ impl Component for WebcamSetting {
         &webcam_default_label,
         &webcam_indexed_label,
       ),
+      true,
+    )
+  }
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct VideoHardwareDecodingSettingProps {
+  initial_enabled: bool,
+}
+
+impl PartialEq for VideoHardwareDecodingSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.initial_enabled == other.initial_enabled
+  }
+}
+
+struct VideoHardwareDecodingSetting {
+  enabled: Signal<bool>,
+}
+
+impl Component for VideoHardwareDecodingSetting {
+  type Props = VideoHardwareDecodingSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let enabled = ctx.signal(props.initial_enabled);
+    let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
+    ctx.watch(&enabled, move |enabled| {
+      if let Some(storage) = storage.as_ref() {
+        let mut settings = storage.load_settings().unwrap_or_default();
+        settings.video_hardware_decoding = *enabled;
+        let _ = storage.save_settings(&settings);
+      }
+      if let Some(session) = session.as_ref() {
+        session.set_video_hardware_decoding(*enabled);
+      }
+    });
+    Self { enabled }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let enabled = self.enabled.get();
+    let enabled_signal = self.enabled.clone();
+    audio_row(
+      &ctx.t("settings.video.hardware_decoding"),
+      &ctx.t("settings.video.hardware_decoding.description"),
+      settings_toggle(enabled, move || {
+        enabled_signal.set(!enabled_signal.get_untracked());
+      }),
       true,
     )
   }

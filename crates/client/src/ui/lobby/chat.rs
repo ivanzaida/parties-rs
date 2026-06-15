@@ -663,16 +663,36 @@ fn push_message_range(ranges: &mut Vec<MessageTextRange>, start: usize, end: usi
 
 fn push_message_token_range(text: &str, start: usize, end: usize, ranges: &mut Vec<MessageTextRange>) {
   let token = &text[start..end];
-  let link_len = trimmed_link_len(token);
+  let link_start = leading_link_start(token);
+  let link_candidate = &token[link_start..];
+  let link_len = trimmed_link_len(link_candidate);
 
-  if link_len > 0 && is_link_candidate(&token[..link_len]) {
-    push_message_range(ranges, start, start + link_len, true);
-    if link_len < token.len() {
-      push_message_range(ranges, start + link_len, end, false);
+  if link_len > 0 && is_link_candidate(&link_candidate[..link_len]) {
+    if link_start > 0 {
+      push_message_range(ranges, start, start + link_start, false);
+    }
+    push_message_range(ranges, start + link_start, start + link_start + link_len, true);
+    if link_start + link_len < token.len() {
+      push_message_range(ranges, start + link_start + link_len, end, false);
     }
   } else {
     push_message_range(ranges, start, end, false);
   }
+}
+
+fn leading_link_start(token: &str) -> usize {
+  let mut start = 0;
+  while start < token.len() {
+    let Some(ch) = token[start..].chars().next() else {
+      break;
+    };
+    if matches!(ch, '(' | '[' | '{' | '<' | '"' | '\'') {
+      start += ch.len_utf8();
+    } else {
+      break;
+    }
+  }
+  start
 }
 
 fn trimmed_link_len(token: &str) -> usize {
@@ -681,7 +701,10 @@ fn trimmed_link_len(token: &str) -> usize {
     let Some(ch) = token[..len].chars().next_back() else {
       break;
     };
-    if matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}') {
+    if matches!(
+      ch,
+      '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '>' | '"' | '\''
+    ) {
       len -= ch.len_utf8();
     } else {
       break;
@@ -736,6 +759,30 @@ fn open_link_in_browser(url: &str) {
 
   #[cfg(all(unix, not(target_os = "macos")))]
   let _ = Command::new("xdg-open").arg(url).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parenthesized_https_url_is_linkified_without_wrapper() {
+    let url = "https://rr1---sn-voxpm-3c2e.googlevideo.com/videoplayback?mime=audio%2Fmp4&sig=AHEqNM4wRgIhAJ4I6TzK8TqfhaM0X7Va_P6fP-Gyk1Hun3RgTpi91epKAiEA2_9dBZpe6ZWihDHF6NK47LjLbBDbAxZG8C2Sv9PH06w%3D&source=youtube";
+    let text = format!("failed to open YouTube audio stream: HTTP status client error (403 Forbidden) for url ({url})");
+    let parts = message_text_parts(&text);
+    let linked_parts = parts.iter().filter(|part| part.link).collect::<Vec<_>>();
+
+    assert_eq!(linked_parts.len(), 1);
+    assert_eq!(linked_parts[0].text, url);
+    assert_eq!(parts.last().map(|part| part.text), Some(")"));
+  }
+
+  #[test]
+  fn parenthesized_plain_text_is_not_linkified() {
+    let parts = message_text_parts("this is (not-a-link)");
+
+    assert!(parts.iter().all(|part| !part.link));
+  }
 }
 
 fn chat_day_divider(ctx: &mut Ctx, day: NaiveDate, today: NaiveDate) -> Element {

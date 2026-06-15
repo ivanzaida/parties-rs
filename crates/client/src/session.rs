@@ -1,7 +1,10 @@
 #[cfg(target_os = "windows")]
 use std::collections::{HashMap, VecDeque};
 use std::{
-  sync::{Arc, atomic::AtomicBool},
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
   time::{Duration, Instant},
 };
 
@@ -58,6 +61,7 @@ pub struct ServerSession {
   voice_state: Arc<voice_state::VoiceState>,
   streams: Arc<video_stream::StreamRuntime>,
   video_sink: Arc<video_sink::VideoFrameSink>,
+  video_hardware_decoding: Arc<AtomicBool>,
   revision: Signal<u64>,
 }
 
@@ -73,6 +77,7 @@ impl Default for ServerSession {
       voice_state: Arc::new(voice_state::VoiceState::new()),
       streams: Arc::new(video_stream::StreamRuntime::new()),
       video_sink: Arc::new(video_sink::VideoFrameSink::new(lobby, revision.clone())),
+      video_hardware_decoding: Arc::new(AtomicBool::new(true)),
       revision,
     }
   }
@@ -316,6 +321,10 @@ impl ServerSession {
 
   pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
     self.voice_state.set_notification_audio_settings(settings);
+  }
+
+  pub fn set_video_hardware_decoding(&self, enabled: bool) {
+    self.video_hardware_decoding.store(enabled, Ordering::Relaxed);
   }
 
   fn play_notification_sound(&self, sound: NotificationSound) {
@@ -585,6 +594,7 @@ impl ServerSession {
       codec: metadata.codec,
       width: metadata.width,
       height: metadata.height,
+      hardware_decoding: self.video_hardware_decoding.load(Ordering::Relaxed),
     })
   }
 

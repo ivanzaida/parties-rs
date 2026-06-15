@@ -237,6 +237,9 @@ impl Component for App {
     let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
     if let Some(settings) = settings.as_ref() {
       self.session.set_notification_audio_settings(settings);
+      self
+        .session
+        .set_video_hardware_decoding(settings.video_hardware_decoding);
     }
     let mute_hotkey = settings
       .as_ref()

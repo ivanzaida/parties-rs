@@ -15,7 +15,7 @@ use crate::{
   network::{
     protocol::{
       UserId, VideoCodecId,
-      data::{ForwardedVideoFrame, VideoControl, VideoFrame},
+      data::{ForwardedVideoFrame, VideoControl},
     },
     server::{ReceivedVideoPacket, Server, ServerError},
   },
@@ -95,6 +95,7 @@ pub(super) fn native_video_backend_label(backend: NativeVideoBackend) -> &'stati
     NativeVideoBackend::AmdAmf => "AMD AMF",
     NativeVideoBackend::WindowsMediaFoundation => "Windows Media Foundation",
     NativeVideoBackend::OpenH264 => "OpenH264",
+    NativeVideoBackend::SoftwareDecoder => "Software decoder",
     NativeVideoBackend::AppleVideoToolbox => "Apple VideoToolbox",
   }
 }
@@ -406,7 +407,18 @@ pub(super) fn run_video_receiver<S>(
             );
           }
         }
-        if sample_frame.is_some_and(|frame| !decode_pool.has_decoder_failure(user_id, frame))
+        let sample_config = sample_frame.map(|frame| VideoDecodeConfig {
+          codec: frame.codec,
+          width: frame.width,
+          height: frame.height,
+          hardware_decoding: session
+            .video_decode_config_for_share(user_id)
+            .map(|config| config.hardware_decoding)
+            .unwrap_or(true),
+        });
+        if sample_config
+          .as_ref()
+          .is_some_and(|config| !decode_pool.has_decoder_failure(user_id, config))
           && awaiting_keyframes.insert(user_id)
         {
           request_keyframe_for(
@@ -447,6 +459,10 @@ pub(super) fn run_video_receiver<S>(
         codec: packet.frame.codec,
         width: packet.frame.width,
         height: packet.frame.height,
+        hardware_decoding: session
+          .video_decode_config_for_share(packet.sender_id)
+          .map(|config| config.hardware_decoding)
+          .unwrap_or(true),
       };
       if decode_pool.decoder_config_mismatch(packet.sender_id, &packet_config) {
         decode_pool.reset_user(packet.sender_id);
@@ -536,7 +552,7 @@ pub(super) fn run_video_receiver<S>(
       let received_count = increment_counter(&mut received_counts, packet.sender_id);
       let output =
         Some(packet_index) == latest_watched_packet_index || awaiting_decoded_output.contains(&packet.sender_id);
-      let had_known_decoder_failure = decode_pool.has_decoder_failure(packet.sender_id, &packet.frame);
+      let had_known_decoder_failure = decode_pool.has_decoder_failure(packet.sender_id, &packet_config);
       if should_log_video_count(received_count) {
         tracing::debug!(target: "video::decode",
           "[video:decode] received frame #{received_count} from user {}: frame={} codec={:?} size={}x{} keyframe={} output={} bytes={}",
@@ -561,6 +577,7 @@ pub(super) fn run_video_receiver<S>(
           &mut decoded_counts,
           received_count,
           &packet,
+          &packet_config,
         );
         match native_decode {
           WindowsNativeVideoDecode::Presented => {
@@ -587,7 +604,7 @@ pub(super) fn run_video_receiver<S>(
       let codec = packet.frame.codec;
       let decode_result = {
         let _span = profiler::span("video.decode.packet");
-        decode_pool.decode_cpu(packet, output, output_buffer)
+        decode_pool.decode_cpu(packet, &packet_config, output, output_buffer)
       };
       match decode_result {
         Ok(Some(frame)) => {
@@ -674,8 +691,9 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
   decoded_counts: &mut HashMap<UserId, u64>,
   received_count: u64,
   packet: &ForwardedVideoFrame,
+  packet_config: &VideoDecodeConfig,
 ) -> WindowsNativeVideoDecode {
-  if let Some(shared_planes_result) = decode_pool.decode_to_shared_nv12_planes(packet) {
+  if let Some(shared_planes_result) = decode_pool.decode_to_shared_nv12_planes(packet, packet_config) {
     match shared_planes_result {
       Ok(Some((y_shared_handle, uv_shared_handle))) => {
         if let Some(surface) = session.shared_nv12_planes_video_surface_for_decode(
@@ -705,7 +723,7 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
           );
           return WindowsNativeVideoDecode::Presented;
         }
-        decode_pool.mark_shared_nv12_planes_failure(packet.sender_id, &packet.frame);
+        decode_pool.mark_shared_nv12_planes_failure(packet.sender_id, packet_config);
       }
       Ok(None) => {
         if should_log_video_count(received_count) {
@@ -729,7 +747,7 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
     packet.sender_id,
     packet.frame.width,
     packet.frame.height,
-  ) && let Some(decoded) = decode_pool.decode_to_dx12(packet, &surface)
+  ) && let Some(decoded) = decode_pool.decode_to_dx12(packet, packet_config, &surface)
   {
     if decoded {
       let decoded_count = increment_counter(decoded_counts, packet.sender_id);
@@ -976,24 +994,18 @@ impl VideoDecodePool {
     Ok(())
   }
 
-  pub(super) fn has_decoder_failure(&self, user_id: UserId, frame: &VideoFrame) -> bool {
-    self
-      .decoder_failures
-      .contains(&video_decode_failure_key(user_id, frame))
+  pub(super) fn has_decoder_failure(&self, user_id: UserId, config: &VideoDecodeConfig) -> bool {
+    self.decoder_failures.contains(&(user_id, config.to_owned()))
   }
 
   pub(super) fn decode_cpu(
     &mut self,
     packet: ForwardedVideoFrame,
+    config: &VideoDecodeConfig,
     output: bool,
     output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<DecodedVideoFrame>, String> {
-    let config = VideoDecodeConfig {
-      codec: packet.frame.codec,
-      width: packet.frame.width,
-      height: packet.frame.height,
-    };
-    let failure_key = (packet.sender_id, config.clone());
+    let failure_key = (packet.sender_id, config.to_owned());
 
     if self.decoder_failures.contains(&failure_key) {
       return Ok(None);
@@ -1002,7 +1014,7 @@ impl VideoDecodePool {
     let decoder_needs_start = self
       .decoders
       .get(&packet.sender_id)
-      .is_none_or(|decoder| decoder.config() != &config);
+      .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
       match VideoDecoder::start(config.clone()) {
@@ -1044,14 +1056,10 @@ impl VideoDecodePool {
   pub(super) fn decode_to_dx12(
     &mut self,
     packet: &ForwardedVideoFrame,
+    config: &VideoDecodeConfig,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
   ) -> Option<bool> {
-    let config = VideoDecodeConfig {
-      codec: packet.frame.codec,
-      width: packet.frame.width,
-      height: packet.frame.height,
-    };
-    let failure_key = (packet.sender_id, config.clone());
+    let failure_key = (packet.sender_id, config.to_owned());
 
     if self.dx12_failures.contains(&failure_key) {
       return None;
@@ -1063,7 +1071,7 @@ impl VideoDecodePool {
     let decoder_needs_start = self
       .decoders
       .get(&packet.sender_id)
-      .is_none_or(|decoder| decoder.config() != &config);
+      .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
       match VideoDecoder::start(config.clone()) {
@@ -1112,17 +1120,13 @@ impl VideoDecodePool {
   pub(super) fn decode_to_shared_nv12_planes(
     &mut self,
     packet: &ForwardedVideoFrame,
+    config: &VideoDecodeConfig,
   ) -> Option<Result<Option<(usize, usize)>, String>> {
     if !*DX12_NATIVE_STREAM_DECODE_SUPPORTED {
       return None;
     }
 
-    let config = VideoDecodeConfig {
-      codec: packet.frame.codec,
-      width: packet.frame.width,
-      height: packet.frame.height,
-    };
-    let failure_key = (packet.sender_id, config.clone());
+    let failure_key = (packet.sender_id, config.to_owned());
     if self.shared_nv12_planes_failures.contains(&failure_key) {
       return None;
     }
@@ -1133,7 +1137,7 @@ impl VideoDecodePool {
     let decoder_needs_start = self
       .decoders
       .get(&packet.sender_id)
-      .is_none_or(|decoder| decoder.config() != &config);
+      .is_none_or(|decoder| decoder.config() != config);
     if decoder_needs_start {
       self.decoders.remove(&packet.sender_id);
       match VideoDecoder::start(config.clone()) {
@@ -1176,10 +1180,8 @@ impl VideoDecodePool {
   }
 
   #[cfg(target_os = "windows")]
-  pub(super) fn mark_shared_nv12_planes_failure(&mut self, user_id: UserId, frame: &VideoFrame) {
-    self
-      .shared_nv12_planes_failures
-      .insert(video_decode_failure_key(user_id, frame));
+  pub(super) fn mark_shared_nv12_planes_failure(&mut self, user_id: UserId, config: &VideoDecodeConfig) {
+    self.shared_nv12_planes_failures.insert((user_id, config.to_owned()));
     self.decoders.remove(&user_id);
   }
 }
@@ -1211,15 +1213,4 @@ pub(super) fn native_decoder_unavailable_stream_error(reason: String) -> VideoSt
     message: reason,
     i18n_key: Some("lobby.stream_error.decoder_unavailable"),
   }
-}
-
-fn video_decode_failure_key(user_id: UserId, frame: &VideoFrame) -> (UserId, VideoDecodeConfig) {
-  (
-    user_id,
-    VideoDecodeConfig {
-      codec: frame.codec,
-      width: frame.width,
-      height: frame.height,
-    },
-  )
 }

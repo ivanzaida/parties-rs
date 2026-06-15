@@ -1,6 +1,6 @@
 [package]
 name = "parties-rs"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2024"
 
 [dependencies]
@@ -13,10 +13,13 @@ getrandom = "0.4.2"
 lurq = { version = "0.13.4", features = ["resources", "winit", "image", "wgpu", "dx12", "devtools", "i18n", "serde", "clipboard", "tokio", "router", "form", "svg"] }
 minimp3 = "0.6.1"
 opus = "0.3.1"
+openh264 = "0.9.3"
 quinn = "0.11"
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rust_h265 = "0.1.0"
 semver = "1"
 serde_json = "1"
 sha2 = "0.11.0"

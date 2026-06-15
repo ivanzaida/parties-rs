@@ -83,6 +83,7 @@ pub struct AppSettings {
   pub video_scale_percent: i32,
   pub video_fps: i32,
   pub video_bitrate_mbps: f32,
+  pub video_hardware_decoding: bool,
   pub locale: String,
 }
 
@@ -113,6 +114,7 @@ impl Default for AppSettings {
       video_scale_percent: 100,
       video_fps: 60,
       video_bitrate_mbps: 20.0,
+      video_hardware_decoding: true,
       locale: "en".to_owned(),
     }
   }
@@ -329,9 +331,10 @@ impl Storage {
         video_scale_percent,
         video_fps,
         video_bitrate_mbps,
+        video_hardware_decoding,
         locale
       )
-      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+      VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
@@ -358,6 +361,7 @@ impl Storage {
         settings.video_scale_percent,
         settings.video_fps,
         settings.video_bitrate_mbps,
+        bool_to_int(settings.video_hardware_decoding),
         &settings.locale
       ],
     )?;
@@ -393,6 +397,7 @@ impl Storage {
         video_scale_percent,
         video_fps,
         video_bitrate_mbps,
+        video_hardware_decoding,
         locale
       FROM app_settings
       WHERE id = 1
@@ -429,7 +434,8 @@ impl Storage {
       video_scale_percent: row.get(21)?,
       video_fps: row.get(22)?,
       video_bitrate_mbps: row.get(23)?,
-      locale: row.get(24)?,
+      video_hardware_decoding: int_to_bool(row.get(24)?),
+      locale: row.get(25)?,
     })
   }
 
@@ -779,6 +785,7 @@ impl Storage {
         video_scale_percent INTEGER NOT NULL DEFAULT 100,
         video_fps INTEGER NOT NULL DEFAULT 60,
         video_bitrate_mbps REAL NOT NULL DEFAULT 20,
+        video_hardware_decoding INTEGER NOT NULL DEFAULT 1,
         locale TEXT NOT NULL DEFAULT 'en'
       );
 
@@ -982,6 +989,12 @@ impl Storage {
     if !column_exists(&conn, "app_settings", "video_bitrate_mbps")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN video_bitrate_mbps REAL NOT NULL DEFAULT 20",
+        [],
+      )?;
+    }
+    if !column_exists(&conn, "app_settings", "video_hardware_decoding")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN video_hardware_decoding INTEGER NOT NULL DEFAULT 1",
         [],
       )?;
     }
@@ -1353,6 +1366,7 @@ mod tests {
       video_scale_percent: 75,
       video_fps: 30,
       video_bitrate_mbps: 12.5,
+      video_hardware_decoding: false,
       locale: "uk".to_owned(),
     };
     storage.save_settings(&settings).unwrap();

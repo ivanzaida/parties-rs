@@ -21,6 +21,7 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 mod macos;
+mod software;
 #[cfg(target_os = "windows")]
 mod webcam;
 #[cfg(target_os = "windows")]
@@ -51,6 +52,7 @@ pub struct VideoDecodeConfig {
   pub codec: VideoCodecId,
   pub width: u16,
   pub height: u16,
+  pub hardware_decoding: bool,
 }
 
 pub struct DecodedVideoFrame {
@@ -85,6 +87,7 @@ pub enum NativeVideoBackend {
   AmdAmf,
   WindowsMediaFoundation,
   OpenH264,
+  SoftwareDecoder,
   AppleVideoToolbox,
 }
 
@@ -231,6 +234,7 @@ impl VideoDecoder {
       codec: frame.frame.codec,
       width: frame.frame.width,
       height: frame.frame.height,
+      hardware_decoding: self.config.hardware_decoding,
     };
     if frame_config != self.config {
       return Err(VideoError::new(
@@ -260,6 +264,7 @@ impl VideoDecoder {
       codec: frame.frame.codec,
       width: frame.frame.width,
       height: frame.frame.height,
+      hardware_decoding: self.config.hardware_decoding,
     };
     if frame_config != self.config {
       return Err(VideoError::new(
@@ -279,6 +284,7 @@ impl VideoDecoder {
       codec: frame.frame.codec,
       width: frame.frame.width,
       height: frame.frame.height,
+      hardware_decoding: self.config.hardware_decoding,
     };
     if frame_config != self.config {
       return Err(VideoError::new(
@@ -462,6 +468,7 @@ mod tests {
       codec,
       width: 1280,
       height: 720,
+      hardware_decoding: true,
     }
   }
 
