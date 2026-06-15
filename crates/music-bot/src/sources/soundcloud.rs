@@ -24,6 +24,7 @@ const SOUNDCLOUD_TOKEN_URL: &str = "https://secure.soundcloud.com/oauth/token";
 const MAX_REMOTE_AUDIO_BYTES: u64 = 256 * 1024 * 1024;
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 const TOKEN_REFRESH_RETRY_DELAY: Duration = Duration::from_secs(30);
+const TOKEN_RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(60 * 60);
 const MAX_HLS_PLAYLIST_DEPTH: usize = 4;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,6 +55,7 @@ struct TokenState {
   refresh_token: Option<String>,
   expires_at: Option<Instant>,
   last_error: Option<String>,
+  next_retry_at: Option<Instant>,
 }
 
 impl SoundCloudTokenProvider {
@@ -75,7 +77,9 @@ impl SoundCloudTokenProvider {
       }),
     };
 
-    provider.refresh_now()?;
+    if let Err(error) = provider.refresh_now() {
+      provider.store_refresh_error(error);
+    }
     provider.spawn_refresh_worker();
     Ok(provider)
   }
@@ -94,6 +98,7 @@ impl SoundCloudTokenProvider {
           refresh_token: None,
           expires_at: Some(Instant::now() + DEFAULT_TOKEN_LIFETIME),
           last_error: None,
+          next_retry_at: None,
         }),
         wakeup: Condvar::new(),
         shutdown: AtomicBool::new(false),
@@ -107,7 +112,7 @@ impl SoundCloudTokenProvider {
       return Ok(auth_header);
     }
 
-    self.refresh_now()?;
+    self.refresh_with_cooldown()?;
     self
       .valid_cached_header()
       .ok_or_else(|| "SoundCloud token refresh did not produce a usable token.".to_owned())
@@ -161,8 +166,36 @@ impl SoundCloudTokenProvider {
     state.refresh_token = token.refresh_token;
     state.expires_at = Some(token.expires_at);
     state.last_error = None;
+    state.next_retry_at = None;
     self.inner.wakeup.notify_all();
     Ok(())
+  }
+
+  fn refresh_with_cooldown(&self) -> Result<(), String> {
+    let now = Instant::now();
+    {
+      let state = self.inner.state.lock().expect("soundcloud token state mutex poisoned");
+      if let Some(next_retry_at) = state.next_retry_at
+        && next_retry_at > now
+      {
+        return Err(token_retry_message(
+          state.last_error.as_deref(),
+          next_retry_at.saturating_duration_since(now),
+        ));
+      }
+    }
+
+    self.refresh_now().inspect_err(|error| {
+      self.store_refresh_error(error.clone());
+    })
+  }
+
+  fn store_refresh_error(&self, error: String) {
+    let retry_delay = token_retry_delay(&error);
+    let mut state = self.inner.state.lock().expect("soundcloud token state mutex poisoned");
+    state.last_error = Some(error);
+    state.next_retry_at = Some(Instant::now() + retry_delay);
+    self.inner.wakeup.notify_all();
   }
 
   fn spawn_refresh_worker(&self) {
@@ -179,8 +212,9 @@ impl SoundCloudTokenProvider {
           return;
         }
         state
-          .expires_at
-          .map(refresh_wait_duration)
+          .next_retry_at
+          .map(|next_retry_at| next_retry_at.saturating_duration_since(Instant::now()))
+          .or_else(|| state.expires_at.map(refresh_wait_duration))
           .unwrap_or(TOKEN_REFRESH_RETRY_DELAY)
       };
 
@@ -200,14 +234,7 @@ impl SoundCloudTokenProvider {
       drop(state);
 
       if let Err(error) = self.refresh_now() {
-        let mut state = self.inner.state.lock().expect("soundcloud token state mutex poisoned");
-        state.last_error = Some(error);
-        let (state, _) = self
-          .inner
-          .wakeup
-          .wait_timeout(state, TOKEN_REFRESH_RETRY_DELAY)
-          .expect("soundcloud token state mutex poisoned");
-        drop(state);
+        self.store_refresh_error(error);
       }
     }
   }
@@ -522,6 +549,27 @@ fn refresh_wait_duration(expires_at: Instant) -> Duration {
   refresh_at.saturating_duration_since(Instant::now())
 }
 
+fn token_retry_delay(error: &str) -> Duration {
+  if is_rate_limit_error(error) {
+    TOKEN_RATE_LIMIT_RETRY_DELAY
+  } else {
+    TOKEN_REFRESH_RETRY_DELAY
+  }
+}
+
+fn token_retry_message(last_error: Option<&str>, remaining: Duration) -> String {
+  let seconds = remaining.as_secs().max(1);
+  if last_error.is_some_and(is_rate_limit_error) {
+    format!("SoundCloud is rate limiting token requests. Try again in about {seconds} seconds.")
+  } else {
+    format!("SoundCloud authentication is temporarily unavailable. Try again in about {seconds} seconds.")
+  }
+}
+
+fn is_rate_limit_error(error: &str) -> bool {
+  error.contains("429") || error.contains("Too Many Requests")
+}
+
 fn resolve_track(
   client: &reqwest::blocking::Client,
   token_provider: &SoundCloudTokenProvider,
@@ -556,7 +604,11 @@ fn select_stream(streams: HashMap<String, Option<String>>) -> Result<SoundCloudS
     .into_iter()
     .filter_map(|(key, url)| url.map(|url| SoundCloudStreamCandidate { key, url }))
     .collect::<Vec<_>>();
-  candidates.sort_by_key(|candidate| stream_rank(&candidate.key, &candidate.url));
+  candidates.sort_by(|left, right| {
+    stream_rank(&left.key, &left.url)
+      .cmp(&stream_rank(&right.key, &right.url))
+      .then_with(|| left.key.cmp(&right.key))
+  });
   let available_streams = candidates
     .iter()
     .map(|candidate| candidate.key.as_str())
@@ -575,25 +627,40 @@ fn select_stream(streams: HashMap<String, Option<String>>) -> Result<SoundCloudS
 fn stream_rank(key: &str, url: &str) -> usize {
   let key = key.to_ascii_lowercase();
   let extension = infer_audio_extension(url);
-  if !key.contains("hls") && (key.contains("aac") || extension.as_deref() == Some("m4a")) {
+  if is_preview_stream(&key, url) {
+    99
+  } else if !key.contains("hls") && (key.contains("aac") || extension.as_deref() == Some("m4a")) {
     0
-  } else if !key.contains("hls") && (key.contains("mp3") || extension.as_deref() == Some("mp3")) {
+  } else if key.starts_with("http_")
+    && !key.contains("hls")
+    && (key.contains("mp3") || extension.as_deref() == Some("mp3"))
+  {
     1
-  } else if key.contains("hls") && (key.contains("aac") || key.contains("mp3") || is_hls_url(url)) {
+  } else if !key.contains("hls") && (key.contains("mp3") || extension.as_deref() == Some("mp3")) {
     2
-  } else {
+  } else if key.contains("hls") && (key.contains("aac") || key.contains("mp3") || is_hls_url(url)) {
     3
+  } else {
+    4
   }
 }
 
 fn is_supported_stream(candidate: &SoundCloudStreamCandidate) -> bool {
   let key = candidate.key.to_ascii_lowercase();
+  if is_preview_stream(&key, &candidate.url) {
+    return false;
+  }
+
   let extension = infer_audio_extension(&candidate.url);
   if is_hls_url(&candidate.url) || key.contains("hls") {
     return key.contains("aac") || key.contains("mp3") || is_hls_url(&candidate.url);
   }
 
   key.contains("aac") || key.contains("mp3") || matches!(extension.as_deref(), Some("m4a") | Some("mp3"))
+}
+
+fn is_preview_stream(key: &str, url: &str) -> bool {
+  key.to_ascii_lowercase().contains("preview") || url.to_ascii_lowercase().contains("preview")
 }
 
 fn resolve_stream_url(
@@ -996,4 +1063,74 @@ pub(crate) fn is_soundcloud_url(input: &str) -> bool {
     .ok()
     .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
     .is_some_and(|host| host == "soundcloud.com" || host.ends_with(".soundcloud.com"))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+
+  use super::*;
+
+  #[test]
+  fn stream_selection_prefers_full_http_mp3_over_preview_mp3() {
+    let streams = HashMap::from([
+      (
+        "preview_mp3_128_url".to_owned(),
+        Some("https://media.example.test/preview.mp3".to_owned()),
+      ),
+      (
+        "http_mp3_128_url".to_owned(),
+        Some("https://media.example.test/full.mp3".to_owned()),
+      ),
+      (
+        "hls_mp3_128_url".to_owned(),
+        Some("https://media.example.test/playlist.m3u8".to_owned()),
+      ),
+    ]);
+
+    let selected = select_stream(streams).expect("full MP3 stream should be selected");
+
+    assert_eq!(selected.key, "http_mp3_128_url");
+    assert_eq!(selected.url, "https://media.example.test/full.mp3");
+  }
+
+  #[test]
+  fn stream_selection_rejects_preview_only_streams() {
+    let streams = HashMap::from([(
+      "preview_mp3_128_url".to_owned(),
+      Some("https://media.example.test/preview.mp3".to_owned()),
+    )]);
+
+    let error = match select_stream(streams) {
+      Ok(selected) => panic!("preview stream must not be selected for playback: {}", selected.key),
+      Err(error) => error,
+    };
+
+    assert!(error.contains("supported"));
+  }
+
+  #[test]
+  fn token_retry_delay_uses_long_cooldown_for_rate_limits() {
+    assert_eq!(
+      token_retry_delay("SoundCloud token request failed: HTTP status client error (429 Too Many Requests)"),
+      TOKEN_RATE_LIMIT_RETRY_DELAY
+    );
+    assert_eq!(token_retry_delay("network failed"), TOKEN_REFRESH_RETRY_DELAY);
+  }
+
+  #[test]
+  fn token_retry_message_hides_raw_rate_limit_url() {
+    let message = token_retry_message(
+      Some(
+        "SoundCloud token request failed: HTTP status client error (429 Too Many Requests) for url (https://secure.soundcloud.com/oauth/token)",
+      ),
+      Duration::from_secs(125),
+    );
+
+    assert_eq!(
+      message,
+      "SoundCloud is rate limiting token requests. Try again in about 125 seconds."
+    );
+    assert!(!message.contains("oauth/token"));
+  }
 }

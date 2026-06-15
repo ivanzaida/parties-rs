@@ -19,7 +19,7 @@ mod tests {
 
   use crate::{
     commands::command_definitions,
-    queue::{PlaybackSnapshot, Track},
+    queue::{PlaybackSnapshot, Track, TrackSummary},
     sources::{model::SourceKind, registry::SourceRegistry, soundcloud::SoundCloudTokenProvider},
   };
 
@@ -38,22 +38,72 @@ mod tests {
   fn queue_snapshot_formats_empty_state() {
     let snapshot = PlaybackSnapshot {
       current: None,
+      current_elapsed_ms: None,
       queue: Vec::new(),
     };
 
     assert_eq!(snapshot.queue_message(), "Queue is empty.");
-    assert_eq!(snapshot.now_playing_message(), "Nothing is playing yet.");
+    assert_eq!(snapshot.now_playing_message(), "Nothing is playing.");
   }
 
   #[test]
   fn queue_snapshot_formats_current_and_pending_items() {
     let snapshot = PlaybackSnapshot {
-      current: Some("first".to_owned()),
-      queue: vec!["second".to_owned(), "third".to_owned()],
+      current: Some(TrackSummary::new("first", "https://soundcloud.com/artist/first")),
+      current_elapsed_ms: Some(42_000),
+      queue: vec![
+        TrackSummary::new("second", "https://soundcloud.com/artist/second"),
+        TrackSummary::new("third", "https://soundcloud.com/artist/third"),
+      ],
     };
 
-    assert_eq!(snapshot.queue_message(), "Now playing: first\n1. second\n2. third");
-    assert_eq!(snapshot.now_playing_message(), "Now playing: first");
+    assert_eq!(
+      snapshot.queue_message(),
+      "Playing: [first](https://soundcloud.com/artist/first) - 0:42 / 3:00  \n1) [second](https://soundcloud.com/artist/second) : 3:00  \n2) [third](https://soundcloud.com/artist/third) : 3:00"
+    );
+    assert_eq!(
+      snapshot.now_playing_message(),
+      "Playing: [first](https://soundcloud.com/artist/first) - 0:42 / 3:00"
+    );
+  }
+
+  #[test]
+  fn track_markdown_links_escape_markdown_control_characters() {
+    let summary = TrackSummary::new(
+      "A [demo] \\ track",
+      "https://soundcloud.com/a/path)with space?utm_source=id_123",
+    );
+
+    assert_eq!(
+      summary.markdown_link(),
+      "[A \\[demo\\] \\\\ track](https://soundcloud.com/a/path%29with%20space)"
+    );
+  }
+
+  #[test]
+  fn queue_snapshot_caps_large_markdown_queue() {
+    let snapshot = PlaybackSnapshot {
+      current: Some(TrackSummary::new(
+        "first",
+        "https://soundcloud.com/artist/first?utm_source=id_123",
+      )),
+      current_elapsed_ms: Some(0),
+      queue: (0..100)
+        .map(|index| {
+          TrackSummary::new(
+            &format!("track {index} with a somewhat long title"),
+            &format!("https://soundcloud.com/artist/track-{index}?utm_medium=api&utm_campaign=social_sharing"),
+          )
+        })
+        .collect(),
+    };
+
+    let message = snapshot.queue_message();
+
+    assert!(message.len() <= 3_800);
+    assert!(message.contains("... 95 more"));
+    assert!(message.contains("[first](https://soundcloud.com/artist/first)"));
+    assert!(!message.contains("utm_"));
   }
 
   #[test]

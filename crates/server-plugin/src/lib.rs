@@ -214,6 +214,7 @@ pub mod abi {
     pub name: *const c_char,
     pub description: *const c_char,
     pub usage: *const c_char,
+    pub min_role: u8,
   }
 
   #[repr(C)]
@@ -231,6 +232,7 @@ pub mod abi {
     pub session_id: SessionId,
     pub user_id: UserId,
     pub text_channel_id: ChannelId,
+    pub caller_role: u8,
     pub command_name: *const c_char,
     pub args: *const c_char,
     pub raw_text: *const c_char,
@@ -622,6 +624,7 @@ pub struct CommandDefinition {
   pub name: String,
   pub description: String,
   pub usage: String,
+  pub min_role: u8,
 }
 
 impl CommandDefinition {
@@ -630,7 +633,13 @@ impl CommandDefinition {
       name: name.into(),
       description: description.into(),
       usage: usage.into(),
+      min_role: 3,
     }
+  }
+
+  pub fn with_min_role(mut self, min_role: u8) -> Self {
+    self.min_role = min_role;
+    self
   }
 }
 
@@ -639,6 +648,7 @@ pub struct ChatCommandInvocation {
   pub session_id: SessionId,
   pub user_id: UserId,
   pub text_channel_id: ChannelId,
+  pub caller_role: u8,
   pub command_name: String,
   pub args: String,
   pub raw_text: String,
@@ -878,6 +888,7 @@ impl<'a> HostRef<'a> {
         name: names[index].as_ptr(),
         description: descriptions[index].as_ptr(),
         usage: usages[index].as_ptr(),
+        min_role: commands[index].min_role,
       })
       .collect::<Vec<_>>();
 
@@ -1525,6 +1536,7 @@ pub struct ChatCommandInvocationRef<'a> {
   pub session_id: SessionId,
   pub user_id: UserId,
   pub text_channel_id: ChannelId,
+  pub caller_role: u8,
   pub command_name: &'a str,
   pub args: &'a str,
   pub raw_text: &'a str,
@@ -1561,6 +1573,7 @@ impl<'a> ChatCommandInvocationRef<'a> {
       session_id: invocation.session_id,
       user_id: invocation.user_id,
       text_channel_id: invocation.text_channel_id,
+      caller_role: invocation.caller_role,
       command_name: required_cstr(invocation.command_name, "command_name")?,
       args: optional_cstr(invocation.args)?,
       raw_text: required_cstr(invocation.raw_text, "raw_text")?,
@@ -1770,6 +1783,7 @@ mod tests {
       session_id: 1,
       user_id: 2,
       text_channel_id: 3,
+      caller_role: 3,
       command_name: command_name.as_ptr(),
       args: args.as_ptr(),
       raw_text: raw_text.as_ptr(),
@@ -1780,6 +1794,7 @@ mod tests {
     let decoded = unsafe { ChatCommandInvocationRef::from_raw(&invocation) }.unwrap();
 
     assert_eq!(decoded.command_name, "play");
+    assert_eq!(decoded.caller_role, 3);
     assert_eq!(decoded.args, "https://example.test/song");
     assert_eq!(decoded.raw_text, "/play https://example.test/song");
   }
@@ -1796,6 +1811,7 @@ mod tests {
       assert_eq!(command_count, 1);
       let command = unsafe { &*commands };
       assert_eq!(unsafe { CStr::from_ptr(command.name) }.to_str().unwrap(), "play");
+      assert_eq!(command.min_role, 2);
       true
     }
 
@@ -1806,7 +1822,7 @@ mod tests {
 
     let host = unsafe { HostRef::from_raw(&host) }.unwrap();
     host
-      .create_chat_commands(&[CommandDefinition::new("play", "Queue audio.", "/play {url:string}")])
+      .create_chat_commands(&[CommandDefinition::new("play", "Queue audio.", "/play {url:string}").with_min_role(2)])
       .unwrap();
 
     assert_eq!(calls, 1);
@@ -1876,6 +1892,7 @@ mod tests {
       session_id: 1,
       user_id: 2,
       text_channel_id: 3,
+      caller_role: 3,
       command_name: command_name.as_ptr(),
       args: args.as_ptr(),
       raw_text: raw_text.as_ptr(),

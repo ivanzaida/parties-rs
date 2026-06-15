@@ -7,7 +7,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use server_plugin::{BOT_VOICE_FRAME_DURATION_MS, BotUser, ChannelId, HostHandle};
+use server_plugin::{BOT_VOICE_FRAME_DURATION_MS, BotUser, ChannelId, HostHandle, abi::LogLevel};
 
 use crate::{
   audio::{AudioFrames, VoiceEncoder},
@@ -16,6 +16,8 @@ use crate::{
 };
 
 const PACER_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+const EMPTY_VOICE_TIMEOUT: Duration = Duration::from_secs(20);
+const EMPTY_VOICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 enum PlayerCommand {
   Enqueue {
@@ -79,10 +81,22 @@ impl PlaybackWorker {
 
   pub(crate) fn snapshot(&self) -> PlaybackSnapshot {
     let state = self.state.lock().expect("playback state mutex poisoned");
+    let current_elapsed_ms = state.current_started_at.map(|started_at| {
+      let elapsed_ms = Instant::now().saturating_duration_since(started_at).as_millis();
+      u64::try_from(elapsed_ms).unwrap_or(u64::MAX)
+    });
     PlaybackSnapshot {
-      current: state.current.as_ref().map(|queued| queued.track.title.clone()),
-      queue: state.queue.iter().map(|queued| queued.track.title.clone()).collect(),
+      current: state.current.as_ref().map(|queued| queued.track.summary()),
+      current_elapsed_ms,
+      queue: state.queue.iter().map(|queued| queued.track.summary()).collect(),
     }
+  }
+
+  pub(crate) fn is_finished(&self) -> bool {
+    self
+      .join_handle
+      .as_ref()
+      .is_some_and(|join_handle| join_handle.is_finished())
   }
 
   pub(crate) fn shutdown(mut self) {
@@ -174,7 +188,7 @@ fn next_track(
       }
       PlayerCommand::Stop { text_channel_id } => {
         clear_playback_state(state);
-        host.send_bot_chat(bot, text_channel_id, "Nothing is playing.").ok();
+        host.send_bot_chat(bot, text_channel_id, "Nothing to stop.").ok();
       }
       PlayerCommand::Shutdown => return NextTrack::Shutdown,
     }
@@ -195,9 +209,6 @@ fn play_track(
 ) -> PlaybackControl {
   let mut track = queued.track;
   let text_channel_id = queued.text_channel_id;
-  host
-    .send_bot_chat(bot, text_channel_id, &format!("Loading: {}", track.title))
-    .ok();
 
   if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
     stop_after_voice_disconnect(host, bot, state, text_channel_id);
@@ -207,32 +218,58 @@ fn play_track(
   let mut frames = match AudioFrames::open(&mut track, sources) {
     Ok(frames) => frames,
     Err(error) => {
-      host.send_bot_chat(bot, text_channel_id, &error).ok();
+      host
+        .send_bot_chat(
+          bot,
+          text_channel_id,
+          &format!(
+            "Could not play {}: {}",
+            track.markdown_link(),
+            playback_error_detail(&error)
+          ),
+        )
+        .ok();
       clear_current_track(state);
       return PlaybackControl::Continue;
     }
   };
   update_current_track_title(state, &track.title);
 
-  let response = format!("Now playing: {}", track.title);
-  host.send_bot_chat(bot, text_channel_id, &response).ok();
-
   let mut encoder = match VoiceEncoder::new() {
     Ok(encoder) => encoder,
     Err(error) => {
-      let response = format!("Cannot start audio encoder: {error}");
-      host.send_bot_chat(bot, text_channel_id, &response).ok();
+      host
+        .send_bot_chat(bot, text_channel_id, "Playback stopped: audio encoder failed.")
+        .ok();
+      host
+        .log(LogLevel::Warn, &format!("music-bot audio encoder failed: {error}"))
+        .ok();
       clear_current_track(state);
       return PlaybackControl::Continue;
     }
   };
 
+  mark_current_track_started(state);
+
+  let response = format!("Playing: {}", track.markdown_link());
+  host.send_bot_chat(bot, text_channel_id, &response).ok();
+
   let mut pacer = FramePacer::new();
+  let mut idle_voice = IdleVoiceMonitor::new();
   while let Some(frame) = match frames.next_frame() {
     Ok(frame) => frame,
     Err(error) => {
-      let response = format!("Failed to read audio for {}: {error}", track.title);
-      host.send_bot_chat(bot, text_channel_id, &response).ok();
+      host
+        .send_bot_chat(
+          bot,
+          text_channel_id,
+          &format!(
+            "Playback stopped for {}: {}",
+            track.markdown_link(),
+            playback_error_detail(&error)
+          ),
+        )
+        .ok();
       clear_current_track(state);
       return PlaybackControl::Continue;
     }
@@ -248,11 +285,20 @@ fn play_track(
       return PlaybackControl::Shutdown;
     }
 
+    if idle_voice.channel_has_been_empty_too_long(host, voice_channel_id) {
+      stop_after_empty_voice_channel(host, bot, state, text_channel_id);
+      return PlaybackControl::Shutdown;
+    }
+
     let opus_payload = match encoder.encode(&frame) {
       Ok(payload) => payload,
       Err(error) => {
-        let response = format!("Failed to encode {}: {error}", track.title);
-        host.send_bot_chat(bot, text_channel_id, &response).ok();
+        host
+          .send_bot_chat(bot, text_channel_id, "Playback stopped: audio encoder failed.")
+          .ok();
+        host
+          .log(LogLevel::Warn, &format!("music-bot audio encoder failed: {error}"))
+          .ok();
         clear_current_track(state);
         return PlaybackControl::Continue;
       }
@@ -261,8 +307,12 @@ fn play_track(
     pacer.wait_for_next_frame();
 
     if let Err(error) = host.send_bot_voice_packet(bot, *sequence, &opus_payload) {
-      let response = format!("Failed to send audio for {}: {error}", track.title);
-      host.send_bot_chat(bot, text_channel_id, &response).ok();
+      host
+        .send_bot_chat(bot, text_channel_id, "Playback stopped: could not send voice audio.")
+        .ok();
+      host
+        .log(LogLevel::Warn, &format!("music-bot voice packet failed: {error}"))
+        .ok();
       clear_current_track(state);
       return PlaybackControl::Continue;
     }
@@ -288,9 +338,40 @@ fn stop_after_voice_disconnect(
     .send_bot_chat(
       bot,
       text_channel_id,
-      "I was removed from voice; stopped playback and cleared the queue.",
+      "Removed from voice. Playback stopped and queue cleared.",
     )
     .ok();
+}
+
+fn stop_after_empty_voice_channel(
+  host: &HostHandle,
+  bot: &BotUser,
+  state: &Arc<Mutex<PlayerState>>,
+  text_channel_id: ChannelId,
+) {
+  clear_playback_state(state);
+  host.leave_bot_voice(bot).ok();
+  host
+    .send_bot_chat(
+      bot,
+      text_channel_id,
+      "Voice channel was empty for 20 seconds. Playback stopped and queue cleared.",
+    )
+    .ok();
+}
+
+fn playback_error_detail(error: &str) -> &'static str {
+  if error.contains("HTTP status") {
+    "provider rejected the audio stream"
+  } else if error.contains("decode") {
+    "audio could not be decoded"
+  } else if error.contains("read") {
+    "audio stream ended unexpectedly"
+  } else if error.contains("probe") || error.contains("open") {
+    "audio stream could not be opened"
+  } else {
+    "audio stream failed"
+  }
 }
 
 fn drain_commands_while_playing(
@@ -309,7 +390,8 @@ fn drain_commands_while_playing(
             track: track.clone(),
             text_channel_id,
           });
-          format!("Queued: {}", track.title)
+          let position = state.queue.len();
+          format!("Queued #{}: {}", position, track.markdown_link_with_duration())
         };
         host.send_bot_chat(bot, text_channel_id, &response).ok();
       }
@@ -324,15 +406,13 @@ fn drain_commands_while_playing(
       }
       PlayerCommand::Skip { text_channel_id } => {
         clear_current_track(state);
-        let response = format!("Skipped: {}", current.title);
+        let response = format!("Skipped: {}", current.markdown_link());
         host.send_bot_chat(bot, text_channel_id, &response).ok();
         return CommandDrain::EndCurrent;
       }
       PlayerCommand::Stop { text_channel_id } => {
         clear_playback_state(state);
-        host
-          .send_bot_chat(bot, text_channel_id, "Stopped playback and cleared the queue.")
-          .ok();
+        host.send_bot_chat(bot, text_channel_id, "Stopped. Queue cleared.").ok();
         return CommandDrain::EndCurrent;
       }
       PlayerCommand::Shutdown => return CommandDrain::Shutdown,
@@ -343,7 +423,9 @@ fn drain_commands_while_playing(
 }
 
 fn set_current_track(state: &Arc<Mutex<PlayerState>>, queued: QueuedTrack) {
-  state.lock().expect("playback state mutex poisoned").current = Some(queued);
+  let mut state = state.lock().expect("playback state mutex poisoned");
+  state.current = Some(queued);
+  state.current_started_at = None;
 }
 
 fn enqueue_many_from_idle(
@@ -358,6 +440,7 @@ fn enqueue_many_from_idle(
   };
   let mut state = state.lock().expect("playback state mutex poisoned");
   state.current = Some(queued.clone());
+  state.current_started_at = None;
   state
     .queue
     .extend(tracks.map(|track| QueuedTrack { track, text_channel_id }));
@@ -371,12 +454,15 @@ fn update_current_track_title(state: &Arc<Mutex<PlayerState>>, title: &str) {
 }
 
 fn clear_current_track(state: &Arc<Mutex<PlayerState>>) {
-  state.lock().expect("playback state mutex poisoned").current = None;
+  let mut state = state.lock().expect("playback state mutex poisoned");
+  state.current = None;
+  state.current_started_at = None;
 }
 
 fn clear_playback_state(state: &Arc<Mutex<PlayerState>>) {
   let mut state = state.lock().expect("playback state mutex poisoned");
   state.current = None;
+  state.current_started_at = None;
   state.queue.clear();
 }
 
@@ -384,12 +470,51 @@ fn take_next_queued_track(state: &Arc<Mutex<PlayerState>>) -> Option<QueuedTrack
   let mut state = state.lock().expect("playback state mutex poisoned");
   let queued = state.queue.pop_front()?;
   state.current = Some(queued.clone());
+  state.current_started_at = None;
   Some(queued)
+}
+
+fn mark_current_track_started(state: &Arc<Mutex<PlayerState>>) {
+  state.lock().expect("playback state mutex poisoned").current_started_at = Some(Instant::now());
 }
 
 struct FramePacer {
   next_deadline: Instant,
   frame_duration: Duration,
+}
+
+struct IdleVoiceMonitor {
+  next_check_at: Instant,
+  empty_since: Option<Instant>,
+}
+
+impl IdleVoiceMonitor {
+  fn new() -> Self {
+    Self {
+      next_check_at: Instant::now(),
+      empty_since: None,
+    }
+  }
+
+  fn channel_has_been_empty_too_long(&mut self, host: &HostHandle, voice_channel_id: ChannelId) -> bool {
+    let now = Instant::now();
+    if now < self.next_check_at {
+      return false;
+    }
+    self.next_check_at = now + EMPTY_VOICE_CHECK_INTERVAL;
+
+    match host.get_voice_channel_info(voice_channel_id) {
+      Ok(info) if info.user_count <= 1 => {
+        let empty_since = self.empty_since.get_or_insert(now);
+        now.saturating_duration_since(*empty_since) >= EMPTY_VOICE_TIMEOUT
+      }
+      Ok(_) => {
+        self.empty_since = None;
+        false
+      }
+      Err(_) => false,
+    }
+  }
 }
 
 impl FramePacer {
