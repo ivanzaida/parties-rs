@@ -15,6 +15,8 @@ use crate::{
   sources::registry::SourceRegistry,
 };
 
+const PACER_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+
 enum PlayerCommand {
   Enqueue { track: Track, text_channel_id: ChannelId },
   Skip { text_channel_id: ChannelId },
@@ -180,6 +182,7 @@ fn play_track(
     }
   };
 
+  let mut pacer = FramePacer::new();
   while let Some(frame) = match frames.next_frame() {
     Ok(frame) => frame,
     Err(error) => {
@@ -189,7 +192,6 @@ fn play_track(
       return PlaybackControl::Continue;
     }
   } {
-    let frame_start = Instant::now();
     match drain_commands_while_playing(host, bot, rx, state, &track) {
       CommandDrain::KeepPlaying => {}
       CommandDrain::EndCurrent => return PlaybackControl::Continue,
@@ -206,6 +208,8 @@ fn play_track(
       }
     };
 
+    pacer.wait_for_next_frame();
+
     if let Err(error) = host.send_bot_voice_packet(bot, *sequence, &opus_payload) {
       let response = format!("Failed to send audio for {}: {error}", track.title);
       host.send_bot_chat(bot, text_channel_id, &response).ok();
@@ -213,8 +217,6 @@ fn play_track(
       return PlaybackControl::Continue;
     }
     *sequence = sequence.wrapping_add(1);
-
-    sleep_until_next_frame(frame_start);
   }
 
   clear_current_track(state);
@@ -288,9 +290,42 @@ fn take_next_queued_track(state: &Arc<Mutex<PlayerState>>) -> Option<QueuedTrack
   Some(queued)
 }
 
-fn sleep_until_next_frame(frame_start: Instant) {
-  let frame_duration = Duration::from_millis(u64::from(BOT_VOICE_FRAME_DURATION_MS));
-  if let Some(remaining) = frame_duration.checked_sub(frame_start.elapsed()) {
-    thread::sleep(remaining);
+struct FramePacer {
+  next_deadline: Instant,
+  frame_duration: Duration,
+}
+
+impl FramePacer {
+  fn new() -> Self {
+    Self {
+      next_deadline: Instant::now(),
+      frame_duration: Duration::from_millis(u64::from(BOT_VOICE_FRAME_DURATION_MS)),
+    }
+  }
+
+  fn wait_for_next_frame(&mut self) {
+    let deadline = self.next_deadline;
+    sleep_until(deadline);
+
+    let now = Instant::now();
+    self.next_deadline = deadline + self.frame_duration;
+    if now.saturating_duration_since(deadline) > self.frame_duration {
+      self.next_deadline = now + self.frame_duration;
+    }
+  }
+}
+
+fn sleep_until(deadline: Instant) {
+  loop {
+    let now = Instant::now();
+    let Some(remaining) = deadline.checked_duration_since(now) else {
+      return;
+    };
+
+    if remaining > PACER_SPIN_THRESHOLD {
+      thread::sleep(remaining - PACER_SPIN_THRESHOLD);
+    } else {
+      thread::yield_now();
+    }
   }
 }
