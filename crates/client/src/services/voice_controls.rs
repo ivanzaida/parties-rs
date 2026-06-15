@@ -12,7 +12,7 @@ pub async fn apply_voice_control(
   action: VoiceControlAction,
   no_connected_server: String,
 ) -> Result<(), String> {
-  let server = session.server().ok_or(no_connected_server)?;
+  let server = session.server().ok_or_else(|| no_connected_server.clone())?;
   let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
 
   match action {
@@ -44,6 +44,9 @@ pub async fn apply_voice_control(
     .await
     .map_err(|error| error.to_string())?;
   session.set_local_voice_state(muted, deafened);
+  if !muted && !deafened {
+    session.ensure_voice_capture_started(&no_connected_server)?;
+  }
   session.play_local_voice_state_change_notification();
   Ok(())
 }

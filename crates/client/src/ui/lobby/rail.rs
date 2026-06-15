@@ -145,8 +145,8 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
       );
       session.set_local_voice_state(muted, deafened);
       match session.start_voice(settings, &no_connected_server) {
-        Ok(()) => tracing::info!(target: "voice", "[voice] local voice capture started after join"),
-        Err(error) => tracing::warn!(target: "voice", "[voice] local voice capture failed after join: {error}"),
+        Ok(()) => tracing::info!(target: "voice", "[voice] local voice engine started after join"),
+        Err(error) => tracing::warn!(target: "voice", "[voice] local voice engine failed after join: {error}"),
       }
       Ok(())
     }

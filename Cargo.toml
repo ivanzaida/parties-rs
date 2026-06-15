@@ -1,7 +1,4 @@
 [workspace]
-members = ["crates/client", "crates/libde265-sys"]
+members = ["crates/client"]
 default-members = ["crates/client"]
 resolver = "3"
-
-[patch.crates-io]
-libde265-sys = { path = "crates/libde265-sys" }

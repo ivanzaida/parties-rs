@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::ptr::NonNull;
 use std::{
   borrow::Cow,
@@ -10,16 +10,16 @@ use std::{
 use openh264_sys2::API as _;
 use shiguredo_dav1d::{self as dav1d_native, DecoderConfig};
 
-use super::{DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoDecodeConfig, VideoError};
+use super::{
+  DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoDecodeConfig, VideoError,
+  VideoFrameDecoder,
+};
 use crate::network::protocol::{VideoCodecId, VideoFrame};
 
 const SLOW_SOFTWARE_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
 const AV1_DECODE_SUBMIT_RETRIES: usize = 3;
 const H264_NONFATAL_DECODE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const H264_OPENH264_MAX_LEVEL_IDC: u8 = 52;
-#[cfg(not(target_os = "windows"))]
-const H265_DECODE_PASSES: usize = 8;
-
 pub(super) enum SoftwareVideoDecoder {
   Av1(Av1SoftwareDecoder),
   H265(H265SoftwareDecoder),
@@ -35,10 +35,8 @@ pub(super) struct Av1SoftwareDecoder {
 }
 
 pub(super) struct H265SoftwareDecoder {
-  #[cfg(target_os = "windows")]
-  decoder: WindowsLibhevcDecoder,
-  #[cfg(not(target_os = "windows"))]
-  decoder: libde265::Decoder,
+  #[cfg(any(target_os = "windows", target_os = "macos"))]
+  decoder: NativeLibhevcDecoder,
   width: u16,
   height: u16,
   threads: u32,
@@ -69,8 +67,10 @@ impl SoftwareVideoDecoder {
       Self::Av1(_) | Self::H265(_) => NativeVideoBackend::SoftwareDecoder,
     }
   }
+}
 
-  pub(super) fn decode_frame(
+impl VideoFrameDecoder for SoftwareVideoDecoder {
+  fn decode_frame(
     &mut self,
     frame: &VideoFrame,
     output: bool,
@@ -250,16 +250,16 @@ fn av1_max_frame_delay(threads: usize) -> usize {
 
 impl H265SoftwareDecoder {
   fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
       let threads = h265_decoder_threads(config);
-      let decoder = WindowsLibhevcDecoder::new(config.width, config.height, threads)?;
+      let decoder = NativeLibhevcDecoder::new(config.width, config.height, threads)?;
       tracing::info!(target: "video::decode::software",
         "[video:decode/software] native software H.265 decoder started: size={}x{} threads={} backend={} sao=codec-default deblocking=codec-default",
         config.width,
         config.height,
         threads,
-        WindowsLibhevcDecoder::version()
+        NativeLibhevcDecoder::version()
       );
       return Ok(Self {
         decoder,
@@ -269,34 +269,12 @@ impl H265SoftwareDecoder {
       });
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-      let session = libde265::De265::new()
-        .map_err(|error| VideoError::new(format!("Failed to initialize native software H.265 decoder: {error}")))?;
-      session.disable_logging();
-      let mut decoder = libde265::Decoder::new(session.clone());
-      decoder.set_suppress_faulty_pictures(true);
-      decoder.set_disable_sao(true);
-      decoder.set_disable_deblocking(true);
-      let threads = h265_decoder_threads(config);
-      decoder.start_worker_threads(threads).map_err(|error| {
-        VideoError::new(format!(
-          "Failed to start native software H.265 decoder threads: {error}"
-        ))
-      })?;
-      tracing::info!(target: "video::decode::software",
-        "[video:decode/software] native software H.265 decoder started: size={}x{} threads={} sao=false deblocking=false libde265_version={}",
-        config.width,
-        config.height,
-        threads,
-        session.get_version()
-      );
-      Ok(Self {
-        decoder,
-        width: config.width,
-        height: config.height,
-        threads,
-      })
+      let _ = config;
+      Err(VideoError::new(
+        "Software H.265 decoding is only implemented through native libhevc on Windows and macOS.",
+      ))
     }
   }
 
@@ -306,89 +284,21 @@ impl H265SoftwareDecoder {
     output: bool,
     output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
       return self.decode_frame_libhevc(frame, output, output_buffer);
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-      let total_start = Instant::now();
-      let parse_start = Instant::now();
-      let nals = h265_annex_b_nal_count(&frame.encoded);
-      let parse_elapsed = parse_start.elapsed();
-      if nals == 0 {
-        return Err(VideoError::new("Software H.265 decoder expected Annex B NAL units."));
-      }
-
-      let mut latest: Option<NativeDecodedVideoFrame> = None;
-      let mut reusable_output = output_buffer;
-      let mut codec_elapsed = Duration::ZERO;
-      let mut convert_elapsed = Duration::ZERO;
-
-      let codec_start = Instant::now();
-      self
-        .decoder
-        .push_data(&frame.encoded, i64::from(frame.frame_number), None)
-        .map_err(|error| {
-          VideoError::new(format!(
-            "Native software H.265 decoder failed to accept frame {}: {error}.",
-            frame.frame_number
-          ))
-        })?;
-      self.decoder.push_end_of_frame();
-      for _ in 0..H265_DECODE_PASSES {
-        match self.decoder.decode() {
-          Ok(()) => {}
-          Err(libde265::Error::ImageBufferFull) => {}
-          Err(error) => {
-            codec_elapsed += codec_start.elapsed();
-            return Err(VideoError::new(format!(
-              "Native software H.265 decoder failed on frame {}: {error}.",
-              frame.frame_number
-            )));
-          }
-        }
-
-        while let Some(decoded) = self.decoder.peek_next_picture() {
-          if output {
-            reusable_output = latest.take().map(|frame| frame.pixels).or(reusable_output);
-            let convert_start = Instant::now();
-            let converted = h265_image_to_nv12(&decoded, self.width, self.height, reusable_output.take());
-            convert_elapsed += convert_start.elapsed();
-            latest = Some(converted?);
-          }
-          self.decoder.release_next_picture();
-        }
-
-        if self.decoder.get_number_of_input_bytes_pending() == 0 && self.decoder.get_number_of_nal_units_pending() == 0
-        {
-          break;
-        }
-      }
-      codec_elapsed += codec_start.elapsed();
-
-      log_slow_software_decode(SoftwareDecodeTiming {
-        codec: VideoCodecId::H265,
-        frame,
-        output,
-        produced_frame: latest.is_some(),
-        total_elapsed: total_start.elapsed(),
-        input_copy_elapsed: Duration::ZERO,
-        parse_elapsed,
-        send_elapsed: Duration::ZERO,
-        codec_elapsed,
-        convert_elapsed,
-        units: nals,
-        unit_label: "nals",
-        av1_threads: None,
-        av1_max_frame_delay: None,
-      });
-      Ok(latest)
+      let _ = (frame, output, output_buffer);
+      Err(VideoError::new(
+        "Software H.265 decoding is only implemented through native libhevc on Windows and macOS.",
+      ))
     }
   }
 
-  #[cfg(target_os = "windows")]
+  #[cfg(any(target_os = "windows", target_os = "macos"))]
   fn decode_frame_libhevc(
     &mut self,
     frame: &VideoFrame,
@@ -458,12 +368,12 @@ impl H265SoftwareDecoder {
 fn h265_decoder_threads(config: &VideoDecodeConfig) -> u32 {
   let available_threads = std::thread::available_parallelism().map_or(4, |threads| threads.get());
   let pixels = usize::from(config.width) * usize::from(config.height);
-  #[cfg(target_os = "windows")]
+  #[cfg(any(target_os = "windows", target_os = "macos"))]
   {
     let _ = pixels;
     return available_threads.clamp(1, 4) as u32;
   }
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(not(any(target_os = "windows", target_os = "macos")))]
   {
     let target_threads = if pixels >= 3840 * 2160 {
       available_threads
@@ -476,13 +386,13 @@ fn h265_decoder_threads(config: &VideoDecodeConfig) -> u32 {
   }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[repr(C)]
 struct PartiesLibhevcDecoder {
   _private: [u8; 0],
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 unsafe extern "C" {
   fn parties_libhevc_decoder_create(width: u32, height: u32, threads: u32) -> *mut PartiesLibhevcDecoder;
   fn parties_libhevc_decoder_destroy(decoder: *mut PartiesLibhevcDecoder);
@@ -502,13 +412,13 @@ unsafe extern "C" {
   fn parties_libhevc_decoder_version() -> *const std::ffi::c_char;
 }
 
-#[cfg(target_os = "windows")]
-struct WindowsLibhevcDecoder {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+struct NativeLibhevcDecoder {
   handle: NonNull<PartiesLibhevcDecoder>,
 }
 
-#[cfg(target_os = "windows")]
-impl WindowsLibhevcDecoder {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl NativeLibhevcDecoder {
   fn new(width: u16, height: u16, threads: u32) -> Result<Self, VideoError> {
     let handle = unsafe { parties_libhevc_decoder_create(u32::from(width), u32::from(height), threads) };
     let handle = NonNull::new(handle).ok_or_else(|| VideoError::new("Failed to start native libhevc decoder."))?;
@@ -572,8 +482,8 @@ impl WindowsLibhevcDecoder {
   }
 }
 
-#[cfg(target_os = "windows")]
-impl Drop for WindowsLibhevcDecoder {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl Drop for NativeLibhevcDecoder {
   fn drop(&mut self) {
     unsafe {
       parties_libhevc_decoder_destroy(self.handle.as_ptr());
@@ -1162,40 +1072,6 @@ fn dav1d_frame_to_nv12(
     (frame.y_stride(), frame.u_stride(), frame.v_stride()),
     output_buffer,
   )
-}
-
-#[cfg(not(target_os = "windows"))]
-fn h265_image_to_nv12(
-  image: &libde265::Image,
-  width: u16,
-  height: u16,
-  output_buffer: Option<Vec<u8>>,
-) -> Result<NativeDecodedVideoFrame, VideoError> {
-  if image.get_bits_per_pixel(0) != 8 || image.get_bits_per_pixel(1) != 8 || image.get_bits_per_pixel(2) != 8 {
-    return Err(VideoError::new(format!(
-      "Native software H.265 decoder returned unsupported bit depth: y={} u={} v={}.",
-      image.get_bits_per_pixel(0),
-      image.get_bits_per_pixel(1),
-      image.get_bits_per_pixel(2)
-    )));
-  }
-  if image.get_image_width(0) != u32::from(width) || image.get_image_height(0) != u32::from(height) {
-    return Err(VideoError::new(format!(
-      "Native software H.265 decoder returned unexpected dimensions: got={}x{} expected={}x{}.",
-      image.get_image_width(0),
-      image.get_image_height(0),
-      width,
-      height
-    )));
-  }
-
-  let (y, y_stride) = image.get_image_plane(0);
-  let (u, u_stride) = image.get_image_plane(1);
-  let (v, v_stride) = image.get_image_plane(2);
-  let width = usize::from(width);
-  let height = usize::from(height);
-
-  i420_planes_to_nv12(y, u, v, width, height, (y_stride, u_stride, v_stride), output_buffer)
 }
 
 fn h264_decoded_frame_to_nv12(

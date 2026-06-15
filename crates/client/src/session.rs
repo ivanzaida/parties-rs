@@ -59,6 +59,7 @@ pub struct ServerSession {
   speaking: Arc<speaking::SpeakingTracker>,
   voice: Arc<voice_runtime::VoiceRuntime>,
   voice_state: Arc<voice_state::VoiceState>,
+  voice_settings: Arc<Mutex<AppSettings>>,
   streams: Arc<video_stream::StreamRuntime>,
   video_sink: Arc<video_sink::VideoFrameSink>,
   video_hardware_decoding: Arc<AtomicBool>,
@@ -75,6 +76,7 @@ impl Default for ServerSession {
       speaking: Arc::new(speaking::SpeakingTracker::new()),
       voice: Arc::new(voice_runtime::VoiceRuntime::new()),
       voice_state: Arc::new(voice_state::VoiceState::new()),
+      voice_settings: Arc::new(Mutex::new(AppSettings::default())),
       streams: Arc::new(video_stream::StreamRuntime::new()),
       video_sink: Arc::new(video_sink::VideoFrameSink::new(lobby, revision.clone())),
       video_hardware_decoding: Arc::new(AtomicBool::new(true)),
@@ -615,6 +617,7 @@ impl ServerSession {
   }
 
   pub fn start_voice(&self, settings: AppSettings, no_connected_server: &str) -> Result<(), String> {
+    *self.voice_settings.lock() = settings.clone();
     let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
     tracing::info!(
@@ -622,10 +625,15 @@ impl ServerSession {
       "[voice] starting local voice engine: muted={muted} deafened={deafened} {}",
       self.connection_debug_context()
     );
-    let on_local_voice = self.local_voice_callback();
-    let captures_voice = self
-      .voice
-      .start_capture(server, settings, muted, deafened, on_local_voice)?;
+    let captures_voice = if muted || deafened {
+      self.voice.ensure_stream_playback(settings, deafened)?;
+      false
+    } else {
+      let on_local_voice = self.local_voice_callback();
+      self
+        .voice
+        .start_capture(server, settings, muted, deafened, on_local_voice)?
+    };
     tracing::info!(
       target: "voice",
       "[voice] local voice engine started: captures_voice={} {}",
@@ -635,7 +643,37 @@ impl ServerSession {
     Ok(())
   }
 
+  pub fn ensure_voice_capture_started(&self, no_connected_server: &str) -> Result<(), String> {
+    if self.voice.voice_active() {
+      return Ok(());
+    }
+
+    let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
+    let settings = self.voice_settings.lock().clone();
+    let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
+    if muted || deafened {
+      return Ok(());
+    }
+
+    tracing::info!(
+      target: "voice",
+      "[voice] starting deferred local voice capture after unmute: {}",
+      self.connection_debug_context()
+    );
+    let captures_voice = self
+      .voice
+      .start_capture(server, settings, muted, deafened, self.local_voice_callback())?;
+    tracing::info!(
+      target: "voice",
+      "[voice] deferred local voice capture started: captures_voice={} {}",
+      captures_voice,
+      self.connection_debug_context()
+    );
+    Ok(())
+  }
+
   pub fn ensure_stream_audio_playback(&self, settings: AppSettings) -> Result<(), String> {
+    *self.voice_settings.lock() = settings.clone();
     if self.voice.has_engine() {
       return Ok(());
     }

@@ -1025,7 +1025,7 @@ async fn rejoin_previous_voice_channel(
 
   session.set_local_voice_state(muted, deafened);
   match session.start_voice(settings, "") {
-    Ok(()) => tracing::info!(target: "voice", "[voice] local voice capture restarted after reconnect rejoin"),
-    Err(error) => tracing::warn!(target: "voice", "[voice] local voice capture failed after reconnect rejoin: {error}"),
+    Ok(()) => tracing::info!(target: "voice", "[voice] local voice engine restarted after reconnect rejoin"),
+    Err(error) => tracing::warn!(target: "voice", "[voice] local voice engine failed after reconnect rejoin: {error}"),
   }
 }

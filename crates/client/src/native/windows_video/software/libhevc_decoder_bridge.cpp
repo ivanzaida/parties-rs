@@ -5,7 +5,9 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
 #include <malloc.h>
+#endif
 
 #include "ihevc_typedefs.h"
 #include "iv.h"
@@ -30,11 +32,20 @@ static inline iv_obj_t* obj(void* ptr) {
 }
 
 void* hevc_aligned_alloc(void*, WORD32 alignment, WORD32 size) {
+#if defined(_WIN32)
     return _aligned_malloc(static_cast<size_t>(size), static_cast<size_t>(alignment));
+#else
+    void* ptr = nullptr;
+    return posix_memalign(&ptr, static_cast<size_t>(alignment), static_cast<size_t>(size)) == 0 ? ptr : nullptr;
+#endif
 }
 
 void hevc_aligned_free(void*, void* ptr) {
+#if defined(_WIN32)
     _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
 }
 
 bool set_decode_mode(PartiesLibhevcDecoder* decoder, IVD_VIDEO_DECODE_MODE_T mode) {
