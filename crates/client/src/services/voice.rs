@@ -51,6 +51,8 @@ const INPUT_FRAME_POOL: usize = INPUT_FRAME_QUEUE + 2;
 const MAX_PCM_FRAMES_PER_USER: usize = 12;
 const MIN_PCM_FRAMES_BEFORE_PLAYOUT: usize = 2;
 const MAX_PLC_FRAMES: i16 = 3;
+const MAX_LATE_VOICE_FRAMES_BEFORE_RESET: i16 = 32;
+const LATE_VOICE_PACKETS_BEFORE_RESET: u8 = 3;
 const MAX_CAPTURE_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * 5;
 const MAX_OPUS_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * INPUT_FRAME_POOL;
 const MAX_RENDER_QUEUE_SAMPLES: usize = PROCESS_FRAME_SIZE * 50;
@@ -1489,6 +1491,7 @@ struct DecodeStream {
   decoder: Decoder,
   channels: usize,
   next_sequence: Option<u16>,
+  late_sequence_drop_count: u8,
   normalizer: NormalizationState,
   scratch: Vec<f32>,
 }
@@ -1502,6 +1505,7 @@ impl DecodeStream {
         Channels::Stereo => STREAM_CHANNELS,
       },
       next_sequence: None,
+      late_sequence_drop_count: 0,
       normalizer: NormalizationState::default(),
       scratch: Vec::new(),
     })
@@ -1513,20 +1517,32 @@ impl DecodeStream {
     if let Some(expected) = self.next_sequence {
       let delta = seq_delta(expected, sequence);
       if delta < 0 {
-        return Ok(());
-      }
-
-      if delta > MAX_PLC_FRAMES {
+        self.late_sequence_drop_count = self.late_sequence_drop_count.saturating_add(1);
+        if should_reset_late_voice_sequence(delta, self.late_sequence_drop_count) {
+          self.decoder.reset_state()?;
+          self.next_sequence = None;
+        } else {
+          return Ok(());
+        }
+      } else if delta > MAX_PLC_FRAMES {
         self.decoder.reset_state()?;
       } else {
         for _ in 0..delta {
           self.decode_frame_into(&[], decoded)?;
         }
       }
+
+      if self.next_sequence.is_none() {
+        self.decode_frame_into(opus, decoded)?;
+        self.next_sequence = Some(sequence.wrapping_add(1));
+        self.late_sequence_drop_count = 0;
+        return Ok(());
+      }
     }
 
     self.decode_frame_into(opus, decoded)?;
     self.next_sequence = Some(sequence.wrapping_add(1));
+    self.late_sequence_drop_count = 0;
     Ok(())
   }
 
@@ -1585,6 +1601,10 @@ fn seq_delta(expected: u16, actual: u16) -> i16 {
   actual.wrapping_sub(expected) as i16
 }
 
+fn should_reset_late_voice_sequence(delta: i16, consecutive_late_packets: u8) -> bool {
+  delta < -MAX_LATE_VOICE_FRAMES_BEFORE_RESET && consecutive_late_packets >= LATE_VOICE_PACKETS_BEFORE_RESET
+}
+
 fn rms(samples: &[f32]) -> f32 {
   if samples.is_empty() {
     return 0.0;
@@ -1630,6 +1650,23 @@ mod tests {
     assert_eq!(seq_delta(10, 12), 2);
     assert_eq!(seq_delta(12, 10), -2);
     assert_eq!(seq_delta(u16::MAX, 1), 2);
+  }
+
+  #[test]
+  fn late_voice_sequence_reset_threshold_requires_consecutive_large_late_packets() {
+    assert!(!should_reset_late_voice_sequence(-1, LATE_VOICE_PACKETS_BEFORE_RESET));
+    assert!(!should_reset_late_voice_sequence(
+      -MAX_LATE_VOICE_FRAMES_BEFORE_RESET,
+      LATE_VOICE_PACKETS_BEFORE_RESET
+    ));
+    assert!(!should_reset_late_voice_sequence(
+      -MAX_LATE_VOICE_FRAMES_BEFORE_RESET - 1,
+      LATE_VOICE_PACKETS_BEFORE_RESET - 1
+    ));
+    assert!(should_reset_late_voice_sequence(
+      -MAX_LATE_VOICE_FRAMES_BEFORE_RESET - 1,
+      LATE_VOICE_PACKETS_BEFORE_RESET
+    ));
   }
 
   #[test]
