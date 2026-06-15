@@ -139,8 +139,6 @@ pub(super) struct LeaveChannelEffects {
 pub(super) fn select_channel(lobby: &mut LobbyState, channel_id: ChannelId) {
   let previous = lobby.selected_channel_id;
   lobby.selected_channel_id = Some(channel_id);
-  lobby.selected_text_channel_id = None;
-  lobby.debug_chat_selected = false;
   lobby.stream_browser_channel_id = None;
   sync_selected_users(lobby);
   tracing::debug!(target: "lobby",
@@ -263,6 +261,17 @@ pub(super) fn sync_cached_channel_counts(lobby: &mut LobbyState) {
 pub(super) fn set_watching_user(lobby: &mut LobbyState, user_id: Option<UserId>) -> (Option<UserId>, bool) {
   let previous_user_id = lobby.watching_user_id;
   lobby.watching_user_id = user_id;
+  if let Some(user_id) = user_id
+    && let Some(channel_id) = lobby.selected_channel_id
+    && lobby
+      .users_by_channel
+      .get(&channel_id)
+      .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
+  {
+    lobby.selected_text_channel_id = None;
+    lobby.debug_chat_selected = false;
+    lobby.stream_browser_channel_id = Some(channel_id);
+  }
   (previous_user_id, previous_user_id != user_id)
 }
 
@@ -789,6 +798,74 @@ mod tests {
         source: super::super::chat_commands::ChatCommandSource::Server,
       })
     );
+  }
+
+  #[test]
+  fn joining_voice_channel_preserves_current_text_view() {
+    let mut lobby = LobbyState {
+      selected_text_channel_id: Some(10),
+      ..LobbyState::default()
+    };
+
+    select_channel(&mut lobby, 1);
+
+    assert_eq!(lobby.selected_channel_id, Some(1));
+    assert_eq!(lobby.selected_text_channel_id, Some(10));
+    assert!(!lobby.debug_chat_selected);
+    assert_eq!(lobby.stream_browser_channel_id, None);
+  }
+
+  #[test]
+  fn watching_stream_in_joined_voice_channel_opens_voice_view() {
+    let mut lobby = LobbyState {
+      selected_channel_id: Some(1),
+      selected_text_channel_id: Some(10),
+      users_by_channel: HashMap::from([(
+        1,
+        vec![LobbyUser {
+          user_id: 4,
+          username: "streamer".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: false,
+        }],
+      )]),
+      ..LobbyState::default()
+    };
+
+    set_watching_user(&mut lobby, Some(4));
+
+    assert_eq!(lobby.watching_user_id, Some(4));
+    assert_eq!(lobby.stream_browser_channel_id, Some(1));
+    assert_eq!(lobby.selected_text_channel_id, None);
+    assert!(!lobby.debug_chat_selected);
+  }
+
+  #[test]
+  fn watching_stream_outside_joined_voice_channel_preserves_current_text_view() {
+    let mut lobby = LobbyState {
+      selected_channel_id: Some(1),
+      selected_text_channel_id: Some(10),
+      users_by_channel: HashMap::from([(
+        2,
+        vec![LobbyUser {
+          user_id: 4,
+          username: "streamer".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: false,
+        }],
+      )]),
+      ..LobbyState::default()
+    };
+
+    set_watching_user(&mut lobby, Some(4));
+
+    assert_eq!(lobby.watching_user_id, Some(4));
+    assert_eq!(lobby.stream_browser_channel_id, None);
+    assert_eq!(lobby.selected_text_channel_id, Some(10));
   }
 
   #[test]

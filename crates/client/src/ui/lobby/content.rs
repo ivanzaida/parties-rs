@@ -107,7 +107,7 @@ fn main_top_bar(
     return chat_channel_top_bar(ctx, &channel, Some(unique_lobby_member_count(lobby)));
   }
 
-  if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
+  if let Some(channel) = stream_browser_channel(lobby) {
     if let Some(stream) = watched_stream_for_channel(lobby, channel.id) {
       return stream_watching_top_bar(ctx, stream, debug_mode_enabled, start_stream_modal_open, stop_watching);
     }
@@ -329,7 +329,7 @@ fn main_body(
     );
   }
 
-  if let Some(channel) = stream_browser_channel(lobby).or_else(|| selected_voice_channel(lobby)) {
+  if let Some(channel) = stream_browser_channel(lobby) {
     if let Some(stream) = watched_stream_for_channel(lobby, channel.id) {
       return stream_watching(
         ctx,
@@ -370,11 +370,6 @@ fn selected_text_channel(lobby: &LobbyState) -> Option<&LobbyTextChannel> {
 
 fn stream_browser_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
   let channel_id = lobby.stream_browser_channel_id?;
-  lobby.channels.iter().find(|channel| channel.id == channel_id)
-}
-
-fn selected_voice_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
-  let channel_id = lobby.selected_channel_id?;
   lobby.channels.iter().find(|channel| channel.id == channel_id)
 }
 

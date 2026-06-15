@@ -536,14 +536,15 @@ impl ServerSession {
     let (previous_user_id, changed, view_changed) = {
       let mut lobby = self.lobby.lock();
       let previous_text_channel_id = lobby.selected_text_channel_id;
-      if user_id.is_some() {
-        lobby.selected_text_channel_id = None;
-      }
+      let previous_debug_chat_selected = lobby.debug_chat_selected;
+      let previous_stream_browser_channel_id = lobby.stream_browser_channel_id;
       let (previous_user_id, changed) = lobby::set_watching_user(&mut lobby, user_id);
       (
         previous_user_id,
         changed,
-        previous_text_channel_id != lobby.selected_text_channel_id,
+        previous_text_channel_id != lobby.selected_text_channel_id
+          || previous_debug_chat_selected != lobby.debug_chat_selected
+          || previous_stream_browser_channel_id != lobby.stream_browser_channel_id,
       )
     };
     if changed {

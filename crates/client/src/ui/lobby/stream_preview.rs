@@ -69,8 +69,7 @@ fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: Channe
     return false;
   }
 
-  let visible_voice_channel_id = lobby.stream_browser_channel_id.or(lobby.selected_channel_id);
-  visible_voice_channel_id == Some(watched_channel_id)
+  lobby.stream_browser_channel_id == Some(watched_channel_id)
 }
 
 fn preview_card(
