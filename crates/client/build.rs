@@ -43,6 +43,7 @@ fn main() {
       .file("src/native/windows_video/nvidia/nvdec_decoder.cpp")
       .file("src/native/windows_video/nvidia/nvenc_encoder.cpp")
       .file("src/native/windows_video/software/libhevc_decoder_bridge.cpp")
+      .file("src/native/windows_video/software/mft_h264_decoder_bridge.cpp")
       .include("src/native/windows_video")
       .include("src/native/windows_video/amd")
       .include("src/native/windows_video/amd/amf/public")
@@ -60,6 +61,9 @@ fn main() {
     println!("cargo:rustc-link-lib=d3dcompiler");
     println!("cargo:rustc-link-lib=dxgi");
     println!("cargo:rustc-link-lib=dwmapi");
+    println!("cargo:rustc-link-lib=mfplat");
+    println!("cargo:rustc-link-lib=mfuuid");
+    println!("cargo:rustc-link-lib=wmcodecdspuuid");
     println!("cargo:rustc-link-lib=winmm");
     println!("cargo:rustc-link-lib=windowsapp");
     println!("cargo:rerun-if-changed=src/native/windows_video/bridge/gpu_stream_bridge.cpp");
@@ -90,6 +94,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvcuvid.h");
     println!("cargo:rerun-if-changed=src/native/windows_video/nvidia/nvEncodeAPI.h");
     println!("cargo:rerun-if-changed=src/native/windows_video/software/libhevc_decoder_bridge.cpp");
+    println!("cargo:rerun-if-changed=src/native/windows_video/software/mft_h264_decoder_bridge.cpp");
     println!("cargo:rerun-if-changed=assets/icons/parties_icon.ico");
 
     let mut resource = winresource::WindowsResource::new();

@@ -97,6 +97,11 @@ struct AmfDecoderBridge {
 }
 
 #[repr(C)]
+struct MftH264DecoderBridge {
+  _private: [u8; 0],
+}
+
+#[repr(C)]
 struct GpuStreamBridge {
   _private: [u8; 0],
 }
@@ -172,6 +177,20 @@ unsafe extern "C" {
     height: u16,
     y_shared_handle_out: *mut usize,
     uv_shared_handle_out: *mut usize,
+  ) -> i32;
+  fn parties_mft_h264_decoder_create(width: u32, height: u32) -> *mut MftH264DecoderBridge;
+  fn parties_mft_h264_decoder_destroy(decoder: *mut MftH264DecoderBridge);
+  fn parties_mft_h264_decoder_decode(
+    decoder: *mut MftH264DecoderBridge,
+    data: *const u8,
+    len: usize,
+    timestamp: i64,
+    output_requested: i32,
+    output: *mut u8,
+    output_len: usize,
+    width_out: *mut u32,
+    height_out: *mut u32,
+    error_out: *mut u32,
   ) -> i32;
   fn parties_gpu_stream_create(
     source_kind: u8,
@@ -298,6 +317,7 @@ pub(super) fn encode(
 pub(super) enum NativeVideoDecoder {
   Nvdec(NvdecVideoDecoder),
   AmdAmf(AmdAmfVideoDecoder),
+  MftH264(MftH264VideoDecoder),
   Software(SoftwareVideoDecoder),
 }
 
@@ -309,9 +329,27 @@ pub(super) struct AmdAmfVideoDecoder {
   handle: NonNull<AmfDecoderBridge>,
 }
 
+pub(super) struct MftH264VideoDecoder {
+  handle: NonNull<MftH264DecoderBridge>,
+}
+
 pub(super) fn decode(config: VideoDecodeConfig) -> Result<VideoDecoder, VideoError> {
   install_native_logger();
   if !config.hardware_decoding {
+    if config.codec == VideoCodecId::H264 {
+      let decoder = MftH264VideoDecoder::new(&config)?;
+      tracing::info!(target: "video::decode::windows",
+        "[video:decode/windows] decoder ready through Media Foundation: codec={:?} size={}x{}",
+        config.codec,
+        config.width,
+        config.height
+      );
+      return Ok(VideoDecoder::from_windows(
+        NativeVideoDecoder::MftH264(decoder),
+        config,
+        NativeVideoBackend::WindowsMediaFoundation,
+      ));
+    }
     return software_decode(config);
   }
 
@@ -1743,6 +1781,7 @@ impl NativeVideoDecoder {
     match self {
       Self::Nvdec(decoder) => decoder.decode_frame(frame, output, output_buffer),
       Self::AmdAmf(decoder) => decoder.decode_frame(frame, output, output_buffer),
+      Self::MftH264(decoder) => decoder.decode_frame(frame, output, output_buffer),
       Self::Software(decoder) => decoder.decode_frame(frame, output, output_buffer),
     }
   }
@@ -1755,6 +1794,7 @@ impl NativeVideoDecoder {
     match self {
       Self::Nvdec(decoder) => decoder.decode_frame_to_dx12(frame, surface),
       Self::AmdAmf(decoder) => decoder.decode_frame_to_dx12(frame, surface),
+      Self::MftH264(_) => Ok(false),
       Self::Software(_) => Ok(false),
     }
   }
@@ -1766,7 +1806,109 @@ impl NativeVideoDecoder {
     match self {
       Self::Nvdec(_) => Ok(None),
       Self::AmdAmf(decoder) => decoder.decode_frame_to_shared_nv12_planes(frame),
+      Self::MftH264(_) => Ok(None),
       Self::Software(_) => Ok(None),
+    }
+  }
+}
+
+impl MftH264VideoDecoder {
+  fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
+    if config.codec != VideoCodecId::H264 {
+      return Err(VideoError::new(format!(
+        "Windows Media Foundation H.264 decoder cannot decode {}.",
+        codec_label(config.codec)
+      )));
+    }
+
+    let handle = {
+      let _span = profiler::span("video.ffi.mft_h264_decoder_create");
+      unsafe { parties_mft_h264_decoder_create(u32::from(config.width), u32::from(config.height)) }
+    };
+    let handle = NonNull::new(handle).ok_or_else(|| {
+      VideoError::new(format!(
+        "No Windows Media Foundation H.264 decoder is available at {}x{}.",
+        config.width, config.height
+      ))
+    })?;
+    Ok(Self { handle })
+  }
+
+  fn decode_frame(
+    &mut self,
+    frame: &VideoFrame,
+    output: bool,
+    output_buffer: Option<Vec<u8>>,
+  ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
+    let nv12_len = nv12_len(frame.width, frame.height)?;
+    let mut nv12 = if output {
+      let mut buffer = output_buffer.unwrap_or_default();
+      if buffer.capacity() < nv12_len {
+        buffer = Vec::with_capacity(nv12_len);
+      }
+      buffer
+    } else {
+      Vec::new()
+    };
+    let (nv12_ptr, nv12_len) = if output {
+      (nv12.as_mut_ptr().cast::<u8>(), nv12_len)
+    } else {
+      (ptr::null_mut(), 0)
+    };
+    let mut width_out = 0u32;
+    let mut height_out = 0u32;
+    let mut error_out = 0u32;
+    let status = {
+      let _span = profiler::span("video.ffi.mft_h264_decode");
+      unsafe {
+        parties_mft_h264_decoder_decode(
+          self.handle.as_ptr(),
+          frame.encoded.as_ptr(),
+          frame.encoded.len(),
+          i64::from(frame.frame_number),
+          i32::from(output),
+          nv12_ptr,
+          nv12_len,
+          &mut width_out,
+          &mut height_out,
+          &mut error_out,
+        )
+      }
+    };
+
+    if status < 0 {
+      return Err(VideoError::new(format!(
+        "Windows Media Foundation H.264 decoder failed on frame {}: error=0x{error_out:08x}.",
+        frame.frame_number
+      )));
+    }
+
+    if status == 0 || !output {
+      return Ok(None);
+    }
+
+    if width_out != u32::from(frame.width) || height_out != u32::from(frame.height) {
+      return Err(VideoError::new(format!(
+        "Windows Media Foundation H.264 decoder output size changed from {}x{} to {}x{} on frame {}.",
+        frame.width, frame.height, width_out, height_out, frame.frame_number
+      )));
+    }
+
+    unsafe {
+      nv12.set_len(nv12_len);
+    }
+    Ok(Some(NativeDecodedVideoFrame {
+      format: DecodedVideoPixelFormat::Nv12,
+      pixels: nv12,
+      native_image: None,
+    }))
+  }
+}
+
+impl Drop for MftH264VideoDecoder {
+  fn drop(&mut self) {
+    unsafe {
+      parties_mft_h264_decoder_destroy(self.handle.as_ptr());
     }
   }
 }

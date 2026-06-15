@@ -521,26 +521,13 @@ pub(super) fn run_video_receiver<S>(
           }
           Some(expected_frame_number) => {
             if !packet_config.hardware_decoding {
-              awaiting_decoded_output.remove(&packet.sender_id);
-              expected_frame_numbers.remove(&packet.sender_id);
-              decode_pool.reset_user(packet.sender_id);
-              if awaiting_keyframes.insert(packet.sender_id) {
-                request_keyframe_if_due_after(
-                  &runtime,
-                  &server,
-                  &mut last_keyframe_requests,
-                  packet.sender_id,
-                  "software video frame gap detected",
-                  SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL,
-                );
-              }
+              expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
               tracing::warn!(target: "video::decode",
-                "[video:decode] software video frame gap for user {}: expected={} actual={}; waiting for keyframe",
+                "[video:decode] software decode continuing across video frame gap for user {}: expected={} actual={}",
                 packet.sender_id,
                 expected_frame_number,
                 packet.frame.frame_number
               );
-              continue;
             } else {
               awaiting_decoded_output.remove(&packet.sender_id);
               expected_frame_numbers.remove(&packet.sender_id);

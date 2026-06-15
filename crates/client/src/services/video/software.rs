@@ -1,11 +1,13 @@
 #[cfg(target_os = "windows")]
 use std::ptr::NonNull;
 use std::{
-  ptr,
+  borrow::Cow,
+  ops::Range,
+  ptr, slice,
   time::{Duration, Instant},
 };
 
-use openh264::formats::YUVSource;
+use openh264_sys2::API as _;
 use shiguredo_dav1d::{self as dav1d_native, DecoderConfig};
 
 use super::{DecodedVideoPixelFormat, NativeDecodedVideoFrame, NativeVideoBackend, VideoDecodeConfig, VideoError};
@@ -13,6 +15,8 @@ use crate::network::protocol::{VideoCodecId, VideoFrame};
 
 const SLOW_SOFTWARE_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
 const AV1_DECODE_SUBMIT_RETRIES: usize = 3;
+const H264_NONFATAL_DECODE_LOG_INTERVAL: Duration = Duration::from_secs(1);
+const H264_OPENH264_MAX_LEVEL_IDC: u8 = 52;
 #[cfg(not(target_os = "windows"))]
 const H265_DECODE_PASSES: usize = 8;
 
@@ -41,9 +45,10 @@ pub(super) struct H265SoftwareDecoder {
 }
 
 pub(super) struct H264SoftwareDecoder {
-  decoder: openh264::decoder::Decoder,
+  decoder: OpenH264RawDecoder,
   width: u16,
   height: u16,
+  last_nonfatal_decode_log: Option<Instant>,
 }
 
 impl SoftwareVideoDecoder {
@@ -616,14 +621,367 @@ fn find_annex_b_start_code(data: &[u8]) -> Option<(usize, usize)> {
   None
 }
 
+struct OpenH264RawDecoder {
+  api: openh264_sys2::DynamicAPI,
+  decoder: *mut openh264_sys2::ISVCDecoder,
+  threads: usize,
+}
+
+struct OpenH264DecodeOutcome {
+  frame: Option<OpenH264DecodedFrame>,
+  state: openh264_sys2::DECODING_STATE,
+}
+
+struct OpenH264DecodedFrame {
+  y: *const u8,
+  u: *const u8,
+  v: *const u8,
+  width: usize,
+  height: usize,
+  y_stride: usize,
+  uv_stride: usize,
+}
+
+impl OpenH264RawDecoder {
+  fn new() -> Result<Self, VideoError> {
+    let api = openh264_sys2::DynamicAPI::from_source();
+    let mut decoder = ptr::null_mut();
+    let create_status = unsafe { api.WelsCreateDecoder(&mut decoder) };
+    if create_status != 0 || decoder.is_null() {
+      return Err(VideoError::new(format!(
+        "WelsCreateDecoder failed: status={create_status} decoder_null={}.",
+        decoder.is_null()
+      )));
+    }
+
+    let decoder = Self {
+      api,
+      decoder,
+      threads: 1,
+    };
+    let mut params = openh264_sys2::SDecodingParam::default();
+    params.uiCpuLoad = 100;
+    params.sVideoProperty.eVideoBsType = openh264_sys2::VIDEO_BITSTREAM_AVC;
+    params.eEcActiveIdc = openh264_sys2::ERROR_CON_SLICE_COPY;
+
+    let initialize = unsafe { (**decoder.decoder).Initialize }
+      .ok_or_else(|| VideoError::new("OpenH264 decoder is missing Initialize."))?;
+    let init_status = unsafe { initialize(decoder.decoder, &params) };
+    if init_status != 0 {
+      return Err(VideoError::new(format!(
+        "OpenH264 Initialize failed: status={init_status}."
+      )));
+    }
+    Ok(decoder)
+  }
+
+  fn decode_access_unit(
+    &mut self,
+    input: &H264AnnexBInput<'_>,
+    frame_number: u32,
+  ) -> Result<OpenH264DecodeOutcome, VideoError> {
+    let mut latest_frame = None;
+    let mut latest_state = openh264_sys2::dsErrorFree;
+    let mut single_nal = Vec::new();
+    for range in &input.ranges {
+      single_nal.clear();
+      single_nal.extend_from_slice(&[0, 0, 0, 1]);
+      single_nal.extend_from_slice(&input.data[range.clone()]);
+      let outcome = self.decode_nal(&single_nal, frame_number)?;
+      latest_state = outcome.state;
+      if outcome.frame.is_some() {
+        latest_frame = outcome.frame;
+      }
+    }
+    Ok(OpenH264DecodeOutcome {
+      frame: latest_frame,
+      state: latest_state,
+    })
+  }
+
+  fn decode_nal(&mut self, data: &[u8], frame_number: u32) -> Result<OpenH264DecodeOutcome, VideoError> {
+    let input_len =
+      i32::try_from(data.len()).map_err(|_| VideoError::new("OpenH264 input packet is too large for c_int length."))?;
+    let decode_frame = unsafe { (**self.decoder).DecodeFrameNoDelay }
+      .ok_or_else(|| VideoError::new("OpenH264 decoder is missing DecodeFrameNoDelay."))?;
+    let mut dst = [ptr::null_mut(); 3];
+    let mut buffer_info = openh264_sys2::SBufferInfo::default();
+    let state = unsafe {
+      decode_frame(
+        self.decoder,
+        data.as_ptr(),
+        input_len,
+        dst.as_mut_ptr(),
+        &mut buffer_info,
+      )
+    };
+
+    if !h264_decode_state_is_recoverable(state) {
+      return Err(VideoError::new(format!(
+        "OpenH264 failed on frame {frame_number}: state={state} state_label={}.",
+        h264_decode_state_label(state)
+      )));
+    }
+    if buffer_info.iBufferStatus != 1 || dst[0].is_null() {
+      return Ok(OpenH264DecodeOutcome { frame: None, state });
+    }
+
+    let system_buffer = unsafe { buffer_info.UsrData.sSystemBuffer };
+    if system_buffer.iFormat != openh264_sys2::videoFormatI420 {
+      return Err(VideoError::new(format!(
+        "OpenH264 returned unsupported pixel format {}.",
+        system_buffer.iFormat
+      )));
+    }
+    let width = usize::try_from(system_buffer.iWidth)
+      .map_err(|_| VideoError::new("OpenH264 returned a negative output width."))?;
+    let height = usize::try_from(system_buffer.iHeight)
+      .map_err(|_| VideoError::new("OpenH264 returned a negative output height."))?;
+    let y_stride = usize::try_from(system_buffer.iStride[0])
+      .map_err(|_| VideoError::new("OpenH264 returned a negative Y stride."))?;
+    let uv_stride = usize::try_from(system_buffer.iStride[1])
+      .map_err(|_| VideoError::new("OpenH264 returned a negative UV stride."))?;
+    if width == 0 || height == 0 || y_stride < width || uv_stride < width / 2 {
+      return Err(VideoError::new(format!(
+        "OpenH264 returned invalid output geometry: size={}x{} strides=({}, {}).",
+        width, height, y_stride, uv_stride
+      )));
+    }
+    Ok(OpenH264DecodeOutcome {
+      frame: Some(OpenH264DecodedFrame {
+        y: dst[0],
+        u: dst[1],
+        v: dst[2],
+        width,
+        height,
+        y_stride,
+        uv_stride,
+      }),
+      state,
+    })
+  }
+}
+
+impl Drop for OpenH264RawDecoder {
+  fn drop(&mut self) {
+    if self.decoder.is_null() {
+      return;
+    }
+    unsafe {
+      if let Some(uninitialize) = (**self.decoder).Uninitialize {
+        let _ = uninitialize(self.decoder);
+      }
+      self.api.WelsDestroyDecoder(self.decoder);
+    }
+    self.decoder = ptr::null_mut();
+  }
+}
+
+#[derive(Clone, Copy)]
+struct H264AccessUnitSummary {
+  nals: usize,
+  sps: usize,
+  pps: usize,
+  idr: usize,
+  sps_profile: Option<u8>,
+  sps_level: Option<u8>,
+  sps_level_clamped_from: Option<u8>,
+  length_prefixed: bool,
+}
+
+struct H264AnnexBInput<'a> {
+  data: Cow<'a, [u8]>,
+  ranges: Vec<Range<usize>>,
+  summary: H264AccessUnitSummary,
+}
+
+fn h264_annex_b_decode_input(encoded: &[u8]) -> Result<H264AnnexBInput<'_>, VideoError> {
+  if encoded.is_empty() {
+    return Err(VideoError::new("Software H.264 decoder received an empty frame."));
+  }
+
+  if looks_like_annex_b(encoded) {
+    let ranges = split_annex_b_ranges(encoded);
+    if ranges.is_empty() {
+      return Err(VideoError::new("Software H.264 decoder expected Annex B NAL units."));
+    }
+    let mut summary = summarize_h264_nals(encoded, &ranges, false);
+    let data = h264_clamp_sps_level_for_openh264(Cow::Borrowed(encoded), &ranges, &mut summary);
+    return Ok(H264AnnexBInput { data, ranges, summary });
+  }
+
+  let ranges = split_length_prefixed_ranges(encoded)?;
+  if ranges.is_empty() {
+    return Err(VideoError::new(
+      "Software H.264 decoder expected length-prefixed NAL units.",
+    ));
+  }
+  let output_len = ranges.iter().try_fold(0usize, |total, range| {
+    total
+      .checked_add(4)
+      .and_then(|value| value.checked_add(range.end.saturating_sub(range.start)))
+      .ok_or_else(|| VideoError::new("Software H.264 Annex B conversion overflowed."))
+  })?;
+  let mut output = Vec::with_capacity(output_len);
+  let mut output_ranges = Vec::with_capacity(ranges.len());
+  for range in ranges {
+    output.extend_from_slice(&[0, 0, 0, 1]);
+    let start = output.len();
+    output.extend_from_slice(&encoded[range]);
+    output_ranges.push(start..output.len());
+  }
+  let mut summary = summarize_h264_nals(&output, &output_ranges, true);
+  let data = h264_clamp_sps_level_for_openh264(Cow::Owned(output), &output_ranges, &mut summary);
+  Ok(H264AnnexBInput {
+    data,
+    ranges: output_ranges,
+    summary,
+  })
+}
+
+fn looks_like_annex_b(bytes: &[u8]) -> bool {
+  bytes.starts_with(&[0, 0, 1]) || bytes.starts_with(&[0, 0, 0, 1])
+}
+
+fn split_length_prefixed_ranges(bytes: &[u8]) -> Result<Vec<Range<usize>>, VideoError> {
+  let mut out = Vec::new();
+  let mut cursor = 0;
+  while cursor + 4 <= bytes.len() {
+    let len = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+    cursor += 4;
+    if len == 0 || cursor + len > bytes.len() {
+      return Err(VideoError::new("Invalid length-prefixed H.264 NAL unit."));
+    }
+    out.push(cursor..cursor + len);
+    cursor += len;
+  }
+  if cursor != bytes.len() {
+    return Err(VideoError::new("Trailing bytes after length-prefixed H.264 NAL units."));
+  }
+  Ok(out)
+}
+
+fn summarize_h264_nals(encoded: &[u8], ranges: &[Range<usize>], length_prefixed: bool) -> H264AccessUnitSummary {
+  let mut summary = H264AccessUnitSummary {
+    nals: 0,
+    sps: 0,
+    pps: 0,
+    idr: 0,
+    sps_profile: None,
+    sps_level: None,
+    sps_level_clamped_from: None,
+    length_prefixed,
+  };
+  for range in ranges {
+    let Some(header) = encoded.get(range.start) else {
+      continue;
+    };
+    summary.nals += 1;
+    match header & 0x1f {
+      5 => summary.idr += 1,
+      7 => {
+        summary.sps += 1;
+        if summary.sps_profile.is_none() && range.start + 3 < range.end {
+          summary.sps_profile = Some(encoded[range.start + 1]);
+          summary.sps_level = Some(encoded[range.start + 3]);
+        }
+      }
+      8 => summary.pps += 1,
+      _ => {}
+    }
+  }
+  summary
+}
+
+fn h264_clamp_sps_level_for_openh264<'a>(
+  data: Cow<'a, [u8]>,
+  ranges: &[Range<usize>],
+  summary: &mut H264AccessUnitSummary,
+) -> Cow<'a, [u8]> {
+  let Some(level) = summary.sps_level else {
+    return data;
+  };
+  if level <= H264_OPENH264_MAX_LEVEL_IDC {
+    return data;
+  }
+  let Some(level_index) = ranges.iter().find_map(|range| {
+    let nal_type = data.get(range.start)? & 0x1f;
+    if nal_type == 7 && range.start + 3 < range.end {
+      Some(range.start + 3)
+    } else {
+      None
+    }
+  }) else {
+    return data;
+  };
+
+  let mut owned = data.into_owned();
+  owned[level_index] = H264_OPENH264_MAX_LEVEL_IDC;
+  summary.sps_level_clamped_from = Some(level);
+  summary.sps_level = Some(H264_OPENH264_MAX_LEVEL_IDC);
+  Cow::Owned(owned)
+}
+
+fn h264_decode_state_is_recoverable(state: openh264_sys2::DECODING_STATE) -> bool {
+  state == openh264_sys2::dsErrorFree
+    || state == openh264_sys2::dsFramePending
+    || state & openh264_sys2::dsBitstreamError != 0
+    || state & openh264_sys2::dsNoParamSets != 0
+    || state & openh264_sys2::dsDataErrorConcealed != 0
+    || state & openh264_sys2::dsRefLost != 0
+    || state & openh264_sys2::dsDepLayerLost != 0
+}
+
+fn h264_decode_state_needs_log(state: openh264_sys2::DECODING_STATE) -> bool {
+  state != openh264_sys2::dsErrorFree
+    && state != openh264_sys2::dsFramePending
+    && h264_decode_state_is_recoverable(state)
+}
+
+fn h264_decode_state_label(state: openh264_sys2::DECODING_STATE) -> &'static str {
+  if state == openh264_sys2::dsErrorFree {
+    "ok"
+  } else if state == openh264_sys2::dsFramePending {
+    "frame_pending"
+  } else if state & openh264_sys2::dsNoParamSets != 0 {
+    "no_parameter_sets"
+  } else if state & openh264_sys2::dsBitstreamError != 0 {
+    "bitstream_error"
+  } else if state & openh264_sys2::dsDataErrorConcealed != 0 {
+    "data_error_concealed"
+  } else if state & openh264_sys2::dsRefLost != 0 {
+    "reference_lost"
+  } else if state & openh264_sys2::dsDepLayerLost != 0 {
+    "dependency_layer_lost"
+  } else if state & openh264_sys2::dsInvalidArgument != 0 {
+    "invalid_argument"
+  } else if state & openh264_sys2::dsInitialOptExpected != 0 {
+    "initial_option_expected"
+  } else if state & openh264_sys2::dsOutOfMemory != 0 {
+    "out_of_memory"
+  } else if state & openh264_sys2::dsDstBufNeedExpan != 0 {
+    "destination_buffer_too_small"
+  } else {
+    "unknown"
+  }
+}
+
 impl H264SoftwareDecoder {
   fn new(config: &VideoDecodeConfig) -> Result<Self, VideoError> {
-    let decoder = openh264::decoder::Decoder::new()
-      .map_err(|error| VideoError::new(format!("Failed to start software H.264 decoder: {error}")))?;
+    let decoder = OpenH264RawDecoder::new()
+      .map_err(|error| VideoError::new(format!("Failed to start native software H.264 decoder: {error}")))?;
+    let threads = decoder.threads;
+    tracing::info!(target: "video::decode::software",
+      "[video:decode/software] native software H.264 decoder started: size={}x{} backend=OpenH264 raw_api=true threads={}",
+      config.width,
+      config.height,
+      threads
+    );
     Ok(Self {
       decoder,
       width: config.width,
       height: config.height,
+      last_nonfatal_decode_log: None,
     })
   }
 
@@ -634,14 +992,15 @@ impl H264SoftwareDecoder {
     output_buffer: Option<Vec<u8>>,
   ) -> Result<Option<NativeDecodedVideoFrame>, VideoError> {
     let total_start = Instant::now();
+    let parse_start = Instant::now();
+    let input = h264_annex_b_decode_input(&frame.encoded)?;
+    let parse_elapsed = parse_start.elapsed();
     let codec_start = Instant::now();
-    let decoded = self.decoder.decode(&frame.encoded).map_err(|error| {
-      VideoError::new(format!(
-        "Software H.264 decoder failed on frame {}: {error}.",
-        frame.frame_number
-      ))
-    })?;
+    let decoded = self.decoder.decode_access_unit(&input, frame.frame_number)?;
     let codec_elapsed = codec_start.elapsed();
+    if h264_decode_state_needs_log(decoded.state) {
+      self.log_nonfatal_decode_state(frame, input.summary, decoded.state);
+    }
 
     if !output {
       log_slow_software_decode(SoftwareDecodeTiming {
@@ -651,12 +1010,12 @@ impl H264SoftwareDecoder {
         produced_frame: false,
         total_elapsed: total_start.elapsed(),
         input_copy_elapsed: Duration::ZERO,
-        parse_elapsed: Duration::ZERO,
+        parse_elapsed,
         send_elapsed: Duration::ZERO,
         codec_elapsed,
         convert_elapsed: Duration::ZERO,
-        units: usize::from(decoded.is_some()),
-        unit_label: "pictures",
+        units: input.summary.nals,
+        unit_label: "nals",
         av1_threads: None,
         av1_max_frame_delay: None,
       });
@@ -664,9 +1023,9 @@ impl H264SoftwareDecoder {
     }
 
     let mut convert_elapsed = Duration::ZERO;
-    let result = if let Some(decoded) = decoded {
+    let result = if let Some(decoded_frame) = decoded.frame {
       let convert_start = Instant::now();
-      let converted = yuv_source_to_nv12(&decoded, self.width, self.height, output_buffer);
+      let converted = h264_decoded_frame_to_nv12(&decoded_frame, self.width, self.height, output_buffer);
       convert_elapsed += convert_start.elapsed();
       converted.map(Some)
     } else {
@@ -680,16 +1039,43 @@ impl H264SoftwareDecoder {
       produced_frame,
       total_elapsed: total_start.elapsed(),
       input_copy_elapsed: Duration::ZERO,
-      parse_elapsed: Duration::ZERO,
+      parse_elapsed,
       send_elapsed: Duration::ZERO,
       codec_elapsed,
       convert_elapsed,
-      units: usize::from(produced_frame),
-      unit_label: "pictures",
+      units: input.summary.nals,
+      unit_label: "nals",
       av1_threads: None,
       av1_max_frame_delay: None,
     });
     result
+  }
+
+  fn log_nonfatal_decode_state(&mut self, frame: &VideoFrame, summary: H264AccessUnitSummary, state: i32) {
+    let now = Instant::now();
+    if self
+      .last_nonfatal_decode_log
+      .is_some_and(|last| now.duration_since(last) < H264_NONFATAL_DECODE_LOG_INTERVAL)
+    {
+      return;
+    }
+    self.last_nonfatal_decode_log = Some(now);
+    tracing::warn!(target: "video::decode::software",
+      "[video:decode/software] OpenH264 skipped recoverable frame: frame={} keyframe={} state={} state_label={} bytes={} nals={} sps={} pps={} idr={} sps_profile={} sps_level={} sps_level_clamped_from={} length_prefixed={}",
+      frame.frame_number,
+      frame.keyframe,
+      state,
+      h264_decode_state_label(state),
+      frame.encoded.len(),
+      summary.nals,
+      summary.sps,
+      summary.pps,
+      summary.idr,
+      summary.sps_profile.map(i32::from).unwrap_or(-1),
+      summary.sps_level.map(i32::from).unwrap_or(-1),
+      summary.sps_level_clamped_from.map(i32::from).unwrap_or(-1),
+      summary.length_prefixed
+    );
   }
 }
 
@@ -812,28 +1198,37 @@ fn h265_image_to_nv12(
   i420_planes_to_nv12(y, u, v, width, height, (y_stride, u_stride, v_stride), output_buffer)
 }
 
-fn yuv_source_to_nv12(
-  decoded: &impl YUVSource,
+fn h264_decoded_frame_to_nv12(
+  decoded: &OpenH264DecodedFrame,
   width: u16,
   height: u16,
   output_buffer: Option<Vec<u8>>,
 ) -> Result<NativeDecodedVideoFrame, VideoError> {
-  let expected = (usize::from(width), usize::from(height));
-  if decoded.dimensions() != expected {
-    let (got_width, got_height) = decoded.dimensions();
+  let width = usize::from(width);
+  let height = usize::from(height);
+  if decoded.width != width || decoded.height != height {
     return Err(VideoError::new(format!(
       "Software H.264 decoder returned unexpected dimensions: got={}x{} expected={}x{}.",
-      got_width, got_height, width, height
+      decoded.width, decoded.height, width, height
     )));
   }
+  if decoded.y.is_null() || decoded.u.is_null() || decoded.v.is_null() {
+    return Err(VideoError::new("Software H.264 decoder returned a null output plane."));
+  }
+
+  let y_len = checked_plane_len(decoded.y_stride, height)?;
+  let uv_len = checked_plane_len(decoded.uv_stride, height / 2)?;
+  let y = unsafe { slice::from_raw_parts(decoded.y, y_len) };
+  let u = unsafe { slice::from_raw_parts(decoded.u, uv_len) };
+  let v = unsafe { slice::from_raw_parts(decoded.v, uv_len) };
 
   i420_planes_to_nv12(
-    decoded.y(),
-    decoded.u(),
-    decoded.v(),
-    expected.0,
-    expected.1,
-    decoded.strides(),
+    y,
+    u,
+    v,
+    width,
+    height,
+    (decoded.y_stride, decoded.uv_stride, decoded.uv_stride),
     output_buffer,
   )
 }
@@ -963,5 +1358,39 @@ mod tests {
 
     assert_eq!(decoded.pixels.as_ptr(), original_ptr);
     assert_eq!(decoded.pixels, [1, 2, 3, 4, 5, 6]);
+  }
+
+  #[test]
+  fn h264_annex_b_input_clamps_high_sps_level_for_openh264() {
+    let input = [0, 0, 0, 1, 0x67, 100, 0, 60, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 3];
+    let parsed = h264_annex_b_decode_input(&input).unwrap();
+
+    assert!(matches!(parsed.data, Cow::Owned(_)));
+    assert_eq!(parsed.data[7], 52);
+    assert_eq!(parsed.summary.nals, 3);
+    assert_eq!(parsed.summary.sps, 1);
+    assert_eq!(parsed.summary.pps, 1);
+    assert_eq!(parsed.summary.idr, 1);
+    assert_eq!(parsed.summary.sps_profile, Some(100));
+    assert_eq!(parsed.summary.sps_level, Some(52));
+    assert_eq!(parsed.summary.sps_level_clamped_from, Some(60));
+    assert!(!parsed.summary.length_prefixed);
+    assert_eq!(parsed.ranges, [4..9, 12..14, 17..19]);
+  }
+
+  #[test]
+  fn h264_length_prefixed_input_converts_to_annex_b() {
+    let input = [0, 0, 0, 4, 0x67, 100, 0, 60, 0, 0, 0, 1, 0x68];
+    let parsed = h264_annex_b_decode_input(&input).unwrap();
+
+    assert_eq!(parsed.data.as_ref(), [0, 0, 0, 1, 0x67, 100, 0, 52, 0, 0, 0, 1, 0x68]);
+    assert_eq!(parsed.summary.nals, 2);
+    assert_eq!(parsed.summary.sps, 1);
+    assert_eq!(parsed.summary.pps, 1);
+    assert_eq!(parsed.summary.sps_profile, Some(100));
+    assert_eq!(parsed.summary.sps_level, Some(52));
+    assert_eq!(parsed.summary.sps_level_clamped_from, Some(60));
+    assert!(parsed.summary.length_prefixed);
+    assert_eq!(parsed.ranges, [4..8, 12..13]);
   }
 }
