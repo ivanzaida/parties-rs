@@ -181,6 +181,7 @@ fn main() {
   let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
   lurq_app.set_resource_root(assets.clone());
   lurq_app.load_fonts_dir(assets.join("fonts").as_path());
+  lurq::app::devtools::load_fonts(&mut lurq_app);
   lurq_app.register_font("Inter", "Inter");
   lurq_app.register_font("JetBrains Mono", "JetBrains Mono");
   lurq_app.register_font("Lucide", "Lucide");
@@ -208,6 +209,7 @@ fn main() {
       startup_full_screen,
     },
   );
+  tree.mount_devtools(&mut lurq_app);
   let mut fps_sampler = FpsSampler::new(frame_rate_signal);
 
   let mut window = lurq::app::winit_shell::WinitWindow::new(lurq_app, tree)

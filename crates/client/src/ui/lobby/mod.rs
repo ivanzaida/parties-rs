@@ -11,7 +11,7 @@ use lurq::{
     component::Component,
     ctx::{Ctx, Interval, Modal, Root},
   },
-  components::{Column, Row, Text, VirtualListState},
+  components::{Column, Row, Text},
   core::Signal,
   layout::{
     Alignment,
@@ -105,7 +105,7 @@ pub struct LobbyScreen {
   chat_command_selected_index: Signal<usize>,
   chat_command_scroll_state: ScrollState,
   chat_command_invalid_feedback: ChatCommandInvalidFeedback,
-  chat_virtual_list_state: VirtualListState,
+  chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -128,10 +128,6 @@ impl Component for LobbyScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     let revision_wake = ctx.signal(0_u64);
-    let chat_virtual_list_state = VirtualListState::new(ctx)
-      .with_overscan(8)
-      .with_window_stride(4)
-      .with_initial_visible_count(48);
     let revision_source = Arc::new(Mutex::new(None::<Signal<u64>>));
     let revision_seen = Arc::new(AtomicU64::new(0));
     let interval_wake = revision_wake.clone();
@@ -154,7 +150,7 @@ impl Component for LobbyScreen {
       chat_command_selected_index: ctx.signal(0),
       chat_command_scroll_state: ScrollState::new(),
       chat_command_invalid_feedback: ChatCommandInvalidFeedback::new(ctx),
-      chat_virtual_list_state,
+      chat_scroll_state: ScrollState::new(),
       chat_bottom_anchor: ctx.signal(None),
       chat_bottom_settle_anchor: ctx.signal(None),
       chat_bottom_detached_anchor: ctx.signal(None),
@@ -308,7 +304,7 @@ impl Component for LobbyScreen {
         self.chat_command_selected_index.clone(),
         self.chat_command_scroll_state.clone(),
         self.chat_command_invalid_feedback.clone(),
-        self.chat_virtual_list_state.clone(),
+        self.chat_scroll_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_bottom_settle_anchor.clone(),
         self.chat_bottom_detached_anchor.clone(),

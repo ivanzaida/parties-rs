@@ -59,9 +59,6 @@ impl Component for ChatMessage {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let render_start = Instant::now();
     let props = ctx.props::<Self::Props>().clone();
-    if props.message.id == 245 {
-      println!("rendering msg 245");
-    }
     let message = &props.message;
     let local = message.sender_id == props.local_user_id;
     let timestamp = format_chat_time(message.timestamp);

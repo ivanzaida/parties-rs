@@ -6,16 +6,14 @@ use lurq::{
     layout_kind::ScrollState,
     scrollbar::{ScrollBarPlacement, ScrollBarStyle},
   },
-  node::{dimension::Dimension, Element},
+  node::{Element, dimension::Dimension},
 };
 
 use super::{
   super::{ChatHistoryAction, ChatHistoryRequest},
-  scroll_policy::{plan_bottom_scroll, BottomScrollMetrics},
+  scroll_policy::{BottomScrollMetrics, plan_bottom_scroll},
 };
 use crate::{network::protocol::ChannelId, session::ServerSession, theme};
-
-const CHAT_HISTORY_TOP_THRESHOLD: f32 = 48.0;
 
 pub(super) fn chat_messages_scroll(
   messages: ScrollVertical,
@@ -35,7 +33,7 @@ pub(super) fn chat_messages_scroll(
 
   messages
     .width(Dimension::Pct(100.0))
-    .height(Dimension::Pct(100.0))
+    .height(0.0)
     .flex(1.0)
     .with_scroll_state(scroll_state)
     .scrollbar(chat_scrollbar_style())
@@ -136,31 +134,18 @@ pub(super) fn preserve_chat_scroll_on_prepend(
     let previous_content_height = scroll_state.content_height();
     let previous_scroll_y = scroll_state.scroll_y();
     let is_dragging = scroll_state.is_dragging();
-    if !is_dragging && previous_scroll_y > CHAT_HISTORY_TOP_THRESHOLD {
-      scroll_state.preserve_prepend_anchor_pending();
-      prepend_settle_anchor.set(Some((channel_id, oldest_message_id, previous_content_height)));
-      tracing::info!(
-        target: "chat::history",
-        "[chat/history] pagination follow-up suppressed: reason=preserve_prepend channel={} previous_oldest={} current_oldest={} previous_scroll_y={:.1} previous_content_h={:.1}",
-        channel_id,
-        previous_oldest_message_id,
-        oldest_message_id,
-        previous_scroll_y,
-        previous_content_height,
-      );
-    } else {
-      prepend_settle_anchor.set(None);
-      tracing::info!(
-        target: "chat::history",
-        "[chat/history] pagination follow-up suppressed: reason=prepend_at_top channel={} previous_oldest={} current_oldest={} previous_scroll_y={:.1} dragging={} previous_content_h={:.1}",
-        channel_id,
-        previous_oldest_message_id,
-        oldest_message_id,
-        previous_scroll_y,
-        is_dragging,
-        previous_content_height,
-      );
-    }
+    scroll_state.preserve_prepend_anchor_pending();
+    prepend_settle_anchor.set(Some((channel_id, oldest_message_id, previous_content_height)));
+    tracing::info!(
+      target: "chat::history",
+      "[chat/history] pagination follow-up suppressed: reason=preserve_prepend channel={} previous_oldest={} current_oldest={} previous_scroll_y={:.1} dragging={} previous_content_h={:.1}",
+      channel_id,
+      previous_oldest_message_id,
+      oldest_message_id,
+      previous_scroll_y,
+      is_dragging,
+      previous_content_height,
+    );
   }
 
   top_anchor.set(Some((channel_id, oldest_message_id)));

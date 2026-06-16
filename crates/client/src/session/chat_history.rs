@@ -13,26 +13,13 @@ pub fn merge_chat_history_messages<T: ChatHistoryMessage>(
   messages: &mut Vec<T>,
   incoming: impl IntoIterator<Item = T>,
 ) {
-  let previous_oldest_id = messages.iter().map(ChatHistoryMessage::chat_id).min();
-  let incoming = incoming.into_iter().collect::<Vec<_>>();
-  let prepending_older_history = previous_oldest_id.is_some_and(|oldest_id| {
-    incoming
-      .iter()
-      .any(|message| message.chat_id() != 0 && message.chat_id() < oldest_id)
-  });
-  let trim_side = if prepending_older_history {
-    ChatMessageTrimSide::Newest
-  } else {
-    ChatMessageTrimSide::Oldest
-  };
-
-  merge_chat_messages_with_trim(messages, incoming, trim_side);
+  merge_chat_messages_with_trim(messages, incoming, ChatMessageTrimSide::None);
 }
 
 #[derive(Clone, Copy)]
 enum ChatMessageTrimSide {
+  None,
   Oldest,
-  Newest,
 }
 
 fn merge_chat_messages_with_trim<T: ChatHistoryMessage>(
@@ -56,11 +43,9 @@ fn merge_chat_messages_with_trim<T: ChatHistoryMessage>(
   if messages.len() > MAX_CACHED_MESSAGES_PER_CHANNEL {
     let trim = messages.len() - MAX_CACHED_MESSAGES_PER_CHANNEL;
     match trim_side {
+      ChatMessageTrimSide::None => {}
       ChatMessageTrimSide::Oldest => {
         messages.drain(..trim);
-      }
-      ChatMessageTrimSide::Newest => {
-        messages.truncate(MAX_CACHED_MESSAGES_PER_CHANNEL);
       }
     }
   }

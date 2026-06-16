@@ -31,14 +31,14 @@ fn chat_message(id: u64) -> TestMessage {
 }
 
 #[test]
-fn prepended_history_keeps_oldest_cache_window() {
+fn prepended_history_keeps_loaded_history_and_latest_messages() {
   let mut messages = (51..=300).map(chat_message).collect::<Vec<_>>();
 
   merge_chat_history_messages(&mut messages, (1..=50).map(chat_message));
 
-  assert_eq!(messages.len(), MAX_CACHED_MESSAGES_PER_CHANNEL);
+  assert_eq!(messages.len(), 300);
   assert_eq!(messages.first().map(|message| message.id), Some(1));
-  assert_eq!(messages.last().map(|message| message.id), Some(250));
+  assert_eq!(messages.last().map(|message| message.id), Some(300));
 }
 
 #[test]

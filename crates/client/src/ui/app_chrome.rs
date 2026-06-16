@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use lurq::{
   app::{
     WindowHandle, WindowResizeDirection,
@@ -6,7 +8,7 @@ use lurq::{
     events::{DragEvent, MouseButton, MouseEvent},
   },
   components::{Row, Text},
-  core::Signal,
+  core::{Ref, Signal},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
@@ -31,6 +33,15 @@ pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
   0.0
 };
 pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 3.0 } else { 0.0 };
+const TITLEBAR_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const TITLEBAR_DOUBLE_CLICK_DISTANCE: f32 = 6.0;
+
+#[derive(Clone, Copy, Debug)]
+struct TitlebarClick {
+  at: Instant,
+  x: f32,
+  y: f32,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct FrameRateSignal(pub Signal<u32>);
@@ -51,13 +62,17 @@ impl DevtoolsInspectable for FrameRateSignal {
   }
 }
 
-pub(crate) struct AppChrome;
+pub(crate) struct AppChrome {
+  titlebar_click: Ref<Option<TitlebarClick>>,
+}
 
 impl Component for AppChrome {
   type Props = FrameRateSignal;
 
   fn create(_ctx: &mut Ctx) -> Self {
-    Self
+    Self {
+      titlebar_click: Ref::new(None),
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -78,7 +93,11 @@ impl Component for AppChrome {
       .align_items(Alignment::Center)
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
       .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
-      .child(window_drag_region(ctx, ctx.props::<Self::Props>().0.get()))
+      .child(window_drag_region(
+        ctx,
+        ctx.props::<Self::Props>().0.get(),
+        self.titlebar_click.clone(),
+      ))
       .child(window_controls(ctx))
   }
 }
@@ -248,21 +267,49 @@ fn resize_handle(
       if event.button == MouseButton::Left {
         #[cfg(target_os = "windows")]
         if begin_native_window_resize(direction) {
+          event.prevent_default();
+          event.stop_immediate_propagation();
           return;
         }
 
         window.start_resize(direction);
+        event.prevent_default();
+        event.stop_immediate_propagation();
       }
     })
     .into()
 }
 
-fn window_drag_region(ctx: &mut Ctx, fps: u32) -> Element {
+fn consume_titlebar_double_click(tracker: &Ref<Option<TitlebarClick>>, event: &MouseEvent) -> bool {
+  let now = Instant::now();
+  let is_double_click = tracker.get().is_some_and(|last| {
+    now
+      .checked_duration_since(last.at)
+      .is_some_and(|elapsed| elapsed <= TITLEBAR_DOUBLE_CLICK_INTERVAL)
+      && (event.x - last.x).abs() <= TITLEBAR_DOUBLE_CLICK_DISTANCE
+      && (event.y - last.y).abs() <= TITLEBAR_DOUBLE_CLICK_DISTANCE
+  });
+
+  if is_double_click {
+    tracker.set(None);
+  } else {
+    tracker.set(Some(TitlebarClick {
+      at: now,
+      x: event.x,
+      y: event.y,
+    }));
+  }
+
+  is_double_click
+}
+
+fn window_drag_region(ctx: &mut Ctx, fps: u32, titlebar_click: Ref<Option<TitlebarClick>>) -> Element {
   let window = ctx.window();
+  let mouse_down_window = window.clone();
   let drag_window = window.clone();
   let stop_drag_window = window.clone();
-  let maximize_window = window.clone();
   let maximized = window.is_maximized;
+  let full_screen = window.is_full_screen;
   let fps_label = format!("{fps} fps");
 
   Row::new()
@@ -271,18 +318,63 @@ fn window_drag_region(ctx: &mut Ctx, fps: u32) -> Element {
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Md)
     .padding_left(theme::SpacingSize::Lg)
+    .on_mouse_down(move |event: MouseEvent| {
+      if event.button == MouseButton::Left {
+        if consume_titlebar_double_click(&titlebar_click, &event) {
+          if full_screen {
+            mouse_down_window.set_full_screen(false);
+          }
+          mouse_down_window.set_maximized(!maximized);
+          event.prevent_default();
+          event.stop_immediate_propagation();
+          return;
+        }
+
+        if full_screen {
+          mouse_down_window.set_full_screen(false);
+        }
+
+        #[cfg(target_os = "windows")]
+        if begin_native_window_drag() {
+          event.prevent_default();
+          event.stop_immediate_propagation();
+          return;
+        }
+
+        if full_screen {
+          mouse_down_window.start_drag();
+          event.prevent_default();
+          event.stop_immediate_propagation();
+          return;
+        }
+
+        if maximized {
+          mouse_down_window.set_maximized(false);
+          mouse_down_window.start_drag();
+          event.prevent_default();
+          event.stop_immediate_propagation();
+        }
+      }
+    })
     .on_drag_start(move |event: DragEvent| {
-      if event.button == MouseButton::Left && !maximized {
+      if event.button == MouseButton::Left {
+        if full_screen {
+          drag_window.set_full_screen(false);
+        }
+
         #[cfg(target_os = "windows")]
         if begin_native_window_drag() {
           return;
+        }
+
+        if maximized {
+          drag_window.set_maximized(false);
         }
 
         drag_window.start_drag();
       }
     })
     .on_drag_end(move |_| stop_drag_window.stop_drag())
-    .on_dblclick(move |_| maximize_window.set_maximized(!maximized))
     .child(
       Row::new()
         .width(22.0)
@@ -353,14 +445,25 @@ fn begin_native_window_resize(direction: WindowResizeDirection) -> bool {
 #[cfg(target_os = "windows")]
 fn send_native_non_client_mouse_down(hit_test: u32) -> bool {
   use windows::Win32::{
-    Foundation::{LPARAM, WPARAM},
+    Foundation::{LPARAM, POINT, WPARAM},
     UI::{
       Input::KeyboardAndMouse::ReleaseCapture,
-      WindowsAndMessaging::{GetForegroundWindow, SendMessageW, WM_NCLBUTTONDOWN},
+      WindowsAndMessaging::{GA_ROOT, GetAncestor, GetCursorPos, SendMessageW, WM_NCLBUTTONDOWN, WindowFromPoint},
     },
   };
 
-  let hwnd = unsafe { GetForegroundWindow() };
+  let mut cursor = POINT::default();
+  if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+    return false;
+  }
+
+  let hovered = unsafe { WindowFromPoint(cursor) };
+  if hovered.is_invalid() {
+    return false;
+  }
+
+  let root = unsafe { GetAncestor(hovered, GA_ROOT) };
+  let hwnd = if root.is_invalid() { hovered } else { root };
   if hwnd.is_invalid() {
     return false;
   }

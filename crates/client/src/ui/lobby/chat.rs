@@ -4,10 +4,10 @@ use std::{
   time::Instant,
 };
 
-use chrono::{Local, NaiveDate};
+use chrono::Local;
 use lurq::{
   app::ctx::{CollisionStrategy, Ctx, Overlay, Placement},
-  components::{Column, Row, ScrollVertical, Text, VirtualListState},
+  components::{Column, Row, ScrollVertical, Text},
   core::Signal,
   layout::{
     Alignment,
@@ -27,9 +27,7 @@ pub(super) use channel::ChatChannel;
 pub(super) use composer::ChatCommandInvalidFeedback;
 use composer::{CHAT_COMMAND_SUGGESTION_BOTTOM_GAP, chat_command_suggestions, chat_composer};
 use message::{ChatMessage, ChatMessageProps};
-use scroll::{
-  chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom,
-};
+use scroll::{chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom};
 use timeline::{chat_day_divider, local_chat_date};
 
 use super::{ChatHistoryAction, SendChatAction, shared::error_notice};
@@ -49,7 +47,7 @@ pub(super) fn text_channel_detail(
   command_selected_index: Signal<usize>,
   command_scroll_state: ScrollState,
   command_invalid_feedback: ChatCommandInvalidFeedback,
-  chat_virtual_list_state: VirtualListState,
+  chat_scroll_state: ScrollState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
@@ -61,7 +59,6 @@ pub(super) fn text_channel_detail(
   send_chat: &SendChatAction,
 ) -> Element {
   let render_start = Instant::now();
-  let chat_scroll_state = chat_virtual_list_state.scroll_state();
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
@@ -161,16 +158,15 @@ pub(super) fn text_channel_detail(
       can_page,
     )
   } else {
-    let messages_scroll = virtual_chat_messages_scroll(
+    let messages_content = chat_messages_content(
       ctx,
-      &chat_virtual_list_state,
       &messages,
       lobby.last_error.as_deref(),
       info.user_id,
       debug_user_ids,
     );
     chat_messages_scroll(
-      messages_scroll,
+      ScrollVertical::new(messages_content),
       chat_scroll_state,
       chat_bottom_settle_for_scroll,
       chat_bottom_anchor,
@@ -238,95 +234,50 @@ pub(super) fn text_channel_detail(
   element
 }
 
-fn virtual_chat_messages_scroll(
+fn chat_messages_content(
   ctx: &mut Ctx,
-  virtual_list_state: &VirtualListState,
   messages: &[ProtocolChatMessage],
   error: Option<&str>,
   local_user_id: u32,
   debug_user_ids: bool,
-) -> ScrollVertical {
-  let total_start = Instant::now();
-  let build_start = Instant::now();
+) -> Element {
   let today = Local::now().date_naive();
   let mut last_day = None;
-  let mut items = Vec::with_capacity(messages.len().saturating_mul(2));
-
-  items.push(ChatTimelineItem::Padding("top", 24.0));
+  let mut column = Column::new().width(Dimension::Pct(100.0)).spacing(0.0);
+  column = column.child(Row::new().width(Dimension::Pct(100.0)).height(24.0));
 
   for message in messages {
     let message_day = local_chat_date(message.timestamp);
     if last_day != Some(message_day) {
-      items.push(ChatTimelineItem::Day(message_day));
+      column = column.child(chat_timeline_row(chat_day_divider(ctx, message_day, today)));
       last_day = Some(message_day);
     }
 
-    items.push(ChatTimelineItem::Message(message));
+    let key = format!("message-{}-{:016x}", message.id, chat_message_content_hash(message));
+    column = column.child(chat_timeline_row(ctx.mount_keyed::<ChatMessage>(
+      &key,
+      ChatMessageProps {
+        message: message.clone(),
+        local_user_id,
+        debug_user_ids,
+      },
+    )));
   }
 
   if let Some(error) = error {
-    items.push(ChatTimelineItem::Error(error));
+    column = column.child(chat_timeline_row(error_notice(ctx, error)));
   }
-  items.push(ChatTimelineItem::Padding("bottom", 6.0));
-  let build_elapsed = build_start.elapsed();
-  let item_count = items.len();
-
-  let virtual_start = Instant::now();
-  let scroll = ctx.virtual_list(
-    virtual_list_state,
-    &items,
-    |item: &ChatTimelineItem<'_>| item.key(),
-    move |ctx, item: &ChatTimelineItem<'_>| match *item {
-      ChatTimelineItem::Padding(_, height) => Row::new().width(Dimension::Pct(100.0)).height(height).into(),
-      ChatTimelineItem::Day(day) => chat_virtual_row(chat_day_divider(ctx, day, today)),
-      ChatTimelineItem::Message(message) => chat_virtual_row(ctx.mount::<ChatMessage>(ChatMessageProps {
-        message: (*message).clone(),
-        local_user_id,
-        debug_user_ids,
-      })),
-      ChatTimelineItem::Error(error) => chat_virtual_row(error_notice(ctx, error)),
-    },
-  );
-  let virtual_elapsed = virtual_start.elapsed();
-  let total_elapsed = total_start.elapsed();
-  tracing::trace!(
-    target: "chat-profile",
-    "[chat-profile] virtual_chat_messages messages={} items={} build_ms={:.3} virtual_ms={:.3} total_ms={:.3}",
-    messages.len(),
-    item_count,
-    build_elapsed.as_secs_f64() * 1000.0,
-    virtual_elapsed.as_secs_f64() * 1000.0,
-    total_elapsed.as_secs_f64() * 1000.0,
-  );
-  scroll
+  column = column.child(Row::new().width(Dimension::Pct(100.0)).height(6.0));
+  column.into()
 }
 
-fn chat_virtual_row(child: impl Into<Element>) -> Element {
+fn chat_timeline_row(child: impl Into<Element>) -> Element {
   Column::new()
     .width(Dimension::Pct(100.0))
     .padding_horizontal(24.0)
     .padding_bottom(18.0)
     .child(child)
     .into()
-}
-
-#[derive(Clone, Copy)]
-enum ChatTimelineItem<'a> {
-  Padding(&'static str, f32),
-  Day(NaiveDate),
-  Message(&'a ProtocolChatMessage),
-  Error(&'a str),
-}
-
-impl ChatTimelineItem<'_> {
-  fn key(&self) -> String {
-    match self {
-      Self::Padding(key, _) => format!("padding-{key}"),
-      Self::Day(day) => format!("day-{day}"),
-      Self::Message(message) => format!("message-{}-{:016x}", message.id, chat_message_content_hash(message)),
-      Self::Error(_) => "error".to_owned(),
-    }
-  }
 }
 
 fn chat_message_content_hash(message: &ProtocolChatMessage) -> u64 {
