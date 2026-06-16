@@ -20,13 +20,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Windows x64
-            os: windows-latest
-            artifact_suffix: windows-x64
-            library_file: music_bot.dll
-            library_path: target/release/music_bot.dll
-            archive_ext: zip
-            vcpkg_triplet: x64-windows-static-md
           - label: Linux x64
             os: ubuntu-latest
             artifact_suffix: linux-x64
@@ -41,8 +34,6 @@ jobs:
       LIBRARY_FILE: ${{ matrix.library_file }}
       LIBRARY_PATH: ${{ matrix.library_path }}
       ARCHIVE_EXT: ${{ matrix.archive_ext }}
-      VCPKGRS_TRIPLET: ${{ matrix.vcpkg_triplet }}
-      VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,31 +52,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-music-bot-release-
 
-      - name: Cache vcpkg packages
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg\installed
-          key: windows-vcpkg-${{ matrix.vcpkg_triplet }}-opus
-
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libopus-dev
-
-      - name: Install Windows dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkgRoot) {
-            $vcpkgRoot = "C:\vcpkg"
-          }
-          & "$vcpkgRoot\vcpkg.exe" install "opus:$env:VCPKG_DEFAULT_TRIPLET"
-          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build release plugin
         run: cargo build --release --package music-bot --lib
@@ -102,15 +74,7 @@ jobs:
           $manifest = $manifest -replace 'library = ".*"', "library = `"$env:LIBRARY_FILE`""
           Set-Content -Path (Join-Path $dist "plugin.toml") -Value $manifest -NoNewline
 
-      - name: Package Windows plugin
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $artifact = "$env:PLUGIN_ID-$env:PLUGIN_VERSION-$env:ARTIFACT_SUFFIX"
-          Compress-Archive -Path "dist\$artifact\*" -DestinationPath "dist\$artifact.$env:ARCHIVE_EXT" -Force
-
       - name: Package Linux plugin
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
