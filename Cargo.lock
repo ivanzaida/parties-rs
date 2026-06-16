@@ -2448,6 +2448,8 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "lurq"
 version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26781e67e8287a7469a045afa48119a142e30345a5373073b8ce29ff7ec86dfa"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2481,6 +2483,8 @@ dependencies = [
 [[package]]
 name = "lurq_macros"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2691dd5d90e78647ed67ad17dea0d2dfd9017fa0c902c1cf0bf0008722a536d1"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -6,6 +6,3 @@ members = [
 ]
 default-members = ["crates/client"]
 resolver = "3"
-
-[patch.crates-io]
-lurq = { path = "../lurq/crates/lurq" }
