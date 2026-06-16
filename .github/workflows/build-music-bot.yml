@@ -14,8 +14,40 @@ permissions:
   contents: read
 
 jobs:
+  plugin-metadata:
+    name: Read plugin metadata
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.metadata.outputs.name }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_file="crates/music-bot/Cargo.toml"
+          read_toml_string() {
+            sed -nE "s/^$1 = \"(.*)\"$/\1/p" "$package_file" | head -n1
+          }
+
+          package_name="$(read_toml_string name)"
+          package_version="$(read_toml_string version)"
+
+          if [[ -z "$package_name" || -z "$package_version" ]]; then
+            echo "Failed to read package metadata from $package_file" >&2
+            exit 1
+          fi
+
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.label }}
+    needs: plugin-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +61,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PLUGIN_ID: parties.music_bot
-      PLUGIN_VERSION: 0.1.0
+      PLUGIN_VERSION: ${{ needs.plugin-metadata.outputs.version }}
       ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
       LIBRARY_FILE: ${{ matrix.library_file }}
       LIBRARY_PATH: ${{ matrix.library_path }}
@@ -70,7 +102,14 @@ jobs:
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item $env:LIBRARY_PATH (Join-Path $dist $env:LIBRARY_FILE)
 
-          $manifest = Get-Content "crates/music-bot/plugin.toml" -Raw
+          $template = Get-Content "crates/music-bot/plugin.template.toml"
+          $manifestLines = foreach ($line in $template) {
+            $line
+            if ($line -match '^name = ') {
+              "version = `"$env:PLUGIN_VERSION`""
+            }
+          }
+          $manifest = ($manifestLines -join "`n") + "`n"
           $manifest = $manifest -replace 'library = ".*"', "library = `"$env:LIBRARY_FILE`""
           Set-Content -Path (Join-Path $dist "plugin.toml") -Value $manifest -NoNewline
 
@@ -87,3 +126,54 @@ jobs:
           name: ${{ env.PLUGIN_ID }}-${{ env.PLUGIN_VERSION }}-${{ env.ARTIFACT_SUFFIX }}
           path: dist/${{ env.PLUGIN_ID }}-${{ env.PLUGIN_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
+
+  release:
+    name: Publish plugin release
+    needs:
+      - plugin-metadata
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PACKAGE_NAME: ${{ needs.plugin-metadata.outputs.name }}
+      PACKAGE_VERSION: ${{ needs.plugin-metadata.outputs.version }}
+    steps:
+      - name: Download plugin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - name: Create or update plugin release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+
+          tag="$PACKAGE_NAME-v$PACKAGE_VERSION"
+          title="$PACKAGE_NAME $PACKAGE_VERSION"
+          notes="Automated plugin build for $PACKAGE_NAME $PACKAGE_VERSION."
+          files=()
+          for asset in dist-artifacts/**/*; do
+            if [[ -f "$asset" ]]; then
+              files+=("$asset")
+            fi
+          done
+
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No plugin release assets found." >&2
+            exit 1
+          fi
+
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --repo "$GH_REPO" --clobber
+          else
+            gh release create "$tag" "${files[@]}" \
+              --repo "$GH_REPO" \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes "$notes"
+          fi
