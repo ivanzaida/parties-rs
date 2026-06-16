@@ -57,17 +57,19 @@ impl PartialEq for ScreenSharePreview {
 impl Eq for ScreenSharePreview {}
 
 impl lurq::app::component::DevtoolsInspectable for ScreenSharePreview {
-  fn write_info(&self, buffer: &mut Vec<lurq::app::component::ComponentInfo>) {
+  fn inspect(&self, formatter: &mut lurq::app::component::DevtoolsFormatter<'_>) {
     let value = self
       .image
       .as_ref()
       .map(|image| format!("loaded {}x{}", image.width(), image.height()))
       .unwrap_or_else(|| "none".to_owned());
-    buffer.push(lurq::app::component::ComponentInfo::with_value(
-      "preview",
-      std::any::type_name::<Self>(),
-      value,
-    ));
+    formatter
+      .buffer_mut()
+      .push(lurq::app::component::ComponentInfo::with_value(
+        "preview",
+        std::any::type_name::<Self>(),
+        value,
+      ));
   }
 }
 

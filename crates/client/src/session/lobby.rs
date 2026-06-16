@@ -3,7 +3,10 @@ use std::{
   time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use super::chat_commands::{ChatCommandRegistry, CommandDefinition};
+use super::{
+  chat_commands::{ChatCommandRegistry, CommandDefinition},
+  chat_history::{ChatHistoryMessage, merge_chat_history_messages, merge_chat_messages},
+};
 use crate::{
   network::protocol::{
     ChannelId, Role, S2C, ServerErrorCode, UserId,
@@ -18,7 +21,16 @@ use crate::{
 pub const DEBUG_CHAT_CHANNEL_ID: ChannelId = u32::MAX;
 const DEBUG_CHAT_SENDER_ID: UserId = 0;
 const DEBUG_CHAT_SENDER_NAME: &str = "Debug";
-const MAX_CACHED_MESSAGES_PER_CHANNEL: usize = 250;
+
+impl ChatHistoryMessage for ProtocolChatMessage {
+  fn chat_id(&self) -> u64 {
+    self.id
+  }
+
+  fn chat_timestamp(&self) -> u64 {
+    self.timestamp
+  }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LobbyChannel {
@@ -294,64 +306,6 @@ pub(super) fn user_in_selected_voice_channel(lobby: &LobbyState, user_id: UserId
     .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
 }
 
-pub(super) fn merge_chat_messages(
-  messages: &mut Vec<ProtocolChatMessage>,
-  incoming: impl IntoIterator<Item = ProtocolChatMessage>,
-) {
-  merge_chat_messages_with_trim(messages, incoming, ChatMessageTrimSide::Oldest);
-}
-
-pub(super) fn merge_chat_history_messages(
-  messages: &mut Vec<ProtocolChatMessage>,
-  incoming: impl IntoIterator<Item = ProtocolChatMessage>,
-) {
-  let previous_oldest_id = messages.iter().map(|message| message.id).min();
-  let incoming = incoming.into_iter().collect::<Vec<_>>();
-  let prepending_older_history = previous_oldest_id
-    .is_some_and(|oldest_id| incoming.iter().any(|message| message.id != 0 && message.id < oldest_id));
-  let trim_side = if prepending_older_history {
-    ChatMessageTrimSide::Newest
-  } else {
-    ChatMessageTrimSide::Oldest
-  };
-
-  merge_chat_messages_with_trim(messages, incoming, trim_side);
-}
-
-#[derive(Clone, Copy)]
-enum ChatMessageTrimSide {
-  Oldest,
-  Newest,
-}
-
-fn merge_chat_messages_with_trim(
-  messages: &mut Vec<ProtocolChatMessage>,
-  incoming: impl IntoIterator<Item = ProtocolChatMessage>,
-  trim_side: ChatMessageTrimSide,
-) {
-  for message in incoming {
-    if let Some(existing) = messages.iter_mut().find(|existing| existing.id == message.id) {
-      *existing = message;
-    } else {
-      messages.push(message);
-    }
-  }
-
-  messages.sort_by_key(|message| (message.timestamp, message.id));
-
-  if messages.len() > MAX_CACHED_MESSAGES_PER_CHANNEL {
-    let trim = messages.len() - MAX_CACHED_MESSAGES_PER_CHANNEL;
-    match trim_side {
-      ChatMessageTrimSide::Oldest => {
-        messages.drain(..trim);
-      }
-      ChatMessageTrimSide::Newest => {
-        messages.truncate(MAX_CACHED_MESSAGES_PER_CHANNEL);
-      }
-    }
-  }
-}
-
 #[derive(Clone, Debug)]
 pub(super) struct ServerMessageContext {
   pub(super) local_user_id: Option<UserId>,
@@ -495,8 +449,8 @@ pub(super) fn apply_server_message(
     }
     S2C::ChatHistoryResp(response) => {
       let message_count = response.messages.len();
-      tracing::debug!(target: "chat",
-        "[chat] received history: channel={} messages={} has_more={}",
+      tracing::info!(target: "chat::history",
+        "[chat/history] response received: channel={} messages={} has_more={}",
         response.channel_id,
         message_count,
         response.has_more
@@ -791,41 +745,6 @@ mod tests {
       local_voice_state: (false, false),
       pending_keepalive_ping: None,
     }
-  }
-
-  fn test_chat_message(id: u64) -> ProtocolChatMessage {
-    ProtocolChatMessage {
-      id,
-      channel_id: 10,
-      sender_id: 1,
-      sender_name: "user".to_owned(),
-      timestamp: id,
-      text: format!("message {id}"),
-      pinned: false,
-      attachments: Vec::new(),
-    }
-  }
-
-  #[test]
-  fn prepended_history_is_not_trimmed_back_out_of_cache() {
-    let mut messages = (51..=300).map(test_chat_message).collect::<Vec<_>>();
-
-    merge_chat_history_messages(&mut messages, (1..=50).map(test_chat_message));
-
-    assert_eq!(messages.len(), MAX_CACHED_MESSAGES_PER_CHANNEL);
-    assert_eq!(messages.first().map(|message| message.id), Some(1));
-    assert_eq!(messages.last().map(|message| message.id), Some(250));
-  }
-
-  #[test]
-  fn live_chat_messages_keep_newest_cache_window() {
-    let mut messages = (1..=250).map(test_chat_message).collect::<Vec<_>>();
-
-    merge_chat_messages(&mut messages, [test_chat_message(251)]);
-
-    assert_eq!(messages.len(), MAX_CACHED_MESSAGES_PER_CHANNEL);
-    assert_eq!(messages.first().map(|message| message.id), Some(2));
-    assert_eq!(messages.last().map(|message| message.id), Some(251));
   }
 
   #[test]

@@ -1,6 +1,6 @@
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Row, Text},
@@ -21,8 +21,8 @@ pub(super) struct DebugChannelsProps {
 }
 
 impl DevtoolsInspectable for DebugChannelsProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected",
       std::any::type_name::<bool>(),
       self.selected.to_string(),

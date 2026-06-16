@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Row, Stack, Text},
@@ -37,8 +37,8 @@ impl PartialEq for PercentSliderProps {
 }
 
 impl DevtoolsInspectable for PercentSliderProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<i32>(),
       self.initial_value.to_string(),

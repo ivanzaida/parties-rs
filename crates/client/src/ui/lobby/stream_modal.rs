@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lurq::{
   animation::Transition,
-  app::ctx::Ctx,
+  app::{ctx::Ctx, events::KeyboardEvent},
   components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
   core::Signal,
   layout::{
@@ -178,8 +178,8 @@ pub(super) fn start_stream_modal(
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))
     .child(dialog)
-    .on_key_down(move |event| {
-      if hotkeys::is_cancel_key(event) && !settings_open {
+    .on_key_down(move |event: KeyboardEvent| {
+      if hotkeys::is_cancel_key(&event) && !settings_open {
         close_on_escape.set(false);
       }
     })

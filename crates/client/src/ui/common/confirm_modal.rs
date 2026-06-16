@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Row, Text},
@@ -49,10 +49,14 @@ impl PartialEq for ConfirmModalProps {
 }
 
 impl DevtoolsInspectable for ConfirmModalProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value("title", "Arc<str>", self.title.to_string()));
-    buffer.push(ComponentInfo::with_value("body", "Arc<str>", self.body.to_string()));
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter
+      .buffer_mut()
+      .push(ComponentInfo::with_value("title", "Arc<str>", self.title.to_string()));
+    formatter
+      .buffer_mut()
+      .push(ComponentInfo::with_value("body", "Arc<str>", self.body.to_string()));
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "confirm_label",
       "Arc<str>",
       self.confirm_label.to_string(),

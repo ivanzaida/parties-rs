@@ -8,7 +8,7 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-use lurq::app::component::{ComponentInfo, DevtoolsInspectable};
+use lurq::app::component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
@@ -141,33 +141,33 @@ pub struct StoredServer {
 }
 
 impl DevtoolsInspectable for StoredServer {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "address",
       std::any::type_name::<String>(),
       self.address.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
       self.server_name.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "role",
       std::any::type_name::<Role>(),
       format!("{:?}", self.role),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "certificate_fingerprint",
       std::any::type_name::<String>(),
       self.certificate_fingerprint.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_password",
       std::any::type_name::<String>(),
       if self.server_password.is_empty() {
@@ -176,7 +176,7 @@ impl DevtoolsInspectable for StoredServer {
         "<stored>".to_owned()
       },
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "display_name",
       std::any::type_name::<String>(),
       self.display_name.clone(),
@@ -213,8 +213,8 @@ pub struct Storage {
 }
 
 impl DevtoolsInspectable for Storage {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "path",
       std::any::type_name::<Self>(),
       self.path.display().to_string(),
@@ -437,21 +437,6 @@ impl Storage {
       video_hardware_decoding: int_to_bool(row.get(24)?),
       locale: row.get(25)?,
     })
-  }
-
-  pub fn save_window_state(&self, state: WindowState) -> Result<(), StorageError> {
-    let conn = self.connection()?;
-    conn.execute(
-      "INSERT OR REPLACE INTO app_window_state (id, x, y, width, height, full_screen) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-      params![
-        state.x,
-        state.y,
-        state.width as i64,
-        state.height as i64,
-        bool_to_int(state.full_screen)
-      ],
-    )?;
-    Ok(())
   }
 
   pub fn load_window_state(&self) -> Result<Option<WindowState>, StorageError> {
@@ -1456,29 +1441,6 @@ mod tests {
     let storage = Storage::open(&path).unwrap();
 
     assert!(storage.load_settings().unwrap().debug_mode_enabled);
-
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(format!("{}-wal", path.display()));
-    let _ = fs::remove_file(format!("{}-shm", path.display()));
-  }
-
-  #[test]
-  fn window_state_round_trips() {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let path = env::temp_dir().join(format!("parties-rs-storage-window-{nonce}.db"));
-    let storage = Storage::open(&path).unwrap();
-
-    assert_eq!(storage.load_window_state().unwrap(), None);
-
-    let state = WindowState {
-      x: 320,
-      y: 180,
-      width: 1440,
-      height: 960,
-      full_screen: true,
-    };
-    storage.save_window_state(state).unwrap();
-    assert_eq!(storage.load_window_state().unwrap(), Some(state));
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));

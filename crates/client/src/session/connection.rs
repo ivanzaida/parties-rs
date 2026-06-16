@@ -7,7 +7,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use lurq::app::component::{ComponentInfo, DevtoolsInspectable};
+use lurq::app::component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable};
 use parking_lot::Mutex;
 
 use super::{LobbyConnectionWarningKind, video, voice_runtime};
@@ -27,33 +27,33 @@ pub struct ConnectedServerInfo {
 }
 
 impl DevtoolsInspectable for ConnectedServerInfo {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "address",
       std::any::type_name::<String>(),
       self.address.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
       self.server_name.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "display_name",
       std::any::type_name::<String>(),
       self.display_name.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "role",
       std::any::type_name::<Role>(),
       format!("{:?}", self.role),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "certificate_fingerprint",
       std::any::type_name::<String>(),
       self.certificate_fingerprint.clone(),
@@ -74,38 +74,38 @@ pub struct TofuWarning {
 }
 
 impl DevtoolsInspectable for TofuWarning {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "address",
       std::any::type_name::<String>(),
       self.address.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
       self.server_name.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "role",
       std::any::type_name::<Role>(),
       format!("{:?}", self.role),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "saved_fingerprint",
       std::any::type_name::<String>(),
       self.saved_fingerprint.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "received_fingerprint",
       std::any::type_name::<String>(),
       self.received_fingerprint.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_password",
       std::any::type_name::<String>(),
       if self.server_password.is_empty() {
@@ -114,7 +114,7 @@ impl DevtoolsInspectable for TofuWarning {
         "<stored>".to_owned()
       },
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "display_name",
       std::any::type_name::<String>(),
       self.display_name.clone(),

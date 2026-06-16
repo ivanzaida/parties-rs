@@ -115,6 +115,10 @@ impl Role {
       _ => None,
     }
   }
+
+  pub fn from_u8_or_user(value: u8) -> Self {
+    Self::from_u8(value).unwrap_or(Self::User)
+  }
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]

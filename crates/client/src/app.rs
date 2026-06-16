@@ -1,6 +1,6 @@
 use std::{
   sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
   },
   time::Duration,
@@ -8,8 +8,9 @@ use std::{
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Modal, Root},
+    events::KeyboardEvent,
   },
   components::{Column, Row, Stack, Text},
   core::Signal,
@@ -32,11 +33,12 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::{Storage, WindowState},
+  storage::Storage,
   theme,
   ui::{
     app_chrome::{
-      AppChrome, CHROME_HEIGHT, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, modal_layer, window_affordance_layers,
+      AppChrome, CHROME_HEIGHT, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, FrameRateSignal, modal_layer,
+      window_affordance_layers,
     },
     common::lucide_icon::{LucideIcon, LucideIconProps},
     connect_server::ConnectServerScreen,
@@ -69,16 +71,11 @@ pub struct App {
   settings_page: Signal<SettingsPage>,
   active_toggle_hotkeys: Signal<Vec<String>>,
   update_status: Signal<StartupUpdateStatus>,
+  frame_rate: FrameRateSignal,
   startup_full_screen: bool,
   startup_full_screen_applied: Signal<bool>,
-  window_state_tracker: Option<WindowStateTracker>,
+  last_full_screen: Signal<bool>,
   global_hotkeys: GlobalVoiceHotkeys,
-}
-
-#[derive(Clone)]
-pub struct WindowStateTracker {
-  pub current: Arc<Mutex<WindowState>>,
-  pub last_saved: Arc<Mutex<Option<WindowState>>>,
 }
 
 #[derive(Clone)]
@@ -87,8 +84,8 @@ pub struct AppProps {
   pub startup_storage: Option<Storage>,
   pub startup_error: Option<String>,
   pub session: ServerSession,
+  pub frame_rate: FrameRateSignal,
   pub startup_full_screen: bool,
-  pub window_state_tracker: Option<WindowStateTracker>,
 }
 
 impl PartialEq for AppProps {
@@ -98,8 +95,8 @@ impl PartialEq for AppProps {
 }
 
 impl DevtoolsInspectable for AppProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::new(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::new(
       "tokio",
       std::any::type_name::<tokio::runtime::Handle>(),
     ));
@@ -210,9 +207,10 @@ impl Component for App {
       settings_page: ctx.signal(SettingsPage::Overview),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
       update_status,
+      frame_rate: props.frame_rate.clone(),
       startup_full_screen: props.startup_full_screen,
       startup_full_screen_applied: ctx.signal(false),
-      window_state_tracker: props.window_state_tracker.clone(),
+      last_full_screen: ctx.signal(props.startup_full_screen),
       global_hotkeys,
     }
   }
@@ -231,7 +229,7 @@ impl Component for App {
       self.startup_full_screen_applied.set(true);
       startup_window.set_full_screen(true);
     } else {
-      self.sync_window_full_screen(storage.as_ref(), startup_window.is_full_screen);
+      self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
     let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
     if let Some(settings) = settings.as_ref() {
@@ -280,7 +278,7 @@ impl Component for App {
       .clip();
 
     if CUSTOM_WINDOW_CHROME {
-      content = content.child(ctx.mount::<AppChrome>(()));
+      content = content.child(ctx.mount::<AppChrome>(self.frame_rate.clone()));
     }
 
     content = content.child(
@@ -312,8 +310,8 @@ impl Component for App {
       let close_settings = settings_popup.clone();
       ctx.provide(settings_popup.clone());
       let popup = ctx.mount::<SettingsPopup>(());
-      let settings_layer = modal_layer(ctx, popup).on_key_down(move |event| {
-        if hotkeys::is_cancel_key(event) {
+      let settings_layer = modal_layer(ctx, popup).on_key_down(move |event: KeyboardEvent| {
+        if hotkeys::is_cancel_key(&event) {
           close_settings.close();
         }
       });
@@ -331,14 +329,14 @@ impl Component for App {
       let mute_down_hotkey = mute_hotkey.clone();
       let deafen_down_hotkey = deafen_hotkey.clone();
       let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
-      root = root.on_key_down(move |event| {
-        if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, event) {
+      root = root.on_key_down(move |event: KeyboardEvent| {
+        if push_to_talk_enabled && hotkeys::event_matches_hotkey(&ptt_down_hotkey, &event) {
           ptt_session.set_push_to_talk_active(true);
-        } else if hotkeys::event_matches_hotkey(&mute_down_hotkey, event) {
+        } else if hotkeys::event_matches_hotkey(&mute_down_hotkey, &event) {
           if activate_toggle_hotkey(&active_toggle_hotkeys, &mute_down_hotkey) {
             voice_hotkey.run(VoiceControlAction::ToggleMute);
           }
-        } else if hotkeys::event_matches_hotkey(&deafen_down_hotkey, event) {
+        } else if hotkeys::event_matches_hotkey(&deafen_down_hotkey, &event) {
           if activate_toggle_hotkey(&active_toggle_hotkeys, &deafen_down_hotkey) {
             voice_hotkey.run(VoiceControlAction::ToggleDeafen);
           }
@@ -347,12 +345,12 @@ impl Component for App {
 
       let ptt_session = self.session.clone();
       let active_toggle_hotkeys = self.active_toggle_hotkeys.clone();
-      root = root.on_key_up(move |event| {
-        if push_to_talk_enabled && hotkeys::event_releases_hotkey(&push_to_talk_hotkey, event) {
+      root = root.on_key_up(move |event: KeyboardEvent| {
+        if push_to_talk_enabled && hotkeys::event_releases_hotkey(&push_to_talk_hotkey, &event) {
           ptt_session.set_push_to_talk_active(false);
         }
-        release_toggle_hotkey(&active_toggle_hotkeys, &mute_hotkey, event);
-        release_toggle_hotkey(&active_toggle_hotkeys, &deafen_hotkey, event);
+        release_toggle_hotkey(&active_toggle_hotkeys, &mute_hotkey, &event);
+        release_toggle_hotkey(&active_toggle_hotkeys, &deafen_hotkey, &event);
       });
     }
 
@@ -444,25 +442,13 @@ impl App {
 }
 
 impl App {
-  fn sync_window_full_screen(&self, storage: Option<&Storage>, full_screen: bool) {
-    let (Some(storage), Some(tracker)) = (storage, self.window_state_tracker.as_ref()) else {
-      return;
-    };
-
-    let state = {
-      let mut state = tracker.current.lock().expect("window state lock poisoned");
-      if state.full_screen == full_screen {
-        return;
-      }
-      state.full_screen = full_screen;
-      *state
-    };
-    let mut last_saved = tracker.last_saved.lock().expect("window state lock poisoned");
-    if *last_saved == Some(state) {
+  fn sync_window_full_screen(&self, ctx: &Ctx, full_screen: bool) {
+    if self.last_full_screen.get_untracked() == full_screen {
       return;
     }
-    if storage.save_window_state(state).is_ok() {
-      *last_saved = Some(state);
+    self.last_full_screen.set(full_screen);
+    if let Err(error) = ctx.set_persistent_value("window.full_screen", full_screen) {
+      tracing::warn!(target: "window::state", "failed to save full screen state: {error}");
     }
   }
 }

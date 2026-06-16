@@ -3076,11 +3076,14 @@ fn split_length_prefixed_ranges(bytes: &[u8]) -> Result<Vec<Range<usize>>, Video
   while cursor + 4 <= bytes.len() {
     let len = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
-    if len == 0 || cursor + len > bytes.len() {
+    let Some(end) = cursor.checked_add(len) else {
+      return Err(VideoError::new("Invalid length-prefixed video NAL unit."));
+    };
+    if len == 0 || end > bytes.len() {
       return Err(VideoError::new("Invalid length-prefixed video NAL unit."));
     }
-    out.push(cursor..cursor + len);
-    cursor += len;
+    out.push(cursor..end);
+    cursor = end;
   }
   if cursor != bytes.len() {
     return Err(VideoError::new("Trailing bytes after length-prefixed video NAL units."));

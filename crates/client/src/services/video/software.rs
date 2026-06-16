@@ -596,7 +596,12 @@ impl OpenH264RawDecoder {
     for range in &input.ranges {
       single_nal.clear();
       single_nal.extend_from_slice(&[0, 0, 0, 1]);
-      single_nal.extend_from_slice(&input.data[range.clone()]);
+      let nal = h264_nal_range(
+        input.data.as_ref(),
+        range.clone(),
+        "Software H.264 decoder received an invalid NAL range.",
+      )?;
+      single_nal.extend_from_slice(nal);
       let outcome = self.decode_nal(&single_nal, frame_number)?;
       latest_state = outcome.state;
       if outcome.frame.is_some() {
@@ -735,9 +740,14 @@ fn h264_annex_b_decode_input(encoded: &[u8]) -> Result<H264AnnexBInput<'_>, Vide
   let mut output = Vec::with_capacity(output_len);
   let mut output_ranges = Vec::with_capacity(ranges.len());
   for range in ranges {
+    let nal = h264_nal_range(
+      encoded,
+      range,
+      "Software H.264 Annex B conversion received an invalid NAL range.",
+    )?;
     output.extend_from_slice(&[0, 0, 0, 1]);
     let start = output.len();
-    output.extend_from_slice(&encoded[range]);
+    output.extend_from_slice(nal);
     output_ranges.push(start..output.len());
   }
   let mut summary = summarize_h264_nals(&output, &output_ranges, true);
@@ -759,16 +769,23 @@ fn split_length_prefixed_ranges(bytes: &[u8]) -> Result<Vec<Range<usize>>, Video
   while cursor + 4 <= bytes.len() {
     let len = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
     cursor += 4;
-    if len == 0 || cursor + len > bytes.len() {
+    let Some(end) = cursor.checked_add(len) else {
+      return Err(VideoError::new("Invalid length-prefixed H.264 NAL unit."));
+    };
+    if len == 0 || end > bytes.len() {
       return Err(VideoError::new("Invalid length-prefixed H.264 NAL unit."));
     }
-    out.push(cursor..cursor + len);
-    cursor += len;
+    out.push(cursor..end);
+    cursor = end;
   }
   if cursor != bytes.len() {
     return Err(VideoError::new("Trailing bytes after length-prefixed H.264 NAL units."));
   }
   Ok(out)
+}
+
+fn h264_nal_range<'a>(data: &'a [u8], range: Range<usize>, message: &'static str) -> Result<&'a [u8], VideoError> {
+  data.get(range).ok_or_else(|| VideoError::new(message))
 }
 
 fn summarize_h264_nals(encoded: &[u8], ranges: &[Range<usize>], length_prefixed: bool) -> H264AccessUnitSummary {
@@ -1268,5 +1285,14 @@ mod tests {
     assert_eq!(parsed.summary.sps_level_clamped_from, Some(60));
     assert!(parsed.summary.length_prefixed);
     assert_eq!(parsed.ranges, [4..8, 12..13]);
+  }
+
+  #[test]
+  fn h264_invalid_nal_range_returns_error_instead_of_panicking() {
+    let data = [0; 12];
+
+    let error = h264_nal_range(&data, 13..12, "bad range").unwrap_err();
+
+    assert_eq!(error.to_string(), "bad range");
   }
 }

@@ -1,4 +1,5 @@
 use std::{
+  cell::Cell,
   collections::{HashMap, HashSet, VecDeque},
   env, fmt,
   panic::{AssertUnwindSafe, catch_unwind},
@@ -66,8 +67,15 @@ const LOCAL_VOICE_INPUT_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
 const LOCAL_VOICE_SEND_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
 const LOCAL_VOICE_IDLE_WARN_REPEAT: Duration = Duration::from_secs(30);
 static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+thread_local! {
+  static CATCHING_INPUT_CAPTURE_CALLBACK_PANIC: Cell<u32> = const { Cell::new(0) };
+}
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+pub(crate) fn is_catching_input_capture_callback_panic() -> bool {
+  CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.get() > 0)
+}
 
 #[derive(Debug)]
 pub struct VoiceError {
@@ -921,7 +929,11 @@ impl InputCaptureState {
       return;
     }
 
-    if catch_unwind(AssertUnwindSafe(|| self.push(data))).is_err() {
+    CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.set(depth.get().saturating_add(1)));
+    let result = catch_unwind(AssertUnwindSafe(|| self.push(data)));
+    CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.set(depth.get().saturating_sub(1)));
+
+    if result.is_err() {
       self.callback_failed = true;
       self.capture_frame.clear();
       self.process_frame.clear();

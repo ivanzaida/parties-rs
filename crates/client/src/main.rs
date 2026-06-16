@@ -17,18 +17,34 @@ mod windows_diagnostics;
 use std::ffi::{CStr, c_char};
 use std::{
   panic,
-  sync::{Arc, Mutex},
+  path::PathBuf,
+  sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::{Duration, Instant},
 };
 
-use lurq::app::{WindowCornerRadius, WindowIcon};
+use lurq::{
+  app::{WindowCornerRadius, WindowIcon},
+  core::Signal,
+  persistent_storage::{PersistentStorage, PersistentWrite},
+};
 use session::ServerSession;
 use storage::{Storage, WindowState};
-use ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME};
+use ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, FrameRateSignal};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 900;
 const MIN_WINDOW_WIDTH: u32 = 768;
 const MIN_WINDOW_HEIGHT: u32 = 640;
+const FPS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+const WINDOW_STATE_SAVE_DEBOUNCE: Duration = Duration::from_millis(200);
+const WINDOW_X_KEY: &str = "window.x";
+const WINDOW_Y_KEY: &str = "window.y";
+const WINDOW_WIDTH_KEY: &str = "window.width";
+const WINDOW_HEIGHT_KEY: &str = "window.height";
+const WINDOW_FULL_SCREEN_KEY: &str = "window.full_screen";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScreenBounds {
@@ -36,6 +52,96 @@ struct ScreenBounds {
   y: i32,
   width: u32,
   height: u32,
+}
+
+struct FpsSampler {
+  signal: Signal<u32>,
+  last_sample: Instant,
+  frames_since_sample: u32,
+}
+
+#[derive(Clone)]
+struct WindowStateSaveScheduler {
+  tokio: tokio::runtime::Handle,
+  storage: PersistentStorage,
+  last_saved: Arc<Mutex<Option<WindowState>>>,
+  pending: Arc<Mutex<Option<WindowState>>>,
+  scheduled: Arc<AtomicBool>,
+}
+
+impl WindowStateSaveScheduler {
+  fn new(tokio: tokio::runtime::Handle, storage: PersistentStorage, last_saved: Option<WindowState>) -> Self {
+    Self {
+      tokio,
+      storage,
+      last_saved: Arc::new(Mutex::new(last_saved)),
+      pending: Arc::new(Mutex::new(None)),
+      scheduled: Arc::new(AtomicBool::new(false)),
+    }
+  }
+
+  fn schedule(&self, state: WindowState) {
+    *self.pending.lock().expect("window state save lock poisoned") = Some(state);
+    if self.scheduled.swap(true, Ordering::AcqRel) {
+      return;
+    }
+
+    let scheduler = self.clone();
+    self.tokio.spawn(async move {
+      scheduler.run().await;
+    });
+  }
+
+  async fn run(self) {
+    loop {
+      tokio::time::sleep(WINDOW_STATE_SAVE_DEBOUNCE).await;
+      if let Some(state) = self.pending.lock().expect("window state save lock poisoned").take() {
+        let should_save = {
+          let last_saved = self.last_saved.lock().expect("window state lock poisoned");
+          !last_saved.is_some_and(|last_saved| window_bounds_equal(last_saved, state))
+        };
+
+        if should_save && save_window_bounds_to_persistent(&self.storage, state) {
+          *self.last_saved.lock().expect("window state lock poisoned") = Some(state);
+        }
+      }
+
+      if self.pending.lock().expect("window state save lock poisoned").is_none() {
+        self.scheduled.store(false, Ordering::Release);
+        if self.pending.lock().expect("window state save lock poisoned").is_none() {
+          return;
+        }
+        if self.scheduled.swap(true, Ordering::AcqRel) {
+          return;
+        }
+      }
+    }
+  }
+}
+
+impl FpsSampler {
+  fn new(signal: Signal<u32>) -> Self {
+    Self {
+      signal,
+      last_sample: Instant::now(),
+      frames_since_sample: 0,
+    }
+  }
+
+  fn record_frame(&mut self) -> Option<u32> {
+    self.frames_since_sample = self.frames_since_sample.saturating_add(1);
+    let now = Instant::now();
+    let elapsed = now.duration_since(self.last_sample);
+    if elapsed < FPS_SAMPLE_INTERVAL {
+      return None;
+    }
+
+    let fps = (self.frames_since_sample as f32 / elapsed.as_secs_f32()).round() as u32;
+    self.signal.set(fps);
+    self.frames_since_sample = 0;
+    self.last_sample = now;
+    Some(fps)
+  }
 }
 
 fn main() {
@@ -49,13 +155,7 @@ fn main() {
     .enable_all()
     .build()
     .expect("failed to create tokio runtime");
-  let (startup_storage, window_state, startup_error) = load_startup_storage();
-  let window_state = window_state.map(validate_startup_window_state);
-  let startup_full_screen = window_state.is_some_and(|state| state.full_screen);
-  let window_state_tracker = startup_storage.as_ref().map(|_| app::WindowStateTracker {
-    current: Arc::new(Mutex::new(window_state.unwrap_or_else(|| default_window_state(false)))),
-    last_saved: Arc::new(Mutex::new(window_state)),
-  });
+  let (startup_storage, startup_error) = load_startup_storage();
   #[cfg(target_os = "windows")]
   let dx12_video_surfaces = lurq::app::dx12_render::Dx12VideoSurfaceAllocator::new();
   #[cfg(target_os = "windows")]
@@ -66,8 +166,19 @@ fn main() {
 
   let mut lurq_app = lurq::app::App::new();
   lurq_app.set_tokio_handle(tokio_runtime.handle().clone());
+  if let Err(error) = lurq_app.set_persistent_storage_path(persistent_storage_path()) {
+    tracing::warn!(target: "window::state", "failed to open persistent storage: {error}");
+  }
+  let persistent_storage = lurq_app.persistent_storage().clone();
+  let window_state =
+    load_startup_window_state(&persistent_storage, startup_storage.as_ref()).map(validate_startup_window_state);
+  if let Some(state) = window_state {
+    save_window_state_to_persistent(&persistent_storage, state);
+  }
+  let startup_full_screen = window_state.is_some_and(|state| state.full_screen);
+  let frame_rate_signal = Signal::new(0);
 
-  let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+  let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
   lurq_app.set_resource_root(assets.clone());
   lurq_app.load_fonts_dir(assets.join("fonts").as_path());
   lurq_app.register_font("Inter", "Inter");
@@ -93,10 +204,11 @@ fn main() {
       startup_storage: startup_storage.clone(),
       startup_error,
       session: session.clone(),
+      frame_rate: FrameRateSignal(frame_rate_signal.clone()),
       startup_full_screen,
-      window_state_tracker: window_state_tracker.clone(),
     },
   );
+  let mut fps_sampler = FpsSampler::new(frame_rate_signal);
 
   let mut window = lurq::app::winit_shell::WinitWindow::new(lurq_app, tree)
     .with_title("Parties")
@@ -112,18 +224,34 @@ fn main() {
       WindowCornerRadius::Rounded
     } else {
       WindowCornerRadius::Default
+    })
+    .on_paint(move |tree, _, report| {
+      if let Some(fps) = fps_sampler.record_frame() {
+        if tracing::enabled!(target: "frame-profile", tracing::Level::TRACE) {
+          tracing::trace!(
+            target: "frame-profile",
+            "[frame-profile] fps={} cached={} layout_updated={} layout_recalculated={} reasons={:?} {}",
+            fps,
+            report.used_cached_render_list,
+            report.layout_updated,
+            report.layout_recalculated,
+            report.reasons,
+            tree.last_profile()
+          );
+        }
+      }
     });
 
   if let Some(state) = window_state {
     window = window.with_position(state.x, state.y);
   }
 
-  if let (Some(storage), Some(window_state_tracker)) = (startup_storage, window_state_tracker) {
-    let current_window_state = window_state_tracker.current.clone();
-    let last_saved_state = window_state_tracker.last_saved.clone();
-    let move_storage = storage.clone();
+  {
+    let current_window_state = Arc::new(Mutex::new(window_state.unwrap_or_else(|| default_window_state(false))));
+    let save_scheduler =
+      WindowStateSaveScheduler::new(tokio_runtime.handle().clone(), persistent_storage.clone(), window_state);
     let move_state = current_window_state.clone();
-    let move_last_saved_state = last_saved_state.clone();
+    let move_save_scheduler = save_scheduler.clone();
     window = window.on_position_changed(move |x, y| {
       let state = {
         let mut state = move_state.lock().expect("window state lock poisoned");
@@ -131,17 +259,10 @@ fn main() {
         state.y = y;
         *state
       };
-      let mut last_saved_state = move_last_saved_state.lock().expect("window state lock poisoned");
-      if *last_saved_state == Some(state) {
-        return;
-      }
-
-      if move_storage.save_window_state(state).is_ok() {
-        *last_saved_state = Some(state);
-      }
+      move_save_scheduler.schedule(state);
     });
     let resize_state = current_window_state;
-    let resize_last_saved_state = last_saved_state;
+    let resize_save_scheduler = save_scheduler;
     window = window.on_size_changed(move |width, height| {
       let state = {
         let mut state = resize_state.lock().expect("window state lock poisoned");
@@ -149,14 +270,7 @@ fn main() {
         state.height = height;
         *state
       };
-      let mut last_saved_state = resize_last_saved_state.lock().expect("window state lock poisoned");
-      if *last_saved_state == Some(state) {
-        return;
-      }
-
-      if storage.save_window_state(state).is_ok() {
-        *last_saved_state = Some(state);
-      }
+      resize_save_scheduler.schedule(state);
     });
   }
 
@@ -266,6 +380,9 @@ fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: S
   let panic_session = session.clone();
   let default_panic_hook = panic::take_hook();
   panic::set_hook(Box::new(move |info| {
+    if services::voice::is_catching_input_capture_callback_panic() {
+      return;
+    }
     panic_session.disconnect_for_shutdown();
     default_panic_hook(info);
   }));
@@ -307,16 +424,48 @@ extern "C" fn windows_native_log_callback(level: u8, message: *const c_char) {
   }
 }
 
-fn load_startup_storage() -> (Option<Storage>, Option<WindowState>, Option<String>) {
+fn load_startup_storage() -> (Option<Storage>, Option<String>) {
   let storage = match Storage::open_default() {
     Ok(storage) => storage,
-    Err(error) => return (None, None, Some(error.to_string())),
+    Err(error) => return (None, Some(error.to_string())),
   };
 
-  match storage.load_window_state() {
-    Ok(state) => (Some(storage), state, None),
-    Err(error) => (Some(storage), None, Some(error.to_string())),
-  }
+  (Some(storage), None)
+}
+
+fn persistent_storage_path() -> PathBuf {
+  Storage::default_data_dir().join("lurq.redb")
+}
+
+fn load_startup_window_state(
+  persistent_storage: &PersistentStorage,
+  fallback_storage: Option<&Storage>,
+) -> Option<WindowState> {
+  load_window_state_from_persistent(persistent_storage).or_else(|| {
+    fallback_storage
+      .and_then(|storage| storage.load_window_state().ok().flatten())
+      .map(validate_startup_window_state)
+  })
+}
+
+fn load_window_state_from_persistent(storage: &PersistentStorage) -> Option<WindowState> {
+  let values = storage
+    .read_bulk([
+      WINDOW_X_KEY,
+      WINDOW_Y_KEY,
+      WINDOW_WIDTH_KEY,
+      WINDOW_HEIGHT_KEY,
+      WINDOW_FULL_SCREEN_KEY,
+    ])
+    .ok()?;
+
+  Some(WindowState {
+    x: values.value(WINDOW_X_KEY)?,
+    y: values.value(WINDOW_Y_KEY)?,
+    width: values.value(WINDOW_WIDTH_KEY)?,
+    height: values.value(WINDOW_HEIGHT_KEY)?,
+    full_screen: values.value(WINDOW_FULL_SCREEN_KEY).unwrap_or(false),
+  })
 }
 
 fn default_window_state(full_screen: bool) -> WindowState {
@@ -326,6 +475,41 @@ fn default_window_state(full_screen: bool) -> WindowState {
     width: DEFAULT_WINDOW_WIDTH,
     height: DEFAULT_WINDOW_HEIGHT,
     full_screen,
+  }
+}
+
+fn window_bounds_equal(a: WindowState, b: WindowState) -> bool {
+  a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height
+}
+
+fn save_window_bounds_to_persistent(storage: &PersistentStorage, state: WindowState) -> bool {
+  match storage.write_bulk([
+    PersistentWrite::new(WINDOW_X_KEY, state.x),
+    PersistentWrite::new(WINDOW_Y_KEY, state.y),
+    PersistentWrite::new(WINDOW_WIDTH_KEY, state.width),
+    PersistentWrite::new(WINDOW_HEIGHT_KEY, state.height),
+  ]) {
+    Ok(()) => true,
+    Err(error) => {
+      tracing::warn!(target: "window::state", "failed to save window bounds: {error}");
+      false
+    }
+  }
+}
+
+fn save_window_state_to_persistent(storage: &PersistentStorage, state: WindowState) -> bool {
+  match storage.write_bulk([
+    PersistentWrite::new(WINDOW_X_KEY, state.x),
+    PersistentWrite::new(WINDOW_Y_KEY, state.y),
+    PersistentWrite::new(WINDOW_WIDTH_KEY, state.width),
+    PersistentWrite::new(WINDOW_HEIGHT_KEY, state.height),
+    PersistentWrite::new(WINDOW_FULL_SCREEN_KEY, state.full_screen),
+  ]) {
+    Ok(()) => true,
+    Err(error) => {
+      tracing::warn!(target: "window::state", "failed to save window state: {error}");
+      false
+    }
   }
 }
 

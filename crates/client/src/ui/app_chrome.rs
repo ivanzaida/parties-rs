@@ -1,6 +1,12 @@
 use lurq::{
-  app::{WindowHandle, WindowResizeDirection, component::Component, ctx::Ctx, events::MouseButton},
+  app::{
+    WindowHandle, WindowResizeDirection,
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
+    ctx::Ctx,
+    events::{DragEvent, MouseButton, MouseEvent},
+  },
   components::{Row, Text},
+  core::Signal,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
@@ -24,12 +30,31 @@ pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
 } else {
   0.0
 };
-pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 6.0 } else { 0.0 };
+pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 3.0 } else { 0.0 };
 
-pub struct AppChrome;
+#[derive(Clone, Debug)]
+pub(crate) struct FrameRateSignal(pub Signal<u32>);
+
+impl PartialEq for FrameRateSignal {
+  fn eq(&self, other: &Self) -> bool {
+    self.0.id() == other.0.id()
+  }
+}
+
+impl DevtoolsInspectable for FrameRateSignal {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
+      "signal",
+      std::any::type_name::<Signal<u32>>(),
+      self.0.id().to_string(),
+    ));
+  }
+}
+
+pub(crate) struct AppChrome;
 
 impl Component for AppChrome {
-  type Props = ();
+  type Props = FrameRateSignal;
 
   fn create(_ctx: &mut Ctx) -> Self {
     Self
@@ -53,7 +78,7 @@ impl Component for AppChrome {
       .align_items(Alignment::Center)
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfacePanel))
       .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
-      .child(window_drag_region(ctx))
+      .child(window_drag_region(ctx, ctx.props::<Self::Props>().0.get()))
       .child(window_controls(ctx))
   }
 }
@@ -219,20 +244,26 @@ fn resize_handle(
     .absolute(x, y, width, height)
     .background(BackgroundColor::Color(Color::from_hex("#00000000")))
     .cursor(cursor)
-    .on_mouse_down(move |event| {
+    .on_mouse_down(move |event: MouseEvent| {
       if event.button == MouseButton::Left {
+        #[cfg(target_os = "windows")]
+        if begin_native_window_resize(direction) {
+          return;
+        }
+
         window.start_resize(direction);
       }
     })
     .into()
 }
 
-fn window_drag_region(ctx: &mut Ctx) -> Element {
+fn window_drag_region(ctx: &mut Ctx, fps: u32) -> Element {
   let window = ctx.window();
   let drag_window = window.clone();
   let stop_drag_window = window.clone();
   let maximize_window = window.clone();
   let maximized = window.is_maximized;
+  let fps_label = format!("{fps} fps");
 
   Row::new()
     .height(Dimension::Pct(100.0))
@@ -240,8 +271,13 @@ fn window_drag_region(ctx: &mut Ctx) -> Element {
     .align_items(Alignment::Center)
     .spacing(theme::SpacingSize::Md)
     .padding_left(theme::SpacingSize::Lg)
-    .on_drag_start(move |event| {
+    .on_drag_start(move |event: DragEvent| {
       if event.button == MouseButton::Left && !maximized {
+        #[cfg(target_os = "windows")]
+        if begin_native_window_drag() {
+          return;
+        }
+
         drag_window.start_drag();
       }
     })
@@ -260,6 +296,11 @@ fn window_drag_region(ctx: &mut Ctx) -> Element {
         .variant(theme::TypographyStyle::Button)
         .color(theme::PaletteColor::TextSecondary),
     )
+    .child(
+      Text::new(&fps_label)
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted),
+    )
     .into()
 }
 
@@ -273,7 +314,7 @@ fn macos_window_drag_region(ctx: &mut Ctx) -> Element {
   Row::new()
     .height(Dimension::Pct(100.0))
     .flex(1.0)
-    .on_drag_start(move |event| {
+    .on_drag_start(move |event: DragEvent| {
       if event.button == MouseButton::Left && !maximized {
         drag_window.start_drag();
       }
@@ -281,6 +322,54 @@ fn macos_window_drag_region(ctx: &mut Ctx) -> Element {
     .on_drag_end(move |_| stop_drag_window.stop_drag())
     .on_dblclick(move |_| maximize_window.set_maximized(!maximized))
     .into()
+}
+
+#[cfg(target_os = "windows")]
+fn begin_native_window_drag() -> bool {
+  use windows::Win32::UI::WindowsAndMessaging::HTCAPTION;
+
+  send_native_non_client_mouse_down(HTCAPTION)
+}
+
+#[cfg(target_os = "windows")]
+fn begin_native_window_resize(direction: WindowResizeDirection) -> bool {
+  use windows::Win32::UI::WindowsAndMessaging::{
+    HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+  };
+
+  let hit_test = match direction {
+    WindowResizeDirection::North => HTTOP,
+    WindowResizeDirection::South => HTBOTTOM,
+    WindowResizeDirection::West => HTLEFT,
+    WindowResizeDirection::East => HTRIGHT,
+    WindowResizeDirection::NorthWest => HTTOPLEFT,
+    WindowResizeDirection::NorthEast => HTTOPRIGHT,
+    WindowResizeDirection::SouthWest => HTBOTTOMLEFT,
+    WindowResizeDirection::SouthEast => HTBOTTOMRIGHT,
+  };
+  send_native_non_client_mouse_down(hit_test)
+}
+
+#[cfg(target_os = "windows")]
+fn send_native_non_client_mouse_down(hit_test: u32) -> bool {
+  use windows::Win32::{
+    Foundation::{LPARAM, WPARAM},
+    UI::{
+      Input::KeyboardAndMouse::ReleaseCapture,
+      WindowsAndMessaging::{GetForegroundWindow, SendMessageW, WM_NCLBUTTONDOWN},
+    },
+  };
+
+  let hwnd = unsafe { GetForegroundWindow() };
+  if hwnd.is_invalid() {
+    return false;
+  }
+
+  unsafe {
+    let _ = ReleaseCapture();
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(hit_test as usize)), Some(LPARAM(0)));
+  }
+  true
 }
 
 fn window_controls(ctx: &mut Ctx) -> Element {

@@ -29,6 +29,7 @@ use crate::{
 };
 
 pub mod chat_commands;
+pub mod chat_history;
 mod connection;
 mod lobby;
 mod speaking;
@@ -240,7 +241,7 @@ impl ServerSession {
     let mut should_bump = false;
     {
       let mut lobby = self.lobby.lock();
-      if lobby.disconnected {
+      if lobby.disconnected || self.connection.shutdown_requested() {
         return;
       }
       let warning = LobbyConnectionWarning { kind, message };

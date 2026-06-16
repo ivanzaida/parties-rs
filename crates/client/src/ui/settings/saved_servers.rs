@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Modal, Root},
+    events::MouseEvent,
   },
   clipboard,
   components::{Column, Rect, Row, ScrollVertical, Text, TextInput},
@@ -359,7 +360,7 @@ fn server_row(
     )
     .child({
       let scale = ctx.window().scale_factor.max(f32::EPSILON);
-      menu_trigger(ctx).on_click(move |event| {
+      menu_trigger(ctx).on_click(move |event: MouseEvent| {
         menu_address.set(Some(address.clone()));
         menu_anchor_y.set(Some(event.y / scale));
         menu_open.set(true);
@@ -483,8 +484,8 @@ impl PartialEq for EditSavedServerModalProps {
 }
 
 impl DevtoolsInspectable for EditSavedServerModalProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server",
       std::any::type_name::<String>(),
       self.server.address.clone(),

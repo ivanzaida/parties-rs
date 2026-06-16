@@ -6,9 +6,9 @@ use std::{
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Interval, Modal, Root},
-    events::MouseButton,
+    events::{MouseButton, MouseEvent},
   },
   components::{Column, Row, Stack, Text},
   core::Signal,
@@ -82,23 +82,23 @@ impl PartialEq for VoiceChannelsProps {
 }
 
 impl DevtoolsInspectable for VoiceChannelsProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "channels",
       std::any::type_name::<usize>(),
       self.channels.len().to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
       format!("{:?}", self.selected_channel_id),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "users_by_channel",
       std::any::type_name::<usize>(),
       self.users_by_channel.values().map(Vec::len).sum::<usize>().to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "streaming_user_ids",
       std::any::type_name::<usize>(),
       self.streaming_user_ids.len().to_string(),
@@ -526,7 +526,7 @@ fn channel_user_row(
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)));
 
   if !local {
-    row = row.on_mouse_click(MouseButton::Right, move |event| {
+    row = row.on_mouse_click(MouseButton::Right, move |event: MouseEvent| {
       let anchor = (event.x / scale, event.y / scale);
       open_anchor.set(Some(anchor));
       open_context.set(Some(user_id));
@@ -944,8 +944,8 @@ impl PartialEq for UserVolumeControlProps {
 }
 
 impl DevtoolsInspectable for UserVolumeControlProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),
@@ -975,8 +975,8 @@ impl PartialEq for UserNormalizationToggleProps {
 }
 
 impl DevtoolsInspectable for UserNormalizationToggleProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),

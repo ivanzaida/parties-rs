@@ -26,7 +26,7 @@ pub(super) fn refresh_button(ctx: &mut Ctx, on_click: impl Fn(&MouseEvent) + Sen
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .on_click(on_click)
+    .on_click(move |event: MouseEvent| on_click(&event))
     .child(ctx.mount::<LucideIcon>(LucideIconProps {
       icon: "refresh-cw",
       size: 15.0,

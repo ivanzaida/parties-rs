@@ -1,12 +1,8 @@
-use std::{
-  collections::HashMap,
-  process::Command,
-  sync::{Arc, Mutex, OnceLock},
-};
+use std::{process::Command, time::Instant};
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Markdown, MarkdownProps, Row, Text},
@@ -24,10 +20,6 @@ use crate::{
   },
 };
 
-const CHAT_MARKDOWN_SOURCE_CACHE_LIMIT: usize = 2048;
-
-type ChatMarkdownSourceCache = Mutex<HashMap<String, Arc<str>>>;
-
 #[derive(Clone, PartialEq)]
 pub(super) struct ChatMessageProps {
   pub(super) message: ProtocolChatMessage,
@@ -36,18 +28,18 @@ pub(super) struct ChatMessageProps {
 }
 
 impl DevtoolsInspectable for ChatMessageProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "id",
       std::any::type_name::<u64>(),
       self.message.id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "sender_id",
       std::any::type_name::<u32>(),
       self.message.sender_id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "text_len",
       std::any::type_name::<usize>(),
       self.message.text.len().to_string(),
@@ -65,13 +57,17 @@ impl Component for ChatMessage {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let render_start = Instant::now();
     let props = ctx.props::<Self::Props>().clone();
+    if props.message.id == 245 {
+      println!("rendering msg 245");
+    }
     let message = &props.message;
     let local = message.sender_id == props.local_user_id;
     let timestamp = format_chat_time(message.timestamp);
     let sender_name = user_display_name(message.sender_id, &message.sender_name, props.debug_user_ids);
 
-    Row::new()
+    let element = Row::new()
       .width(Dimension::Pct(100.0))
       .align_items(Alignment::Start)
       .spacing(theme::SpacingSize::Md)
@@ -79,6 +75,7 @@ impl Component for ChatMessage {
       .child(
         Column::new()
           .width(Dimension::Pct(100.0))
+          .min_width(0.0)
           .flex(1.0)
           .spacing(theme::SpacingSize::Xs)
           .child(
@@ -98,25 +95,41 @@ impl Component for ChatMessage {
                   .color(theme::PaletteColor::TextMuted)
                   .selectable(true),
               )
+              .child(chat_message_id_badge(message.id, props.debug_user_ids))
               .child(pinned_badge(ctx, message.pinned)),
           )
           .child(chat_message_text(ctx, &message.text)),
-      )
+      );
+    let elapsed = render_start.elapsed();
+    tracing::trace!(
+      target: "chat-profile",
+      "[chat-profile] chat_message_render id={} sender={} text_len={} ms={:.3}",
+      message.id,
+      message.sender_id,
+      message.text.len(),
+      elapsed.as_secs_f64() * 1000.0,
+    );
+    element
   }
 }
 
 fn chat_message_text(ctx: &mut Ctx, text: &str) -> Element {
   let mut style = ctx.theme().typography().description.clone();
   style.color = theme::palette().text_secondary;
-  let source = cached_chat_markdown_source(text);
+  let source = chat_markdown_source(text);
 
-  ctx
-    .mount::<Markdown>(
-      MarkdownProps::new(source)
-        .style(style)
-        .width(Dimension::Pct(100.0))
-        .selectable(true)
-        .on_link_click(|link| open_link_in_browser(&browser_url_for_link(link.destination()))),
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .min_width(0.0)
+    .clip()
+    .child(
+      ctx.mount::<Markdown>(
+        MarkdownProps::new(source)
+          .style(style)
+          .width(Dimension::Pct(100.0))
+          .selectable(true)
+          .on_link_click(|link| open_link_in_browser(&browser_url_for_link(link.destination()))),
+      ),
     )
     .into()
 }
@@ -129,6 +142,18 @@ fn chat_sender_badge(ctx: &mut Ctx, local: bool) -> Element {
   Text::new(&ctx.t("lobby.users.you"))
     .variant(theme::TypographyStyle::Caption)
     .color(theme::PaletteColor::TextMuted)
+    .into()
+}
+
+fn chat_message_id_badge(message_id: u64, debug_user_ids: bool) -> Element {
+  if !debug_user_ids {
+    return Row::new().into();
+  }
+
+  Text::new(&format!("[msg:{message_id}]"))
+    .variant(theme::TypographyStyle::Caption)
+    .color(theme::PaletteColor::TextMuted)
+    .selectable(true)
     .into()
 }
 
@@ -165,10 +190,18 @@ struct MessageTextRange {
 }
 
 fn chat_markdown_source(text: &str) -> String {
+  let started_at = Instant::now();
   let text = compact_chat_markdown_blocks(text);
   let ranges = message_text_ranges(&text);
   if ranges.iter().all(|range| !range.link) {
-    return text.into_owned();
+    let source = text.into_owned();
+    tracing::trace!(
+      target: "chat-profile",
+      "[chat-profile] markdown_source_compute text_len={} links=false ms={:.3}",
+      source.len(),
+      started_at.elapsed().as_secs_f64() * 1000.0,
+    );
+    return source;
   }
 
   let mut output = String::with_capacity(text.len() + ranges.len() * 8);
@@ -185,6 +218,12 @@ fn chat_markdown_source(text: &str) -> String {
       output.push_str(part);
     }
   }
+  tracing::trace!(
+    target: "chat-profile",
+    "[chat-profile] markdown_source_compute text_len={} links=true ms={:.3}",
+    text.len(),
+    started_at.elapsed().as_secs_f64() * 1000.0,
+  );
   output
 }
 
@@ -210,7 +249,7 @@ fn compact_chat_markdown_blocks(text: &str) -> std::borrow::Cow<'_, str> {
 
 fn line_starts_with_markdown_list_marker(line: &str) -> bool {
   let line = line.trim_start();
-  line.starts_with("- ") || line.starts_with("* ") || ordered_markdown_marker_dot_index(line).is_some()
+  line.starts_with("- ") || line.starts_with("* ") || ordered_markdown_marker_delimiter(line).is_some()
 }
 
 fn push_compact_chat_markdown_line(output: &mut String, line: &str) {
@@ -224,24 +263,27 @@ fn push_compact_chat_markdown_line(output: &mut String, line: &str) {
     return;
   }
 
-  if let Some(dot_index) = ordered_markdown_marker_dot_index(content) {
-    output.push_str(&content[..dot_index]);
+  if let Some((delimiter_index, delimiter)) = ordered_markdown_marker_delimiter(content) {
+    output.push_str(&content[..delimiter_index]);
     output.push('\\');
-    output.push('.');
-    output.push_str(&content[dot_index + '.'.len_utf8()..]);
+    output.push(delimiter);
+    output.push_str(&content[delimiter_index + delimiter.len_utf8()..]);
     return;
   }
 
   output.push_str(content);
 }
 
-fn ordered_markdown_marker_dot_index(line: &str) -> Option<usize> {
-  let dot_index = line.find('.')?;
-  if dot_index == 0 || !line[..dot_index].chars().all(|ch| ch.is_ascii_digit()) {
+fn ordered_markdown_marker_delimiter(line: &str) -> Option<(usize, char)> {
+  let delimiter_index = line.find(['.', ')'])?;
+  if delimiter_index == 0 || !line[..delimiter_index].chars().all(|ch| ch.is_ascii_digit()) {
     return None;
   }
-  let marker_len = dot_index + '.'.len_utf8();
-  line[marker_len..].starts_with(' ').then_some(dot_index)
+  let delimiter = line[delimiter_index..].chars().next()?;
+  let marker_len = delimiter_index + delimiter.len_utf8();
+  line[marker_len..]
+    .starts_with([' ', '\t'])
+    .then_some((delimiter_index, delimiter))
 }
 
 fn message_text_ranges(text: &str) -> Vec<MessageTextRange> {
@@ -402,33 +444,6 @@ fn push_markdown_link_destination(output: &mut String, destination: &str) {
   output.push('>');
 }
 
-fn cached_chat_markdown_source(text: &str) -> Arc<str> {
-  let cache = chat_markdown_source_cache();
-  if let Some(source) = cache
-    .lock()
-    .expect("chat markdown source cache lock poisoned")
-    .get(text)
-    .cloned()
-  {
-    return source;
-  }
-
-  let source: Arc<str> = Arc::from(chat_markdown_source(text));
-  let mut cache = cache.lock().expect("chat markdown source cache lock poisoned");
-  if cache.len() >= CHAT_MARKDOWN_SOURCE_CACHE_LIMIT
-    && let Some(key) = cache.keys().next().cloned()
-  {
-    cache.remove(&key);
-  }
-  cache.insert(text.to_owned(), source.clone());
-  source
-}
-
-fn chat_markdown_source_cache() -> &'static ChatMarkdownSourceCache {
-  static CACHE: OnceLock<ChatMarkdownSourceCache> = OnceLock::new();
-  CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 fn browser_url_for_link(link: &str) -> String {
   if link.starts_with("http://") || link.starts_with("https://") {
     link.to_owned()
@@ -477,10 +492,30 @@ mod tests {
   }
 
   #[test]
-  fn chat_markdown_source_is_cached_in_app() {
-    let first = cached_chat_markdown_source("visit example.com");
-    let second = cached_chat_markdown_source("visit example.com");
+  fn ordered_dot_marker_is_escaped_to_keep_chat_line_layout() {
+    assert_eq!(chat_markdown_source("1. first"), "1\\. first");
+  }
 
-    assert!(Arc::ptr_eq(&first, &second));
+  #[test]
+  fn ordered_paren_marker_is_escaped_to_keep_chat_line_layout() {
+    assert_eq!(chat_markdown_source("1) first"), "1\\) first");
+  }
+
+  #[test]
+  fn music_queue_lines_are_not_rendered_as_markdown_lists() {
+    let source = "Queued playlist: 2 tracks  \n1) [first](https://example.com/first) : 3:06  \n2) second : 3:34";
+
+    assert_eq!(
+      chat_markdown_source(source),
+      "Queued playlist: 2 tracks  \n1\\) [first](https://example.com/first) : 3:06  \n2\\) second : 3:34"
+    );
+  }
+
+  #[test]
+  fn chat_markdown_source_is_deterministic() {
+    let first = chat_markdown_source("visit example.com");
+    let second = chat_markdown_source("visit example.com");
+
+    assert_eq!(first, second);
   }
 }

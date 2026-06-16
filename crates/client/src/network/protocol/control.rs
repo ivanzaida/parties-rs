@@ -296,10 +296,7 @@ impl ChannelUserReadExt for BinaryReader<'_> {
     let user_id = self.read_u32()?;
     let username = self.read_string()?;
     let raw_role = self.read_u8()?;
-    let role = Role::from_u8(raw_role).ok_or(DecodeError::InvalidEnumValue {
-      field: "role",
-      value: raw_role,
-    })?;
+    let role = Role::from_u8_or_user(raw_role);
     Ok((user_id, username, role))
   }
 }
@@ -320,10 +317,7 @@ impl UserJoinedChannel {
     let channel_id = r.read_u32()?;
     let role = if r.has_remaining(1) {
       let raw_role = r.read_u8()?;
-      Role::from_u8(raw_role).ok_or(DecodeError::InvalidEnumValue {
-        field: "role",
-        value: raw_role,
-      })?
+      Role::from_u8_or_user(raw_role)
     } else {
       Role::User
     };
@@ -398,10 +392,7 @@ impl UserRoleChanged {
     let mut r = BinaryReader::new(bytes);
     let user_id = r.read_u32()?;
     let raw_role = r.read_u8()?;
-    let role = Role::from_u8(raw_role).ok_or(DecodeError::InvalidEnumValue {
-      field: "role",
-      value: raw_role,
-    })?;
+    let role = Role::from_u8_or_user(raw_role);
     r.finish()?;
     Ok(Self { user_id, role })
   }
@@ -655,6 +646,50 @@ mod tests {
       &crate::network::protocol::PROTOCOL_VERSION.to_le_bytes()
     );
     assert_eq!(&versioned[2..34], &[7; 32]);
+  }
+
+  #[test]
+  fn channel_user_list_defaults_unknown_role_to_user() {
+    let mut w = BinaryWriter::new();
+    w.write_u32(7);
+    w.write_u32(1);
+    w.write_u32(42);
+    w.write_string("bot").unwrap();
+    w.write_u8(0x04);
+    w.write_u8(0);
+    w.write_u8(0);
+
+    let list = ChannelUserList::decode_payload(w.as_slice()).unwrap();
+
+    assert_eq!(list.channel_id, 7);
+    assert_eq!(list.users.len(), 1);
+    assert_eq!(list.users[0].role, Role::User);
+  }
+
+  #[test]
+  fn user_joined_channel_defaults_unknown_role_to_user() {
+    let mut w = BinaryWriter::new();
+    w.write_u32(42);
+    w.write_string("bot").unwrap();
+    w.write_u32(7);
+    w.write_u8(0x04);
+
+    let joined = UserJoinedChannel::decode_payload(w.as_slice()).unwrap();
+
+    assert_eq!(joined.user_id, 42);
+    assert_eq!(joined.role, Role::User);
+  }
+
+  #[test]
+  fn user_role_changed_defaults_unknown_role_to_user() {
+    let mut w = BinaryWriter::new();
+    w.write_u32(42);
+    w.write_u8(0x04);
+
+    let changed = UserRoleChanged::decode_payload(w.as_slice()).unwrap();
+
+    assert_eq!(changed.user_id, 42);
+    assert_eq!(changed.role, Role::User);
   }
 
   #[test]

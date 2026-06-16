@@ -1,7 +1,13 @@
+use std::{
+  collections::hash_map::DefaultHasher,
+  hash::{Hash, Hasher},
+  time::Instant,
+};
+
 use chrono::{Local, NaiveDate};
 use lurq::{
   app::ctx::{CollisionStrategy, Ctx, Overlay, Placement},
-  components::{Column, Text},
+  components::{Column, Row, ScrollVertical, Text, VirtualListState},
   core::Signal,
   layout::{
     Alignment,
@@ -14,6 +20,7 @@ mod channel;
 mod composer;
 mod message;
 mod scroll;
+mod scroll_policy;
 mod timeline;
 
 pub(super) use channel::ChatChannel;
@@ -21,7 +28,7 @@ pub(super) use composer::ChatCommandInvalidFeedback;
 use composer::{CHAT_COMMAND_SUGGESTION_BOTTOM_GAP, chat_command_suggestions, chat_composer};
 use message::{ChatMessage, ChatMessageProps};
 use scroll::{
-  chat_messages_scroll, preserve_chat_scroll_on_prepend, request_chat_history_if_at_top, schedule_chat_scroll_to_bottom,
+  chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom,
 };
 use timeline::{chat_day_divider, local_chat_date};
 
@@ -42,28 +49,30 @@ pub(super) fn text_channel_detail(
   command_selected_index: Signal<usize>,
   command_scroll_state: ScrollState,
   command_invalid_feedback: ChatCommandInvalidFeedback,
-  chat_scroll_state: ScrollState,
-  chat_scroll_revision: Signal<u64>,
+  chat_virtual_list_state: VirtualListState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
-  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_user_ids: bool,
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
 ) -> Element {
-  let _chat_scroll_revision = chat_scroll_revision.get();
+  let render_start = Instant::now();
+  let chat_scroll_state = chat_virtual_list_state.scroll_state();
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
-  let messages = if channel.is_server_backed() {
+  let messages: &[ProtocolChatMessage] = if channel.is_server_backed() {
     lobby
       .chat_messages_by_channel
       .get(&channel_id)
-      .cloned()
-      .unwrap_or_default()
+      .map(Vec::as_slice)
+      .unwrap_or(&[])
   } else {
-    lobby.debug_chat_messages.clone()
+    lobby.debug_chat_messages.as_slice()
   };
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
@@ -80,89 +89,107 @@ pub(super) fn text_channel_detail(
     .is_none_or(|(anchor_channel_id, _)| anchor_channel_id != channel_id);
   if channel_changed {
     chat_scroll_state.scroll_to_bottom_pending();
-    chat_scroll_revision.set(chat_scroll_revision.get_untracked().wrapping_add(1));
   }
-  preserve_chat_scroll_on_prepend(
+  let _ = preserve_chat_scroll_on_prepend(
     channel_id,
     oldest_message_id,
     chat_scroll_state.clone(),
     chat_top_anchor,
+    chat_prepend_settle_anchor.clone(),
   );
-  let chat_bottom_settle_for_paging = chat_bottom_settle_anchor.clone();
+  let chat_bottom_settle_for_scroll = chat_bottom_settle_anchor.clone();
   schedule_chat_scroll_to_bottom(
     channel_id,
     newest_message_id,
     newest_message_from_local,
     chat_scroll_state.clone(),
-    chat_bottom_anchor,
-    chat_bottom_settle_anchor,
+    chat_bottom_anchor.clone(),
+    chat_bottom_settle_anchor.clone(),
+    chat_bottom_detached_anchor.clone(),
   );
-  request_chat_history_if_at_top(
-    chat_scroll_state.clone(),
-    chat_bottom_settle_for_paging,
-    session.clone(),
-    chat_history,
-    channel_id,
-    oldest_message_id,
-    can_page,
-  );
-  let mut messages_column = Column::new()
-    .width(Dimension::Pct(100.0))
-    .spacing(18.0)
-    .padding_vertical(theme::SpacingSize::Xl)
-    .padding_horizontal(24.0);
+  let list_start = Instant::now();
+  let messages_scroll = if initial_history_loading || messages.is_empty() {
+    let mut messages_column = Column::new()
+      .width(Dimension::Pct(100.0))
+      .spacing(18.0)
+      .padding_vertical(theme::SpacingSize::Xl)
+      .padding_horizontal(24.0);
 
-  if initial_history_loading {
-    messages_column = messages_column.child(
-      Column::new()
-        .width(Dimension::Pct(100.0))
-        .flex(1.0)
-        .align_items(Alignment::Center)
-        .justify(Justify::Center)
-        .child(loader(18.0)),
-    );
-  } else if messages.is_empty() {
-    messages_column = messages_column.child(
-      Column::new()
-        .width(Dimension::Pct(100.0))
-        .flex(1.0)
-        .align_items(Alignment::Center)
-        .justify(Justify::Center)
-        .spacing(theme::SpacingSize::Sm)
-        .child(
-          Text::new(&ctx.t(channel.empty_title_key()))
-            .variant(theme::TypographyStyle::Title)
-            .color(theme::PaletteColor::TextPrimary),
-        )
-        .child(
-          Text::new(&ctx.t(channel.empty_description_key()))
-            .variant(theme::TypographyStyle::Description)
-            .color(theme::PaletteColor::TextMuted),
-        ),
-    );
+    if initial_history_loading {
+      messages_column = messages_column.child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .flex(1.0)
+          .align_items(Alignment::Center)
+          .justify(Justify::Center)
+          .child(loader(18.0)),
+      );
+    } else {
+      messages_column = messages_column.child(
+        Column::new()
+          .width(Dimension::Pct(100.0))
+          .flex(1.0)
+          .align_items(Alignment::Center)
+          .justify(Justify::Center)
+          .spacing(theme::SpacingSize::Sm)
+          .child(
+            Text::new(&ctx.t(channel.empty_title_key()))
+              .variant(theme::TypographyStyle::Title)
+              .color(theme::PaletteColor::TextPrimary),
+          )
+          .child(
+            Text::new(&ctx.t(channel.empty_description_key()))
+              .variant(theme::TypographyStyle::Description)
+              .color(theme::PaletteColor::TextMuted),
+          ),
+      );
+    }
+
+    if let Some(error) = lobby.last_error.as_deref() {
+      messages_column = messages_column.child(error_notice(ctx, error));
+    }
+    chat_messages_scroll(
+      ScrollVertical::new(messages_column),
+      chat_scroll_state,
+      chat_bottom_settle_for_scroll,
+      chat_bottom_anchor,
+      chat_bottom_detached_anchor,
+      session,
+      chat_history,
+      channel_id,
+      oldest_message_id,
+      can_page,
+    )
   } else {
-    messages_column = append_chat_messages(ctx, messages_column, &messages, info.user_id, debug_user_ids);
-  }
-
-  if let Some(error) = lobby.last_error.as_deref() {
-    messages_column = messages_column.child(error_notice(ctx, error));
-  }
+    let messages_scroll = virtual_chat_messages_scroll(
+      ctx,
+      &chat_virtual_list_state,
+      &messages,
+      lobby.last_error.as_deref(),
+      info.user_id,
+      debug_user_ids,
+    );
+    chat_messages_scroll(
+      messages_scroll,
+      chat_scroll_state,
+      chat_bottom_settle_for_scroll,
+      chat_bottom_anchor,
+      chat_bottom_detached_anchor,
+      session,
+      chat_history,
+      channel_id,
+      oldest_message_id,
+      can_page,
+    )
+  };
+  let list_elapsed = list_start.elapsed();
 
   let composer_ref = ctx.element_ref();
   let mut body = Column::new()
     .width(Dimension::Pct(100.0))
     .height(Dimension::Pct(100.0))
     .flex(1.0)
-    .child(chat_messages_scroll(
-      messages_column,
-      chat_scroll_state,
-      chat_scroll_revision,
-      session,
-      chat_history,
-      channel_id,
-      oldest_message_id,
-      can_page,
-    ))
+    .child(messages_scroll)
     .child(chat_composer(
       ctx,
       &channel,
@@ -195,19 +222,37 @@ pub(super) fn text_channel_detail(
     }
   }
 
-  body.into()
+  let element = body.into();
+  let total_elapsed = render_start.elapsed();
+  tracing::trace!(
+    target: "chat-profile",
+    "[chat-profile] text_channel_render channel={} messages={} loading={} empty={} can_page={} list_ms={:.3} total_ms={:.3}",
+    channel_id,
+    messages.len(),
+    initial_history_loading,
+    messages.is_empty(),
+    can_page,
+    list_elapsed.as_secs_f64() * 1000.0,
+    total_elapsed.as_secs_f64() * 1000.0,
+  );
+  element
 }
 
-fn append_chat_messages(
+fn virtual_chat_messages_scroll(
   ctx: &mut Ctx,
-  column: Column,
+  virtual_list_state: &VirtualListState,
   messages: &[ProtocolChatMessage],
+  error: Option<&str>,
   local_user_id: u32,
   debug_user_ids: bool,
-) -> Column {
+) -> ScrollVertical {
+  let total_start = Instant::now();
+  let build_start = Instant::now();
   let today = Local::now().date_naive();
   let mut last_day = None;
   let mut items = Vec::with_capacity(messages.len().saturating_mul(2));
+
+  items.push(ChatTimelineItem::Padding("top", 24.0));
 
   for message in messages {
     let message_day = local_chat_date(message.timestamp);
@@ -219,31 +264,86 @@ fn append_chat_messages(
     items.push(ChatTimelineItem::Message(message));
   }
 
-  column.with_children(ctx.for_each(
-    items,
-    |item| item.key(),
-    move |ctx, item| match item {
-      ChatTimelineItem::Day(day) => chat_day_divider(ctx, day, today),
-      ChatTimelineItem::Message(message) => ctx.mount::<ChatMessage>(ChatMessageProps {
-        message: message.clone(),
+  if let Some(error) = error {
+    items.push(ChatTimelineItem::Error(error));
+  }
+  items.push(ChatTimelineItem::Padding("bottom", 6.0));
+  let build_elapsed = build_start.elapsed();
+  let item_count = items.len();
+
+  let virtual_start = Instant::now();
+  let scroll = ctx.virtual_list(
+    virtual_list_state,
+    &items,
+    |item: &ChatTimelineItem<'_>| item.key(),
+    move |ctx, item: &ChatTimelineItem<'_>| match *item {
+      ChatTimelineItem::Padding(_, height) => Row::new().width(Dimension::Pct(100.0)).height(height).into(),
+      ChatTimelineItem::Day(day) => chat_virtual_row(chat_day_divider(ctx, day, today)),
+      ChatTimelineItem::Message(message) => chat_virtual_row(ctx.mount::<ChatMessage>(ChatMessageProps {
+        message: (*message).clone(),
         local_user_id,
         debug_user_ids,
-      }),
+      })),
+      ChatTimelineItem::Error(error) => chat_virtual_row(error_notice(ctx, error)),
     },
-  ))
+  );
+  let virtual_elapsed = virtual_start.elapsed();
+  let total_elapsed = total_start.elapsed();
+  tracing::trace!(
+    target: "chat-profile",
+    "[chat-profile] virtual_chat_messages messages={} items={} build_ms={:.3} virtual_ms={:.3} total_ms={:.3}",
+    messages.len(),
+    item_count,
+    build_elapsed.as_secs_f64() * 1000.0,
+    virtual_elapsed.as_secs_f64() * 1000.0,
+    total_elapsed.as_secs_f64() * 1000.0,
+  );
+  scroll
+}
+
+fn chat_virtual_row(child: impl Into<Element>) -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .padding_horizontal(24.0)
+    .padding_bottom(18.0)
+    .child(child)
+    .into()
 }
 
 #[derive(Clone, Copy)]
 enum ChatTimelineItem<'a> {
+  Padding(&'static str, f32),
   Day(NaiveDate),
   Message(&'a ProtocolChatMessage),
+  Error(&'a str),
 }
 
 impl ChatTimelineItem<'_> {
   fn key(&self) -> String {
     match self {
+      Self::Padding(key, _) => format!("padding-{key}"),
       Self::Day(day) => format!("day-{day}"),
-      Self::Message(message) => format!("message-{}", message.id),
+      Self::Message(message) => format!("message-{}-{:016x}", message.id, chat_message_content_hash(message)),
+      Self::Error(_) => "error".to_owned(),
     }
   }
+}
+
+fn chat_message_content_hash(message: &ProtocolChatMessage) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  message.channel_id.hash(&mut hasher);
+  message.sender_id.hash(&mut hasher);
+  message.sender_name.hash(&mut hasher);
+  message.timestamp.hash(&mut hasher);
+  message.text.hash(&mut hasher);
+  message.pinned.hash(&mut hasher);
+  message.attachments.len().hash(&mut hasher);
+  for attachment in &message.attachments {
+    attachment.id.hash(&mut hasher);
+    attachment.file_name.hash(&mut hasher);
+    attachment.file_size.hash(&mut hasher);
+    attachment.mime_type.hash(&mut hasher);
+    attachment.uploaded.hash(&mut hasher);
+  }
+  hasher.finish()
 }

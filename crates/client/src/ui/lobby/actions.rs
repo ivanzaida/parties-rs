@@ -124,13 +124,31 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
         let server = server.clone();
         let session = session.clone();
         tasks.push(tokio::spawn(async move {
+          tracing::info!(
+            target: "chat::history",
+            "[chat/history] request send: channel={} before={} limit=50",
+            request.channel_id,
+            request.before_id,
+          );
           if let Err(error) = server
             .request_chat_history(request.channel_id, request.before_id, 50)
             .await
           {
+            tracing::warn!(
+              target: "chat::history",
+              "[chat/history] request failed: channel={} before={} error={error}",
+              request.channel_id,
+              request.before_id,
+            );
             session.finish_chat_history_request(request.channel_id, true);
             return Err(error.to_string());
           }
+          tracing::info!(
+            target: "chat::history",
+            "[chat/history] request sent: channel={} before={} limit=50",
+            request.channel_id,
+            request.before_id,
+          );
           Ok(())
         }));
       }
@@ -921,6 +939,7 @@ pub(super) fn watch_stream_action(
         .view_screen_share(user_id)
         .await
         .map_err(|error| error.to_string())?;
+      session.set_watching_user(Some(user_id));
       match server.request_keyframe_stream(user_id).await {
         Ok(()) => {
           tracing::debug!(target: "video", "[video] keyframe requested on video stream for user {user_id}");
@@ -935,7 +954,6 @@ pub(super) fn watch_stream_action(
         }
       }
       tracing::info!(target: "video", "[video] stream view active for user {user_id}");
-      session.set_watching_user(Some(user_id));
       let settings = storage
         .as_ref()
         .and_then(|storage| storage.load_settings().ok())

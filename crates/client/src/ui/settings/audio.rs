@@ -5,9 +5,9 @@ use std::{
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
-    events::MouseButton,
+    events::{KeyboardEvent, MouseButton, MouseEvent},
   },
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
   core::Signal,
@@ -554,13 +554,13 @@ impl PartialEq for AudioPercentSliderSettingProps {
 }
 
 impl DevtoolsInspectable for AudioPercentSliderSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "title_key",
       std::any::type_name::<&'static str>(),
       self.title_key.to_owned(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<i32>(),
       self.initial_value.to_string(),
@@ -612,13 +612,13 @@ impl PartialEq for AudioDelaySliderSettingProps {
 }
 
 impl DevtoolsInspectable for AudioDelaySliderSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "title_key",
       std::any::type_name::<&'static str>(),
       self.title_key.to_owned(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<i32>(),
       self.initial_value.to_string(),
@@ -679,8 +679,8 @@ impl PartialEq for AudioThresholdSettingProps {
 }
 
 impl DevtoolsInspectable for AudioThresholdSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<i32>(),
       self.initial_value.to_string(),
@@ -1211,7 +1211,7 @@ fn hotkey_button(
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .active_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .on_click(move |event| {
+    .on_click(move |event: MouseEvent| {
       if event.button != MouseButton::Left {
         return;
       }
@@ -1234,18 +1234,18 @@ fn hotkey_button(
         *click_capture.lock().expect("audio hotkey capture lock poisoned") = Some(capture);
       }
     })
-    .on_key_down(move |event| {
+    .on_key_down(move |event: KeyboardEvent| {
       if !key_recording.get_untracked() {
         return;
       }
-      if hotkeys::is_cancel_key(event) {
+      if hotkeys::is_cancel_key(&event) {
         key_recording.set(false);
         cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());
-      } else if hotkeys::is_clear_key(event) {
+      } else if hotkeys::is_clear_key(&event) {
         key_value.set(String::new());
         key_recording.set(false);
         cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());
-      } else if let Some(hotkey) = hotkeys::event_to_hotkey(event) {
+      } else if let Some(hotkey) = hotkeys::event_to_hotkey(&event) {
         key_value.set(hotkey);
         key_recording.set(false);
         cancel_mouse_hotkey_capture(&key_capture, key_global_hotkeys.as_ref());

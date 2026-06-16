@@ -327,6 +327,10 @@ fn falsy(value: &str) -> bool {
 }
 
 fn scrub_sentry_event(mut event: sentry::protocol::Event<'static>) -> Option<sentry::protocol::Event<'static>> {
+  if is_noisy_dx12_allocator_reset_event(&event) {
+    return None;
+  }
+
   event.server_name = None;
   event.user = None;
   event.request = None;
@@ -347,6 +351,28 @@ fn scrub_sentry_event(mut event: sentry::protocol::Event<'static>) -> Option<sen
     scrub_value(value);
   }
   Some(event)
+}
+
+fn is_noisy_dx12_allocator_reset_event(event: &sentry::protocol::Event<'_>) -> bool {
+  event.message.as_deref().is_some_and(is_noisy_dx12_allocator_reset_text)
+    || event.logentry.as_ref().is_some_and(|entry| {
+      is_noisy_dx12_allocator_reset_text(&entry.message)
+        || entry.params.iter().any(value_contains_noisy_dx12_allocator_reset)
+    })
+    || event.extra.values().any(value_contains_noisy_dx12_allocator_reset)
+}
+
+fn value_contains_noisy_dx12_allocator_reset(value: &Value) -> bool {
+  match value {
+    Value::String(text) => is_noisy_dx12_allocator_reset_text(text),
+    Value::Array(values) => values.iter().any(value_contains_noisy_dx12_allocator_reset),
+    Value::Object(values) => values.values().any(value_contains_noisy_dx12_allocator_reset),
+    _ => false,
+  }
+}
+
+fn is_noisy_dx12_allocator_reset_text(text: &str) -> bool {
+  text.contains("failed to render native dx12 frame") && text.contains("reset dx12 command allocator:")
 }
 
 fn scrub_optional_text(text: &mut Option<String>) {
@@ -865,6 +891,18 @@ mod tests {
       scrub_sensitive_text("connect address=127.0.0.1 certificate_fingerprint=abc123 frame=7"),
       "connect address=[redacted] certificate_fingerprint=[redacted] frame=7"
     );
+  }
+
+  #[test]
+  fn sentry_filter_drops_noisy_dx12_allocator_reset_render_errors() {
+    let event = sentry::protocol::Event {
+      message: Some(
+        r#"failed to render native dx12 frame: Error { code: HRESULT(0x80004005), message: "reset dx12 command allocator: Unspecified error" }"#.to_owned(),
+      ),
+      ..Default::default()
+    };
+
+    assert!(is_noisy_dx12_allocator_reset_event(&event));
   }
 
   #[test]

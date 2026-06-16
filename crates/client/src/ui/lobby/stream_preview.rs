@@ -1,5 +1,5 @@
 use lurq::{
-  app::ctx::Ctx,
+  app::{ctx::Ctx, events::MouseEvent},
   components::{Column, Row, Stack, Text, TextOverflow},
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
@@ -194,7 +194,7 @@ fn close_preview_button(ctx: &mut Ctx, stop_watching: &StopWatchingAction) -> El
     button = button
       .cursor(CursorIcon::Pointer)
       .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#1F232BCC"))))
-      .on_click(move |event| {
+      .on_click(move |event: MouseEvent| {
         event.stop_immediate_propagation();
         action.run(());
       });

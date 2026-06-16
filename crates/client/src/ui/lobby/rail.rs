@@ -1,6 +1,6 @@
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Rect, Row, Text},
@@ -48,28 +48,28 @@ impl PartialEq for LobbyRailProps {
 }
 
 impl DevtoolsInspectable for LobbyRailProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
       self.info.server_name.clone(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "channels",
       std::any::type_name::<usize>(),
       self.lobby.channels.len().to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "text_channels",
       std::any::type_name::<usize>(),
       self.lobby.text_channels.len().to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
       format!("{:?}", self.lobby.selected_channel_id),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_text_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
       format!("{:?}", self.lobby.selected_text_channel_id),

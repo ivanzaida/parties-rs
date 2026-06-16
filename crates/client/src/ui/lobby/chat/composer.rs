@@ -2,7 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use lurq::{
   animation::Transition,
-  app::ctx::{Ctx, Timeout},
+  app::{
+    ctx::{Ctx, Timeout},
+    events::KeyboardEvent,
+  },
   components::{Column, Row, ScrollVertical, Text, TextInput},
   core::{ElementRef, Signal},
   layout::{
@@ -152,7 +155,7 @@ pub(super) fn chat_composer(
             .flex(1.0)
             .background(BackgroundColor::Color(Color::from_hex("#00000000")))
             .caret_color(theme::PaletteColor::Accent)
-            .on_key_down(move |event| {
+            .on_key_down(move |event: KeyboardEvent| {
               if handle_chat_command_navigation(
                 &key_command_registry,
                 &key_value,

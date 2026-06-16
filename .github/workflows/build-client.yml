@@ -125,6 +125,8 @@ jobs:
             ${{ runner.os }}-${{ matrix.rust_target }}-cargo-release-
 
       - name: Build release client
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: ${{ runner.os == 'Windows' && '2' || '0' }}
         run: cargo build --release --target ${{ matrix.rust_target }} --package ${{ env.PACKAGE_NAME }}
 
       - name: Download Sparkle
@@ -160,6 +162,27 @@ jobs:
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item $env:BINARY_PATH $dist
           Compress-Archive -Path "$dist\*" -DestinationPath "dist\$artifact.$env:ARCHIVE_EXT" -Force
+
+      - name: Package Windows debug symbols
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifact = "$env:PACKAGE_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
+          $symbols = Join-Path "dist" "$artifact-debug-symbols"
+          $releaseDir = Split-Path -Parent $env:BINARY_PATH
+          $pdbs = @(Get-ChildItem -Path $releaseDir -Filter "*.pdb" -File)
+
+          if ($pdbs.Count -eq 0) {
+            Write-Error "No PDB files found in $releaseDir. Ensure release debug info is enabled."
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force $symbols | Out-Null
+          Copy-Item $env:BINARY_PATH $symbols
+          foreach ($pdb in $pdbs) {
+            Copy-Item $pdb.FullName $symbols
+          }
+          Compress-Archive -Path "$symbols\*" -DestinationPath "dist\$artifact-debug-symbols.zip" -Force
 
       - name: Package macOS binary
         if: runner.os == 'macOS'
@@ -443,6 +466,14 @@ jobs:
           path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
 
+      - name: Upload Windows debug symbols artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols
+          path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols.zip
+          if-no-files-found: error
+
       - name: Upload Sparkle appcast artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -481,6 +512,9 @@ jobs:
           files=()
           for asset in dist-artifacts/**/*; do
             if [[ -f "$asset" ]]; then
+              case "$asset" in
+                *-debug-symbols.zip) continue ;;
+              esac
               files+=("$asset")
             fi
           done

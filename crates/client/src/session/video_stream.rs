@@ -153,6 +153,9 @@ impl StreamRuntime {
         }
 
         session.set_watching_user(Some(user_id));
+        if let Err(error) = request_reconnect_stream_keyframe(session.server(), user_id).await {
+          tracing::warn!(target: "video", "[video] restored stream keyframe request failed after reconnect: user={user_id} error={error}");
+        }
         if let Err(error) = session.ensure_stream_audio_playback(settings) {
           tracing::warn!(target: "audio::decode", "[audio:decode] stream playback unavailable after reconnect restore: {error}");
         }
@@ -183,6 +186,13 @@ async fn request_reconnect_stream_view(server: Option<Arc<Server>>, user_id: Use
     .view_screen_share(user_id)
     .await
     .map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+async fn request_reconnect_stream_keyframe(server: Option<Arc<Server>>, user_id: UserId) -> Result<(), String> {
+  let Some(server) = server else {
+    return Err("no connected server".to_owned());
+  };
   match server.request_keyframe_stream(user_id).await {
     Ok(()) => {
       tracing::debug!(target: "video", "[video] keyframe requested on restored stream for user {user_id}");

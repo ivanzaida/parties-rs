@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Row, ScrollVertical, Stack, Text},
@@ -344,8 +344,8 @@ impl PartialEq for VideoBitrateSettingProps {
 }
 
 impl DevtoolsInspectable for VideoBitrateSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<f32>(),
       format_bitrate_value(self.initial_value),

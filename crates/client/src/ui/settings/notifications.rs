@@ -2,9 +2,9 @@ use std::{fs, sync::Arc};
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Modal, Root},
-    events::MouseButton,
+    events::{MouseButton, MouseEvent},
   },
   components::{Button, Column, Row, ScrollVertical, Stack, Text, TextOverflow},
   core::Signal,
@@ -190,8 +190,8 @@ impl PartialEq for NotificationVolumeSettingProps {
 }
 
 impl DevtoolsInspectable for NotificationVolumeSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "initial_value",
       std::any::type_name::<i32>(),
       self.initial_value.to_string(),
@@ -244,8 +244,8 @@ impl PartialEq for NotificationSoundSettingProps {
 }
 
 impl DevtoolsInspectable for NotificationSoundSettingProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "sound",
       std::any::type_name::<NotificationSound>(),
       format!("{:?}", self.sound),
@@ -364,7 +364,7 @@ fn notification_sound_controls(
   let toggle_menu_open = menu_open.clone();
   let toggle_menu_anchor = menu_anchor.clone();
   let scale = ctx.window().scale_factor.max(f32::EPSILON);
-  let trigger = notification_icon_button(ctx, "ellipsis", true).on_click(move |event| {
+  let trigger = notification_icon_button(ctx, "ellipsis", true).on_click(move |event: MouseEvent| {
     toggle_menu_anchor.set(Some((event.x / scale, event.y / scale)));
     toggle_menu_open.set(!toggle_menu_open.get());
   });

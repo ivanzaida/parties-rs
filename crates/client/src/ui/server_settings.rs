@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Modal, Root},
-    events::MouseButton,
+    events::{KeyboardEvent, MouseButton, MouseEvent},
     theme::Breakpoint,
   },
   components::{Column, Row, ScrollVertical, Stack, Text, TextInput},
@@ -383,8 +383,8 @@ fn server_settings_screen(
       admin_pending,
       channel_state,
     ))
-    .on_key_down(move |event| {
-      if hotkeys::is_cancel_key(event)
+    .on_key_down(move |event: KeyboardEvent| {
+      if hotkeys::is_cancel_key(&event)
         && let Some(navigator) = navigator.as_ref()
       {
         navigator.replace(ROUTE_LOBBY);
@@ -986,7 +986,7 @@ fn voice_create_row(
           }),
         ),
     )
-    .on_key_down(move |event| {
+    .on_key_down(move |event: KeyboardEvent| {
       if enabled && event.key == "Enter" {
         create_voice_channel(&key_name, &key_max_users, &key_action);
       }
@@ -1035,7 +1035,7 @@ fn text_create_row(ctx: &mut Ctx, name: Signal<String>, admin_action: &ServerAdm
           }),
         ),
     )
-    .on_key_down(move |event| {
+    .on_key_down(move |event: KeyboardEvent| {
       if enabled && event.key == "Enter" {
         create_text_channel(&key_name, &key_action);
       }
@@ -1164,13 +1164,13 @@ impl PartialEq for VoiceChannelSettingsRowProps {
 }
 
 impl DevtoolsInspectable for VoiceChannelSettingsRowProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "channel_id",
       std::any::type_name::<ChannelId>(),
       self.channel.id.to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "name",
       std::any::type_name::<String>(),
       self.channel.name.clone(),
@@ -1260,7 +1260,7 @@ impl Component for VoiceChannelSettingsRow {
           }
         }),
       )
-      .on_key_down(move |event| {
+      .on_key_down(move |event: KeyboardEvent| {
         if event.key == "Enter" {
           rename_voice_channel_if_changed(channel_id, &original_name, &key_name, disabled, &key_action);
         }
@@ -1891,7 +1891,7 @@ fn member_role_pill(
     pill = pill
       .cursor(CursorIcon::Pointer)
       .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#232830"))))
-      .on_mouse_click(MouseButton::Left, move |event| {
+      .on_mouse_click(MouseButton::Left, move |event: MouseEvent| {
         if role_picker_user_id.get_untracked() == Some(user_id) {
           close_member_role_picker(
             role_picker_user_id.clone(),

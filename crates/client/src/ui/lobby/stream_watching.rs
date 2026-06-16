@@ -5,7 +5,7 @@ use std::{
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::{Ctx, Interval},
   },
   components::{Column, Row, Stack, Text, TextOverflow},
@@ -393,8 +393,8 @@ impl PartialEq for StreamVolumeControlProps {
 }
 
 impl DevtoolsInspectable for StreamVolumeControlProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "user_id",
       std::any::type_name::<UserId>(),
       self.user_id.to_string(),

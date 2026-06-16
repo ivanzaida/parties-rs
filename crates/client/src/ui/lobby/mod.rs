@@ -11,7 +11,7 @@ use lurq::{
     component::Component,
     ctx::{Ctx, Interval, Modal, Root},
   },
-  components::{Column, Row, Text},
+  components::{Column, Row, Text, VirtualListState},
   core::Signal,
   layout::{
     Alignment,
@@ -71,7 +71,6 @@ type ReconnectAction = lurq::app::ctx::FutureAction<ReconnectRequest, ConnectedS
 const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 5;
 const AUTO_RECONNECT_RETRY_DELAY_MS: u64 = 1_500;
 const LOBBY_REVISION_WAKE_INTERVAL: Duration = Duration::from_millis(50);
-const CHAT_SCROLL_WAKE_INTERVAL: Duration = Duration::from_millis(16);
 
 #[derive(Clone, Copy)]
 struct ChatHistoryRequest {
@@ -106,12 +105,12 @@ pub struct LobbyScreen {
   chat_command_selected_index: Signal<usize>,
   chat_command_scroll_state: ScrollState,
   chat_command_invalid_feedback: ChatCommandInvalidFeedback,
-  chat_scroll_state: ScrollState,
-  chat_scroll_revision: Signal<u64>,
-  chat_scroll_interval: Interval,
+  chat_virtual_list_state: VirtualListState,
   chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
-  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
   chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   start_stream_modal_open: Signal<bool>,
   stream_start_submitted: Signal<bool>,
   stream_source_kind: Signal<ScreenShareSourceKind>,
@@ -129,24 +128,10 @@ impl Component for LobbyScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     let revision_wake = ctx.signal(0_u64);
-    let chat_scroll_state = ScrollState::new();
-    let chat_scroll_revision = ctx.signal(0_u64);
-    let chat_scroll_seen_y = Arc::new(Mutex::new(0.0_f32));
-    let chat_scroll_interval_state = chat_scroll_state.clone();
-    let chat_scroll_interval_revision = chat_scroll_revision.clone();
-    let chat_scroll_interval_seen_y = chat_scroll_seen_y.clone();
-    let chat_scroll_interval = ctx.create_interval(CHAT_SCROLL_WAKE_INTERVAL, move || {
-      if !chat_scroll_interval_state.is_dragging() {
-        return;
-      }
-
-      let y = chat_scroll_interval_state.scroll_y();
-      let mut seen_y = chat_scroll_interval_seen_y.lock().expect("chat scroll y lock poisoned");
-      if (y - *seen_y).abs() >= 0.5 {
-        *seen_y = y;
-        chat_scroll_interval_revision.set(chat_scroll_interval_revision.get_untracked().wrapping_add(1));
-      }
-    });
+    let chat_virtual_list_state = VirtualListState::new(ctx)
+      .with_overscan(8)
+      .with_window_stride(4)
+      .with_initial_visible_count(48);
     let revision_source = Arc::new(Mutex::new(None::<Signal<u64>>));
     let revision_seen = Arc::new(AtomicU64::new(0));
     let interval_wake = revision_wake.clone();
@@ -169,12 +154,12 @@ impl Component for LobbyScreen {
       chat_command_selected_index: ctx.signal(0),
       chat_command_scroll_state: ScrollState::new(),
       chat_command_invalid_feedback: ChatCommandInvalidFeedback::new(ctx),
-      chat_scroll_state,
-      chat_scroll_revision,
-      chat_scroll_interval,
+      chat_virtual_list_state,
       chat_bottom_anchor: ctx.signal(None),
       chat_bottom_settle_anchor: ctx.signal(None),
+      chat_bottom_detached_anchor: ctx.signal(None),
       chat_top_anchor: ctx.signal(None),
+      chat_prepend_settle_anchor: ctx.signal(None),
       start_stream_modal_open: ctx.signal(false),
       stream_start_submitted: ctx.signal(false),
       stream_source_kind: ctx.signal(ScreenShareSourceKind::Screen),
@@ -192,7 +177,6 @@ impl Component for LobbyScreen {
     let _revision_wake = self.revision_wake.get();
     let Some(session) = ctx.use_context::<ServerSession>() else {
       self.revision_interval.stop();
-      self.chat_scroll_interval.stop();
       *self
         .revision_source
         .lock()
@@ -214,7 +198,6 @@ impl Component for LobbyScreen {
 
     let Some(info) = session.info() else {
       self.revision_interval.stop();
-      self.chat_scroll_interval.stop();
       *self
         .revision_source
         .lock()
@@ -233,12 +216,8 @@ impl Component for LobbyScreen {
     let mut lobby = session.lobby();
     if lobby.disconnected {
       self.revision_interval.stop();
-      self.chat_scroll_interval.stop();
     } else if !self.revision_interval.is_active() {
       self.revision_interval.start();
-    }
-    if !lobby.disconnected && !self.chat_scroll_interval.is_active() {
-      self.chat_scroll_interval.start();
     }
     let receiver = receiver_action(ctx, session.clone());
     if !session.shutdown_requested()
@@ -329,11 +308,12 @@ impl Component for LobbyScreen {
         self.chat_command_selected_index.clone(),
         self.chat_command_scroll_state.clone(),
         self.chat_command_invalid_feedback.clone(),
-        self.chat_scroll_state.clone(),
-        self.chat_scroll_revision.clone(),
+        self.chat_virtual_list_state.clone(),
         self.chat_bottom_anchor.clone(),
         self.chat_bottom_settle_anchor.clone(),
+        self.chat_bottom_detached_anchor.clone(),
         self.chat_top_anchor.clone(),
+        self.chat_prepend_settle_anchor.clone(),
         debug_mode_enabled,
         storage,
         session.clone(),

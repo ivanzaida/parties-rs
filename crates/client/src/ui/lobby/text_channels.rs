@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use lurq::{
   app::{
-    component::{Component, ComponentInfo, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Rect, Row, Text},
@@ -34,13 +34,13 @@ impl PartialEq for TextChannelsProps {
 }
 
 impl DevtoolsInspectable for TextChannelsProps {
-  fn write_info(&self, buffer: &mut Vec<ComponentInfo>) {
-    buffer.push(ComponentInfo::with_value(
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "channels",
       std::any::type_name::<usize>(),
       self.channels.len().to_string(),
     ));
-    buffer.push(ComponentInfo::with_value(
+    formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
       format!("{:?}", self.selected_channel_id),
