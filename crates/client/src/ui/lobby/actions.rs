@@ -110,19 +110,49 @@ pub(super) fn receiver_action(ctx: &mut Ctx, session: ServerSession) -> Receiver
 
 pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> ChatHistoryAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
-  ctx.future_action(move |request: ChatHistoryRequest| {
+  ctx.future_action(move |requests: Vec<ChatHistoryRequest>| {
     let session = session.clone();
     let copy = copy.clone();
     async move {
-      let server = session.server().ok_or(copy.no_connected_server)?;
-      if let Err(error) = server
-        .request_chat_history(request.channel_id, request.before_id, 50)
-        .await
-      {
-        session.finish_chat_history_request(request.channel_id, true);
-        return Err(error.to_string());
+      if requests.is_empty() {
+        return Ok(());
       }
-      Ok(())
+
+      let server = session.server().ok_or(copy.no_connected_server)?;
+      let mut tasks = Vec::with_capacity(requests.len());
+      for request in requests {
+        let server = server.clone();
+        let session = session.clone();
+        tasks.push(tokio::spawn(async move {
+          if let Err(error) = server
+            .request_chat_history(request.channel_id, request.before_id, 50)
+            .await
+          {
+            session.finish_chat_history_request(request.channel_id, true);
+            return Err(error.to_string());
+          }
+          Ok(())
+        }));
+      }
+
+      let mut first_error = None;
+      for task in tasks {
+        match task.await {
+          Ok(Ok(())) => {}
+          Ok(Err(error)) => {
+            first_error.get_or_insert(error);
+          }
+          Err(error) => {
+            first_error.get_or_insert(error.to_string());
+          }
+        }
+      }
+
+      if let Some(error) = first_error {
+        Err(error)
+      } else {
+        Ok(())
+      }
     }
   })
 }

@@ -4,7 +4,7 @@ pub use lurq::app::theme::{PaletteColor, RadiusSize, SpacingSize, TypographyStyl
 use lurq::{
   app::theme::{
     FormButtonRole, FormButtonTheme, FormFieldTheme, FormInputTheme, FormTextRole, FormTheme, Theme, ThemeFonts,
-    ThemePalette, ThemeRadii, ThemeSpacing, ThemeTypography,
+    ThemeMarkdown, ThemePalette, ThemeRadii, ThemeSpacing, ThemeTypography,
   },
   layout::text_style::{FontWeight, TextStyle},
   node::{color::Color, dimension::Dimension, padding::Padding, spacing_value::SpacingValue},
@@ -41,6 +41,7 @@ pub fn palette() -> ThemePalette {
 pub fn setup(theme: &Theme) {
   let palette = palette();
   theme.set_palette(palette.clone());
+  theme.set_markdown(markdown(&palette));
 
   theme.set_spacing(ThemeSpacing {
     xs: Dimension::Px(4.0),
@@ -224,4 +225,44 @@ pub fn setup(theme: &Theme) {
     },
     ..FormTheme::default()
   });
+}
+
+pub fn markdown(palette: &ThemePalette) -> ThemeMarkdown {
+  let mut markdown = ThemeMarkdown::default();
+  markdown.document_spacing = 2.0;
+  markdown.list_item_spacing = 2.0;
+  markdown.nested_block_spacing = 2.0;
+  markdown.code_block_spacing = 4.0;
+  markdown.blockquote_gap = 6.0;
+  markdown.list_marker_gap = 4.0;
+  markdown.unordered_list_marker_width = 14.0;
+  markdown.ordered_list_marker_width = 28.0;
+
+  markdown.link.text.color = Some(palette.accent);
+  markdown.list_marker.text.color = Some(palette.text_muted);
+  markdown.blockquote_marker.text.color = Some(palette.text_muted);
+  markdown.inline_code.text.color = Some(palette.text_primary);
+  markdown.code_block.text.color = Some(palette.text_primary);
+  markdown.code_block_label.text.color = Some(palette.text_muted);
+  markdown.table_marker.text.color = Some(palette.text_muted);
+  markdown.table_header.text.color = Some(palette.text_primary);
+  markdown.table_cell.text.color = Some(palette.text_secondary);
+
+  markdown.code_block_box.background = Some(palette.surface_input);
+  markdown.code_block_box.border_color = Some(palette.border);
+  markdown.code_block_box.radius = Some(5.0);
+  markdown.code_block_box.padding = Some(8.0);
+
+  markdown.blockquote_box.background = Some(palette.surface_raised);
+  markdown.blockquote_box.border_color = Some(palette.accent);
+  markdown.blockquote_box.border_width = Some(2.0);
+  markdown.blockquote_box.radius = Some(3.0);
+  markdown.blockquote_box.padding = Some(8.0);
+
+  markdown.table_box.border_color = Some(palette.border);
+  markdown.table_header_box.background = Some(palette.surface_raised);
+  markdown.table_header_box.padding = Some(6.0);
+  markdown.table_cell_box.padding = Some(6.0);
+
+  markdown
 }

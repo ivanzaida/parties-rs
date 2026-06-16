@@ -231,7 +231,7 @@ pub(super) fn close_stream_browser(lobby: &mut LobbyState) {
   lobby.stream_browser_channel_id = None;
 }
 
-pub(super) fn begin_chat_history_request(lobby: &mut LobbyState, channel_id: ChannelId) -> bool {
+pub(super) fn begin_chat_history_request(lobby: &mut LobbyState, channel_id: ChannelId, _before_id: u64) -> bool {
   if lobby.chat_history_has_more.get(&channel_id) == Some(&false) || lobby.chat_history_loading.contains(&channel_id) {
     return false;
   }
@@ -494,10 +494,11 @@ pub(super) fn apply_server_message(
       }
     }
     S2C::ChatHistoryResp(response) => {
+      let message_count = response.messages.len();
       tracing::debug!(target: "chat",
         "[chat] received history: channel={} messages={} has_more={}",
         response.channel_id,
-        response.messages.len(),
+        message_count,
         response.has_more
       );
       lobby.chat_history_loading.remove(&response.channel_id);

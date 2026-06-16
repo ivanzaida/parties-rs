@@ -518,10 +518,10 @@ impl ServerSession {
     self.bump_revision();
   }
 
-  pub fn begin_chat_history_request(&self, channel_id: ChannelId) -> bool {
+  pub fn begin_chat_history_request(&self, channel_id: ChannelId, before_id: u64) -> bool {
     let should_begin = {
       let mut lobby = self.lobby.lock();
-      lobby::begin_chat_history_request(&mut lobby, channel_id)
+      lobby::begin_chat_history_request(&mut lobby, channel_id, before_id)
     };
 
     if should_begin {

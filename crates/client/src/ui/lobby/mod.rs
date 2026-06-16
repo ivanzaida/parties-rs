@@ -60,7 +60,7 @@ use stream_preview::floating_stream_preview;
 use stream_shared::watched_stream;
 
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
-type ChatHistoryAction = lurq::app::ctx::FutureAction<ChatHistoryRequest, (), String>;
+type ChatHistoryAction = lurq::app::ctx::FutureAction<Vec<ChatHistoryRequest>, (), String>;
 type SendChatAction = lurq::app::ctx::FutureAction<SendChatInput, (), String>;
 type StartStreamAction = lurq::app::ctx::FutureAction<StartStreamInput, (), String>;
 type StopStreamAction = lurq::app::ctx::FutureAction<(), (), String>;
@@ -249,18 +249,40 @@ impl Component for LobbyScreen {
       receiver.run(());
     }
     let chat_history = chat_history_action(ctx, session.clone());
-    if let Some(channel_id) = lobby.selected_text_channel_id
-      && lobby
-        .chat_messages_by_channel
-        .get(&channel_id)
-        .is_none_or(Vec::is_empty)
-      && session.begin_chat_history_request(channel_id)
-    {
-      lobby.chat_history_loading.insert(channel_id);
-      chat_history.run(ChatHistoryRequest {
-        channel_id,
-        before_id: 0,
-      });
+    if !chat_history.is_active() {
+      let mut history_requests = Vec::new();
+      if let Some(channel_id) = lobby.selected_text_channel_id
+        && lobby
+          .chat_messages_by_channel
+          .get(&channel_id)
+          .is_none_or(Vec::is_empty)
+        && session.begin_chat_history_request(channel_id, 0)
+      {
+        lobby.chat_history_loading.insert(channel_id);
+        history_requests.push(ChatHistoryRequest {
+          channel_id,
+          before_id: 0,
+        });
+      }
+      for channel in &lobby.text_channels {
+        if Some(channel.id) == lobby.selected_text_channel_id
+          || !lobby
+            .chat_messages_by_channel
+            .get(&channel.id)
+            .is_none_or(Vec::is_empty)
+          || !session.begin_chat_history_request(channel.id, 0)
+        {
+          continue;
+        }
+        lobby.chat_history_loading.insert(channel.id);
+        history_requests.push(ChatHistoryRequest {
+          channel_id: channel.id,
+          before_id: 0,
+        });
+      }
+      if !history_requests.is_empty() {
+        chat_history.run(history_requests);
+      }
     }
     let send_chat = send_chat_action(ctx, session.clone());
     let start_stream = start_stream_action(ctx, storage.clone(), session.clone());
