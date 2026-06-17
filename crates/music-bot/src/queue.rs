@@ -6,6 +6,7 @@ use crate::sources::{model::SourceRequest, registry::SourceRegistry};
 
 const MAX_QUEUE_MESSAGE_BYTES: usize = 3_800;
 const MAX_QUEUE_NEXT_TRACKS: usize = 5;
+const MAX_PLAYLIST_SUMMARY_TRACKS: usize = 5;
 const MARKDOWN_LINE_BREAK: &str = "  \n";
 
 #[derive(Clone)]
@@ -228,4 +229,32 @@ fn is_soundcloud_url(url: &str) -> bool {
 
 fn projected_message_len(lines: &[String], next_line: &str) -> usize {
   lines.iter().map(String::len).sum::<usize>() + lines.len() * MARKDOWN_LINE_BREAK.len() + next_line.len()
+}
+
+pub(crate) fn playlist_queue_message(tracks: &[Track]) -> String {
+  let mut lines = vec![format!("Added {} tracks:", tracks.len())];
+  let mut omitted = 0usize;
+
+  for (index, track) in tracks.iter().enumerate() {
+    if index >= MAX_PLAYLIST_SUMMARY_TRACKS {
+      omitted = tracks.len() - index;
+      break;
+    }
+
+    let line = format!("{}) {}", index + 1, track.markdown_link_with_duration());
+    let projected_len =
+      lines.iter().map(String::len).sum::<usize>() + lines.len() * MARKDOWN_LINE_BREAK.len() + line.len();
+    let remaining_count = tracks.len() - index;
+    let omitted_line = format!("... {remaining_count} more");
+    if projected_len + omitted_line.len() + MARKDOWN_LINE_BREAK.len() > MAX_QUEUE_MESSAGE_BYTES {
+      omitted = remaining_count;
+      break;
+    }
+    lines.push(line);
+  }
+
+  if omitted > 0 {
+    lines.push(format!("... {omitted} more"));
+  }
+  lines.join(MARKDOWN_LINE_BREAK)
 }

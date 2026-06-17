@@ -8,13 +8,8 @@ use crate::{
   commands::command_definitions,
   config::BotConfig,
   player::PlaybackWorker,
-  queue::Track,
   sources::{registry::SourceRegistry, soundcloud::SoundCloudTokenProvider},
 };
-
-const MAX_BOT_CHAT_BYTES: usize = 3_800;
-const MAX_PLAYLIST_SUMMARY_TRACKS: usize = 5;
-const MARKDOWN_LINE_BREAK: &str = "  \n";
 
 #[derive(Default)]
 pub(crate) struct MusicBot {
@@ -145,13 +140,14 @@ impl MusicBot {
       );
       return;
     };
-    let tracks = match Track::parse_many(url, sources) {
-      Ok(tracks) => tracks,
-      Err(error) => {
-        self.send_reply(host, invocation.text_channel_id, &source_error_message(&error));
-        return;
-      }
-    };
+    if !sources.supports(url) {
+      self.send_reply(
+        host,
+        invocation.text_channel_id,
+        "Only SoundCloud URLs are supported right now.",
+      );
+      return;
+    }
 
     let slot_index = match self.acquire_bot_for_voice(host, invocation.user_id, voice_channel_id) {
       Ok(slot_index) => slot_index,
@@ -175,8 +171,6 @@ impl MusicBot {
       return;
     }
 
-    let track_count = tracks.len();
-    let playlist_message = (track_count > 1).then(|| playlist_queue_message(&tracks));
     let Some(worker) = self.bots.get(slot_index).and_then(|slot| slot.worker.as_ref()) else {
       self.send_reply(
         host,
@@ -186,15 +180,7 @@ impl MusicBot {
       return;
     };
 
-    if track_count > 1 {
-      worker.enqueue_many(tracks, invocation.text_channel_id);
-    } else if let Some(track) = tracks.into_iter().next() {
-      worker.enqueue(track, invocation.text_channel_id);
-    }
-
-    if let Some(message) = playlist_message {
-      self.send_reply(host, invocation.text_channel_id, &message);
-    }
+    worker.resolve_and_enqueue(url.to_owned(), invocation.text_channel_id);
   }
 
   fn handle_stop(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
@@ -472,49 +458,6 @@ fn bot_identity(bot_number: usize) -> (String, String) {
   }
 }
 
-fn playlist_queue_message(tracks: &[Track]) -> String {
-  let mut lines = vec![format!("Added {} tracks:", tracks.len())];
-  let mut omitted = 0usize;
-
-  for (index, track) in tracks.iter().enumerate() {
-    if index >= MAX_PLAYLIST_SUMMARY_TRACKS {
-      omitted = tracks.len() - index;
-      break;
-    }
-
-    let line = format!("{}) {}", index + 1, track.markdown_link_with_duration());
-    let projected_len =
-      lines.iter().map(String::len).sum::<usize>() + lines.len() * MARKDOWN_LINE_BREAK.len() + line.len();
-    let remaining_count = tracks.len() - index;
-    let omitted_line = format!("... {remaining_count} more");
-    if projected_len + omitted_line.len() + MARKDOWN_LINE_BREAK.len() > MAX_BOT_CHAT_BYTES {
-      omitted = remaining_count;
-      break;
-    }
-    lines.push(line);
-  }
-
-  if omitted > 0 {
-    lines.push(format!("... {omitted} more"));
-  }
-  lines.join(MARKDOWN_LINE_BREAK)
-}
-
-fn source_error_message(error: &str) -> String {
-  if error.contains("Only SoundCloud URLs are supported") {
-    "Only SoundCloud URLs are supported right now.".to_owned()
-  } else if error.contains("playlist")
-    || error.contains("track")
-    || error.contains("SoundCloud")
-    || error.contains("private")
-    || error.contains("deleted")
-  {
-    error.to_owned()
-  } else {
-    "Could not read that SoundCloud URL.".to_owned()
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use std::{collections::HashMap, ffi::CStr, os::raw::c_char};
@@ -522,7 +465,10 @@ mod tests {
   use server_plugin::{HostRef, MessageId, abi};
 
   use super::*;
-  use crate::sources::model::{SourceKind, SourceRequest};
+  use crate::{
+    queue::{Track, playlist_queue_message},
+    sources::model::{SourceKind, SourceRequest},
+  };
 
   #[test]
   fn bot_identity_uses_stable_primary_and_numbered_extra_bots() {

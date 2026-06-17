@@ -11,7 +11,7 @@ use server_plugin::{BOT_VOICE_FRAME_DURATION_MS, BotUser, ChannelId, HostHandle,
 
 use crate::{
   audio::{AudioFrames, VoiceEncoder},
-  queue::{PlaybackSnapshot, PlayerState, QueuedTrack, Track},
+  queue::{PlaybackSnapshot, PlayerState, QueuedTrack, Track, playlist_queue_message},
   sources::registry::SourceRegistry,
 };
 
@@ -20,12 +20,12 @@ const EMPTY_VOICE_TIMEOUT: Duration = Duration::from_secs(20);
 const EMPTY_VOICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 enum PlayerCommand {
-  Enqueue {
-    track: Track,
+  ResolveAndEnqueue {
+    input: String,
     text_channel_id: ChannelId,
   },
-  EnqueueMany {
-    tracks: Vec<Track>,
+  EnqueueResolved {
+    tracks: Result<Vec<Track>, String>,
     text_channel_id: ChannelId,
   },
   Skip {
@@ -48,7 +48,9 @@ impl PlaybackWorker {
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(PlayerState::default()));
     let worker_state = Arc::clone(&state);
-    let join_handle = thread::spawn(move || run_player(host, bot, sources, voice_channel_id, rx, worker_state));
+    let resolver_tx = tx.clone();
+    let join_handle =
+      thread::spawn(move || run_player(host, bot, sources, voice_channel_id, rx, worker_state, resolver_tx));
 
     Self {
       tx,
@@ -57,17 +59,10 @@ impl PlaybackWorker {
     }
   }
 
-  pub(crate) fn enqueue(&self, track: Track, text_channel_id: ChannelId) {
-    self.tx.send(PlayerCommand::Enqueue { track, text_channel_id }).ok();
-  }
-
-  pub(crate) fn enqueue_many(&self, tracks: Vec<Track>, text_channel_id: ChannelId) {
+  pub(crate) fn resolve_and_enqueue(&self, input: String, text_channel_id: ChannelId) {
     self
       .tx
-      .send(PlayerCommand::EnqueueMany {
-        tracks,
-        text_channel_id,
-      })
+      .send(PlayerCommand::ResolveAndEnqueue { input, text_channel_id })
       .ok();
   }
 
@@ -134,9 +129,11 @@ fn run_player(
   voice_channel_id: ChannelId,
   rx: Receiver<PlayerCommand>,
   state: Arc<Mutex<PlayerState>>,
+  tx: Sender<PlayerCommand>,
 ) {
   let mut sequence = 0u16;
-  while let NextTrack::Track(queued) = next_track(&host, &bot, &rx, &state) {
+  let mut resolver_threads = ResolverThreads::new(tx);
+  while let NextTrack::Track(queued) = next_track(&host, &bot, &sources, &rx, &state, &mut resolver_threads) {
     match play_track(
       &host,
       &bot,
@@ -144,6 +141,7 @@ fn run_player(
       voice_channel_id,
       &rx,
       &state,
+      &mut resolver_threads,
       &mut sequence,
       queued,
     ) {
@@ -151,6 +149,7 @@ fn run_player(
       PlaybackControl::Shutdown => break,
     }
   }
+  resolver_threads.join_all();
 }
 
 enum NextTrack {
@@ -161,25 +160,26 @@ enum NextTrack {
 fn next_track(
   host: &HostHandle,
   bot: &BotUser,
+  sources: &SourceRegistry,
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
+  resolver_threads: &mut ResolverThreads,
 ) -> NextTrack {
   if let Some(track) = take_next_queued_track(state) {
     return NextTrack::Track(track);
   }
 
   while let Ok(command) = rx.recv() {
+    resolver_threads.reap_finished();
     match command {
-      PlayerCommand::Enqueue { track, text_channel_id } => {
-        let queued = QueuedTrack { track, text_channel_id };
-        set_current_track(state, queued.clone());
-        return NextTrack::Track(queued);
+      PlayerCommand::ResolveAndEnqueue { input, text_channel_id } => {
+        resolver_threads.resolve(input, text_channel_id, sources.clone());
       }
-      PlayerCommand::EnqueueMany {
+      PlayerCommand::EnqueueResolved {
         tracks,
         text_channel_id,
       } => {
-        if let Some(queued) = enqueue_many_from_idle(state, tracks, text_channel_id) {
+        if let Some(queued) = enqueue_resolved_from_idle(host, bot, state, tracks, text_channel_id) {
           return NextTrack::Track(queued);
         }
       }
@@ -204,6 +204,7 @@ fn play_track(
   voice_channel_id: ChannelId,
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
+  resolver_threads: &mut ResolverThreads,
   sequence: &mut u16,
   queued: QueuedTrack,
 ) -> PlaybackControl {
@@ -274,7 +275,7 @@ fn play_track(
       return PlaybackControl::Continue;
     }
   } {
-    match drain_commands_while_playing(host, bot, rx, state, &track) {
+    match drain_commands_while_playing(host, bot, rx, state, sources, resolver_threads, &track) {
       CommandDrain::KeepPlaying => {}
       CommandDrain::EndCurrent => return PlaybackControl::Continue,
       CommandDrain::Shutdown => return PlaybackControl::Shutdown,
@@ -379,30 +380,21 @@ fn drain_commands_while_playing(
   bot: &BotUser,
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
+  sources: &SourceRegistry,
+  resolver_threads: &mut ResolverThreads,
   current: &Track,
 ) -> CommandDrain {
   while let Ok(command) = rx.try_recv() {
+    resolver_threads.reap_finished();
     match command {
-      PlayerCommand::Enqueue { track, text_channel_id } => {
-        let response = {
-          let mut state = state.lock().expect("playback state mutex poisoned");
-          state.queue.push_back(QueuedTrack {
-            track: track.clone(),
-            text_channel_id,
-          });
-          let position = state.queue.len();
-          format!("Queued #{}: {}", position, track.markdown_link_with_duration())
-        };
-        host.send_bot_chat(bot, text_channel_id, &response).ok();
+      PlayerCommand::ResolveAndEnqueue { input, text_channel_id } => {
+        resolver_threads.resolve(input, text_channel_id, sources.clone());
       }
-      PlayerCommand::EnqueueMany {
+      PlayerCommand::EnqueueResolved {
         tracks,
         text_channel_id,
       } => {
-        let mut state = state.lock().expect("playback state mutex poisoned");
-        state
-          .queue
-          .extend(tracks.into_iter().map(|track| QueuedTrack { track, text_channel_id }));
+        enqueue_resolved_while_playing(host, bot, state, tracks, text_channel_id);
       }
       PlayerCommand::Skip { text_channel_id } => {
         clear_current_track(state);
@@ -422,10 +414,143 @@ fn drain_commands_while_playing(
   CommandDrain::KeepPlaying
 }
 
-fn set_current_track(state: &Arc<Mutex<PlayerState>>, queued: QueuedTrack) {
-  let mut state = state.lock().expect("playback state mutex poisoned");
-  state.current = Some(queued);
-  state.current_started_at = None;
+fn enqueue_resolved_from_idle(
+  host: &HostHandle,
+  bot: &BotUser,
+  state: &Arc<Mutex<PlayerState>>,
+  tracks: Result<Vec<Track>, String>,
+  text_channel_id: ChannelId,
+) -> Option<QueuedTrack> {
+  let tracks = match tracks {
+    Ok(tracks) => tracks,
+    Err(error) => {
+      host
+        .send_bot_chat(bot, text_channel_id, &source_error_message(&error))
+        .ok();
+      return None;
+    }
+  };
+
+  if tracks.is_empty() {
+    host
+      .send_bot_chat(bot, text_channel_id, "SoundCloud URL did not contain queueable tracks.")
+      .ok();
+    return None;
+  }
+
+  if tracks.len() > 1 {
+    host
+      .send_bot_chat(bot, text_channel_id, &playlist_queue_message(&tracks))
+      .ok();
+  }
+
+  enqueue_many_from_idle(state, tracks, text_channel_id)
+}
+
+fn enqueue_resolved_while_playing(
+  host: &HostHandle,
+  bot: &BotUser,
+  state: &Arc<Mutex<PlayerState>>,
+  tracks: Result<Vec<Track>, String>,
+  text_channel_id: ChannelId,
+) {
+  let tracks = match tracks {
+    Ok(tracks) => tracks,
+    Err(error) => {
+      host
+        .send_bot_chat(bot, text_channel_id, &source_error_message(&error))
+        .ok();
+      return;
+    }
+  };
+
+  match tracks.len() {
+    0 => {
+      host
+        .send_bot_chat(bot, text_channel_id, "SoundCloud URL did not contain queueable tracks.")
+        .ok();
+    }
+    1 => {
+      let track = tracks.into_iter().next().expect("one resolved track");
+      let response = {
+        let mut state = state.lock().expect("playback state mutex poisoned");
+        state.queue.push_back(QueuedTrack {
+          track: track.clone(),
+          text_channel_id,
+        });
+        let position = state.queue.len();
+        format!("Queued #{}: {}", position, track.markdown_link_with_duration())
+      };
+      host.send_bot_chat(bot, text_channel_id, &response).ok();
+    }
+    _ => {
+      let response = playlist_queue_message(&tracks);
+      let mut state = state.lock().expect("playback state mutex poisoned");
+      state
+        .queue
+        .extend(tracks.into_iter().map(|track| QueuedTrack { track, text_channel_id }));
+      drop(state);
+      host.send_bot_chat(bot, text_channel_id, &response).ok();
+    }
+  }
+}
+
+fn source_error_message(error: &str) -> String {
+  if error.contains("Only SoundCloud URLs are supported") {
+    "Only SoundCloud URLs are supported right now.".to_owned()
+  } else if error.contains("playlist")
+    || error.contains("track")
+    || error.contains("SoundCloud")
+    || error.contains("private")
+    || error.contains("deleted")
+  {
+    error.to_owned()
+  } else {
+    "Could not read that SoundCloud URL.".to_owned()
+  }
+}
+
+struct ResolverThreads {
+  tx: Sender<PlayerCommand>,
+  handles: Vec<JoinHandle<()>>,
+}
+
+impl ResolverThreads {
+  fn new(tx: Sender<PlayerCommand>) -> Self {
+    Self {
+      tx,
+      handles: Vec::new(),
+    }
+  }
+
+  fn resolve(&mut self, input: String, text_channel_id: ChannelId, sources: SourceRegistry) {
+    let tx = self.tx.clone();
+    self.handles.push(thread::spawn(move || {
+      let tracks = Track::parse_many(&input, &sources);
+      tx.send(PlayerCommand::EnqueueResolved {
+        tracks,
+        text_channel_id,
+      })
+      .ok();
+    }));
+  }
+
+  fn reap_finished(&mut self) {
+    let mut index = 0;
+    while index < self.handles.len() {
+      if self.handles[index].is_finished() {
+        self.handles.swap_remove(index).join().ok();
+      } else {
+        index += 1;
+      }
+    }
+  }
+
+  fn join_all(mut self) {
+    for handle in self.handles.drain(..) {
+      handle.join().ok();
+    }
+  }
 }
 
 fn enqueue_many_from_idle(
@@ -549,5 +674,331 @@ fn sleep_until(deadline: Instant) {
     } else {
       thread::yield_now();
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    ffi::{CStr, c_void},
+    os::raw::c_char,
+    sync::{
+      Arc, Mutex,
+      mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
+  };
+
+  use server_plugin::{HostRef, MessageId, abi};
+
+  use super::*;
+  use crate::sources::{
+    model::{ResolvedAudio, SourceKind, SourceRequest},
+    registry::TestSourceBackend,
+  };
+
+  #[test]
+  fn resolve_command_does_not_block_playback_command_drain() {
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let sources = SourceRegistry::new_for_tests(Arc::new(BlockingParseBackend {
+      started: Mutex::new(Some(started_tx)),
+      release: Mutex::new(release_rx),
+    }));
+    let (tx, rx) = mpsc::channel();
+    let mut resolver_threads = ResolverThreads::new(tx.clone());
+    let state = Arc::new(Mutex::new(PlayerState::default()));
+    let mut fake = FakeHost::default();
+    let host = fake.host_handle();
+    let bot = host.create_bot_user("music", "Music Bot").unwrap();
+
+    tx.send(PlayerCommand::ResolveAndEnqueue {
+      input: "https://soundcloud.com/artist/new-track".to_owned(),
+      text_channel_id: 99,
+    })
+    .unwrap();
+
+    let started_at = Instant::now();
+    let drain = drain_commands_while_playing(&host, &bot, &rx, &state, &sources, &mut resolver_threads, &track(0));
+
+    assert!(matches!(drain, CommandDrain::KeepPlaying));
+    assert!(started_at.elapsed() < Duration::from_millis(200));
+    assert!(state.lock().expect("state mutex poisoned").queue.is_empty());
+
+    started_rx.recv_timeout(Duration::from_millis(500)).unwrap();
+    release_tx.send(()).unwrap();
+    let command = rx.recv_timeout(Duration::from_millis(500)).unwrap();
+    match command {
+      PlayerCommand::EnqueueResolved {
+        tracks,
+        text_channel_id,
+      } => {
+        assert_eq!(text_channel_id, 99);
+        assert_eq!(tracks.unwrap().len(), 1);
+      }
+      _ => panic!("resolver should return resolved enqueue command"),
+    }
+    resolver_threads.join_all();
+  }
+
+  #[test]
+  fn resolved_tracks_are_queued_while_playing() {
+    let sources = SourceRegistry::new_for_tests(Arc::new(ImmediateBackend));
+    let (tx, rx) = mpsc::channel();
+    let mut resolver_threads = ResolverThreads::new(tx.clone());
+    let state = Arc::new(Mutex::new(PlayerState::default()));
+    let mut fake = FakeHost::default();
+    let host = fake.host_handle();
+    let bot = host.create_bot_user("music", "Music Bot").unwrap();
+
+    tx.send(PlayerCommand::EnqueueResolved {
+      tracks: Ok(vec![track(1)]),
+      text_channel_id: 99,
+    })
+    .unwrap();
+
+    let drain = drain_commands_while_playing(&host, &bot, &rx, &state, &sources, &mut resolver_threads, &track(0));
+
+    assert!(matches!(drain, CommandDrain::KeepPlaying));
+    let state = state.lock().expect("state mutex poisoned");
+    assert_eq!(state.queue.len(), 1);
+    assert_eq!(state.queue[0].track.title, "track 1");
+    drop(state);
+    assert_eq!(fake.chats.len(), 1);
+    assert!(fake.chats[0].2.starts_with("Queued #1: "));
+  }
+
+  #[test]
+  fn multiple_bot_resolvers_keep_parsed_queues_separate() {
+    let sources_a = SourceRegistry::new_for_tests(Arc::new(IndexedBackend {
+      first_index: 10,
+      count: 2,
+    }));
+    let sources_b = SourceRegistry::new_for_tests(Arc::new(IndexedBackend {
+      first_index: 20,
+      count: 3,
+    }));
+    let (tx_a, rx_a) = mpsc::channel();
+    let (tx_b, rx_b) = mpsc::channel();
+    let mut resolver_threads_a = ResolverThreads::new(tx_a.clone());
+    let mut resolver_threads_b = ResolverThreads::new(tx_b.clone());
+    let state_a = Arc::new(Mutex::new(PlayerState::default()));
+    let state_b = Arc::new(Mutex::new(PlayerState::default()));
+    let mut fake = FakeHost::default();
+    let host = fake.host_handle();
+    let bot_a = host.create_bot_user("music", "Music Bot").unwrap();
+    let bot_b = host.create_bot_user("music-2", "Music Bot 2").unwrap();
+
+    tx_a
+      .send(PlayerCommand::ResolveAndEnqueue {
+        input: "https://soundcloud.com/artist/list-a".to_owned(),
+        text_channel_id: 101,
+      })
+      .unwrap();
+    tx_b
+      .send(PlayerCommand::ResolveAndEnqueue {
+        input: "https://soundcloud.com/artist/list-b".to_owned(),
+        text_channel_id: 202,
+      })
+      .unwrap();
+
+    drain_commands_while_playing(
+      &host,
+      &bot_a,
+      &rx_a,
+      &state_a,
+      &sources_a,
+      &mut resolver_threads_a,
+      &track(0),
+    );
+    drain_commands_while_playing(
+      &host,
+      &bot_b,
+      &rx_b,
+      &state_b,
+      &sources_b,
+      &mut resolver_threads_b,
+      &track(0),
+    );
+
+    drain_until_queue_len(&host, &bot_a, &rx_a, &state_a, &sources_a, &mut resolver_threads_a, 2);
+    drain_until_queue_len(&host, &bot_b, &rx_b, &state_b, &sources_b, &mut resolver_threads_b, 3);
+
+    assert_eq!(queue_titles(&state_a), vec!["track 10", "track 11"]);
+    assert_eq!(queue_titles(&state_b), vec!["track 20", "track 21", "track 22"]);
+    assert!(
+      fake
+        .chats
+        .iter()
+        .any(|chat| chat.0 == 1 && chat.1 == 101 && chat.2.starts_with("Added 2 tracks:"))
+    );
+    assert!(
+      fake
+        .chats
+        .iter()
+        .any(|chat| chat.0 == 2 && chat.1 == 202 && chat.2.starts_with("Added 3 tracks:"))
+    );
+
+    resolver_threads_a.join_all();
+    resolver_threads_b.join_all();
+  }
+
+  struct BlockingParseBackend {
+    started: Mutex<Option<Sender<()>>>,
+    release: Mutex<Receiver<()>>,
+  }
+
+  impl TestSourceBackend for BlockingParseBackend {
+    fn parse(&self, input: &str) -> Result<SourceRequest, String> {
+      self.parse_many(input).map(|mut requests| requests.remove(0))
+    }
+
+    fn parse_many(&self, _input: &str) -> Result<Vec<SourceRequest>, String> {
+      if let Some(started) = self.started.lock().expect("started mutex poisoned").take() {
+        started.send(()).ok();
+      }
+      self.release.lock().expect("release mutex poisoned").recv().unwrap();
+      Ok(vec![source_request(10)])
+    }
+
+    fn resolve(&self, _request: &SourceRequest) -> Result<ResolvedAudio, String> {
+      Err("not used".to_owned())
+    }
+  }
+
+  struct ImmediateBackend;
+
+  impl TestSourceBackend for ImmediateBackend {
+    fn parse(&self, input: &str) -> Result<SourceRequest, String> {
+      self.parse_many(input).map(|mut requests| requests.remove(0))
+    }
+
+    fn parse_many(&self, _input: &str) -> Result<Vec<SourceRequest>, String> {
+      Ok(vec![source_request(1)])
+    }
+
+    fn resolve(&self, _request: &SourceRequest) -> Result<ResolvedAudio, String> {
+      Err("not used".to_owned())
+    }
+  }
+
+  struct IndexedBackend {
+    first_index: usize,
+    count: usize,
+  }
+
+  impl TestSourceBackend for IndexedBackend {
+    fn parse(&self, input: &str) -> Result<SourceRequest, String> {
+      self.parse_many(input).map(|mut requests| requests.remove(0))
+    }
+
+    fn parse_many(&self, _input: &str) -> Result<Vec<SourceRequest>, String> {
+      Ok(
+        (0..self.count)
+          .map(|offset| source_request(self.first_index + offset))
+          .collect(),
+      )
+    }
+
+    fn resolve(&self, _request: &SourceRequest) -> Result<ResolvedAudio, String> {
+      Err("not used".to_owned())
+    }
+  }
+
+  fn drain_until_queue_len(
+    host: &HostHandle,
+    bot: &BotUser,
+    rx: &Receiver<PlayerCommand>,
+    state: &Arc<Mutex<PlayerState>>,
+    sources: &SourceRegistry,
+    resolver_threads: &mut ResolverThreads,
+    expected_len: usize,
+  ) {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+      drain_commands_while_playing(host, bot, rx, state, sources, resolver_threads, &track(0));
+      if state.lock().expect("state mutex poisoned").queue.len() == expected_len {
+        return;
+      }
+      thread::sleep(Duration::from_millis(5));
+    }
+
+    panic!("queue did not reach expected length {expected_len}");
+  }
+
+  fn queue_titles(state: &Arc<Mutex<PlayerState>>) -> Vec<String> {
+    state
+      .lock()
+      .expect("state mutex poisoned")
+      .queue
+      .iter()
+      .map(|queued| queued.track.title.clone())
+      .collect()
+  }
+
+  fn track(index: usize) -> Track {
+    Track {
+      title: format!("track {index}"),
+      duration_ms: Some(180_000),
+      source: source_request(index),
+    }
+  }
+
+  fn source_request(index: usize) -> SourceRequest {
+    SourceRequest {
+      kind: SourceKind::SoundCloud,
+      url: format!("https://soundcloud.com/artist/track-{index}"),
+      provider_id: Some(index.to_string()),
+      duration_ms: Some(180_000),
+      loading_title: format!("track {index}"),
+    }
+  }
+
+  #[derive(Default)]
+  struct FakeHost {
+    next_bot_id: usize,
+    chats: Vec<(usize, ChannelId, String)>,
+  }
+
+  impl FakeHost {
+    fn host_handle(&mut self) -> HostHandle {
+      let mut host = abi::Host::empty();
+      host.context = (self as *mut Self).cast();
+      host.create_bot_user = Some(fake_create_bot_user);
+      host.send_bot_chat = Some(fake_send_bot_chat);
+      unsafe { HostRef::from_raw(&host).unwrap().to_handle() }
+    }
+  }
+
+  unsafe extern "C" fn fake_create_bot_user(
+    context: *mut c_void,
+    _key: *const c_char,
+    _display_name: *const c_char,
+    out_bot: *mut abi::BotHandle,
+    out_user_id: *mut u32,
+  ) -> bool {
+    let fake = unsafe { &mut *(context as *mut FakeHost) };
+    fake.next_bot_id += 1;
+    unsafe {
+      *out_bot = fake.next_bot_id as abi::BotHandle;
+      *out_user_id = 100 + fake.next_bot_id as u32;
+    }
+    true
+  }
+
+  unsafe extern "C" fn fake_send_bot_chat(
+    context: *mut c_void,
+    bot: abi::BotHandle,
+    text_channel_id: ChannelId,
+    text: *const c_char,
+    out_message_id: *mut MessageId,
+  ) -> bool {
+    let fake = unsafe { &mut *(context as *mut FakeHost) };
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned();
+    fake.chats.push((bot as usize, text_channel_id, text));
+    unsafe {
+      *out_message_id = fake.chats.len() as MessageId;
+    }
+    true
   }
 }
