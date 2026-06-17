@@ -519,7 +519,7 @@ pub(super) fn apply_server_message(
         });
         true
       };
-      if lobby.selected_channel_id == Some(joined_channel_id) {
+      if lobby.selected_channel_id == Some(joined_channel_id) || was_in_selected_channel {
         sync_selected_users(lobby);
       }
       tracing::debug!(target: "lobby",

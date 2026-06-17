@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "bip39",
  "bytes",

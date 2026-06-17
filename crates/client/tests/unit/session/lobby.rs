@@ -124,6 +124,237 @@ fn watching_stream_outside_joined_voice_channel_preserves_current_text_view() {
 }
 
 #[test]
+fn local_leave_channel_emits_speaking_reset_effect() {
+  let mut lobby = LobbyState {
+    selected_channel_id: Some(1),
+    users_by_channel: HashMap::from([(
+      1,
+      vec![
+        LobbyUser {
+          user_id: 4,
+          username: "local".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: true,
+        },
+        LobbyUser {
+          user_id: 7,
+          username: "remote".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: true,
+        },
+      ],
+    )]),
+    users: vec![LobbyUser {
+      user_id: 4,
+      username: "local".to_owned(),
+      role: Role::User,
+      muted: false,
+      deafened: false,
+      speaking: true,
+    }],
+    ..LobbyState::default()
+  };
+
+  let effects = leave_channel_locally(&mut lobby, Some(4));
+
+  assert!(effects.left_voice);
+  assert_eq!(effects.forget_speaking_user, Some(4));
+  assert_eq!(effects.clear_video_cache_user, Some(4));
+  assert_eq!(lobby.selected_channel_id, None);
+  assert!(lobby.users.is_empty());
+  assert_eq!(lobby.users_by_channel[&1].len(), 1);
+  assert_eq!(lobby.users_by_channel[&1][0].user_id, 7);
+}
+
+#[test]
+fn local_user_left_channel_message_clears_speaking_and_stops_voice() {
+  let mut lobby = LobbyState {
+    selected_channel_id: Some(1),
+    users_by_channel: HashMap::from([(
+      1,
+      vec![LobbyUser {
+        user_id: 4,
+        username: "local".to_owned(),
+        role: Role::User,
+        muted: false,
+        deafened: false,
+        speaking: true,
+      }],
+    )]),
+    users: vec![LobbyUser {
+      user_id: 4,
+      username: "local".to_owned(),
+      role: Role::User,
+      muted: false,
+      deafened: false,
+      speaking: true,
+    }],
+    ..LobbyState::default()
+  };
+
+  let effects = apply_server_message(
+    &mut lobby,
+    S2C::UserLeftChannel(crate::network::protocol::control::UserLeftChannel {
+      user_id: 4,
+      channel_id: 1,
+    }),
+    test_context(),
+  );
+
+  assert!(effects.stop_local_voice);
+  assert_eq!(effects.clear_speaking_user, Some(4));
+  assert_eq!(lobby.selected_channel_id, None);
+  assert!(lobby.users.is_empty());
+  assert!(lobby.users_by_channel.values().all(Vec::is_empty));
+}
+
+#[test]
+fn remote_user_left_selected_channel_clears_watch_and_speaking_effects() {
+  let mut lobby = LobbyState {
+    selected_channel_id: Some(1),
+    watching_user_id: Some(7),
+    screen_shares: vec![LobbyScreenShare {
+      sharer_user_id: 7,
+      metadata: crate::network::protocol::control::ScreenShareMetadata {
+        codec: crate::network::protocol::VideoCodecId::H264,
+        width: 1280,
+        height: 720,
+      },
+    }],
+    users_by_channel: HashMap::from([(
+      1,
+      vec![
+        LobbyUser {
+          user_id: 4,
+          username: "local".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: false,
+        },
+        LobbyUser {
+          user_id: 7,
+          username: "remote".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: true,
+        },
+      ],
+    )]),
+    ..LobbyState::default()
+  };
+  sync_selected_users(&mut lobby);
+
+  let effects = apply_server_message(
+    &mut lobby,
+    S2C::UserLeftChannel(crate::network::protocol::control::UserLeftChannel {
+      user_id: 7,
+      channel_id: 1,
+    }),
+    test_context(),
+  );
+
+  assert!(!effects.stop_local_voice);
+  assert_eq!(effects.clear_speaking_user, Some(7));
+  assert_eq!(effects.clear_video_cache_users, vec![7]);
+  assert_eq!(effects.notification_sound, Some(NotificationSound::VoiceLeave));
+  assert_eq!(effects.watching_change, Some(Some(7)));
+  assert_eq!(lobby.watching_user_id, None);
+  assert!(lobby.screen_shares.is_empty());
+  assert_eq!(lobby.users.len(), 1);
+  assert_eq!(lobby.users[0].user_id, 4);
+}
+
+#[test]
+fn remote_joined_other_channel_moves_user_out_of_selected_channel() {
+  let mut lobby = LobbyState {
+    selected_channel_id: Some(1),
+    users_by_channel: HashMap::from([
+      (
+        1,
+        vec![LobbyUser {
+          user_id: 7,
+          username: "remote".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: true,
+        }],
+      ),
+      (2, Vec::new()),
+    ]),
+    ..LobbyState::default()
+  };
+  sync_selected_users(&mut lobby);
+
+  let effects = apply_server_message(
+    &mut lobby,
+    S2C::UserJoinedChannel(crate::network::protocol::control::UserJoinedChannel {
+      user_id: 7,
+      username: "remote".to_owned(),
+      channel_id: 2,
+      role: Role::User,
+    }),
+    test_context(),
+  );
+
+  assert_eq!(effects.notification_sound, Some(NotificationSound::VoiceLeave));
+  assert!(lobby.users.is_empty());
+  assert!(lobby.users_by_channel[&1].is_empty());
+  assert_eq!(lobby.users_by_channel[&2].len(), 1);
+  assert_eq!(lobby.users_by_channel[&2][0].user_id, 7);
+  assert!(!lobby.users_by_channel[&2][0].speaking);
+}
+
+#[test]
+fn channel_user_list_moves_user_between_cached_channels() {
+  let mut lobby = LobbyState {
+    selected_channel_id: Some(2),
+    users_by_channel: HashMap::from([
+      (
+        1,
+        vec![LobbyUser {
+          user_id: 7,
+          username: "remote".to_owned(),
+          role: Role::User,
+          muted: false,
+          deafened: false,
+          speaking: true,
+        }],
+      ),
+      (2, Vec::new()),
+    ]),
+    ..LobbyState::default()
+  };
+
+  apply_server_message(
+    &mut lobby,
+    S2C::ChannelUserList(crate::network::protocol::control::ChannelUserList {
+      channel_id: 2,
+      users: vec![crate::network::protocol::control::ChannelUser {
+        user_id: 7,
+        username: "remote".to_owned(),
+        role: Role::User,
+        muted: false,
+        deafened: false,
+      }],
+    }),
+    test_context(),
+  );
+
+  assert!(lobby.users_by_channel[&1].is_empty());
+  assert_eq!(lobby.users_by_channel[&2].len(), 1);
+  assert_eq!(lobby.users.len(), 1);
+  assert_eq!(lobby.users[0].user_id, 7);
+  assert!(!lobby.users[0].speaking);
+}
+
+#[test]
 fn kicked_server_error_marks_disconnect_without_auto_reconnect() {
   let mut lobby = LobbyState {
     selected_channel_id: Some(1),

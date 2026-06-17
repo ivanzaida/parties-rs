@@ -97,3 +97,29 @@ fn stale_activity_stop_does_not_clear_new_activity() {
   tracker.stop_user_speaking_activity(session, 7, active_token);
   assert_eq!(set_false_calls.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn clear_all_resets_activity_tokens_before_new_channel_activity() {
+  let tracker = Arc::new(SpeakingTracker::new());
+  let set_true_calls = Arc::new(AtomicUsize::new(0));
+  let set_false_calls = Arc::new(AtomicUsize::new(0));
+  let session = TestSession {
+    set_true_calls: set_true_calls.clone(),
+    set_false_calls: set_false_calls.clone(),
+  };
+
+  let stale_token = tracker.start_user_speaking_activity(session.clone(), 7);
+  tracker.clear_all();
+  let active_token = tracker.start_user_speaking_activity(session.clone(), 7);
+  tracker.stop_user_speaking_activity(session, 7, stale_token);
+
+  assert_eq!(set_true_calls.load(Ordering::Relaxed), 2);
+  assert_eq!(set_false_calls.load(Ordering::Relaxed), 0);
+
+  let session = TestSession {
+    set_true_calls,
+    set_false_calls: set_false_calls.clone(),
+  };
+  tracker.stop_user_speaking_activity(session, 7, active_token);
+  assert_eq!(set_false_calls.load(Ordering::Relaxed), 1);
+}
