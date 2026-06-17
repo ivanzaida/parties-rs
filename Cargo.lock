@@ -677,6 +677,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "client"
+version = "0.1.32"
+dependencies = [
+ "bip39",
+ "bytes",
+ "cc",
+ "chrono",
+ "core-foundation-sys 0.8.7",
+ "core-media-sys",
+ "core-video-sys",
+ "cpal",
+ "ed25519-dalek",
+ "flate2",
+ "getrandom 0.4.2",
+ "lurq",
+ "minimp3",
+ "openh264-sys2",
+ "opus",
+ "parking_lot",
+ "quinn",
+ "rdev",
+ "reqwest 0.12.28",
+ "rfd",
+ "rusqlite",
+ "rustls",
+ "semver",
+ "sentry",
+ "sentry-tracing",
+ "serde_json",
+ "sha2 0.11.0",
+ "shiguredo_dav1d",
+ "sonora",
+ "tar",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-log",
+ "tracing-subscriber",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "winresource",
+ "zip",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3429,51 +3474,6 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
-]
-
-[[package]]
-name = "parties-rs"
-version = "0.1.31"
-dependencies = [
- "bip39",
- "bytes",
- "cc",
- "chrono",
- "core-foundation-sys 0.8.7",
- "core-media-sys",
- "core-video-sys",
- "cpal",
- "ed25519-dalek",
- "flate2",
- "getrandom 0.4.2",
- "lurq",
- "minimp3",
- "openh264-sys2",
- "opus",
- "parking_lot",
- "quinn",
- "rdev",
- "reqwest 0.12.28",
- "rfd",
- "rusqlite",
- "rustls",
- "semver",
- "sentry",
- "sentry-tracing",
- "serde_json",
- "sha2 0.11.0",
- "shiguredo_dav1d",
- "sonora",
- "tar",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-log",
- "tracing-subscriber",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "winresource",
- "zip",
 ]
 
 [[package]]

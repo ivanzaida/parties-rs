@@ -92,6 +92,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
+      APP_NAME: parties-rs
       PACKAGE_VERSION: ${{ needs.package-metadata.outputs.version }}
       ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
       RUST_TARGET: ${{ matrix.rust_target }}
@@ -157,7 +158,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $artifact = "$env:PACKAGE_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
+          $artifact = "$env:APP_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
           $dist = Join-Path "dist" $artifact
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item $env:BINARY_PATH $dist
@@ -167,7 +168,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $artifact = "$env:PACKAGE_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
+          $artifact = "$env:APP_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
           $symbols = Join-Path "dist" "$artifact-debug-symbols"
           $releaseDir = Split-Path -Parent $env:BINARY_PATH
           $pdbs = @(Get-ChildItem -Path $releaseDir -Filter "*.pdb" -File)
@@ -184,6 +185,45 @@ jobs:
           }
           Compress-Archive -Path "$symbols\*" -DestinationPath "dist\$artifact-debug-symbols.zip" -Force
 
+      - name: Install Sentry CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: npm install --global @sentry/cli
+
+      - name: Upload Windows debug symbols to Sentry
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+        run: |
+          $missing = @()
+          foreach ($name in @("SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT")) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              $missing += $name
+            }
+          }
+
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing required Sentry secrets: $($missing -join ', ')"
+            exit 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:SENTRY_URL)) {
+            $env:SENTRY_URL = "https://sentry.lurq.dev/"
+          }
+
+          $artifact = "$env:APP_NAME-$env:PACKAGE_VERSION-$env:ARTIFACT_SUFFIX"
+          $symbols = Join-Path "dist" "$artifact-debug-symbols"
+          if (!(Test-Path $symbols)) {
+            Write-Error "Debug symbols directory not found: $symbols"
+            exit 1
+          }
+
+          sentry-cli debug-files upload $symbols
+
       - name: Package macOS binary
         if: runner.os == 'macOS'
         shell: bash
@@ -196,7 +236,7 @@ jobs:
             exit 1
           fi
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dist="dist/$artifact"
           app="$dist/$MACOS_APP_NAME.app"
 
@@ -296,7 +336,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           app="dist/$artifact/$MACOS_APP_NAME.app"
           identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')"
 
@@ -336,7 +376,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dmg_path="dist/$artifact.$ARCHIVE_EXT"
           dmg_root="$RUNNER_TEMP/dmg-root"
 
@@ -358,7 +398,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dmg_path="dist/$artifact.$ARCHIVE_EXT"
           identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')"
 
@@ -386,7 +426,7 @@ jobs:
             exit 1
           fi
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dmg_path="dist/$artifact.$ARCHIVE_EXT"
 
           xcrun notarytool submit "$dmg_path" \
@@ -409,7 +449,7 @@ jobs:
             exit 1
           fi
 
-          artifact="$PACKAGE_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
+          artifact="$APP_NAME-$PACKAGE_VERSION-$ARTIFACT_SUFFIX"
           dmg_path="dist/$artifact.$ARCHIVE_EXT"
           dmg_size="$(stat -f%z "$dmg_path")"
           dmg_url="https://github.com/${{ github.repository }}/releases/download/v${PACKAGE_VERSION}/${artifact}.${ARCHIVE_EXT}"
@@ -462,23 +502,23 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}
-          path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
+          name: ${{ env.APP_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}
+          path: dist/${{ env.APP_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}.${{ env.ARCHIVE_EXT }}
           if-no-files-found: error
 
       - name: Upload Windows debug symbols artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols
-          path: dist/${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols.zip
+          name: ${{ env.APP_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols
+          path: dist/${{ env.APP_NAME }}-${{ env.PACKAGE_VERSION }}-${{ env.ARTIFACT_SUFFIX }}-debug-symbols.zip
           if-no-files-found: error
 
       - name: Upload Sparkle appcast artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PACKAGE_NAME }}-${{ env.PACKAGE_VERSION }}-appcast
+          name: ${{ env.APP_NAME }}-${{ env.PACKAGE_VERSION }}-appcast
           path: dist/appcast.xml
           if-no-files-found: error
 
@@ -493,8 +533,14 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PACKAGE_NAME: ${{ needs.package-metadata.outputs.name }}
+      APP_NAME: parties-rs
       PACKAGE_VERSION: ${{ needs.package-metadata.outputs.version }}
     steps:
+      - name: Checkout release history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -507,8 +553,30 @@ jobs:
           shopt -s globstar nullglob
 
           tag="v$PACKAGE_VERSION"
-          title="$PACKAGE_NAME $PACKAGE_VERSION"
-          notes="Automated client build for $PACKAGE_NAME $PACKAGE_VERSION."
+          title="$APP_NAME $PACKAGE_VERSION"
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^$tag$" | head -n1 || true)"
+
+          {
+            echo "Automated client build for $APP_NAME $PACKAGE_VERSION."
+            echo
+            echo "## Changelog"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+              echo "Changes since \`$previous_tag\`:"
+              changelog="$(git log --format='- %s (%h)' "$previous_tag..$GITHUB_SHA")"
+            else
+              echo "Initial release history:"
+              changelog="$(git log --max-count=50 --format='- %s (%h)' "$GITHUB_SHA")"
+            fi
+
+            if [[ -n "$changelog" ]]; then
+              printf '%s\n' "$changelog"
+            else
+              echo "- No commits found."
+            fi
+          } > "$notes_file"
+
           files=()
           for asset in dist-artifacts/**/*; do
             if [[ -f "$asset" ]]; then
@@ -525,11 +593,15 @@ jobs:
           fi
 
           if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit "$tag" \
+              --repo "$GH_REPO" \
+              --title "$title" \
+              --notes-file "$notes_file"
             gh release upload "$tag" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$tag" "${files[@]}" \
               --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
               --title "$title" \
-              --notes "$notes"
+              --notes-file "$notes_file"
           fi

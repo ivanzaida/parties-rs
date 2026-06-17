@@ -142,6 +142,11 @@ jobs:
       PACKAGE_NAME: ${{ needs.plugin-metadata.outputs.name }}
       PACKAGE_VERSION: ${{ needs.plugin-metadata.outputs.version }}
     steps:
+      - name: Checkout release history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download plugin artifacts
         uses: actions/download-artifact@v4
         with:
@@ -155,7 +160,29 @@ jobs:
 
           tag="$PACKAGE_NAME-v$PACKAGE_VERSION"
           title="$PACKAGE_NAME $PACKAGE_VERSION"
-          notes="Automated plugin build for $PACKAGE_NAME $PACKAGE_VERSION."
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          previous_tag="$(git tag --list "$PACKAGE_NAME-v*" --sort=-v:refname | grep -v "^$tag$" | head -n1 || true)"
+
+          {
+            echo "Automated plugin build for $PACKAGE_NAME $PACKAGE_VERSION."
+            echo
+            echo "## Changelog"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+              echo "Changes since \`$previous_tag\`:"
+              changelog="$(git log --format='- %s (%h)' "$previous_tag..$GITHUB_SHA")"
+            else
+              echo "Initial release history:"
+              changelog="$(git log --max-count=50 --format='- %s (%h)' "$GITHUB_SHA")"
+            fi
+
+            if [[ -n "$changelog" ]]; then
+              printf '%s\n' "$changelog"
+            else
+              echo "- No commits found."
+            fi
+          } > "$notes_file"
+
           files=()
           for asset in dist-artifacts/**/*; do
             if [[ -f "$asset" ]]; then
@@ -169,11 +196,15 @@ jobs:
           fi
 
           if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit "$tag" \
+              --repo "$GH_REPO" \
+              --title "$title" \
+              --notes-file "$notes_file"
             gh release upload "$tag" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$tag" "${files[@]}" \
               --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
               --title "$title" \
-              --notes "$notes"
+              --notes-file "$notes_file"
           fi
