@@ -112,7 +112,8 @@ pub struct VoiceEngine {
   stop: Arc<AtomicBool>,
   control: Arc<VoiceControlState>,
   mixer: Arc<Mutex<VoiceMixer>>,
-  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
+  outgoing_frame_tx: Option<SyncSender<EncodeFrame>>,
+  outgoing_sound_generation: Arc<AtomicU64>,
   decoders: HashMap<UserId, DecodeStream>,
   stream_decoders: HashMap<UserId, DecodeStream>,
   normalized_users: HashSet<UserId>,
@@ -136,7 +137,7 @@ impl VoiceEngine {
     let stop = Arc::new(AtomicBool::new(false));
     let control = Arc::new(VoiceControlState::new(&settings, muted, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
-    let outgoing_sound = Arc::new(Mutex::new(OutgoingSoundState::default()));
+    let outgoing_sound_generation = Arc::new(AtomicU64::new(0));
 
     let output_stream = match build_output_stream(&settings, control.clone(), mixer.clone()) {
       Ok(stream) => Some(stream),
@@ -147,32 +148,26 @@ impl VoiceEngine {
         None
       }
     };
-    let input_result = build_input_path(
-      server,
-      &settings,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-      on_local_voice,
-    );
+    let input_result = build_input_path(server, &settings, control.clone(), stop.clone(), on_local_voice);
     let input_error = input_result.as_ref().err().map(ToString::to_string);
-    let (input_stream, encoder_thread) = input_result.unwrap_or((None, None));
+    let input_path = input_result.unwrap_or_default();
 
-    if input_stream.is_none() && output_stream.is_none() {
+    if input_path.stream.is_none() && output_stream.is_none() {
       return Err(VoiceError::new(
         input_error.unwrap_or_else(|| "No usable audio input or output device.".to_owned()),
       ));
     }
-    let captures_voice = input_stream.is_some() || encoder_thread.is_some();
+    let captures_voice = input_path.stream.is_some() || input_path.encoder_thread.is_some();
 
     Ok(Self {
-      _input_stream: input_stream,
+      _input_stream: input_path.stream,
       _output_stream: output_stream,
-      encoder_thread,
+      encoder_thread: input_path.encoder_thread,
       stop,
       control,
       mixer,
-      outgoing_sound,
+      outgoing_frame_tx: input_path.frame_tx,
+      outgoing_sound_generation,
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
       normalized_users: HashSet::new(),
@@ -184,7 +179,6 @@ impl VoiceEngine {
     let stop = Arc::new(AtomicBool::new(false));
     let control = Arc::new(VoiceControlState::new(&settings, true, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
-    let outgoing_sound = Arc::new(Mutex::new(OutgoingSoundState::default()));
     let output_stream = build_output_stream(&settings, control.clone(), mixer.clone())?;
 
     Ok(Self {
@@ -194,7 +188,8 @@ impl VoiceEngine {
       stop,
       control,
       mixer,
-      outgoing_sound,
+      outgoing_frame_tx: None,
+      outgoing_sound_generation: Arc::new(AtomicU64::new(0)),
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
       normalized_users: HashSet::new(),
@@ -209,11 +204,8 @@ impl VoiceEngine {
   pub fn set_voice_state(&self, muted: bool, deafened: bool) {
     self.control.set_voice_state(muted, deafened);
     if muted || deafened {
-      self
-        .outgoing_sound
-        .lock()
-        .expect("outgoing sound lock poisoned")
-        .clear();
+      self.outgoing_sound_generation.fetch_add(1, Ordering::Relaxed);
+      self.control.set_outgoing_sound_active(false);
     }
     if deafened {
       self
@@ -263,6 +255,12 @@ impl VoiceEngine {
     if !self.captures_voice {
       return Ok(false);
     }
+    let Some(frame_tx) = self.outgoing_frame_tx.clone() else {
+      return Ok(false);
+    };
+    if !self.control.can_transmit_outgoing_sound() {
+      return Ok(false);
+    }
     if volume_percent <= 0 {
       return Ok(false);
     }
@@ -276,11 +274,45 @@ impl VoiceEngine {
     apply_outgoing_sound_volume(&mut samples, volume_percent);
     apply_outgoing_sound_fade(&mut samples);
 
-    self
-      .outgoing_sound
-      .lock()
-      .expect("outgoing sound lock poisoned")
-      .replace(samples);
+    let generation = self.outgoing_sound_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let active_generation = self.outgoing_sound_generation.clone();
+    let control = self.control.clone();
+    control.set_outgoing_sound_active(true);
+    if let Err(error) = thread::Builder::new()
+      .name("parties-outgoing-join-sound".to_owned())
+      .spawn(move || {
+        let frame_duration = Duration::from_millis(20);
+        let mut next_frame_at = Instant::now();
+        for chunk in samples.chunks(OPUS_FRAME_SIZE) {
+          if active_generation.load(Ordering::Relaxed) != generation || !control.can_transmit_outgoing_sound() {
+            break;
+          }
+          let mut frame = Vec::with_capacity(OPUS_FRAME_SIZE);
+          frame.extend_from_slice(chunk);
+          frame.resize(OPUS_FRAME_SIZE, 0.0);
+          if frame_tx
+            .send(EncodeFrame {
+              samples: frame,
+              force_transmit: true,
+            })
+            .is_err()
+          {
+            break;
+          }
+          next_frame_at = next_frame_at.checked_add(frame_duration).unwrap_or_else(Instant::now);
+          if let Some(delay) = next_frame_at.checked_duration_since(Instant::now()) {
+            thread::sleep(delay);
+          }
+        }
+        if active_generation.load(Ordering::Relaxed) == generation {
+          control.set_outgoing_sound_active(false);
+        }
+      })
+    {
+      self.outgoing_sound_generation.fetch_add(1, Ordering::Relaxed);
+      self.control.set_outgoing_sound_active(false);
+      return Err(format!("Failed to start outgoing voice join sound thread: {error}"));
+    }
     Ok(true)
   }
 
@@ -621,13 +653,12 @@ fn build_input_path(
   settings: &AppSettings,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
-  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   on_local_voice: LocalVoiceCallback,
-) -> Result<(Option<cpal::Stream>, Option<JoinHandle<()>>), VoiceError> {
+) -> Result<VoiceInputPath, VoiceError> {
   ensure_microphone_authorized()?;
 
   let Some(device) = audio_devices::input_device(&settings.audio_input_device) else {
-    return Ok((None, None));
+    return Ok(VoiceInputPath::default());
   };
 
   let supported_config = device
@@ -636,120 +667,49 @@ fn build_input_path(
   let sample_format = supported_config.sample_format();
   let config = low_latency_stream_config(&supported_config);
   let (frame_tx, frame_rx) = mpsc::sync_channel(INPUT_FRAME_QUEUE);
+  let outgoing_frame_tx = frame_tx.clone();
   let (free_frame_tx, free_frame_rx) = mpsc::sync_channel(INPUT_FRAME_POOL);
   for _ in 0..INPUT_FRAME_POOL {
     let _ = free_frame_tx.try_send(Vec::with_capacity(OPUS_FRAME_SIZE));
   }
 
   let input_stream = match sample_format {
-    SampleFormat::F32 => build_input_stream::<f32>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::F64 => build_input_stream::<f64>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::I8 => build_input_stream::<i8>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::I16 => build_input_stream::<i16>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::I24 => build_input_stream::<cpal::I24>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::I32 => build_input_stream::<i32>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::I64 => build_input_stream::<i64>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::U8 => build_input_stream::<u8>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::U16 => build_input_stream::<u16>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::U24 => build_input_stream::<cpal::U24>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::U32 => build_input_stream::<u32>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound.clone(),
-    ),
-    SampleFormat::U64 => build_input_stream::<u64>(
-      &device,
-      config,
-      frame_tx,
-      free_frame_rx,
-      control.clone(),
-      stop.clone(),
-      outgoing_sound,
-    ),
+    SampleFormat::F32 => {
+      build_input_stream::<f32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::F64 => {
+      build_input_stream::<f64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I8 => {
+      build_input_stream::<i8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I16 => {
+      build_input_stream::<i16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I24 => {
+      build_input_stream::<cpal::I24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I32 => {
+      build_input_stream::<i32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::I64 => {
+      build_input_stream::<i64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U8 => {
+      build_input_stream::<u8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U16 => {
+      build_input_stream::<u16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U24 => {
+      build_input_stream::<cpal::U24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U32 => {
+      build_input_stream::<u32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
+    SampleFormat::U64 => {
+      build_input_stream::<u64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
+    }
     _ => Err(VoiceError::new("Unsupported input sample format.")),
   }?;
 
@@ -758,7 +718,18 @@ fn build_input_path(
     .map_err(|error| VoiceError::new(format!("Failed to start input stream: {error}")))?;
 
   let encoder_thread = spawn_encoder_thread(server, frame_rx, free_frame_tx, stop, on_local_voice, control)?;
-  Ok((Some(input_stream), Some(encoder_thread)))
+  Ok(VoiceInputPath {
+    stream: Some(input_stream),
+    encoder_thread: Some(encoder_thread),
+    frame_tx: Some(outgoing_frame_tx),
+  })
+}
+
+#[derive(Default)]
+struct VoiceInputPath {
+  stream: Option<cpal::Stream>,
+  encoder_thread: Option<JoinHandle<()>>,
+  frame_tx: Option<SyncSender<EncodeFrame>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -793,11 +764,10 @@ fn ensure_microphone_authorized() -> Result<(), VoiceError> {
 fn build_input_stream<T>(
   device: &cpal::Device,
   config: cpal::StreamConfig,
-  frame_tx: SyncSender<Vec<f32>>,
+  frame_tx: SyncSender<EncodeFrame>,
   free_frame_rx: Receiver<Vec<f32>>,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
-  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
 ) -> Result<cpal::Stream, VoiceError>
 where
   T: cpal::SizedSample,
@@ -805,15 +775,7 @@ where
 {
   let channels = usize::from(config.channels.max(1));
   let sample_rate = config.sample_rate;
-  let mut state = InputCaptureState::new(
-    channels,
-    sample_rate,
-    frame_tx,
-    free_frame_rx,
-    control,
-    stop,
-    outgoing_sound,
-  );
+  let mut state = InputCaptureState::new(channels, sample_rate, frame_tx, free_frame_rx, control, stop);
 
   device
     .build_input_stream::<T, _, _>(
@@ -827,7 +789,7 @@ where
 
 fn spawn_encoder_thread(
   server: Arc<Server>,
-  frame_rx: Receiver<Vec<f32>>,
+  frame_rx: Receiver<EncodeFrame>,
   free_frame_tx: SyncSender<Vec<f32>>,
   stop: Arc<AtomicBool>,
   on_local_voice: LocalVoiceCallback,
@@ -878,7 +840,13 @@ fn spawn_encoder_thread(
         input_frames = input_frames.saturating_add(1);
         last_input_frame_at = now;
 
-        if !voice_gate.should_transmit(&control, &frame) {
+        if !frame.force_transmit && control.outgoing_sound_active() {
+          frame.samples.clear();
+          let _ = free_frame_tx.try_send(frame.samples);
+          continue;
+        }
+
+        if !frame.force_transmit && !voice_gate.should_transmit(&control, &frame.samples) {
           suppressed_frames = suppressed_frames.saturating_add(1);
           warn_local_voice_send_idle(
             &control,
@@ -891,12 +859,12 @@ fn spawn_encoder_thread(
             voice_gate.hold_frames,
             &mut last_send_idle_warn_at,
           );
-          frame.clear();
-          let _ = free_frame_tx.try_send(frame);
+          frame.samples.clear();
+          let _ = free_frame_tx.try_send(frame.samples);
           continue;
         }
 
-        let len = match encoder.encode_float(&frame, &mut opus) {
+        let len = match encoder.encode_float(&frame.samples, &mut opus) {
           Ok(len) => len,
           Err(error) => {
             encode_errors = encode_errors.saturating_add(1);
@@ -905,14 +873,14 @@ fn spawn_encoder_thread(
               "[audio:encode] voice opus encode failed #{}: {error}",
               encode_errors
             );
-            frame.clear();
-            let _ = free_frame_tx.try_send(frame);
+            frame.samples.clear();
+            let _ = free_frame_tx.try_send(frame.samples);
             continue;
           }
         };
         if len == 0 {
-          frame.clear();
-          let _ = free_frame_tx.try_send(frame);
+          frame.samples.clear();
+          let _ = free_frame_tx.try_send(frame.samples);
           continue;
         }
 
@@ -940,8 +908,8 @@ fn spawn_encoder_thread(
           }
         }
         sequence = sequence.wrapping_add(1);
-        frame.clear();
-        let _ = free_frame_tx.try_send(frame);
+        frame.samples.clear();
+        let _ = free_frame_tx.try_send(frame.samples);
       }
       tracing::info!(
         target: "audio::encode",
@@ -1030,25 +998,28 @@ struct InputCaptureState {
   capture_frame: VecDeque<f32>,
   process_frame: Vec<f32>,
   opus_frame: VecDeque<f32>,
-  frame_tx: SyncSender<Vec<f32>>,
+  frame_tx: SyncSender<EncodeFrame>,
   free_frame_rx: Receiver<Vec<f32>>,
   spare_frame: Option<Vec<f32>>,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
-  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   callback_failed: bool,
   processor: CaptureProcessor,
+}
+
+struct EncodeFrame {
+  samples: Vec<f32>,
+  force_transmit: bool,
 }
 
 impl InputCaptureState {
   fn new(
     channels: usize,
     sample_rate: u32,
-    frame_tx: SyncSender<Vec<f32>>,
+    frame_tx: SyncSender<EncodeFrame>,
     free_frame_rx: Receiver<Vec<f32>>,
     control: Arc<VoiceControlState>,
     stop: Arc<AtomicBool>,
-    outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   ) -> Self {
     Self {
       channels,
@@ -1061,7 +1032,6 @@ impl InputCaptureState {
       spare_frame: None,
       control,
       stop,
-      outgoing_sound,
       callback_failed: false,
       processor: CaptureProcessor::default(),
     }
@@ -1102,13 +1072,9 @@ impl InputCaptureState {
     }
 
     let can_transmit_voice = self.control.can_transmit();
-    let can_transmit_sound = self.control.can_transmit_outgoing_sound() && self.outgoing_sound_has_audio();
-    if !can_transmit_voice && !can_transmit_sound {
+    if !can_transmit_voice {
       self.capture_frame.clear();
       self.opus_frame.clear();
-      if !self.control.can_transmit_outgoing_sound() {
-        self.clear_outgoing_sound();
-      }
       return;
     }
 
@@ -1135,7 +1101,6 @@ impl InputCaptureState {
         {
           break;
         }
-        self.mix_outgoing_sound();
         pop_front_samples(&mut self.capture_frame, PROCESS_FRAME_SIZE);
         self.opus_frame.extend(self.process_frame.iter().copied());
         trim_front_samples(&mut self.opus_frame, MAX_OPUS_QUEUE_SAMPLES);
@@ -1147,16 +1112,23 @@ impl InputCaptureState {
         };
         frame.extend(self.opus_frame.iter().take(OPUS_FRAME_SIZE).copied());
 
-        match self.frame_tx.try_send(frame) {
-          Ok(()) => {}
+        match self.frame_tx.try_send(EncodeFrame {
+          samples: frame,
+          force_transmit: false,
+        }) {
+          Ok(()) => {
+            pop_front_samples(&mut self.opus_frame, OPUS_FRAME_SIZE);
+          }
           Err(TrySendError::Disconnected(frame)) => {
-            self.recycle_frame_buffer(frame);
+            self.recycle_frame_buffer(frame.samples);
             pop_front_samples(&mut self.opus_frame, OPUS_FRAME_SIZE);
             break;
           }
-          Err(TrySendError::Full(frame)) => self.recycle_frame_buffer(frame),
+          Err(TrySendError::Full(frame)) => {
+            self.recycle_frame_buffer(frame.samples);
+            break;
+          }
         }
-        pop_front_samples(&mut self.opus_frame, OPUS_FRAME_SIZE);
       }
     }
   }
@@ -1176,45 +1148,25 @@ impl InputCaptureState {
       self.spare_frame = Some(frame);
     }
   }
-
-  fn outgoing_sound_has_audio(&self) -> bool {
-    self
-      .outgoing_sound
-      .try_lock()
-      .is_ok_and(|outgoing_sound| outgoing_sound.has_audio())
-  }
-
-  fn mix_outgoing_sound(&mut self) {
-    if !self.control.can_transmit_outgoing_sound() {
-      self.clear_outgoing_sound();
-      return;
-    }
-
-    if let Ok(mut outgoing_sound) = self.outgoing_sound.try_lock() {
-      let mixed = outgoing_sound.mix_into(&mut self.process_frame);
-      self
-        .control
-        .set_outgoing_sound_active(mixed || outgoing_sound.has_audio());
-    }
-  }
-
-  fn clear_outgoing_sound(&self) {
-    if let Ok(mut outgoing_sound) = self.outgoing_sound.try_lock() {
-      outgoing_sound.clear();
-    }
-    self.control.set_outgoing_sound_active(false);
-  }
 }
 
 fn pop_front_samples(samples: &mut VecDeque<f32>, count: usize) {
-  for _ in 0..count.min(samples.len()) {
-    samples.pop_front();
+  pop_front_values(samples, count);
+}
+
+fn pop_front_values<T>(values: &mut VecDeque<T>, count: usize) {
+  for _ in 0..count.min(values.len()) {
+    values.pop_front();
   }
 }
 
 fn trim_front_samples(samples: &mut VecDeque<f32>, max_len: usize) {
-  let overflow = samples.len().saturating_sub(max_len);
-  pop_front_samples(samples, overflow);
+  trim_front_values(samples, max_len);
+}
+
+fn trim_front_values<T>(values: &mut VecDeque<T>, max_len: usize) {
+  let overflow = values.len().saturating_sub(max_len);
+  pop_front_values(values, overflow);
 }
 
 #[derive(Default)]
@@ -1280,49 +1232,6 @@ impl CaptureProcessor {
     }
 
     true
-  }
-}
-
-#[derive(Default)]
-struct OutgoingSoundState {
-  samples: Vec<f32>,
-  position: usize,
-}
-
-impl OutgoingSoundState {
-  fn replace(&mut self, samples: Vec<f32>) {
-    self.samples = samples;
-    self.position = 0;
-  }
-
-  fn has_audio(&self) -> bool {
-    self.position < self.samples.len()
-  }
-
-  fn mix_into(&mut self, frame: &mut [f32]) -> bool {
-    if !self.has_audio() {
-      return false;
-    }
-
-    let mut mixed = false;
-    for sample in frame {
-      if self.position >= self.samples.len() {
-        break;
-      }
-      *sample = (*sample + self.samples[self.position]).clamp(-1.0, 1.0);
-      self.position += 1;
-      mixed = true;
-    }
-
-    if !self.has_audio() {
-      self.clear();
-    }
-    mixed
-  }
-
-  fn clear(&mut self) {
-    self.samples.clear();
-    self.position = 0;
   }
 }
 

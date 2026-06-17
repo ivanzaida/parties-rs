@@ -20,7 +20,7 @@ use crate::{
     server::Server,
   },
   services::{
-    notifications::NotificationSound,
+    notifications::{self, NotificationSound},
     profiler,
     video::{DecodedVideoFrame, VideoBroadcastConfig, VideoDecodeConfig, VideoFrameLoopback},
     voice::LocalVoiceCallback,
@@ -324,6 +324,14 @@ impl ServerSession {
 
   pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
     self.voice_state.set_notification_audio_settings(settings);
+    let mut voice_settings = self.voice_settings.lock();
+    voice_settings
+      .audio_output_device
+      .clone_from(&settings.audio_output_device);
+    voice_settings.notification_volume = settings.notification_volume;
+    voice_settings
+      .notification_sound_overrides
+      .clone_from(&settings.notification_sound_overrides);
   }
 
   pub fn set_video_hardware_decoding(&self, enabled: bool) {
@@ -343,7 +351,10 @@ impl ServerSession {
       .voice
       .queue_outgoing_voice_join_sound(&settings.notification_sound_overrides, settings.notification_volume)
     {
-      Ok(true) => tracing::info!(target: "voice", "[voice] queued outgoing voice join sound"),
+      Ok(true) => {
+        tracing::info!(target: "voice", "[voice] queued outgoing voice join sound");
+        notifications::play_outgoing_voice_join(notifications::NotificationAudioSettings::from_app_settings(settings));
+      }
       Ok(false) => tracing::debug!(
         target: "voice",
         "[voice] skipped outgoing voice join sound: no selected sound or no active voice capture"

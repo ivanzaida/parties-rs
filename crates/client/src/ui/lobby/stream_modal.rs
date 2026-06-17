@@ -26,7 +26,7 @@ use crate::{
   },
   theme,
   ui::{
-    app_chrome::{CHROME_HEIGHT, RESIZE_HANDLE_SIZE, content_height},
+    app_chrome::content_height,
     common::lucide_icon::{LucideIcon, LucideIconProps},
     loader::loader,
     settings::{SettingsPage, SettingsPopupHandle},
@@ -93,13 +93,6 @@ pub(super) fn start_stream_modal(
   let window = ctx.window();
   let window_width = window.logical_width();
   let modal_height = content_height(ctx);
-  let resize_gutter = if window.is_maximized || window.is_full_screen {
-    0.0
-  } else {
-    RESIZE_HANDLE_SIZE
-  };
-  let layer_width = (window_width - resize_gutter * 2.0).max(0.0);
-  let layer_height = (modal_height - resize_gutter).max(0.0);
   let metrics = stream_modal_metrics(ctx);
   let close_on_escape = open.clone();
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
@@ -171,9 +164,9 @@ pub(super) fn start_stream_modal(
   ));
 
   Column::new()
-    .width(layer_width)
-    .height(layer_height)
-    .absolute(resize_gutter, CHROME_HEIGHT, layer_width, layer_height)
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))

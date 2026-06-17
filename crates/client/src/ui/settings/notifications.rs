@@ -518,7 +518,7 @@ fn notification_sound_action_overlay(
   Stack::new()
     .width(window_width)
     .height(modal_height)
-    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .child(
       Row::new()
         .width(window_width)
@@ -565,7 +565,7 @@ fn outgoing_voice_join_sound_action_overlay(
   Stack::new()
     .width(window_width)
     .height(modal_height)
-    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .child(
       Row::new()
         .width(window_width)

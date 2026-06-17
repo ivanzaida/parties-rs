@@ -18,7 +18,7 @@ use lurq::{
 use crate::{
   theme,
   ui::{
-    app_chrome::{CHROME_HEIGHT, content_height},
+    app_chrome::content_height,
     common::lucide_icon::{LucideIcon, LucideIconProps},
   },
 };
@@ -118,7 +118,7 @@ impl Component for ConfirmModal {
     Column::new()
       .width(window_width)
       .height(modal_height)
-      .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+      .absolute(0.0, 0.0, window_width, modal_height)
       .align_items(Alignment::Center)
       .justify(Justify::Center)
       .background(BackgroundColor::Color(Color::from_hex("#00000099")))

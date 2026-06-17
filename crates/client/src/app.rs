@@ -37,10 +37,7 @@ use crate::{
   storage::Storage,
   theme,
   ui::{
-    app_chrome::{
-      AppChrome, CHROME_HEIGHT, CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, FrameRateSignal, modal_layer,
-      window_affordance_layers,
-    },
+    app_chrome::{FrameRateSignal, modal_layer, wrap_window_chrome},
     common::lucide_icon::{LucideIcon, LucideIconProps},
     connect_server::ConnectServerScreen,
     identity_seed::IdentitySeedScreen,
@@ -61,7 +58,6 @@ use crate::{
   },
 };
 
-const MACOS_WINDOW_CORNER_RADIUS: f32 = 10.0;
 const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const UPDATE_PILL_MARGIN: f32 = 16.0;
 const UPDATE_PILL_TOP_GAP: f32 = 12.0;
@@ -302,10 +298,6 @@ impl Component for App {
       .justify(Justify::Start)
       .clip();
 
-    if CUSTOM_WINDOW_CHROME {
-      content = content.child(ctx.mount::<AppChrome>(self.frame_rate.clone()));
-    }
-
     content = content.child(
       Column::new()
         .width(Dimension::Pct(100.0))
@@ -321,15 +313,6 @@ impl Component for App {
       .clip()
       .child(content);
 
-    let window = ctx.window();
-    if CUSTOM_MACOS_CHROME && !window.is_maximized && !window.is_full_screen {
-      root = root.rounded(MACOS_WINDOW_CORNER_RADIUS);
-    }
-
-    if CUSTOM_WINDOW_CHROME {
-      root = root.border_inside(1.0, theme::PaletteColor::Border);
-    }
-
     let settings_open = self.settings_open.clone();
     if settings_open.get() {
       let close_settings = settings_popup.clone();
@@ -341,10 +324,6 @@ impl Component for App {
         }
       });
       root = root.child(Modal::new(settings_layer).open(settings_open));
-    }
-
-    for layer in window_affordance_layers(ctx) {
-      root = root.child(layer);
     }
 
     if local_hotkeys_enabled {
@@ -384,7 +363,7 @@ impl Component for App {
       root = root.child(pill);
     }
 
-    root
+    wrap_window_chrome(ctx, root, self.frame_rate.clone(), self.session.clone())
   }
 }
 
@@ -398,11 +377,7 @@ impl App {
     };
     let window = ctx.window();
     let x = (window.logical_width() - width - UPDATE_PILL_MARGIN).max(UPDATE_PILL_MARGIN);
-    let y = if CUSTOM_WINDOW_CHROME {
-      CHROME_HEIGHT + UPDATE_PILL_TOP_GAP
-    } else {
-      UPDATE_PILL_TOP_GAP
-    };
+    let y = UPDATE_PILL_TOP_GAP;
     let title = update_pill_title(ctx, status);
     let detail = update_pill_detail(ctx, status);
 

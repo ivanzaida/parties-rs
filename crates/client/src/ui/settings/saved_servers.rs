@@ -25,7 +25,7 @@ use crate::{
   storage::{Storage, StoredServer},
   theme,
   ui::{
-    app_chrome::{CHROME_HEIGHT, content_height, modal_y},
+    app_chrome::{content_height, modal_y},
     common::{
       confirm_modal::{ConfirmAction, ConfirmModal, ConfirmModalProps},
       lucide_icon::{LucideIcon, LucideIconProps},
@@ -398,7 +398,7 @@ fn server_action_menu(
   Column::new()
     .width(window_width)
     .height(modal_height)
-    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .align_items(Alignment::End)
     .padding_top(menu_top)
     .padding_right(34.0)
@@ -735,7 +735,7 @@ fn edit_server_modal(
   Row::new()
     .width(window_width)
     .height(modal_height)
-    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))
@@ -977,7 +977,7 @@ fn fingerprint_modal(ctx: &mut Ctx, server: &StoredServer, open: Signal<bool>) -
   Column::new()
     .width(window_width)
     .height(modal_height)
-    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .absolute(0.0, 0.0, window_width, modal_height)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .background(BackgroundColor::Color(Color::from_hex("#00000099")))

@@ -15,10 +15,7 @@ use crate::{
   network::protocol::ChannelId,
   session::{LobbyState, ServerSession},
   theme,
-  ui::{
-    app_chrome::{CHROME_HEIGHT, CUSTOM_WINDOW_CHROME},
-    common::lucide_icon::{LucideIcon, LucideIconProps},
-  },
+  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
 
 const PREVIEW_WIDTH: f32 = 324.0;
@@ -57,11 +54,7 @@ fn preview_x(ctx: &Ctx) -> f32 {
 }
 
 fn preview_y() -> f32 {
-  if CUSTOM_WINDOW_CHROME {
-    CHROME_HEIGHT + PREVIEW_TOP_GAP
-  } else {
-    PREVIEW_TOP_GAP
-  }
+  PREVIEW_TOP_GAP
 }
 
 fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: ChannelId) -> bool {

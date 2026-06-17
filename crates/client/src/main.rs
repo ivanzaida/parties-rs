@@ -308,6 +308,9 @@ fn log_startup_gpu_info() {
   if !logged_any {
     tracing::warn!(target: "startup::gpu", "[startup/gpu] no DXGI adapters found");
   }
+
+  log_dxgi_gpu_preference_adapters(&factory);
+  log_dx12_renderer_adapter(&factory);
 }
 
 #[cfg(target_os = "windows")]
@@ -332,6 +335,139 @@ fn log_dxgi_adapter(index: u32, adapter: &windows::Win32::Graphics::Dxgi::IDXGIA
     name,
     dedicated_vram_mb,
     shared_memory_mb,
+    output_count,
+    desc.Flags
+  );
+}
+
+#[cfg(target_os = "windows")]
+fn log_dxgi_gpu_preference_adapters(factory: &windows::Win32::Graphics::Dxgi::IDXGIFactory1) {
+  use windows::Win32::Graphics::Dxgi::{
+    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_GPU_PREFERENCE_UNSPECIFIED,
+    IDXGIAdapter1, IDXGIFactory6,
+  };
+  use windows_core::Interface;
+
+  let Ok(factory) = factory.cast::<IDXGIFactory6>() else {
+    tracing::warn!(target: "startup::gpu", "[startup/gpu] DXGI factory does not support GPU preference enumeration");
+    return;
+  };
+
+  for (label, preference) in [
+    ("unspecified", DXGI_GPU_PREFERENCE_UNSPECIFIED),
+    ("high_performance", DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE),
+    ("minimum_power", DXGI_GPU_PREFERENCE_MINIMUM_POWER),
+  ] {
+    match unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, preference) } {
+      Ok(adapter) => log_selected_dxgi_adapter(format_args!("dxgi-preference-{label}"), &adapter),
+      Err(error) => tracing::warn!(
+        target: "startup::gpu",
+        "[startup/gpu] dxgi-preference-{label}: failed to resolve adapter: {error}"
+      ),
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn log_dx12_renderer_adapter(factory: &windows::Win32::Graphics::Dxgi::IDXGIFactory1) {
+  use windows::Win32::Graphics::Dxgi::{DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND};
+
+  if let Some((adapter_index, adapter)) = preferred_dx12_adapter(factory) {
+    log_selected_dxgi_adapter(
+      format_args!("dx12-renderer-selected source=dxgi-preference-unspecified index={adapter_index}"),
+      &adapter,
+    );
+    return;
+  }
+
+  let mut adapter_index = 0;
+  loop {
+    let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+      Ok(adapter) => adapter,
+      Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => {
+        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: no DX12-capable hardware adapter found");
+        return;
+      }
+      Err(error) => {
+        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to enumerate adapter #{adapter_index}: {error}");
+        return;
+      }
+    };
+
+    let desc = match unsafe { adapter.GetDesc1() } {
+      Ok(desc) => desc,
+      Err(error) => {
+        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to read adapter #{adapter_index}: {error}");
+        return;
+      }
+    };
+
+    if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 && can_create_dx12_device(&adapter) {
+      log_selected_dxgi_adapter(format_args!("dx12-renderer-selected index={adapter_index}"), &adapter);
+      return;
+    }
+
+    adapter_index += 1;
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn preferred_dx12_adapter(
+  factory: &windows::Win32::Graphics::Dxgi::IDXGIFactory1,
+) -> Option<(u32, windows::Win32::Graphics::Dxgi::IDXGIAdapter1)> {
+  use windows::Win32::Graphics::Dxgi::{
+    DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_GPU_PREFERENCE_UNSPECIFIED, IDXGIAdapter1, IDXGIFactory6,
+  };
+  use windows_core::Interface;
+
+  let factory = factory.cast::<IDXGIFactory6>().ok()?;
+  let mut adapter_index = 0;
+  loop {
+    let adapter =
+      unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(adapter_index, DXGI_GPU_PREFERENCE_UNSPECIFIED) }
+        .ok()?;
+    let desc = unsafe { adapter.GetDesc1() }.ok()?;
+    if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 && can_create_dx12_device(&adapter) {
+      return Some((adapter_index, adapter));
+    }
+    adapter_index += 1;
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn can_create_dx12_device(adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> bool {
+  use windows::Win32::Graphics::{
+    Direct3D::D3D_FEATURE_LEVEL_11_0,
+    Direct3D12::{D3D12CreateDevice, ID3D12Device},
+  };
+
+  let mut device = None::<ID3D12Device>;
+  unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, &mut device) }.is_ok()
+}
+
+#[cfg(target_os = "windows")]
+fn log_selected_dxgi_adapter(label: std::fmt::Arguments<'_>, adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) {
+  let desc = match unsafe { adapter.GetDesc1() } {
+    Ok(desc) => desc,
+    Err(error) => {
+      tracing::warn!(target: "startup::gpu", "[startup/gpu] {label}: failed to read desc: {error}");
+      return;
+    }
+  };
+
+  let name = utf16_null_terminated_to_string(&desc.Description);
+  let vendor = gpu_vendor_label(desc.VendorId);
+  let dedicated_vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
+  let output_count = dxgi_output_count(adapter);
+  tracing::info!(
+    target: "startup::gpu",
+    "[startup/gpu] {label}: vendor={vendor} vendor_id=0x{:04x} device_id=0x{:04x} luid={:08x}:{:08x} name='{}' dedicated_vram={}MB outputs={} flags=0x{:x}",
+    desc.VendorId,
+    desc.DeviceId,
+    desc.AdapterLuid.HighPart as u32,
+    desc.AdapterLuid.LowPart,
+    name,
+    dedicated_vram_mb,
     output_count,
     desc.Flags
   );

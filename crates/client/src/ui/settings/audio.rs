@@ -1,5 +1,6 @@
 use std::{
   sync::{Arc, Mutex},
+  thread,
   time::Duration,
 };
 
@@ -1123,7 +1124,20 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
     return;
   }
   let settings = storage.load_settings().unwrap_or_default();
-  let _ = session.start_voice(settings, "");
+  let session = session.clone();
+  if let Err(error) = thread::Builder::new()
+    .name("parties-voice-device-restart".to_owned())
+    .spawn(move || {
+      if !session.voice_active() || session.lobby().selected_channel_id.is_none() {
+        return;
+      }
+      if let Err(error) = session.start_voice(settings, "") {
+        tracing::warn!(target: "voice", "[voice] failed to restart local voice engine after audio setting change: {error}");
+      }
+    })
+  {
+    tracing::warn!(target: "voice", "[voice] failed to spawn audio setting restart thread: {error}");
+  }
 }
 
 fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) -> AppSettings {
