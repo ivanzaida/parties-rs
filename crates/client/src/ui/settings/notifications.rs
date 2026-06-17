@@ -89,6 +89,16 @@ impl Component for SettingsNotificationsScreen {
               Column::new()
                 .width(Dimension::Pct(100.0))
                 .spacing(12.0)
+                .child(audio_section_label(&ctx.t("settings.notifications.section.outgoing")))
+                .child(outgoing_voice_join_sound_setting(
+                  ctx,
+                  &self.notification_sound_overrides,
+                )),
+            )
+            .child(
+              Column::new()
+                .width(Dimension::Pct(100.0))
+                .spacing(12.0)
                 .child(audio_section_label(&ctx.t("settings.notifications.section.sounds")))
                 .child(notification_sound_setting(
                   ctx,
@@ -346,6 +356,117 @@ fn notification_sound_setting(
   })
 }
 
+#[derive(Clone)]
+struct OutgoingVoiceJoinSoundSettingProps {
+  initial_overrides: String,
+}
+
+impl PartialEq for OutgoingVoiceJoinSoundSettingProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.initial_overrides == other.initial_overrides
+  }
+}
+
+impl DevtoolsInspectable for OutgoingVoiceJoinSoundSettingProps {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
+      "key",
+      std::any::type_name::<&'static str>(),
+      notifications::OUTGOING_VOICE_JOIN_SOUND_KEY.to_owned(),
+    ));
+  }
+}
+
+struct OutgoingVoiceJoinSoundSetting {
+  value: Signal<String>,
+  menu_open: Signal<bool>,
+  menu_anchor: Signal<Option<(f32, f32)>>,
+}
+
+impl Component for OutgoingVoiceJoinSoundSetting {
+  type Props = OutgoingVoiceJoinSoundSettingProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>();
+    Self {
+      value: ctx
+        .signal(notifications::outgoing_voice_join_sound_override(&props.initial_overrides).unwrap_or_default()),
+      menu_open: ctx.signal(false),
+      menu_anchor: ctx.signal(None::<(f32, f32)>),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
+    let custom = self.value.get() == notifications::SOUND_CHOICE_CUSTOM;
+    let custom_exists = custom && notifications::outgoing_voice_join_sound_exists();
+    let custom_missing = custom && !custom_exists;
+    let status = if custom_exists {
+      ctx
+        .t_args(
+          "settings.notifications.custom_file",
+          [(
+            "file",
+            format!("audio/{}", notifications::OUTGOING_VOICE_JOIN_SOUND_FILE_NAME),
+          )],
+        )
+        .to_string()
+    } else if custom {
+      ctx.t("settings.notifications.custom_missing").to_string()
+    } else {
+      ctx.t("settings.notifications.none").to_string()
+    };
+
+    let mut action_modal = None;
+    if self.menu_open.get() {
+      action_modal = Some(
+        Modal::new(outgoing_voice_join_sound_action_overlay(
+          ctx,
+          self.value.clone(),
+          self.menu_open.clone(),
+          self.menu_anchor.clone(),
+          self.menu_anchor.get(),
+          storage.clone(),
+          session.clone(),
+          custom_exists,
+          storage.is_none(),
+        ))
+        .open(self.menu_open.clone())
+        .target(Root),
+      );
+    }
+
+    let row = audio_row(
+      &ctx.t("settings.notifications.outgoing_voice_join"),
+      &ctx.t("settings.notifications.outgoing_voice_join.description"),
+      notification_sound_controls(
+        ctx,
+        self.menu_open.clone(),
+        self.menu_anchor.clone(),
+        &status,
+        custom_exists,
+        custom_missing,
+      ),
+      true,
+    );
+    if let Some(action_modal) = action_modal {
+      return Column::new()
+        .width(Dimension::Pct(100.0))
+        .child(row)
+        .child(action_modal)
+        .into();
+    }
+    row
+  }
+}
+
+fn outgoing_voice_join_sound_setting(ctx: &mut Ctx, initial_overrides: &str) -> Element {
+  ctx.mount::<OutgoingVoiceJoinSoundSetting>(OutgoingVoiceJoinSoundSettingProps {
+    initial_overrides: initial_overrides.to_owned(),
+  })
+}
+
 fn notification_sound_controls(
   ctx: &mut Ctx,
   menu_open: Signal<bool>,
@@ -414,6 +535,62 @@ fn notification_sound_action_overlay(
     .child(
       notification_sound_action_menu(ctx, sound, value, menu_open, menu_anchor, storage, session, disabled)
         .absolute_position(menu_left, menu_top),
+    )
+    .into()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn outgoing_voice_join_sound_action_overlay(
+  ctx: &mut Ctx,
+  value: Signal<String>,
+  menu_open: Signal<bool>,
+  menu_anchor: Signal<Option<(f32, f32)>>,
+  anchor: Option<(f32, f32)>,
+  storage: Option<Storage>,
+  session: Option<ServerSession>,
+  custom_exists: bool,
+  disabled: bool,
+) -> Element {
+  let window = ctx.window();
+  let window_width = window.logical_width();
+  let modal_height = content_height(ctx);
+  let (menu_left, menu_top) = notification_action_menu_position(anchor, window_width, modal_height);
+  let close_left_open = menu_open.clone();
+  let close_left_anchor = menu_anchor.clone();
+  let close_right_open = menu_open.clone();
+  let close_right_anchor = menu_anchor.clone();
+  let close_middle_open = menu_open.clone();
+  let close_middle_anchor = menu_anchor.clone();
+
+  Stack::new()
+    .width(window_width)
+    .height(modal_height)
+    .absolute(0.0, CHROME_HEIGHT, window_width, modal_height)
+    .child(
+      Row::new()
+        .width(window_width)
+        .height(modal_height)
+        .background(BackgroundColor::Color(Color::from_hex("#00000000")))
+        .on_click(move |_| close_notification_menu(close_left_open.clone(), close_left_anchor.clone()))
+        .on_mouse_click(MouseButton::Right, move |_| {
+          close_notification_menu(close_right_open.clone(), close_right_anchor.clone())
+        })
+        .on_mouse_click(MouseButton::Middle, move |_| {
+          close_notification_menu(close_middle_open.clone(), close_middle_anchor.clone())
+        }),
+    )
+    .child(
+      outgoing_voice_join_sound_action_menu(
+        ctx,
+        value,
+        menu_open,
+        menu_anchor,
+        storage,
+        session,
+        custom_exists,
+        disabled,
+      )
+      .absolute_position(menu_left, menu_top),
     )
     .into()
 }
@@ -525,6 +702,101 @@ fn notification_sound_action_menu(
       reset_value.set(String::new());
       if let Some(storage) = reset_storage.as_ref() {
         let settings = save_notification_sound_override(storage, sound, notifications::SOUND_CHOICE_DEFAULT);
+        if let Some(session) = reset_session.as_ref() {
+          session.set_notification_audio_settings(&settings);
+        }
+      }
+    });
+  }
+
+  Column::new()
+    .width(NOTIFICATION_ACTION_MENU_WIDTH)
+    .spacing(2.0)
+    .padding(6.0)
+    .rounded(8.0)
+    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+    .border_inside(1.0, BackgroundColor::Palette(theme::PaletteColor::BorderStrong))
+    .child(play)
+    .child(choose)
+    .child(reset)
+}
+
+fn outgoing_voice_join_sound_action_menu(
+  ctx: &mut Ctx,
+  value: Signal<String>,
+  menu_open: Signal<bool>,
+  menu_anchor: Signal<Option<(f32, f32)>>,
+  storage: Option<Storage>,
+  session: Option<ServerSession>,
+  custom_exists: bool,
+  disabled: bool,
+) -> Column {
+  let play_label = ctx.t("settings.notifications.action.play").to_string();
+  let choose_label = ctx.t("settings.notifications.action.choose_mp3").to_string();
+  let reset_label = ctx.t("settings.notifications.action.reset").to_string();
+
+  let play_storage = storage.clone();
+  let close_play = menu_open.clone();
+  let close_play_anchor = menu_anchor.clone();
+  let mut play = notification_menu_item(ctx, "play", &play_label, false, custom_exists);
+  if custom_exists {
+    play = play.on_click(move |_| {
+      close_notification_menu(close_play.clone(), close_play_anchor.clone());
+      let settings = play_storage
+        .as_ref()
+        .and_then(|storage| storage.load_settings().ok())
+        .unwrap_or_else(AppSettings::default);
+      notifications::play_outgoing_voice_join(notifications::NotificationAudioSettings::from_app_settings(&settings));
+    });
+  }
+
+  let choose_storage = storage.clone();
+  let choose_session = session.clone();
+  let choose_value = value.clone();
+  let close_choose = menu_open.clone();
+  let close_choose_anchor = menu_anchor.clone();
+  let mp3_filter_label = ctx.t("settings.notifications.file_filter.mp3_audio").to_string();
+  let mut choose = notification_menu_item(ctx, "plus", &choose_label, false, !disabled);
+  if !disabled {
+    choose = choose.on_click(move |_| {
+      close_notification_menu(close_choose.clone(), close_choose_anchor.clone());
+      let audio_dir = notifications::custom_audio_dir();
+      let _ = fs::create_dir_all(&audio_dir);
+      let Some(path) = rfd::FileDialog::new()
+        .add_filter(&mp3_filter_label, &["mp3"])
+        .set_directory(audio_dir)
+        .pick_file()
+      else {
+        return;
+      };
+
+      if let Err(error) = notifications::install_outgoing_voice_join_sound(&path) {
+        tracing::error!(target: "notifications", "[notifications] failed to install outgoing voice join sound: {error}");
+        return;
+      }
+
+      choose_value.set(notifications::SOUND_CHOICE_CUSTOM.to_owned());
+      if let Some(storage) = choose_storage.as_ref() {
+        let settings = save_outgoing_voice_join_sound_override(storage, notifications::SOUND_CHOICE_CUSTOM);
+        if let Some(session) = choose_session.as_ref() {
+          session.set_notification_audio_settings(&settings);
+        }
+      }
+    });
+  }
+
+  let reset_storage = storage;
+  let reset_session = session;
+  let reset_value = value.clone();
+  let close_reset = menu_open;
+  let close_reset_anchor = menu_anchor;
+  let mut reset = notification_menu_item(ctx, "x", &reset_label, true, !disabled);
+  if !disabled {
+    reset = reset.on_click(move |_| {
+      close_notification_menu(close_reset.clone(), close_reset_anchor.clone());
+      reset_value.set(String::new());
+      if let Some(storage) = reset_storage.as_ref() {
+        let settings = save_outgoing_voice_join_sound_override(storage, notifications::SOUND_CHOICE_DEFAULT);
         if let Some(session) = reset_session.as_ref() {
           session.set_notification_audio_settings(&settings);
         }
@@ -683,23 +955,36 @@ fn save_notification_sound_override(
   value: impl AsRef<str>,
 ) -> AppSettings {
   let mut settings = storage.load_settings().unwrap_or_default();
-  settings.notification_sound_overrides =
-    set_notification_sound_override(&settings.notification_sound_overrides, sound, value.as_ref());
+  settings.notification_sound_overrides = set_sound_override_key(
+    &settings.notification_sound_overrides,
+    notifications::notification_sound_key(sound),
+    value.as_ref(),
+  );
   let _ = storage.save_settings(&settings);
   settings
 }
 
-fn set_notification_sound_override(overrides: &str, sound: NotificationSound, value: &str) -> String {
+fn save_outgoing_voice_join_sound_override(storage: &Storage, value: impl AsRef<str>) -> AppSettings {
+  let mut settings = storage.load_settings().unwrap_or_default();
+  settings.notification_sound_overrides = set_sound_override_key(
+    &settings.notification_sound_overrides,
+    notifications::OUTGOING_VOICE_JOIN_SOUND_KEY,
+    value.as_ref(),
+  );
+  let _ = storage.save_settings(&settings);
+  settings
+}
+
+fn set_sound_override_key(overrides: &str, key: &str, value: &str) -> String {
   let mut object = serde_json::from_str::<serde_json::Value>(overrides)
     .ok()
     .and_then(|value| value.as_object().cloned())
     .unwrap_or_default();
-  let key = notifications::notification_sound_key(sound).to_owned();
   let value = value.trim();
   if value.is_empty() {
-    object.remove(&key);
+    object.remove(key);
   } else {
-    object.insert(key, serde_json::Value::String(value.to_owned()));
+    object.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
   }
 
   if object.is_empty() {

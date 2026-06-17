@@ -22,7 +22,7 @@ use sonora::{
   config::{EchoCanceller, HighPassFilter, MaxProcessingRate, NoiseSuppression, NoiseSuppressionLevel, Pipeline},
 };
 
-use super::audio_devices;
+use super::{audio_devices, notifications};
 use crate::{
   network::{
     protocol::{
@@ -57,6 +57,9 @@ const LATE_VOICE_PACKETS_BEFORE_RESET: u8 = 3;
 const MAX_CAPTURE_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * 5;
 const MAX_OPUS_QUEUE_SAMPLES: usize = OPUS_FRAME_SIZE * INPUT_FRAME_POOL;
 const MAX_RENDER_QUEUE_SAMPLES: usize = PROCESS_FRAME_SIZE * 50;
+const MAX_OUTGOING_SOUND_SAMPLES: usize = SAMPLE_RATE as usize * 2;
+const OUTGOING_SOUND_FADE_SAMPLES: usize = SAMPLE_RATE as usize / 50;
+const OUTGOING_SOUND_MAX_PEAK: f32 = 0.5;
 const STREAM_BUFFER_TARGET_MS: u32 = 20;
 const VOICE_ACTIVATION_HOLD_FRAMES: u8 = 12;
 const DEFAULT_AEC_DELAY_MS: i32 = 20;
@@ -109,6 +112,7 @@ pub struct VoiceEngine {
   stop: Arc<AtomicBool>,
   control: Arc<VoiceControlState>,
   mixer: Arc<Mutex<VoiceMixer>>,
+  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   decoders: HashMap<UserId, DecodeStream>,
   stream_decoders: HashMap<UserId, DecodeStream>,
   normalized_users: HashSet<UserId>,
@@ -132,6 +136,7 @@ impl VoiceEngine {
     let stop = Arc::new(AtomicBool::new(false));
     let control = Arc::new(VoiceControlState::new(&settings, muted, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
+    let outgoing_sound = Arc::new(Mutex::new(OutgoingSoundState::default()));
 
     let output_stream = match build_output_stream(&settings, control.clone(), mixer.clone()) {
       Ok(stream) => Some(stream),
@@ -142,7 +147,14 @@ impl VoiceEngine {
         None
       }
     };
-    let input_result = build_input_path(server, &settings, control.clone(), stop.clone(), on_local_voice);
+    let input_result = build_input_path(
+      server,
+      &settings,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+      on_local_voice,
+    );
     let input_error = input_result.as_ref().err().map(ToString::to_string);
     let (input_stream, encoder_thread) = input_result.unwrap_or((None, None));
 
@@ -160,6 +172,7 @@ impl VoiceEngine {
       stop,
       control,
       mixer,
+      outgoing_sound,
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
       normalized_users: HashSet::new(),
@@ -171,6 +184,7 @@ impl VoiceEngine {
     let stop = Arc::new(AtomicBool::new(false));
     let control = Arc::new(VoiceControlState::new(&settings, true, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
+    let outgoing_sound = Arc::new(Mutex::new(OutgoingSoundState::default()));
     let output_stream = build_output_stream(&settings, control.clone(), mixer.clone())?;
 
     Ok(Self {
@@ -180,6 +194,7 @@ impl VoiceEngine {
       stop,
       control,
       mixer,
+      outgoing_sound,
       decoders: HashMap::new(),
       stream_decoders: HashMap::new(),
       normalized_users: HashSet::new(),
@@ -193,6 +208,13 @@ impl VoiceEngine {
 
   pub fn set_voice_state(&self, muted: bool, deafened: bool) {
     self.control.set_voice_state(muted, deafened);
+    if muted || deafened {
+      self
+        .outgoing_sound
+        .lock()
+        .expect("outgoing sound lock poisoned")
+        .clear();
+    }
     if deafened {
       self
         .mixer
@@ -235,6 +257,31 @@ impl VoiceEngine {
 
   pub fn set_push_to_talk_release_delay_ms(&self, value: i32) {
     self.control.set_push_to_talk_release_delay_ms(value);
+  }
+
+  pub fn queue_outgoing_voice_join_sound(&self, sound_overrides: &str, volume_percent: i32) -> Result<bool, String> {
+    if !self.captures_voice {
+      return Ok(false);
+    }
+    if volume_percent <= 0 {
+      return Ok(false);
+    }
+
+    let Some(mut samples) = notifications::decode_outgoing_voice_join_sound_mono(sound_overrides, SAMPLE_RATE)? else {
+      return Ok(false);
+    };
+    if samples.len() > MAX_OUTGOING_SOUND_SAMPLES {
+      samples.truncate(MAX_OUTGOING_SOUND_SAMPLES);
+    }
+    apply_outgoing_sound_volume(&mut samples, volume_percent);
+    apply_outgoing_sound_fade(&mut samples);
+
+    self
+      .outgoing_sound
+      .lock()
+      .expect("outgoing sound lock poisoned")
+      .replace(samples);
+    Ok(true)
   }
 
   pub fn set_user_volume(&self, user_id: UserId, volume_percent: i32) {
@@ -388,6 +435,7 @@ struct VoiceControlState {
   push_to_talk_release_delay_ms: AtomicU64,
   push_to_talk_active: AtomicBool,
   push_to_talk_release_until_ms: AtomicU64,
+  outgoing_sound_active: AtomicBool,
   audio_processing: Option<Arc<Mutex<AudioProcessing>>>,
 }
 
@@ -405,6 +453,7 @@ impl VoiceControlState {
       )),
       push_to_talk_active: AtomicBool::new(false),
       push_to_talk_release_until_ms: AtomicU64::new(0),
+      outgoing_sound_active: AtomicBool::new(false),
       audio_processing: build_audio_processing(settings),
     }
   }
@@ -417,6 +466,18 @@ impl VoiceControlState {
         || self.push_to_talk_release_until_ms.load(Ordering::Relaxed) > monotonic_millis())
   }
 
+  fn can_transmit_outgoing_sound(&self) -> bool {
+    !self.muted.load(Ordering::Relaxed) && !self.deafened.load(Ordering::Relaxed)
+  }
+
+  fn outgoing_sound_active(&self) -> bool {
+    self.outgoing_sound_active.load(Ordering::Relaxed)
+  }
+
+  fn set_outgoing_sound_active(&self, active: bool) {
+    self.outgoing_sound_active.store(active, Ordering::Relaxed);
+  }
+
   fn audio_processing(&self) -> Option<&Arc<Mutex<AudioProcessing>>> {
     self.audio_processing.as_ref()
   }
@@ -427,6 +488,7 @@ impl VoiceControlState {
     if muted || deafened {
       self.push_to_talk_active.store(false, Ordering::Relaxed);
       self.push_to_talk_release_until_ms.store(0, Ordering::Relaxed);
+      self.outgoing_sound_active.store(false, Ordering::Relaxed);
     }
   }
 
@@ -559,6 +621,7 @@ fn build_input_path(
   settings: &AppSettings,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
+  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   on_local_voice: LocalVoiceCallback,
 ) -> Result<(Option<cpal::Stream>, Option<JoinHandle<()>>), VoiceError> {
   ensure_microphone_authorized()?;
@@ -579,42 +642,114 @@ fn build_input_path(
   }
 
   let input_stream = match sample_format {
-    SampleFormat::F32 => {
-      build_input_stream::<f32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::F64 => {
-      build_input_stream::<f64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::I8 => {
-      build_input_stream::<i8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::I16 => {
-      build_input_stream::<i16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::I24 => {
-      build_input_stream::<cpal::I24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::I32 => {
-      build_input_stream::<i32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::I64 => {
-      build_input_stream::<i64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::U8 => {
-      build_input_stream::<u8>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::U16 => {
-      build_input_stream::<u16>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::U24 => {
-      build_input_stream::<cpal::U24>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::U32 => {
-      build_input_stream::<u32>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
-    SampleFormat::U64 => {
-      build_input_stream::<u64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
-    }
+    SampleFormat::F32 => build_input_stream::<f32>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::F64 => build_input_stream::<f64>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::I8 => build_input_stream::<i8>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::I16 => build_input_stream::<i16>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::I24 => build_input_stream::<cpal::I24>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::I32 => build_input_stream::<i32>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::I64 => build_input_stream::<i64>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::U8 => build_input_stream::<u8>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::U16 => build_input_stream::<u16>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::U24 => build_input_stream::<cpal::U24>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::U32 => build_input_stream::<u32>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound.clone(),
+    ),
+    SampleFormat::U64 => build_input_stream::<u64>(
+      &device,
+      config,
+      frame_tx,
+      free_frame_rx,
+      control.clone(),
+      stop.clone(),
+      outgoing_sound,
+    ),
     _ => Err(VoiceError::new("Unsupported input sample format.")),
   }?;
 
@@ -662,6 +797,7 @@ fn build_input_stream<T>(
   free_frame_rx: Receiver<Vec<f32>>,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
+  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
 ) -> Result<cpal::Stream, VoiceError>
 where
   T: cpal::SizedSample,
@@ -669,7 +805,15 @@ where
 {
   let channels = usize::from(config.channels.max(1));
   let sample_rate = config.sample_rate;
-  let mut state = InputCaptureState::new(channels, sample_rate, frame_tx, free_frame_rx, control, stop);
+  let mut state = InputCaptureState::new(
+    channels,
+    sample_rate,
+    frame_tx,
+    free_frame_rx,
+    control,
+    stop,
+    outgoing_sound,
+  );
 
   device
     .build_input_stream::<T, _, _>(
@@ -891,6 +1035,7 @@ struct InputCaptureState {
   spare_frame: Option<Vec<f32>>,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
+  outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   callback_failed: bool,
   processor: CaptureProcessor,
 }
@@ -903,6 +1048,7 @@ impl InputCaptureState {
     free_frame_rx: Receiver<Vec<f32>>,
     control: Arc<VoiceControlState>,
     stop: Arc<AtomicBool>,
+    outgoing_sound: Arc<Mutex<OutgoingSoundState>>,
   ) -> Self {
     Self {
       channels,
@@ -915,6 +1061,7 @@ impl InputCaptureState {
       spare_frame: None,
       control,
       stop,
+      outgoing_sound,
       callback_failed: false,
       processor: CaptureProcessor::default(),
     }
@@ -954,15 +1101,23 @@ impl InputCaptureState {
       return;
     }
 
-    if !self.control.can_transmit() {
+    let can_transmit_voice = self.control.can_transmit();
+    let can_transmit_sound = self.control.can_transmit_outgoing_sound() && self.outgoing_sound_has_audio();
+    if !can_transmit_voice && !can_transmit_sound {
       self.capture_frame.clear();
       self.opus_frame.clear();
+      if !self.control.can_transmit_outgoing_sound() {
+        self.clear_outgoing_sound();
+      }
       return;
     }
 
     for input_frame in data.chunks(self.channels) {
-      let mono =
-        input_frame.iter().map(|sample| sample.to_sample::<f32>()).sum::<f32>() / input_frame.len().max(1) as f32;
+      let mono = if can_transmit_voice {
+        input_frame.iter().map(|sample| sample.to_sample::<f32>()).sum::<f32>() / input_frame.len().max(1) as f32
+      } else {
+        0.0
+      };
 
       self.resampler.push(mono.clamp(-1.0, 1.0), |sample| {
         self.capture_frame.push_back(sample);
@@ -980,6 +1135,7 @@ impl InputCaptureState {
         {
           break;
         }
+        self.mix_outgoing_sound();
         pop_front_samples(&mut self.capture_frame, PROCESS_FRAME_SIZE);
         self.opus_frame.extend(self.process_frame.iter().copied());
         trim_front_samples(&mut self.opus_frame, MAX_OPUS_QUEUE_SAMPLES);
@@ -1020,6 +1176,34 @@ impl InputCaptureState {
       self.spare_frame = Some(frame);
     }
   }
+
+  fn outgoing_sound_has_audio(&self) -> bool {
+    self
+      .outgoing_sound
+      .try_lock()
+      .is_ok_and(|outgoing_sound| outgoing_sound.has_audio())
+  }
+
+  fn mix_outgoing_sound(&mut self) {
+    if !self.control.can_transmit_outgoing_sound() {
+      self.clear_outgoing_sound();
+      return;
+    }
+
+    if let Ok(mut outgoing_sound) = self.outgoing_sound.try_lock() {
+      let mixed = outgoing_sound.mix_into(&mut self.process_frame);
+      self
+        .control
+        .set_outgoing_sound_active(mixed || outgoing_sound.has_audio());
+    }
+  }
+
+  fn clear_outgoing_sound(&self) {
+    if let Ok(mut outgoing_sound) = self.outgoing_sound.try_lock() {
+      outgoing_sound.clear();
+    }
+    self.control.set_outgoing_sound_active(false);
+  }
 }
 
 fn pop_front_samples(samples: &mut VecDeque<f32>, count: usize) {
@@ -1045,6 +1229,10 @@ struct VoiceActivationGate {
 
 impl VoiceActivationGate {
   fn should_transmit(&mut self, control: &VoiceControlState, frame: &[f32]) -> bool {
+    if control.outgoing_sound_active() {
+      return true;
+    }
+
     self.should_transmit_level(
       !control.push_to_talk,
       rms_to_perceptual(rms(frame)),
@@ -1092,6 +1280,49 @@ impl CaptureProcessor {
     }
 
     true
+  }
+}
+
+#[derive(Default)]
+struct OutgoingSoundState {
+  samples: Vec<f32>,
+  position: usize,
+}
+
+impl OutgoingSoundState {
+  fn replace(&mut self, samples: Vec<f32>) {
+    self.samples = samples;
+    self.position = 0;
+  }
+
+  fn has_audio(&self) -> bool {
+    self.position < self.samples.len()
+  }
+
+  fn mix_into(&mut self, frame: &mut [f32]) -> bool {
+    if !self.has_audio() {
+      return false;
+    }
+
+    let mut mixed = false;
+    for sample in frame {
+      if self.position >= self.samples.len() {
+        break;
+      }
+      *sample = (*sample + self.samples[self.position]).clamp(-1.0, 1.0);
+      self.position += 1;
+      mixed = true;
+    }
+
+    if !self.has_audio() {
+      self.clear();
+    }
+    mixed
+  }
+
+  fn clear(&mut self) {
+    self.samples.clear();
+    self.position = 0;
   }
 }
 
@@ -1664,6 +1895,33 @@ fn normalize_target(level: i32) -> f32 {
 fn apply_gain(frame: &mut [f32], gain: f32) {
   for sample in frame {
     *sample *= gain;
+  }
+}
+
+fn apply_outgoing_sound_volume(samples: &mut [f32], volume_percent: i32) {
+  let volume_gain = (volume_percent.clamp(0, 100) as f32) / 100.0;
+  let peak = samples.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
+  let peak_limit = OUTGOING_SOUND_MAX_PEAK * volume_gain;
+  let gain = if peak > peak_limit && peak > 0.0 {
+    peak_limit / peak
+  } else {
+    volume_gain
+  };
+  apply_gain(samples, gain);
+}
+
+fn apply_outgoing_sound_fade(samples: &mut [f32]) {
+  let fade_samples = OUTGOING_SOUND_FADE_SAMPLES.min(samples.len() / 2);
+  if fade_samples == 0 {
+    return;
+  }
+
+  for index in 0..fade_samples {
+    let fade_in = (index + 1) as f32 / fade_samples as f32;
+    let fade_out = (fade_samples - index) as f32 / fade_samples as f32;
+    samples[index] *= fade_in;
+    let tail_index = samples.len() - 1 - index;
+    samples[tail_index] *= fade_out;
   }
 }
 

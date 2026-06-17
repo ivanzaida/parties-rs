@@ -564,6 +564,7 @@
       "description": "Choose how app notification sounds are played.",
       "section": {
         "playback": "PLAYBACK",
+        "outgoing": "OUTGOING",
         "sounds": "SOUNDS"
       },
       "volume": {
@@ -571,6 +572,7 @@
         "description": "Set the volume for app notification sounds."
       },
       "default": "Default",
+      "none": "Off",
       "custom": "Custom",
       "custom_file": "{{file}}",
       "custom_missing": "Custom file missing",
@@ -620,6 +622,10 @@
           "$value": "Moderation",
           "description": "Sound for denied actions or voice state changes."
         }
+      },
+      "outgoing_voice_join": {
+        "$value": "Join channel sound",
+        "description": "MP3 played into the channel from your mic when you join. Your mic stays active while it plays."
       }
     },
     "audio": {

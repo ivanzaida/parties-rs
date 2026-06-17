@@ -93,7 +93,7 @@ pub fn percent_slider_control(
   on_blur: PercentSliderSaveAction,
 ) -> Element {
   let current = value.get().clamp(0, 100);
-  let fill_width = track_width * current as f32 / 100.0;
+  let fill_width = app_slider::travel_width(track_width) * current as f32 / 100.0;
   let value_label = ctx.t_args("common.percent", [("value", current.to_string())]);
 
   let mut slider = app_slider::slider(value.clone(), track_width, 0, 100);

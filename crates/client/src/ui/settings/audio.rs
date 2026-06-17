@@ -941,7 +941,8 @@ enum AudioSliderSetting {
 
 fn delay_slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
   let current = value.get().clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS);
-  let fill_width = AUDIO_SLIDER_WIDTH * current as f32 / PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS as f32;
+  let fill_width =
+    app_slider::travel_width(AUDIO_SLIDER_WIDTH) * current as f32 / PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS as f32;
   let label = format!("{:.1}s", current as f32 / 10.0);
   let mut slider = app_slider::slider(
     value.clone(),
@@ -982,17 +983,24 @@ fn threshold_slider(
   let current = value.get().clamp(0, 100);
   let level = input_level.clamp(0.0, 1.0);
   let threshold = current as f32 / 100.0;
-  let level_width = THRESHOLD_CONTROL_WIDTH * level;
+  let threshold_track_width = THRESHOLD_CONTROL_WIDTH - THRESHOLD_MARKER_WIDTH;
+  let threshold_track_offset = THRESHOLD_MARKER_WIDTH * 0.5;
+  let level_width = threshold_track_width * level;
   let speaking = input_level_active && level >= threshold;
   let db_label = format!("-{current} dB");
   let status_label = if speaking { speaking_label } else { silent_label };
-
   let mut slider = Slider::new(value.clone())
     .range(0, 100)
     .width(THRESHOLD_CONTROL_WIDTH)
     .height(THRESHOLD_CONTROL_HEIGHT)
-    .track_style(threshold_track_style(Color::from_hex("#00000000")))
-    .track_hovered_style(threshold_track_style(Color::from_hex("#00000000")))
+    .track_style(threshold_track_style(
+      THRESHOLD_CONTROL_WIDTH,
+      Color::from_hex("#00000000"),
+    ))
+    .track_hovered_style(threshold_track_style(
+      THRESHOLD_CONTROL_WIDTH,
+      Color::from_hex("#00000000"),
+    ))
     .thumb_style(threshold_marker_style(theme::palette().text_primary))
     .thumb_hovered_style(threshold_marker_style(theme::palette().text_primary));
 
@@ -1024,19 +1032,22 @@ fn threshold_slider(
             .rounded(7.0)
             .clip()
             .child(
-              Rect::new(THRESHOLD_CONTROL_WIDTH, THRESHOLD_TRACK_HEIGHT)
+              Rect::new(threshold_track_width, THRESHOLD_TRACK_HEIGHT)
+                .absolute_position(threshold_track_offset, 0.0)
                 .rounded(7.0)
                 .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceInput))
                 .border_inside(1.0, theme::PaletteColor::Border),
             )
             .child(
-              Rect::new(level_width, THRESHOLD_TRACK_HEIGHT).background_gradient(Gradient::linear(
-                90.0,
-                [
-                  GradientStop::at(theme::palette().accent, 0.0),
-                  GradientStop::at(theme::palette().accent_hover, 1.0),
-                ],
-              )),
+              Rect::new(level_width, THRESHOLD_TRACK_HEIGHT)
+                .absolute_position(threshold_track_offset, 0.0)
+                .background_gradient(Gradient::linear(
+                  90.0,
+                  [
+                    GradientStop::at(theme::palette().accent, 0.0),
+                    GradientStop::at(theme::palette().accent_hover, 1.0),
+                  ],
+                )),
             ),
         )
         .child(slider),
@@ -1044,9 +1055,9 @@ fn threshold_slider(
     .into()
 }
 
-fn threshold_track_style(color: Color) -> SliderPartStyle {
+fn threshold_track_style(width: f32, color: Color) -> SliderPartStyle {
   SliderPartStyle::new()
-    .width(THRESHOLD_CONTROL_WIDTH)
+    .width(width)
     .height(THRESHOLD_TRACK_HEIGHT)
     .rounded(7.0)
     .background(color)

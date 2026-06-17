@@ -144,8 +144,11 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         "[voice] local voice state announced after join: channel={channel_id} muted={muted} deafened={deafened}"
       );
       session.set_local_voice_state(muted, deafened);
-      match session.start_voice(settings, &no_connected_server) {
-        Ok(()) => tracing::info!(target: "voice", "[voice] local voice engine started after join"),
+      match session.start_voice(settings.clone(), &no_connected_server) {
+        Ok(()) => {
+          tracing::info!(target: "voice", "[voice] local voice engine started after join");
+          session.queue_voice_join_sound_to_channel(&settings);
+        }
         Err(error) => tracing::warn!(target: "voice", "[voice] local voice engine failed after join: {error}"),
       }
       Ok(())

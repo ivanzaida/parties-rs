@@ -13,8 +13,21 @@ pub const THUMB_SIZE: f32 = 16.0;
 pub const THUMB_RADIUS: f32 = 8.0;
 pub const THUMB_BORDER: f32 = 2.0;
 
+pub fn travel_width(width: f32) -> f32 {
+  (width - THUMB_SIZE).max(0.0)
+}
+
+fn track_offset() -> f32 {
+  THUMB_SIZE * 0.5
+}
+
+fn track_y() -> f32 {
+  (SLIDER_HEIGHT - TRACK_HEIGHT) * 0.5
+}
+
 pub fn track(width: f32) -> Element {
-  Rect::new(width, TRACK_HEIGHT)
+  Rect::new(travel_width(width), TRACK_HEIGHT)
+    .absolute_position(track_offset(), track_y())
     .rounded(TRACK_RADIUS)
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
     .into()
@@ -22,6 +35,7 @@ pub fn track(width: f32) -> Element {
 
 pub fn fill(width: f32) -> Element {
   Rect::new(width, TRACK_HEIGHT)
+    .absolute_position(track_offset(), track_y())
     .rounded(TRACK_RADIUS)
     .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
     .into()

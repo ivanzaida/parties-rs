@@ -35,6 +35,8 @@ pub const SOUND_CHOICE_STREAM_ENDED: &str = "stream_ended";
 pub const SOUND_CHOICE_CONNECTION_LOST: &str = "connection_lost";
 pub const SOUND_CHOICE_MODERATION_ACTION: &str = "moderation_action";
 pub const SOUND_CHOICE_CUSTOM: &str = "custom";
+pub const OUTGOING_VOICE_JOIN_SOUND_KEY: &str = "outgoing_voice_join";
+pub const OUTGOING_VOICE_JOIN_SOUND_FILE_NAME: &str = "outgoing_voice_join.mp3";
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,24 +205,39 @@ pub fn custom_sound_path(sound: NotificationSound) -> PathBuf {
   custom_audio_dir().join(notification_sound_file_name(sound))
 }
 
+pub fn outgoing_voice_join_sound_path() -> PathBuf {
+  custom_audio_dir().join(OUTGOING_VOICE_JOIN_SOUND_FILE_NAME)
+}
+
 pub fn custom_sound_exists(sound: NotificationSound) -> bool {
   custom_sound_path(sound).is_file()
 }
 
+pub fn outgoing_voice_join_sound_exists() -> bool {
+  outgoing_voice_join_sound_path().is_file()
+}
+
 pub fn install_custom_sound(sound: NotificationSound, source: &Path) -> Result<PathBuf, String> {
+  install_custom_mp3(source, &custom_sound_path(sound), "notification sound")
+}
+
+pub fn install_outgoing_voice_join_sound(source: &Path) -> Result<PathBuf, String> {
+  install_custom_mp3(source, &outgoing_voice_join_sound_path(), "outgoing voice join sound")
+}
+
+fn install_custom_mp3(source: &Path, target: &Path, label: &str) -> Result<PathBuf, String> {
   if source
     .extension()
     .and_then(|extension| extension.to_str())
     .is_none_or(|extension| !extension.eq_ignore_ascii_case("mp3"))
   {
-    return Err("Selected notification sound must be an MP3 file.".to_owned());
+    return Err(format!("Selected {label} must be an MP3 file."));
   }
 
-  let target = custom_sound_path(sound);
   let Some(parent) = target.parent() else {
-    return Err("Could not resolve notification audio directory.".to_owned());
+    return Err("Could not resolve audio directory.".to_owned());
   };
-  fs::create_dir_all(parent).map_err(|error| format!("Failed to create notification audio directory: {error}"))?;
+  fs::create_dir_all(parent).map_err(|error| format!("Failed to create audio directory: {error}"))?;
 
   let same_file = source
     .canonicalize()
@@ -228,10 +245,10 @@ pub fn install_custom_sound(sound: NotificationSound, source: &Path) -> Result<P
     .zip(target.canonicalize().ok())
     .is_some_and(|(source, target)| source == target);
   if !same_file {
-    fs::copy(source, &target).map_err(|error| format!("Failed to copy notification sound: {error}"))?;
+    fs::copy(source, target).map_err(|error| format!("Failed to copy {label}: {error}"))?;
   }
 
-  Ok(target)
+  Ok(target.to_path_buf())
 }
 
 pub fn resolve_sound_with_overrides(sound: NotificationSound, overrides: &str) -> NotificationSoundAsset {
@@ -291,9 +308,17 @@ pub fn resolve_sound_choice(sound: NotificationSound, choice: &str) -> Notificat
 }
 
 pub fn notification_sound_override(overrides: &str, sound: NotificationSound) -> Option<String> {
+  sound_override(overrides, notification_sound_key(sound))
+}
+
+pub fn outgoing_voice_join_sound_override(overrides: &str) -> Option<String> {
+  sound_override(overrides, OUTGOING_VOICE_JOIN_SOUND_KEY)
+}
+
+fn sound_override(overrides: &str, key: &str) -> Option<String> {
   let value = serde_json::from_str::<serde_json::Value>(overrides).ok()?;
   value
-    .get(notification_sound_key(sound))
+    .get(key)
     .and_then(serde_json::Value::as_str)
     .map(str::trim)
     .filter(|choice| !choice.is_empty())
@@ -331,8 +356,32 @@ pub fn play(sound: NotificationSound, settings: NotificationAudioSettings) {
     });
 }
 
+pub fn play_outgoing_voice_join(settings: NotificationAudioSettings) {
+  if settings.volume <= 0 {
+    return;
+  }
+
+  let _ = thread::Builder::new()
+    .name("parties-outgoing-join-sound-preview".to_owned())
+    .spawn(move || {
+      if let Err(error) = play_outgoing_voice_join_blocking(settings) {
+        tracing::warn!(target: "notifications", "[notifications] outgoing voice join preview unavailable: {error}");
+      }
+    });
+}
+
 fn play_blocking(sound: NotificationSound, settings: NotificationAudioSettings) -> Result<(), String> {
   let decoded = decode_notification_sound(sound, &settings.sound_overrides)?;
+  play_decoded_blocking(decoded, settings)
+}
+
+fn play_outgoing_voice_join_blocking(settings: NotificationAudioSettings) -> Result<(), String> {
+  let decoded = decode_outgoing_voice_join_sound(&settings.sound_overrides)?
+    .ok_or_else(|| "No outgoing voice join sound selected.".to_owned())?;
+  play_decoded_blocking(decoded, settings)
+}
+
+fn play_decoded_blocking(decoded: DecodedNotificationSound, settings: NotificationAudioSettings) -> Result<(), String> {
   let Some(device) = audio_devices::output_device(&settings.output_device) else {
     return Err("No output device available.".to_owned());
   };
@@ -422,6 +471,46 @@ fn decode_notification_sound(sound: NotificationSound, overrides: &str) -> Resul
     }
   }
   decode_mp3(resolve_sound_with_overrides(sound, overrides).bytes)
+}
+
+pub(crate) fn decode_outgoing_voice_join_sound_mono(
+  overrides: &str,
+  target_sample_rate: u32,
+) -> Result<Option<Vec<f32>>, String> {
+  Ok(
+    decode_outgoing_voice_join_sound(overrides)?
+      .map(|sound| sound.resampled_mono(target_sample_rate))
+      .filter(|samples| !samples.is_empty()),
+  )
+}
+
+fn decode_outgoing_voice_join_sound(overrides: &str) -> Result<Option<DecodedNotificationSound>, String> {
+  if outgoing_voice_join_sound_override(overrides).as_deref() != Some(SOUND_CHOICE_CUSTOM) {
+    return Ok(None);
+  }
+
+  let path = outgoing_voice_join_sound_path();
+  match fs::read(&path) {
+    Ok(bytes) => match decode_mp3(&bytes) {
+      Ok(decoded) => Ok(Some(decoded)),
+      Err(error) => {
+        tracing::warn!(
+          target: "notifications",
+          "[notifications] outgoing voice join sound invalid: path={} error={error}",
+          path.display()
+        );
+        Err(error)
+      }
+    },
+    Err(error) => {
+      tracing::warn!(
+        target: "notifications",
+        "[notifications] outgoing voice join sound unavailable: path={} error={error}",
+        path.display()
+      );
+      Ok(None)
+    }
+  }
 }
 
 fn decode_mp3(bytes: &[u8]) -> Result<DecodedNotificationSound, String> {
@@ -553,6 +642,41 @@ impl NotificationRenderState {
 
   fn advance_source_position(&mut self) {
     self.source_position += f64::from(self.sound.sample_rate) / f64::from(self.output_rate);
+  }
+}
+
+impl DecodedNotificationSound {
+  fn resampled_mono(&self, target_sample_rate: u32) -> Vec<f32> {
+    if self.samples.is_empty() || self.channels == 0 || self.sample_rate == 0 || target_sample_rate == 0 {
+      return Vec::new();
+    }
+
+    let frame_count = self.samples.len() / self.channels;
+    if frame_count == 0 {
+      return Vec::new();
+    }
+
+    let target_frames =
+      ((frame_count as u64) * u64::from(target_sample_rate)).div_ceil(u64::from(self.sample_rate)) as usize;
+    let step = f64::from(self.sample_rate) / f64::from(target_sample_rate);
+    let mut mono = Vec::with_capacity(target_frames);
+    let mut source_position = 0.0_f64;
+    for _ in 0..target_frames {
+      let index = source_position.floor() as usize;
+      let next_index = (index + 1).min(frame_count - 1);
+      let fraction = (source_position - index as f64) as f32;
+      let current = self.frame_average(index.min(frame_count - 1));
+      let next = self.frame_average(next_index);
+      mono.push((current + (next - current) * fraction).clamp(-1.0, 1.0));
+      source_position += step;
+    }
+    mono
+  }
+
+  fn frame_average(&self, index: usize) -> f32 {
+    let start = index * self.channels;
+    let end = start + self.channels;
+    self.samples[start..end].iter().sum::<f32>() / self.channels as f32
   }
 }
 

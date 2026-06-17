@@ -477,7 +477,8 @@ fn fps_options(ctx: &mut Ctx) -> Vec<DropdownOption> {
 
 fn bitrate_slider(ctx: &mut Ctx, value: Signal<f32>, on_blur: VideoBitrateSaveAction, unit: &str) -> Element {
   let current = value.get().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-  let fill_width = VIDEO_SLIDER_WIDTH * (current - VIDEO_BITRATE_MIN) / (VIDEO_BITRATE_MAX - VIDEO_BITRATE_MIN);
+  let fill_width = app_slider::travel_width(VIDEO_SLIDER_WIDTH) * (current - VIDEO_BITRATE_MIN)
+    / (VIDEO_BITRATE_MAX - VIDEO_BITRATE_MIN);
   let value_label = ctx.t_args(
     "settings.video.bitrate.value",
     [("value", format_bitrate_value(current)), ("unit", unit.to_owned())],

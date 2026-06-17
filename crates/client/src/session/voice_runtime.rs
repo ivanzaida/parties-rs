@@ -363,6 +363,18 @@ impl VoiceRuntime {
     self.engine.lock().as_ref().is_some_and(VoiceEngine::captures_voice)
   }
 
+  pub(super) fn queue_outgoing_voice_join_sound(
+    &self,
+    sound_overrides: &str,
+    volume_percent: i32,
+  ) -> Result<bool, String> {
+    let engine = self.engine.lock();
+    let Some(engine) = engine.as_ref() else {
+      return Ok(false);
+    };
+    engine.queue_outgoing_voice_join_sound(sound_overrides, volume_percent)
+  }
+
   pub(super) fn stop(&self) -> bool {
     self.engine.lock().take().is_some()
   }

@@ -338,6 +338,20 @@ impl ServerSession {
     self.play_notification_sound(NotificationSound::VoiceJoin);
   }
 
+  pub fn queue_voice_join_sound_to_channel(&self, settings: &AppSettings) {
+    match self
+      .voice
+      .queue_outgoing_voice_join_sound(&settings.notification_sound_overrides, settings.notification_volume)
+    {
+      Ok(true) => tracing::info!(target: "voice", "[voice] queued outgoing voice join sound"),
+      Ok(false) => tracing::debug!(
+        target: "voice",
+        "[voice] skipped outgoing voice join sound: no selected sound or no active voice capture"
+      ),
+      Err(error) => tracing::warn!(target: "voice", "[voice] failed to queue outgoing voice join sound: {error}"),
+    }
+  }
+
   pub fn play_voice_leave_notification(&self) {
     self.play_notification_sound(NotificationSound::VoiceLeave);
   }
