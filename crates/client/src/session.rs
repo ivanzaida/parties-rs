@@ -20,10 +20,10 @@ use crate::{
     server::Server,
   },
   services::{
-    notifications::{self, NotificationSound},
+    notifications::NotificationSound,
     profiler,
     video::{DecodedVideoFrame, VideoBroadcastConfig, VideoDecodeConfig, VideoFrameLoopback},
-    voice::LocalVoiceCallback,
+    voice::{LocalSpeakingActivityCallback, LocalVoiceCallback},
   },
   storage::AppSettings,
 };
@@ -347,13 +347,13 @@ impl ServerSession {
   }
 
   pub fn queue_voice_join_sound_to_channel(&self, settings: &AppSettings) {
-    match self
-      .voice
-      .queue_outgoing_voice_join_sound(&settings.notification_sound_overrides, settings.notification_volume)
-    {
+    match self.voice.queue_outgoing_voice_join_sound(
+      &settings.notification_sound_overrides,
+      settings.notification_volume,
+      self.local_intro_speaking_callback(),
+    ) {
       Ok(true) => {
         tracing::info!(target: "voice", "[voice] queued outgoing voice join sound");
-        notifications::play_outgoing_voice_join(notifications::NotificationAudioSettings::from_app_settings(settings));
       }
       Ok(false) => tracing::debug!(
         target: "voice",
@@ -433,6 +433,14 @@ impl ServerSession {
     self.speaking.mark_user_speaking(self.clone(), user_id);
   }
 
+  fn start_user_speaking_activity(&self, user_id: UserId) -> u64 {
+    self.speaking.start_user_speaking_activity(self.clone(), user_id)
+  }
+
+  fn stop_user_speaking_activity(&self, user_id: UserId, token: u64) {
+    self.speaking.stop_user_speaking_activity(self.clone(), user_id, token);
+  }
+
   fn clear_user_speaking(&self, user_id: UserId) {
     self.speaking.clear_user_speaking(self.clone(), user_id);
   }
@@ -479,6 +487,9 @@ impl ServerSession {
   }
 
   pub fn select_channel(&self, channel_id: ChannelId) {
+    if let Some(user_id) = self.info().map(|info| info.user_id) {
+      self.speaking.forget_user(user_id);
+    }
     {
       let mut lobby = self.lobby.lock();
       lobby::select_channel(&mut lobby, channel_id);
@@ -797,6 +808,24 @@ impl ServerSession {
         return;
       };
       session.mark_user_speaking(user_id);
+    })
+  }
+
+  fn local_intro_speaking_callback(&self) -> LocalSpeakingActivityCallback {
+    let session = self.clone();
+    let local_user_id = self.info().map(|info| info.user_id);
+    let active_token = Arc::new(Mutex::new(None));
+
+    Arc::new(move |active| {
+      let Some(user_id) = local_user_id else {
+        return;
+      };
+      if active {
+        let token = session.start_user_speaking_activity(user_id);
+        *active_token.lock() = Some(token);
+      } else if let Some(token) = active_token.lock().take() {
+        session.stop_user_speaking_activity(user_id, token);
+      }
     })
   }
 

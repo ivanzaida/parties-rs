@@ -92,7 +92,7 @@ pub(super) fn start_stream_modal(
 ) -> Element {
   let window = ctx.window();
   let window_width = window.logical_width();
-  let modal_height = content_height(ctx);
+  let modal_height = window.logical_height();
   let metrics = stream_modal_metrics(ctx);
   let close_on_escape = open.clone();
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();

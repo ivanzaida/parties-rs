@@ -15,7 +15,7 @@ use crate::{
     },
     server::{ReceivedAudioPacket, Server, ServerError},
   },
-  services::voice::{LocalVoiceCallback, VoiceEngine},
+  services::voice::{LocalSpeakingActivityCallback, LocalVoiceCallback, VoiceEngine},
   storage::AppSettings,
 };
 
@@ -367,12 +367,13 @@ impl VoiceRuntime {
     &self,
     sound_overrides: &str,
     volume_percent: i32,
+    on_local_intro_activity: LocalSpeakingActivityCallback,
   ) -> Result<bool, String> {
     let engine = self.engine.lock();
     let Some(engine) = engine.as_ref() else {
       return Ok(false);
     };
-    engine.queue_outgoing_voice_join_sound(sound_overrides, volume_percent)
+    engine.queue_outgoing_voice_join_sound(sound_overrides, volume_percent, on_local_intro_activity)
   }
 
   pub(super) fn stop(&self) -> bool {

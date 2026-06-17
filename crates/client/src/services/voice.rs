@@ -50,6 +50,7 @@ const MAX_OPUS_PACKET: usize = 512;
 const INPUT_FRAME_QUEUE: usize = 8;
 const INPUT_FRAME_POOL: usize = INPUT_FRAME_QUEUE + 2;
 const MAX_PCM_FRAMES_PER_USER: usize = 12;
+const MAX_LOCAL_NOTIFICATION_FRAMES: usize = MAX_OUTGOING_SOUND_SAMPLES.div_ceil(OPUS_FRAME_SIZE) + 2;
 const MIN_PCM_FRAMES_BEFORE_PLAYOUT: usize = 2;
 const MAX_PLC_FRAMES: i16 = 3;
 const MAX_LATE_VOICE_FRAMES_BEFORE_RESET: i16 = 32;
@@ -75,6 +76,7 @@ thread_local! {
 }
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+pub type LocalSpeakingActivityCallback = Arc<dyn Fn(bool) + Send + Sync + 'static>;
 
 pub(crate) fn is_catching_input_capture_callback_panic() -> bool {
   CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.get() > 0)
@@ -251,7 +253,12 @@ impl VoiceEngine {
     self.control.set_push_to_talk_release_delay_ms(value);
   }
 
-  pub fn queue_outgoing_voice_join_sound(&self, sound_overrides: &str, volume_percent: i32) -> Result<bool, String> {
+  pub fn queue_outgoing_voice_join_sound(
+    &self,
+    sound_overrides: &str,
+    volume_percent: i32,
+    on_local_intro_activity: LocalSpeakingActivityCallback,
+  ) -> Result<bool, String> {
     if !self.captures_voice {
       return Ok(false);
     }
@@ -273,10 +280,13 @@ impl VoiceEngine {
     }
     apply_outgoing_sound_volume(&mut samples, volume_percent);
     apply_outgoing_sound_fade(&mut samples);
+    on_local_intro_activity(true);
+    self.play_local_outgoing_sound(&samples);
 
     let generation = self.outgoing_sound_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let active_generation = self.outgoing_sound_generation.clone();
     let control = self.control.clone();
+    let finish_local_intro_activity = on_local_intro_activity.clone();
     control.set_outgoing_sound_active(true);
     if let Err(error) = thread::Builder::new()
       .name("parties-outgoing-join-sound".to_owned())
@@ -304,6 +314,7 @@ impl VoiceEngine {
             thread::sleep(delay);
           }
         }
+        finish_local_intro_activity(false);
         if active_generation.load(Ordering::Relaxed) == generation {
           control.set_outgoing_sound_active(false);
         }
@@ -311,9 +322,21 @@ impl VoiceEngine {
     {
       self.outgoing_sound_generation.fetch_add(1, Ordering::Relaxed);
       self.control.set_outgoing_sound_active(false);
+      on_local_intro_activity(false);
       return Err(format!("Failed to start outgoing voice join sound thread: {error}"));
     }
     Ok(true)
+  }
+
+  fn play_local_outgoing_sound(&self, samples: &[f32]) {
+    let mut mixer = self.mixer.lock().expect("voice mixer lock poisoned");
+    mixer.clear_local_notification_audio();
+    for chunk in samples.chunks(OPUS_FRAME_SIZE) {
+      let mut frame = Vec::with_capacity(OPUS_FRAME_SIZE);
+      frame.extend_from_slice(chunk);
+      frame.resize(OPUS_FRAME_SIZE, 0.0);
+      mixer.push_frame(AudioStreamId::LocalNotification, frame);
+    }
   }
 
   pub fn set_user_volume(&self, user_id: UserId, volume_percent: i32) {
@@ -1478,6 +1501,7 @@ struct VoiceMixer {
 enum AudioStreamId {
   Voice(UserId),
   Stream(UserId),
+  LocalNotification,
 }
 
 impl VoiceMixer {
@@ -1499,9 +1523,10 @@ impl VoiceMixer {
   }
 
   fn push_frame(&mut self, stream_id: AudioStreamId, pcm: Vec<f32>) {
+    let max_frames = max_frames_for_stream_id(stream_id);
     let dropped = {
       let stream = self.streams.entry(stream_id).or_default();
-      let dropped = if stream.frames.len() >= MAX_PCM_FRAMES_PER_USER {
+      let dropped = if stream.frames.len() >= max_frames {
         stream.frames.pop_front()
       } else {
         None
@@ -1572,6 +1597,12 @@ impl VoiceMixer {
     }
   }
 
+  fn clear_local_notification_audio(&mut self) {
+    if let Some(stream) = self.streams.remove(&AudioStreamId::LocalNotification) {
+      self.recycle_stream(stream);
+    }
+  }
+
   fn clear_all_stream_audio(&mut self) {
     let stream_ids = self
       .streams
@@ -1612,6 +1643,13 @@ impl VoiceMixer {
     for frame in stream.recycled.drain(..) {
       self.recycle_frame(frame);
     }
+  }
+}
+
+fn max_frames_for_stream_id(stream_id: AudioStreamId) -> usize {
+  match stream_id {
+    AudioStreamId::LocalNotification => MAX_LOCAL_NOTIFICATION_FRAMES,
+    AudioStreamId::Voice(_) | AudioStreamId::Stream(_) => MAX_PCM_FRAMES_PER_USER,
   }
 }
 
