@@ -134,6 +134,7 @@ pub fn intro(ctx: &mut Ctx, copy: OnboardingIntroCopy<'_>) -> Stack {
         )
         .child(
           Row::new()
+            .width(Dimension::Pct(100.0))
             .align_items(Alignment::Center)
             .spacing(8.0)
             .child(ctx.mount::<LucideIcon>(LucideIconProps {
@@ -144,7 +145,9 @@ pub fn intro(ctx: &mut Ctx, copy: OnboardingIntroCopy<'_>) -> Stack {
             .child(
               Text::new(copy.footer_note)
                 .variant(theme::TypographyStyle::Link)
-                .color(theme::PaletteColor::TextMuted),
+                .color(theme::PaletteColor::TextMuted)
+                .width(Dimension::Pct(100.0))
+                .flex(1.0),
             ),
         ),
     )

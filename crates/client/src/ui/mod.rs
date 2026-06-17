@@ -15,3 +15,4 @@ pub mod sentry_reports;
 pub mod server_settings;
 pub mod servers;
 pub mod settings;
+pub mod tofu_warning;

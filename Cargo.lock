@@ -2492,9 +2492,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.14.0"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26781e67e8287a7469a045afa48119a142e30345a5373073b8ce29ff7ec86dfa"
+checksum = "46e5bb4653b0a2ab12c7b63ed0d0e12eb4d36e60f1a23c21cd880d8fd6555d51"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2512,6 +2512,7 @@ dependencies = [
  "pulldown-cmark",
  "raw-window-handle",
  "redb",
+ "rfd",
  "serde_json",
  "swash",
  "tiny-skia",

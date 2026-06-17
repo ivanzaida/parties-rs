@@ -19,6 +19,7 @@ use lurq::{
 use crate::{
   identity::{public_key_fingerprint, secret_key_to_hex},
   routes::ROUTE_IDENTITY_SETUP,
+  session::ServerSession,
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -26,7 +27,10 @@ use crate::{
       confirm_modal::{ConfirmAction, ConfirmModal, ConfirmModalProps},
       lucide_icon::{LucideIcon, LucideIconProps},
     },
-    settings::shell::{SettingsPage, header, page_stack, screen},
+    settings::{
+      SettingsPopupHandle,
+      shell::{SettingsPage, header, page_stack, screen},
+    },
   },
 };
 
@@ -62,6 +66,8 @@ impl Component for SettingsIdentityScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let session = ctx.use_context::<ServerSession>();
+    let settings_popup = ctx.use_context::<SettingsPopupHandle>();
     let identity = storage
       .as_ref()
       .and_then(|storage| storage.load_identity().ok())
@@ -167,6 +173,8 @@ impl Component for SettingsIdentityScreen {
       .into();
 
     let confirm_storage = storage.clone();
+    let confirm_session = session.clone();
+    let confirm_settings_popup = settings_popup.clone();
     let confirm_navigator = navigator.clone();
     let on_remove: ConfirmAction = Arc::new(move || {
       if let Some(storage) = confirm_storage.as_ref() {
@@ -174,6 +182,12 @@ impl Component for SettingsIdentityScreen {
       }
       if let Some(navigator) = confirm_navigator.as_ref() {
         navigator.replace(ROUTE_IDENTITY_SETUP);
+      }
+      if let Some(settings_popup) = confirm_settings_popup.as_ref() {
+        settings_popup.close();
+      }
+      if let Some(session) = confirm_session.as_ref() {
+        session.disconnect();
       }
     });
     let confirm_props = ConfirmModalProps {
@@ -311,15 +325,18 @@ fn identity_row(title: &str, subtitle: &str, subtitle_mono: bool, trailing: Elem
       Column::new()
         .flex(1.0)
         .spacing(theme::SpacingSize::Xs)
-        .child(Text::styled(title, row_title_style()))
-        .child(Text::styled(
-          subtitle,
-          if subtitle_mono {
-            row_mono_subtitle_style()
-          } else {
-            row_subtitle_style()
-          },
-        )),
+        .child(Text::styled(title, row_title_style()).width(Dimension::Pct(100.0)))
+        .child(
+          Text::styled(
+            subtitle,
+            if subtitle_mono {
+              row_mono_subtitle_style()
+            } else {
+              row_subtitle_style()
+            },
+          )
+          .width(Dimension::Pct(100.0)),
+        ),
     )
     .child(trailing)
     .into()

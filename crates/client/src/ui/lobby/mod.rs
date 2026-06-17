@@ -22,7 +22,7 @@ use lurq::{
 
 use crate::{
   network::protocol::{ChannelId, UserId},
-  routes::ROUTE_CHOOSE_SERVER,
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
   storage::{AppSettings, Storage},
@@ -203,6 +203,13 @@ impl Component for LobbyScreen {
       }
       return empty_lobby(ctx);
     };
+    if session.tofu_warning().is_some() {
+      self.revision_interval.stop();
+      if let Some(navigator) = ctx.navigator() {
+        navigator.replace(ROUTE_TOFU_WARNING);
+      }
+      return empty_lobby(ctx);
+    }
     let debug_mode_enabled = storage
       .as_ref()
       .and_then(|storage| storage.load_settings().ok())

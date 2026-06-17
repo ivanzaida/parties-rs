@@ -16,7 +16,7 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY, ROUTE_SENTRY_REPORTS},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY, ROUTE_SENTRY_REPORTS, ROUTE_TOFU_WARNING},
   services::{
     startup::{StartupProgress, StartupProgressLabels, load_startup_data},
     updater::{StartupUpdateStatus, restart_into_update},
@@ -151,6 +151,7 @@ impl Component for LoadingIdentityScreen {
     };
     let session = ctx.use_context::<ServerSession>();
     let resume_errors = ConnectErrorCopy::from_ctx(ctx);
+    let route_session = session.clone();
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
       let errors = resume_errors.clone();
@@ -204,6 +205,8 @@ impl Component for LoadingIdentityScreen {
         if let Some(navigator) = ctx.navigator() {
           let route = if data.sentry_reports_enabled.is_none() {
             ROUTE_SENTRY_REPORTS
+          } else if route_session.as_ref().and_then(ServerSession::tofu_warning).is_some() {
+            ROUTE_TOFU_WARNING
           } else if restore_update_resume_state.data == Some(true) {
             ROUTE_LOBBY
           } else if data.has_identity {
@@ -299,6 +302,14 @@ async fn restore_update_resume_after_restart(
   {
     tracing::warn!(target: "updater", "[updater] failed to restore server after update restart: {error}");
     return Ok(false);
+  }
+  if session.tofu_warning().is_some() {
+    tracing::warn!(
+      target: "updater",
+      "[updater] paused restore after update restart: server fingerprint changed address={}",
+      server.address
+    );
+    return Ok(true);
   }
 
   let Some(channel_id) = resume.voice_channel_id else {

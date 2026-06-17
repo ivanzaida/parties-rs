@@ -8,27 +8,31 @@ The Cargo package is named `client`, but the built app and release artifacts are
 
 ### Startup
 
-![Startup](docs/screenshots/startup.png)
+![Startup](docs/screenshots/1.startup.png)
+
+### Generate Identity
+
+![Generate identity](docs/screenshots/2.generate-identity.png)
 
 ### Server Selection
 
-![Server selection](docs/screenshots/server-selection.png)
+![Server selection](docs/screenshots/3.server-selection.png)
 
 ### Lobby
 
-![Lobby](docs/screenshots/lobby.png)
+![Lobby](docs/screenshots/4.lobby.png)
 
 ### Settings
 
-![Settings](docs/screenshots/settings.png)
+![Settings](docs/screenshots/5.settings.png)
 
 ### Streaming
 
-![Streaming](docs/screenshots/stream.png)
+![Streaming](docs/screenshots/6.stream.png)
 
 ### Share Screen
 
-![Share screen](docs/screenshots/share_screen.png)
+![Share screen](docs/screenshots/7.share-screen.png)
 
 ## What It Includes
 

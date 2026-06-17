@@ -11,13 +11,13 @@ use lurq::{
     layout_kind::Justify,
     scrollbar::{ScrollBarPlacement, ScrollBarStyle},
   },
-  node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
+  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 use server_card::{ServerCard, ServerCardProps, ServerCardState};
 
 use crate::{
   network::server_query::{ServerQueryInfo, query_server},
-  routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY},
+  routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_TOFU_WARNING},
   session::{ConnectedServerInfo, ServerSession},
   storage::{Storage, StoredServer},
   theme,
@@ -198,7 +198,16 @@ impl SavedServersScreen {
         self.failed.set(None);
         self.failure_message.set(None);
         if let Some(navigator) = ctx.navigator() {
-          navigator.replace(ROUTE_LOBBY);
+          if ctx
+            .use_context::<ServerSession>()
+            .as_ref()
+            .and_then(ServerSession::tofu_warning)
+            .is_some()
+          {
+            navigator.replace(ROUTE_TOFU_WARNING);
+          } else {
+            navigator.replace(ROUTE_LOBBY);
+          }
         }
       } else if state.is_rejected() {
         self.running.set(None);
@@ -480,7 +489,7 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
     .justify(Justify::SpaceBetween)
     .padding_horizontal(metrics.top_bar_padding_x)
     .background(BackgroundColor::Color(Color::from_hex("#0D0E10")))
-    .border_inside(1.0, theme::PaletteColor::Border)
+    .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
     .child(
       Row::new()
         .align_items(Alignment::Center)

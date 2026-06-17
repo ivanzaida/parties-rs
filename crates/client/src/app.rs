@@ -25,7 +25,7 @@ use crate::{
     ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING, ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE,
     ROUTE_SENTRY_REPORTS, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS, ROUTE_SERVER_SETTINGS_MEMBERS,
     ROUTE_SERVER_SETTINGS_ROLES, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
-    ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM, ROUTE_TOFU_WARNING,
   },
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
@@ -57,6 +57,7 @@ use crate::{
       SettingsAudioScreen, SettingsIdentityScreen, SettingsNotificationsScreen, SettingsOverviewScreen, SettingsPage,
       SettingsPopup, SettingsPopupHandle, SettingsSavedServersScreen, SettingsStreamScreen,
     },
+    tofu_warning::TofuWarningScreen,
   },
 };
 
@@ -141,6 +142,7 @@ impl Component for App {
         .route(ROUTE_RESTORE_IDENTITY, |ctx| ctx.mount::<RestoreIdentityScreen>(()))
         .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
         .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
+        .route(ROUTE_TOFU_WARNING, |ctx| ctx.mount::<TofuWarningScreen>(()))
         .route(ROUTE_LOBBY, |ctx| ctx.mount::<LobbyScreen>(()))
         .route(ROUTE_SERVER_SETTINGS, |ctx| {
           ctx.mount::<ServerSettingsScreen>(ServerSettingsPage::Server)
@@ -230,6 +232,21 @@ impl Component for App {
     let storage = self.storage.get();
     if let Some(storage) = storage.clone() {
       ctx.provide(storage);
+    }
+    if storage
+      .as_ref()
+      .is_some_and(|storage| !storage.has_identity().unwrap_or(true))
+    {
+      let path = self.router.path().get();
+      if route_requires_identity(path.as_ref()) {
+        if self.settings_open.get_untracked() {
+          self.settings_open.set(false);
+        }
+        if self.session.info().is_some() {
+          self.session.disconnect();
+        }
+        self.router.replace(ROUTE_IDENTITY_SETUP);
+      }
     }
     let startup_window = ctx.window();
     if self.startup_full_screen && !self.startup_full_screen_applied.get_untracked() {
@@ -586,6 +603,16 @@ fn release_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str, eve
 
 fn hotkey_key(hotkey: &str) -> String {
   hotkey.trim().to_ascii_lowercase()
+}
+
+fn route_requires_identity(path: &str) -> bool {
+  !(path == ROUTE_LOADING
+    || path == ROUTE_SENTRY_REPORTS
+    || path == ROUTE_IDENTITY_SETUP
+    || path == ROUTE_SEED_PHRASE
+    || path == ROUTE_IMPORT_PRIVATE_KEY
+    || path == ROUTE_IMPORT_LEGACY_CONFIG
+    || path == ROUTE_RESTORE_IDENTITY)
 }
 
 #[cfg(test)]

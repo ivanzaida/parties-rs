@@ -7,6 +7,7 @@ pub const ROUTE_IMPORT_LEGACY_CONFIG: &str = "/identity/import-legacy-config";
 pub const ROUTE_RESTORE_IDENTITY: &str = "/identity/restore";
 pub const ROUTE_CHOOSE_SERVER: &str = "/servers";
 pub const ROUTE_CONNECT_SERVER: &str = "/servers/connect";
+pub const ROUTE_TOFU_WARNING: &str = "/servers/trust-warning";
 pub const ROUTE_LOBBY: &str = "/lobby";
 pub const ROUTE_SERVER_SETTINGS: &str = "/server/settings";
 pub const ROUTE_SERVER_SETTINGS_CHANNELS: &str = "/server/settings/channels";

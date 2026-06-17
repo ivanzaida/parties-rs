@@ -909,8 +909,8 @@
   },
   "tofu_warning": {
     "caption": "SERVER TRUST",
-    "title": "Certificate changed",
-    "desc": "The server is presenting a different certificate than the one saved locally.",
+    "title": "Server fingerprint changed",
+    "desc": "The certificate presented by {{server}} no longer matches the identity you trusted on first connect. This can mean the server was reconfigured, or that the connection is being intercepted.",
     "meta_title": "Verify before trusting",
     "meta_desc": "Only trust the new certificate if you expect this server to have changed keys.",
     "save_failed_title": "Trust update failed",
@@ -918,9 +918,13 @@
     "heading": "Trust warning",
     "saved_label": "SAVED FINGERPRINT",
     "received_label": "RECEIVED FINGERPRINT",
+    "media": {
+      "title": "Media is blocked",
+      "desc": "Voice and screen sharing stay disabled until you disconnect or explicitly trust this new fingerprint."
+    },
     "action": {
       "disconnect": "Disconnect",
-      "trust": "Trust certificate"
+      "trust": "Trust anyway"
     }
   },
   "server_settings": {

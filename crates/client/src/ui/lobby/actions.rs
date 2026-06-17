@@ -1029,6 +1029,15 @@ async fn reconnect_saved_server(
   )
   .await?;
 
+  if session.tofu_warning().is_some() {
+    tracing::warn!(
+      target: "lobby",
+      "[lobby] paused reconnect: server fingerprint changed address={}",
+      info.address
+    );
+    return Ok(info);
+  }
+
   if let Some(channel_id) = reconnect_channel_id {
     rejoin_previous_voice_channel(&session, &storage, channel_id, reconnect_voice_state).await;
   }

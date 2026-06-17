@@ -19,8 +19,8 @@ use crate::{
     server::Server,
     server_query::query_server,
   },
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS},
-  session::{ConnectedServer, ConnectedServerInfo, ServerSession},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS, ROUTE_TOFU_WARNING},
+  session::{ConnectedServer, ConnectedServerInfo, ServerSession, TofuWarning},
   storage::{AppSettings, Storage, StoredServer},
   theme,
   ui::{
@@ -130,6 +130,7 @@ impl Component for ConnectServerScreen {
     };
 
     let errors = ConnectErrorCopy::from_ctx(ctx);
+    let route_session = session.clone();
     let connect = ctx.future_action(move |(address, seed, display_name): (String, String, String)| {
       let storage = storage.clone();
       let session = session.clone();
@@ -144,7 +145,11 @@ impl Component for ConnectServerScreen {
     if state.data.is_some() && !self.navigated.get_untracked() {
       self.navigated.set(true);
       if let Some(navigator) = ctx.navigator() {
-        navigator.replace(ROUTE_LOBBY);
+        if route_session.as_ref().and_then(ServerSession::tofu_warning).is_some() {
+          navigator.replace(ROUTE_TOFU_WARNING);
+        } else {
+          navigator.replace(ROUTE_LOBBY);
+        }
       }
     }
 
@@ -427,8 +432,26 @@ pub async fn connect_and_store(
     .as_ref()
     .and_then(|storage| storage.load_user_normalizations(&info.address).ok())
     .unwrap_or_default();
+  let saved_fingerprint = storage
+    .as_ref()
+    .and_then(|storage| storage.load_server(&info.address).ok())
+    .flatten()
+    .map(|server| server.certificate_fingerprint)
+    .unwrap_or_default();
+  let tofu_warning = certificate_fingerprint_changed(&saved_fingerprint, &fingerprint).then(|| TofuWarning {
+    address: info.address.clone(),
+    server_name: info.server_name.clone(),
+    user_id: info.user_id,
+    role: info.role,
+    saved_fingerprint: saved_fingerprint.clone(),
+    received_fingerprint: fingerprint.clone(),
+    server_password: seed.clone(),
+    display_name: info.display_name.clone(),
+  });
 
-  if let Some(storage) = storage.as_ref() {
+  if let Some(storage) = storage.as_ref()
+    && tofu_warning.is_none()
+  {
     storage
       .save_server(&StoredServer {
         address,
@@ -446,6 +469,14 @@ pub async fn connect_and_store(
       info.server_name,
       info.user_id
     );
+  } else if tofu_warning.is_some() {
+    tracing::warn!(
+      target: "network::connect",
+      "[network/connect] server certificate fingerprint changed: address={} saved={} received={}",
+      info.address,
+      saved_fingerprint,
+      fingerprint
+    );
   }
 
   if let Some(session) = session {
@@ -459,6 +490,11 @@ pub async fn connect_and_store(
     for user_id in normalized_users {
       session.set_user_normalization(user_id, true);
     }
+    if let Some(warning) = tofu_warning {
+      session.set_tofu_warning(warning);
+    } else {
+      session.clear_tofu_warning();
+    }
   }
 
   tracing::info!(target: "network::connect",
@@ -468,6 +504,12 @@ pub async fn connect_and_store(
     info.user_id
   );
   Ok(info)
+}
+
+fn certificate_fingerprint_changed(saved: &str, received: &str) -> bool {
+  let saved = saved.trim();
+  let received = received.trim();
+  !saved.is_empty() && !received.is_empty() && !saved.eq_ignore_ascii_case(received)
 }
 
 #[allow(dead_code)]
@@ -791,4 +833,17 @@ fn connecting_button(ctx: &mut Ctx) -> Row {
         .variant(theme::TypographyStyle::Button)
         .color(theme::PaletteColor::TextSecondary),
     )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::certificate_fingerprint_changed;
+
+  #[test]
+  fn certificate_fingerprint_change_requires_existing_and_received_values() {
+    assert!(!certificate_fingerprint_changed("", "aa:bb"));
+    assert!(!certificate_fingerprint_changed("aa:bb", ""));
+    assert!(!certificate_fingerprint_changed("aa:bb", "AA:BB"));
+    assert!(certificate_fingerprint_changed("aa:bb", "cc:dd"));
+  }
 }
