@@ -601,3 +601,7 @@ fn start_stream_button(ctx: &mut Ctx, start_stream_modal_open: Signal<bool>) -> 
 
   button.into()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/ui/lobby/stream_watching.rs"]
+mod tests;

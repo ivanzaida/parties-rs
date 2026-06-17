@@ -128,8 +128,13 @@ pub struct ConnectedServer {
   pub server: Arc<Server>,
 }
 
+struct ConnectedServerState {
+  info: ConnectedServerInfo,
+  server: Option<Arc<Server>>,
+}
+
 pub(super) struct ConnectionRuntime {
-  current: Mutex<Option<ConnectedServer>>,
+  current: Mutex<Option<ConnectedServerState>>,
   tofu_warning: Mutex<Option<TofuWarning>>,
   receiver_started: Mutex<bool>,
   receiver_stop: Mutex<Option<Arc<AtomicBool>>>,
@@ -156,7 +161,20 @@ impl ConnectionRuntime {
     self.stop_receivers();
     self.clear_pending_keepalive_ping();
     self.mark_network_activity();
-    *self.current.lock() = Some(connected);
+    *self.current.lock() = Some(ConnectedServerState {
+      info: connected.info,
+      server: Some(connected.server),
+    });
+    *self.receiver_started.lock() = false;
+  }
+
+  #[cfg(test)]
+  pub(super) fn set_connected_info_for_test(&self, info: ConnectedServerInfo) {
+    self.shutdown_requested.store(false, Ordering::Relaxed);
+    self.stop_receivers();
+    self.clear_pending_keepalive_ping();
+    self.mark_network_activity();
+    *self.current.lock() = Some(ConnectedServerState { info, server: None });
     *self.receiver_started.lock() = false;
   }
 
@@ -184,7 +202,11 @@ impl ConnectionRuntime {
   }
 
   pub(super) fn server(&self) -> Option<Arc<Server>> {
-    self.current.lock().as_ref().map(|connected| connected.server.clone())
+    self
+      .current
+      .lock()
+      .as_ref()
+      .and_then(|connected| connected.server.clone())
   }
 
   pub(super) fn update_current_role(&self, local_user_id: Option<UserId>, role: Role) {
@@ -429,3 +451,7 @@ where
     tokio::time::sleep(KEEPALIVE_INTERVAL).await;
   }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/session/connection.rs"]
+mod tests;

@@ -1287,3 +1287,7 @@ pub(super) fn native_decoder_unavailable_stream_error(reason: String) -> VideoSt
     i18n_key: Some("lobby.stream_error.decoder_unavailable"),
   }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/session/video.rs"]
+mod tests;

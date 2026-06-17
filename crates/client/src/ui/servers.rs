@@ -631,3 +631,7 @@ fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTon
         .color(text_color),
     )
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ui/servers.rs"]
+mod tests;

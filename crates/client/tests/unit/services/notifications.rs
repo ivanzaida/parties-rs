@@ -53,3 +53,52 @@ fn empty_sound_override_uses_default_asset() {
 
   assert_eq!(asset.file_name, "new_message.mp3");
 }
+
+#[test]
+fn outgoing_voice_join_override_uses_own_key() {
+  let overrides = r#"{"voice_join":"custom","outgoing_voice_join":" custom "}"#;
+
+  assert_eq!(
+    outgoing_voice_join_sound_override(overrides).as_deref(),
+    Some(SOUND_CHOICE_CUSTOM)
+  );
+  assert_eq!(
+    notification_sound_override(overrides, NotificationSound::VoiceJoin).as_deref(),
+    Some(SOUND_CHOICE_CUSTOM)
+  );
+}
+
+#[test]
+fn outgoing_voice_join_empty_or_missing_override_is_not_selected() {
+  assert_eq!(
+    outgoing_voice_join_sound_override(r#"{"outgoing_voice_join":""}"#),
+    None
+  );
+  assert_eq!(outgoing_voice_join_sound_override(r#"{"voice_join":"custom"}"#), None);
+  assert_eq!(outgoing_voice_join_sound_override("not-json"), None);
+
+  assert!(
+    decode_outgoing_voice_join_sound_mono(r#"{"voice_join":"custom"}"#, 48_000)
+      .unwrap()
+      .is_none()
+  );
+}
+
+#[test]
+fn decoded_notification_sound_resamples_to_mono() {
+  let sound = DecodedNotificationSound {
+    samples: vec![1.0, -1.0, 0.5, 0.25, -0.5, -1.0],
+    channels: 2,
+    sample_rate: 3,
+  };
+
+  let mono = sound.resampled_mono(6);
+
+  assert_eq!(mono.len(), 6);
+  assert_eq!(mono[0], 0.0);
+  assert_eq!(mono[1], 0.1875);
+  assert_eq!(mono[2], 0.375);
+  assert_eq!(mono[3], -0.1875);
+  assert_eq!(mono[4], -0.75);
+  assert_eq!(mono[5], -0.75);
+}

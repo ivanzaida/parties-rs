@@ -2665,3 +2665,7 @@ fn server_settings_scrollbar_style() -> ScrollBarStyle {
     ..ScrollBarStyle::default()
   }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ui/server_settings.rs"]
+mod tests;

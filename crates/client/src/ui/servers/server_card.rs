@@ -552,3 +552,7 @@ fn role_label(ctx: &Ctx, role: Role) -> std::sync::Arc<str> {
     Role::User => ctx.t("servers.row.role.member"),
   }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/ui/servers/server_card.rs"]
+mod tests;

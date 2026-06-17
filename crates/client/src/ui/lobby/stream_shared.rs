@@ -203,3 +203,7 @@ fn fallback_user_name(ctx: &mut Ctx, user_id: UserId) -> String {
     .t_args("lobby.user.fallback", [("id", user_id.to_string())])
     .to_string()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/ui/lobby/stream_shared.rs"]
+mod tests;

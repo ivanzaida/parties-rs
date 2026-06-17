@@ -74,6 +74,39 @@ fn clear_voice_audio_preserves_stream_audio() {
 }
 
 #[test]
+fn clear_local_notification_audio_preserves_voice_and_stream_audio() {
+  let mut mixer = VoiceMixer::default();
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.9; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.9; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::Voice(1), vec![0.35; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::Voice(1), vec![0.35; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::Stream(2), vec![0.25; OPUS_FRAME_SIZE]);
+
+  mixer.clear_local_notification_audio();
+  let mut output = vec![0.0; OPUS_FRAME_SIZE];
+  mixer.mix_samples(&mut output, true);
+
+  assert!(output.iter().all(|sample| (*sample - 0.6).abs() < f32::EPSILON));
+}
+
+#[test]
+fn local_notification_audio_can_replace_queued_intro_audio() {
+  let mut mixer = VoiceMixer::default();
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.8; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.8; OPUS_FRAME_SIZE]);
+
+  mixer.clear_local_notification_audio();
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.2; OPUS_FRAME_SIZE]);
+  mixer.push_frame(AudioStreamId::LocalNotification, vec![0.2; OPUS_FRAME_SIZE]);
+
+  let mut output = vec![0.0; OPUS_FRAME_SIZE];
+  mixer.mix_samples(&mut output, true);
+
+  assert!(output.iter().all(|sample| (*sample - 0.2).abs() < f32::EPSILON));
+}
+
+#[test]
 fn low_latency_config_uses_supported_buffer_range() {
   let supported = cpal::SupportedStreamConfig::new(
     1,
@@ -110,6 +143,20 @@ fn voice_activation_gate_holds_after_speech() {
     assert!(gate.should_transmit_level(true, 0.1, 0.5));
   }
   assert!(!gate.should_transmit_level(true, 0.1, 0.5));
+}
+
+#[test]
+fn outgoing_sound_active_bypasses_voice_activation_gate() {
+  let settings = AppSettings {
+    voice_activation_threshold: 100,
+    ..AppSettings::default()
+  };
+  let control = VoiceControlState::new(&settings, false, false);
+  let mut gate = VoiceActivationGate::default();
+
+  assert!(!gate.should_transmit(&control, &[0.0; OPUS_FRAME_SIZE]));
+  control.set_outgoing_sound_active(true);
+  assert!(gate.should_transmit(&control, &[0.0; OPUS_FRAME_SIZE]));
 }
 
 #[test]
@@ -159,6 +206,24 @@ fn push_to_talk_ignores_activation_while_muted_or_deafened() {
 }
 
 #[test]
+fn outgoing_sound_transmit_ignores_push_to_talk_but_respects_mute_and_deafen() {
+  let settings = AppSettings {
+    push_to_talk: true,
+    ..AppSettings::default()
+  };
+  let control = VoiceControlState::new(&settings, false, false);
+
+  assert!(!control.can_transmit());
+  assert!(control.can_transmit_outgoing_sound());
+
+  control.set_voice_state(true, false);
+  assert!(!control.can_transmit_outgoing_sound());
+
+  control.set_voice_state(false, true);
+  assert!(!control.can_transmit_outgoing_sound());
+}
+
+#[test]
 fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
   let settings = AppSettings {
     push_to_talk: true,
@@ -183,6 +248,21 @@ fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
 }
 
 #[test]
+fn muting_or_deafening_clears_outgoing_sound_active() {
+  let settings = AppSettings::default();
+
+  let control = VoiceControlState::new(&settings, false, false);
+  control.set_outgoing_sound_active(true);
+  control.set_voice_state(true, false);
+  assert!(!control.outgoing_sound_active());
+
+  let control = VoiceControlState::new(&settings, false, false);
+  control.set_outgoing_sound_active(true);
+  control.set_voice_state(false, true);
+  assert!(!control.outgoing_sound_active());
+}
+
+#[test]
 fn normalization_raises_quiet_frames_toward_target() {
   let mut normalizer = NormalizationState::default();
   let mut frame = vec![0.02; OPUS_FRAME_SIZE];
@@ -198,4 +278,33 @@ fn voice_normalization_does_not_enable_capture_processing_by_itself() {
   settings.voice_normalization = true;
 
   assert!(build_audio_processing(&settings).is_none());
+}
+
+#[test]
+fn outgoing_sound_volume_clamps_peak_and_percent() {
+  let mut samples = vec![2.0, -1.0, 0.5];
+  apply_outgoing_sound_volume(&mut samples, 100);
+  assert_eq!(samples, vec![OUTGOING_SOUND_MAX_PEAK, -0.25, 0.125]);
+
+  let mut samples = vec![0.5, -0.25];
+  apply_outgoing_sound_volume(&mut samples, 50);
+  assert_eq!(samples, vec![0.25, -0.125]);
+
+  let mut samples = vec![0.5, -0.25];
+  apply_outgoing_sound_volume(&mut samples, -10);
+  assert_eq!(samples, vec![0.0, -0.0]);
+}
+
+#[test]
+fn outgoing_sound_fade_shapes_edges_only() {
+  let mut samples = vec![1.0; OUTGOING_SOUND_FADE_SAMPLES * 3];
+  apply_outgoing_sound_fade(&mut samples);
+
+  assert!(samples[0] > 0.0);
+  assert!(samples[0] < samples[1]);
+  assert_eq!(samples[OUTGOING_SOUND_FADE_SAMPLES - 1], 1.0);
+  assert_eq!(samples[OUTGOING_SOUND_FADE_SAMPLES], 1.0);
+  assert_eq!(samples[samples.len() - OUTGOING_SOUND_FADE_SAMPLES - 1], 1.0);
+  assert!(samples[samples.len() - 1] > 0.0);
+  assert!(samples[samples.len() - 1] < samples[samples.len() - 2]);
 }

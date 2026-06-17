@@ -215,3 +215,7 @@ impl Default for StreamRuntime {
     Self::new()
   }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/session/video_stream.rs"]
+mod tests;

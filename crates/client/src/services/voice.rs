@@ -1865,10 +1865,9 @@ fn apply_outgoing_sound_fade(samples: &mut [f32]) {
 
   for index in 0..fade_samples {
     let fade_in = (index + 1) as f32 / fade_samples as f32;
-    let fade_out = (fade_samples - index) as f32 / fade_samples as f32;
     samples[index] *= fade_in;
     let tail_index = samples.len() - 1 - index;
-    samples[tail_index] *= fade_out;
+    samples[tail_index] *= fade_in;
   }
 }
 

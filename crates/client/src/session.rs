@@ -1254,3 +1254,7 @@ impl voice_runtime::VoiceReceiverSession for ServerSession {
     ServerSession::set_connection_warning(self, kind, message);
   }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/session/session.rs"]
+mod tests;

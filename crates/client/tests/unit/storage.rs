@@ -181,6 +181,53 @@ fn settings_round_trip() {
 }
 
 #[test]
+fn settings_clamps_push_to_talk_release_delay_on_save_and_load() {
+  let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+  let path = env::temp_dir().join(format!("parties-rs-storage-settings-clamp-{nonce}.db"));
+  let storage = Storage::open(&path).unwrap();
+
+  storage
+    .save_settings(&AppSettings {
+      push_to_talk_release_delay_ms: -50,
+      ..AppSettings::default()
+    })
+    .unwrap();
+  assert_eq!(storage.load_settings().unwrap().push_to_talk_release_delay_ms, 0);
+
+  storage
+    .save_settings(&AppSettings {
+      push_to_talk_release_delay_ms: 9_000,
+      ..AppSettings::default()
+    })
+    .unwrap();
+  assert_eq!(storage.load_settings().unwrap().push_to_talk_release_delay_ms, 2_000);
+
+  let conn = storage.connection().unwrap();
+  conn
+    .execute(
+      "UPDATE app_settings SET push_to_talk_release_delay_ms = -10 WHERE id = 1",
+      [],
+    )
+    .unwrap();
+  drop(conn);
+  assert_eq!(storage.load_settings().unwrap().push_to_talk_release_delay_ms, 0);
+
+  let conn = storage.connection().unwrap();
+  conn
+    .execute(
+      "UPDATE app_settings SET push_to_talk_release_delay_ms = 9000 WHERE id = 1",
+      [],
+    )
+    .unwrap();
+  drop(conn);
+  assert_eq!(storage.load_settings().unwrap().push_to_talk_release_delay_ms, 2_000);
+
+  let _ = fs::remove_file(&path);
+  let _ = fs::remove_file(format!("{}-wal", path.display()));
+  let _ = fs::remove_file(format!("{}-shm", path.display()));
+}
+
+#[test]
 fn settings_migrates_debug_chat_to_debug_mode() {
   let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
   let path = env::temp_dir().join(format!("parties-rs-storage-debug-mode-migration-{nonce}.db"));
@@ -376,6 +423,46 @@ fn volume_overrides_round_trip() {
   storage.save_user_normalization("server-a", 7, false).unwrap();
   assert!(!storage.load_user_normalization("server-a", 7).unwrap());
   assert!(storage.load_user_normalization("server-a", 9).unwrap());
+
+  let _ = fs::remove_file(&path);
+  let _ = fs::remove_file(format!("{}-wal", path.display()));
+  let _ = fs::remove_file(format!("{}-shm", path.display()));
+}
+
+#[test]
+fn volume_overrides_clamp_saved_and_loaded_values() {
+  let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+  let path = env::temp_dir().join(format!("parties-rs-storage-volume-clamp-{nonce}.db"));
+  let storage = Storage::open(&path).unwrap();
+
+  storage.save_volume_override("server-a", 7, -20).unwrap();
+  assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), Some(0));
+  storage.save_volume_override("server-a", 7, 150).unwrap();
+  assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), None);
+
+  storage.save_stream_volume_override("server-a", 7, -5).unwrap();
+  assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), Some(0));
+  storage.save_stream_volume_override("server-a", 7, 500).unwrap();
+  assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), None);
+
+  let conn = storage.connection().unwrap();
+  conn
+    .execute(
+      "INSERT INTO volume_overrides (server_id, user_id, volume) VALUES ('server-a', 7, 250)",
+      [],
+    )
+    .unwrap();
+  conn
+    .execute(
+      "INSERT INTO stream_volume_overrides (server_id, user_id, volume) VALUES ('server-a', 7, -25)",
+      [],
+    )
+    .unwrap();
+  drop(conn);
+
+  assert_eq!(storage.load_volume_override("server-a", 7).unwrap(), Some(100));
+  assert_eq!(storage.load_stream_volume_override("server-a", 7).unwrap(), Some(0));
+  assert!(storage.load_volume_overrides("server-a").unwrap().is_empty());
 
   let _ = fs::remove_file(&path);
   let _ = fs::remove_file(format!("{}-wal", path.display()));
