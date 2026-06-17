@@ -16,8 +16,14 @@ use crate::{
 };
 
 const PACER_SPIN_THRESHOLD: Duration = Duration::from_millis(1);
+#[cfg(not(test))]
 const EMPTY_VOICE_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const EMPTY_VOICE_TIMEOUT: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
 const EMPTY_VOICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const EMPTY_VOICE_CHECK_INTERVAL: Duration = Duration::from_millis(5);
 
 enum PlayerCommand {
   ResolveAndEnqueue {
@@ -133,7 +139,19 @@ fn run_player(
 ) {
   let mut sequence = 0u16;
   let mut resolver_threads = ResolverThreads::new(tx);
-  while let NextTrack::Track(queued) = next_track(&host, &bot, &sources, &rx, &state, &mut resolver_threads) {
+  let mut idle_voice = IdleVoiceMonitor::new();
+  let mut last_text_channel_id = None;
+  while let NextTrack::Track(queued) = next_track(
+    &host,
+    &bot,
+    &sources,
+    voice_channel_id,
+    &rx,
+    &state,
+    &mut resolver_threads,
+    &mut idle_voice,
+    &mut last_text_channel_id,
+  ) {
     match play_track(
       &host,
       &bot,
@@ -142,6 +160,8 @@ fn run_player(
       &rx,
       &state,
       &mut resolver_threads,
+      &mut idle_voice,
+      &mut last_text_channel_id,
       &mut sequence,
       queued,
     ) {
@@ -161,40 +181,60 @@ fn next_track(
   host: &HostHandle,
   bot: &BotUser,
   sources: &SourceRegistry,
+  voice_channel_id: ChannelId,
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
   resolver_threads: &mut ResolverThreads,
+  idle_voice: &mut IdleVoiceMonitor,
+  last_text_channel_id: &mut Option<ChannelId>,
 ) -> NextTrack {
   if let Some(track) = take_next_queued_track(state) {
     return NextTrack::Track(track);
   }
 
-  while let Ok(command) = rx.recv() {
+  loop {
+    if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
+      stop_after_voice_disconnect(host, bot, state, *last_text_channel_id);
+      return NextTrack::Shutdown;
+    }
+    if idle_voice.channel_has_been_empty_too_long(host, voice_channel_id) {
+      stop_after_empty_voice_channel(host, bot, state, *last_text_channel_id);
+      return NextTrack::Shutdown;
+    }
+
+    let command = match rx.recv_timeout(EMPTY_VOICE_CHECK_INTERVAL) {
+      Ok(command) => command,
+      Err(mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(mpsc::RecvTimeoutError::Disconnected) => return NextTrack::Shutdown,
+    };
+
     resolver_threads.reap_finished();
     match command {
       PlayerCommand::ResolveAndEnqueue { input, text_channel_id } => {
+        *last_text_channel_id = Some(text_channel_id);
         resolver_threads.resolve(input, text_channel_id, sources.clone());
       }
       PlayerCommand::EnqueueResolved {
         tracks,
         text_channel_id,
       } => {
+        *last_text_channel_id = Some(text_channel_id);
         if let Some(queued) = enqueue_resolved_from_idle(host, bot, state, tracks, text_channel_id) {
           return NextTrack::Track(queued);
         }
       }
       PlayerCommand::Skip { text_channel_id } => {
+        *last_text_channel_id = Some(text_channel_id);
         host.send_bot_chat(bot, text_channel_id, "Nothing to skip.").ok();
       }
       PlayerCommand::Stop { text_channel_id } => {
+        *last_text_channel_id = Some(text_channel_id);
         clear_playback_state(state);
         host.send_bot_chat(bot, text_channel_id, "Nothing to stop.").ok();
       }
       PlayerCommand::Shutdown => return NextTrack::Shutdown,
     }
   }
-
-  NextTrack::Shutdown
 }
 
 fn play_track(
@@ -205,14 +245,17 @@ fn play_track(
   rx: &Receiver<PlayerCommand>,
   state: &Arc<Mutex<PlayerState>>,
   resolver_threads: &mut ResolverThreads,
+  idle_voice: &mut IdleVoiceMonitor,
+  last_text_channel_id: &mut Option<ChannelId>,
   sequence: &mut u16,
   queued: QueuedTrack,
 ) -> PlaybackControl {
   let mut track = queued.track;
   let text_channel_id = queued.text_channel_id;
+  *last_text_channel_id = Some(text_channel_id);
 
   if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
-    stop_after_voice_disconnect(host, bot, state, text_channel_id);
+    stop_after_voice_disconnect(host, bot, state, Some(text_channel_id));
     return PlaybackControl::Shutdown;
   }
 
@@ -256,7 +299,6 @@ fn play_track(
   host.send_bot_chat(bot, text_channel_id, &response).ok();
 
   let mut pacer = FramePacer::new();
-  let mut idle_voice = IdleVoiceMonitor::new();
   while let Some(frame) = match frames.next_frame() {
     Ok(frame) => frame,
     Err(error) => {
@@ -282,12 +324,12 @@ fn play_track(
     }
 
     if !bot_is_still_in_expected_voice(host, bot, voice_channel_id) {
-      stop_after_voice_disconnect(host, bot, state, text_channel_id);
+      stop_after_voice_disconnect(host, bot, state, Some(text_channel_id));
       return PlaybackControl::Shutdown;
     }
 
     if idle_voice.channel_has_been_empty_too_long(host, voice_channel_id) {
-      stop_after_empty_voice_channel(host, bot, state, text_channel_id);
+      stop_after_empty_voice_channel(host, bot, state, Some(text_channel_id));
       return PlaybackControl::Shutdown;
     }
 
@@ -332,33 +374,37 @@ fn stop_after_voice_disconnect(
   host: &HostHandle,
   bot: &BotUser,
   state: &Arc<Mutex<PlayerState>>,
-  text_channel_id: ChannelId,
+  text_channel_id: Option<ChannelId>,
 ) {
   clear_playback_state(state);
-  host
-    .send_bot_chat(
-      bot,
-      text_channel_id,
-      "Removed from voice. Playback stopped and queue cleared.",
-    )
-    .ok();
+  if let Some(text_channel_id) = text_channel_id {
+    host
+      .send_bot_chat(
+        bot,
+        text_channel_id,
+        "Removed from voice. Playback stopped and queue cleared.",
+      )
+      .ok();
+  }
 }
 
 fn stop_after_empty_voice_channel(
   host: &HostHandle,
   bot: &BotUser,
   state: &Arc<Mutex<PlayerState>>,
-  text_channel_id: ChannelId,
+  text_channel_id: Option<ChannelId>,
 ) {
   clear_playback_state(state);
   host.leave_bot_voice(bot).ok();
-  host
-    .send_bot_chat(
-      bot,
-      text_channel_id,
-      "Voice channel was empty for 20 seconds. Playback stopped and queue cleared.",
-    )
-    .ok();
+  if let Some(text_channel_id) = text_channel_id {
+    host
+      .send_bot_chat(
+        bot,
+        text_channel_id,
+        "Voice channel was empty for 20 seconds. Playback stopped and queue cleared.",
+      )
+      .ok();
+  }
 }
 
 fn playback_error_detail(error: &str) -> &'static str {
@@ -680,6 +726,7 @@ fn sleep_until(deadline: Instant) {
 #[cfg(test)]
 mod tests {
   use std::{
+    collections::HashMap,
     ffi::{CStr, c_void},
     os::raw::c_char,
     sync::{
@@ -843,6 +890,46 @@ mod tests {
     resolver_threads_b.join_all();
   }
 
+  #[test]
+  fn idle_worker_leaves_empty_voice_channel() {
+    let sources = SourceRegistry::new_for_tests(Arc::new(ImmediateBackend));
+    let (tx, rx) = mpsc::channel();
+    let mut resolver_threads = ResolverThreads::new(tx);
+    let state = Arc::new(Mutex::new(PlayerState::default()));
+    let mut fake = FakeHost::default();
+    let host = fake.host_handle();
+    let bot = host.create_bot_user("music", "Music Bot").unwrap();
+    fake.set_bot_voice(1, 42);
+    fake.set_channel_user_count(42, 1);
+    let mut idle_voice = IdleVoiceMonitor::new();
+    let mut last_text_channel_id = Some(99);
+
+    let next = next_track(
+      &host,
+      &bot,
+      &sources,
+      42,
+      &rx,
+      &state,
+      &mut resolver_threads,
+      &mut idle_voice,
+      &mut last_text_channel_id,
+    );
+
+    assert!(matches!(next, NextTrack::Shutdown));
+    assert_eq!(fake.bot_voice(1), None);
+    assert_eq!(fake.leaves, vec![1]);
+    assert_eq!(
+      fake.chats,
+      vec![(
+        1,
+        99,
+        "Voice channel was empty for 20 seconds. Playback stopped and queue cleared.".to_owned()
+      )]
+    );
+    resolver_threads.join_all();
+  }
+
   struct BlockingParseBackend {
     started: Mutex<Option<Sender<()>>>,
     release: Mutex<Receiver<()>>,
@@ -958,6 +1045,9 @@ mod tests {
   struct FakeHost {
     next_bot_id: usize,
     chats: Vec<(usize, ChannelId, String)>,
+    bot_voice_channels: HashMap<usize, ChannelId>,
+    channel_user_counts: HashMap<ChannelId, u32>,
+    leaves: Vec<usize>,
   }
 
   impl FakeHost {
@@ -966,7 +1056,22 @@ mod tests {
       host.context = (self as *mut Self).cast();
       host.create_bot_user = Some(fake_create_bot_user);
       host.send_bot_chat = Some(fake_send_bot_chat);
+      host.leave_bot_voice = Some(fake_leave_bot_voice);
+      host.get_voice_channel_info = Some(fake_get_voice_channel_info);
+      host.bot_voice_channel = Some(fake_bot_voice_channel);
       unsafe { HostRef::from_raw(&host).unwrap().to_handle() }
+    }
+
+    fn set_bot_voice(&mut self, bot_id: usize, channel_id: ChannelId) {
+      self.bot_voice_channels.insert(bot_id, channel_id);
+    }
+
+    fn bot_voice(&self, bot_id: usize) -> Option<ChannelId> {
+      self.bot_voice_channels.get(&bot_id).copied()
+    }
+
+    fn set_channel_user_count(&mut self, channel_id: ChannelId, user_count: u32) {
+      self.channel_user_counts.insert(channel_id, user_count);
     }
   }
 
@@ -998,6 +1103,41 @@ mod tests {
     fake.chats.push((bot as usize, text_channel_id, text));
     unsafe {
       *out_message_id = fake.chats.len() as MessageId;
+    }
+    true
+  }
+
+  unsafe extern "C" fn fake_leave_bot_voice(context: *mut c_void, bot: abi::BotHandle) -> bool {
+    let fake = unsafe { &mut *(context as *mut FakeHost) };
+    let bot_id = bot as usize;
+    fake.bot_voice_channels.remove(&bot_id);
+    fake.leaves.push(bot_id);
+    true
+  }
+
+  unsafe extern "C" fn fake_get_voice_channel_info(
+    context: *mut c_void,
+    channel_id: ChannelId,
+    out_info: *mut abi::ChannelInfo,
+  ) -> bool {
+    let fake = unsafe { &mut *(context as *mut FakeHost) };
+    let mut info = abi::ChannelInfo::default();
+    info.channel_id = channel_id;
+    info.user_count = fake.channel_user_counts.get(&channel_id).copied().unwrap_or(0);
+    unsafe {
+      *out_info = info;
+    }
+    true
+  }
+
+  unsafe extern "C" fn fake_bot_voice_channel(
+    context: *mut c_void,
+    bot: abi::BotHandle,
+    out_voice_channel_id: *mut ChannelId,
+  ) -> bool {
+    let fake = unsafe { &mut *(context as *mut FakeHost) };
+    unsafe {
+      *out_voice_channel_id = fake.bot_voice_channels.get(&(bot as usize)).copied().unwrap_or(0);
     }
     true
   }
