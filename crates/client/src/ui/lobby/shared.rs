@@ -45,3 +45,7 @@ pub(super) fn error_notice(ctx: &mut Ctx, message: &str) -> Element {
     )
     .into()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/ui/lobby/shared.rs"]
+mod tests;

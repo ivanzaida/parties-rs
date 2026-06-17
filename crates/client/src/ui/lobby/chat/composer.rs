@@ -220,7 +220,9 @@ fn handle_chat_command_navigation(
     return false;
   }
 
-  if matches!((key, code), ("Tab", _) | (_, "Tab")) {
+  let is_tab_completion = matches!((key, code), ("Tab", _) | (_, "Tab"));
+  let is_enter_completion = matches!((key, code), ("Enter", _) | (_, "Enter"));
+  if is_tab_completion || is_enter_completion {
     let input = message_input.get_untracked();
     let Some(query) = command_suggestion_query(&input) else {
       selected_index.set(0);
@@ -231,6 +233,9 @@ fn handle_chat_command_navigation(
       selected_index.set(0);
       return false;
     };
+    if is_enter_completion && command.name.to_ascii_lowercase() == query {
+      return false;
+    }
     message_input.set(command_fill_text(command.name.as_ref()));
     return true;
   }
@@ -703,3 +708,7 @@ fn run_chat_submission(
     command_registry,
   });
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/unit/ui/lobby/chat/composer.rs"]
+mod tests;

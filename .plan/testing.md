@@ -13,13 +13,13 @@ This plan is for bringing the desktop client to a predictable stability baseline
 - Client test attributes found directly in `crates/client/src`: 0.
 - Reachable client unit test target: `cargo test -p client --lib`.
 - Reachable client integration test target: `cargo test -p client --test chat`.
-- Current verified client unit coverage: `cargo test -p client --lib` runs 242 tests.
+- Current verified client unit coverage: `cargo test -p client --lib` runs 267 tests.
 - Current verified chat integration coverage: `cargo test -p client --test chat` runs 10 tests.
 - Verified on 2026-06-17:
   - `cargo fmt --all --check` passes.
   - `cargo clippy -p client --all-targets` passes with existing warnings.
   - `cargo check -p client` passes.
-  - `cargo test -p client --lib` passes with 242 tests.
+  - `cargo test -p client --lib` passes with 267 tests.
   - `cargo test --target-dir target\client-test -p client --test chat` passes with 10 tests.
   - `cargo check --config .cargo/local-lurq.toml -p client` passes and uses local `F:\gavno\lurq`.
 - Existing effective coverage is strongest around pure logic that has been explicitly pulled into integration tests or can be compiled independently:

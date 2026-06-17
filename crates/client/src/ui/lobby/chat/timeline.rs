@@ -124,3 +124,7 @@ fn month_key(month: u32) -> &'static str {
     _ => "date.month.january",
   }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/unit/ui/lobby/chat/timeline.rs"]
+mod tests;

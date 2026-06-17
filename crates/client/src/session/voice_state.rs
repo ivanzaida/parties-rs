@@ -56,3 +56,7 @@ impl Default for VoiceState {
     Self::new()
   }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/session/voice_state.rs"]
+mod tests;
