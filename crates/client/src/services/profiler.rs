@@ -127,13 +127,5 @@ fn truthy(value: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn profiling_enabled_accepts_profile_arg() {
-    assert!(profiling_arg_enabled(["--profile".to_owned()]));
-    assert!(profiling_arg_enabled(["-profile=true".to_owned()]));
-    assert!(!profiling_arg_enabled(["--profile=false".to_owned()]));
-  }
-}
+#[path = "../../tests/unit/services/profiler.rs"]
+mod tests;

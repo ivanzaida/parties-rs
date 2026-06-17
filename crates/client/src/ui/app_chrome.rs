@@ -22,8 +22,8 @@ use crate::{
   },
 };
 
-pub(crate) const CUSTOM_MACOS_CHROME: bool = cfg!(target_os = "macos");
-pub(crate) const CUSTOM_WINDOW_CHROME: bool = cfg!(target_os = "windows") || CUSTOM_MACOS_CHROME;
+pub const CUSTOM_MACOS_CHROME: bool = cfg!(target_os = "macos");
+pub const CUSTOM_WINDOW_CHROME: bool = cfg!(target_os = "windows") || CUSTOM_MACOS_CHROME;
 pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
   28.0
 } else if cfg!(target_os = "windows") {
@@ -34,7 +34,7 @@ pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
 pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 3.0 } else { 0.0 };
 
 #[derive(Clone, Debug)]
-pub(crate) struct FrameRateSignal(pub Signal<u32>);
+pub struct FrameRateSignal(pub Signal<u32>);
 
 impl PartialEq for FrameRateSignal {
   fn eq(&self, other: &Self) -> bool {

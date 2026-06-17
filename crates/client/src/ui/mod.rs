@@ -1,12 +1,12 @@
-pub(crate) mod app_chrome;
-pub(crate) mod brand_logo;
+pub mod app_chrome;
+pub mod brand_logo;
 pub(crate) mod common;
 pub mod connect_server;
 pub mod identity_seed;
 pub mod identity_setup;
 pub mod import_identity;
 pub mod import_legacy_config;
-pub(crate) mod loader;
+pub mod loader;
 pub mod loading_identity;
 pub mod lobby;
 pub mod onboarding_shell;

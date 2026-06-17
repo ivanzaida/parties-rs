@@ -1,18 +1,5 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
-mod app;
-mod i18n;
-mod identity;
-mod network;
-mod routes;
-mod services;
-mod session;
-mod storage;
-mod theme;
-mod ui;
-#[cfg(target_os = "windows")]
-mod windows_diagnostics;
-
 #[cfg(target_os = "windows")]
 use std::ffi::{CStr, c_char};
 use std::{
@@ -25,14 +12,20 @@ use std::{
   time::{Duration, Instant},
 };
 
+#[cfg(target_os = "windows")]
+use client::windows_diagnostics;
+use client::{
+  app, i18n, services,
+  session::ServerSession,
+  storage::{Storage, WindowState},
+  theme, ui,
+  ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, FrameRateSignal},
+};
 use lurq::{
   app::{WindowCornerRadius, WindowIcon},
   core::Signal,
   persistent_storage::{PersistentStorage, PersistentWrite},
 };
-use session::ServerSession;
-use storage::{Storage, WindowState};
-use ui::app_chrome::{CUSTOM_MACOS_CHROME, CUSTOM_WINDOW_CHROME, FrameRateSignal};
 
 const DEFAULT_WINDOW_WIDTH: u32 = 1280;
 const DEFAULT_WINDOW_HEIGHT: u32 = 900;
@@ -711,61 +704,5 @@ fn rects_intersect(x: i32, y: i32, width: u32, height: u32, screen: &ScreenBound
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  const SCREEN: ScreenBounds = ScreenBounds {
-    x: 0,
-    y: 0,
-    width: 1920,
-    height: 1080,
-  };
-
-  fn window_state(x: i32, y: i32, width: u32, height: u32, full_screen: bool) -> WindowState {
-    WindowState {
-      x,
-      y,
-      width,
-      height,
-      full_screen,
-    }
-  }
-
-  #[test]
-  fn startup_window_state_clamps_too_small_size() {
-    let state = validate_window_state_for_screens(window_state(20, 30, 320, 240, true), &[SCREEN]);
-
-    assert_eq!(state.x, 20);
-    assert_eq!(state.y, 30);
-    assert_eq!(state.width, MIN_WINDOW_WIDTH);
-    assert_eq!(state.height, MIN_WINDOW_HEIGHT);
-    assert!(state.full_screen);
-  }
-
-  #[test]
-  fn startup_window_state_resets_when_offscreen() {
-    let state = validate_window_state_for_screens(window_state(5000, 5000, 1280, 900, false), &[SCREEN]);
-
-    assert_eq!(state, default_window_state(false));
-  }
-
-  #[test]
-  fn startup_window_state_resets_when_too_large_for_screens() {
-    let state = validate_window_state_for_screens(window_state(0, 0, 3840, 2160, true), &[SCREEN]);
-
-    assert_eq!(state, default_window_state(true));
-  }
-
-  #[test]
-  fn startup_window_state_keeps_valid_secondary_screen_position() {
-    let secondary = ScreenBounds {
-      x: -1280,
-      y: 0,
-      width: 1280,
-      height: 1024,
-    };
-    let state = validate_window_state_for_screens(window_state(-1000, 40, 900, 700, false), &[SCREEN, secondary]);
-
-    assert_eq!(state, window_state(-1000, 40, 900, 700, false));
-  }
-}
+#[path = "../tests/unit/bin_main.rs"]
+mod tests;
