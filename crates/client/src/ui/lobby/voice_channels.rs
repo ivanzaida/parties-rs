@@ -553,16 +553,8 @@ fn channel_user_row(
     .child(
       Text::new(&username)
         .flex(1.0)
-        .variant(if speaking {
-          theme::TypographyStyle::Button
-        } else {
-          theme::TypographyStyle::Description
-        })
-        .color(if speaking {
-          theme::PaletteColor::TextPrimary
-        } else {
-          theme::PaletteColor::TextSecondary
-        }),
+        .variant(theme::TypographyStyle::Description)
+        .color(theme::PaletteColor::TextSecondary),
     )
     .child(user_voice_icons(ctx, user, streaming));
 
