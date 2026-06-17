@@ -40,6 +40,7 @@ pub struct StartupData {
   pub storage: Option<Storage>,
   pub has_identity: bool,
   pub saved_server_count: usize,
+  pub sentry_reports_enabled: Option<bool>,
 }
 
 fn update_progress(progress: &lurq::core::Signal<StartupProgress>, ratio: f32, label: Arc<str>) {
@@ -57,6 +58,10 @@ fn load_startup_data_sync(
   match initial_storage.map_or_else(Storage::open_default, Ok) {
     Ok(storage) => {
       update_progress(&progress, 0.52, labels.checking_identity);
+      let sentry_reports_enabled = storage
+        .load_settings()
+        .map_err(|error| error.to_string())?
+        .sentry_reports_enabled;
       let has_identity = storage.has_identity().map_err(|error| error.to_string())?;
       let saved_server_count = if has_identity {
         update_progress(&progress, 0.78, labels.loading_servers);
@@ -72,6 +77,7 @@ fn load_startup_data_sync(
         storage: Some(storage),
         has_identity,
         saved_server_count,
+        sentry_reports_enabled,
       })
     }
     Err(error) => Err(error.to_string()),

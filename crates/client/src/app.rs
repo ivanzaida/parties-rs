@@ -21,14 +21,15 @@ use lurq::{
 
 use crate::{
   routes::{
-    ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING,
-    ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS,
-    ROUTE_SERVER_SETTINGS_MEMBERS, ROUTE_SERVER_SETTINGS_ROLES, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO,
-    ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
+    ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_LEGACY_CONFIG,
+    ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING, ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE,
+    ROUTE_SENTRY_REPORTS, ROUTE_SERVER_SETTINGS, ROUTE_SERVER_SETTINGS_CHANNELS, ROUTE_SERVER_SETTINGS_MEMBERS,
+    ROUTE_SERVER_SETTINGS_ROLES, ROUTE_SETTINGS, ROUTE_SETTINGS_AUDIO, ROUTE_SETTINGS_IDENTITY,
+    ROUTE_SETTINGS_NOTIFICATIONS, ROUTE_SETTINGS_SERVERS, ROUTE_SETTINGS_STREAM,
   },
   services::{
     global_hotkeys::GlobalVoiceHotkeys,
-    hotkeys,
+    hotkeys, logger,
     updater::{StartupUpdateStatus, restart_into_update, run_startup_update_check},
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
@@ -45,9 +46,11 @@ use crate::{
     identity_seed::IdentitySeedScreen,
     identity_setup::IdentitySetupScreen,
     import_identity::ImportIdentityScreen,
+    import_legacy_config::ImportLegacyConfigScreen,
     loading_identity::{LoadingIdentityScreen, LoadingIdentityScreenProps},
     lobby::LobbyScreen,
     restore_identity::RestoreIdentityScreen,
+    sentry_reports::SentryReportsScreen,
     server_settings::{ServerSettingsPage, ServerSettingsScreen},
     servers::SavedServersScreen,
     settings::{
@@ -128,9 +131,13 @@ impl Component for App {
             update_status: loading_update_status.clone(),
           })
         })
+        .route(ROUTE_SENTRY_REPORTS, |ctx| ctx.mount::<SentryReportsScreen>(()))
         .route(ROUTE_IDENTITY_SETUP, |ctx| ctx.mount::<IdentitySetupScreen>(()))
         .route(ROUTE_SEED_PHRASE, |ctx| ctx.mount::<IdentitySeedScreen>(()))
         .route(ROUTE_IMPORT_PRIVATE_KEY, |ctx| ctx.mount::<ImportIdentityScreen>(()))
+        .route(ROUTE_IMPORT_LEGACY_CONFIG, |ctx| {
+          ctx.mount::<ImportLegacyConfigScreen>(())
+        })
         .route(ROUTE_RESTORE_IDENTITY, |ctx| ctx.mount::<RestoreIdentityScreen>(()))
         .route(ROUTE_CHOOSE_SERVER, |ctx| ctx.mount::<SavedServersScreen>(()))
         .route(ROUTE_CONNECT_SERVER, |ctx| ctx.mount::<ConnectServerScreen>(()))
@@ -233,6 +240,7 @@ impl Component for App {
     }
     let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
     if let Some(settings) = settings.as_ref() {
+      logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
       self.session.set_notification_audio_settings(settings);
       self
         .session

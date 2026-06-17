@@ -229,7 +229,28 @@ impl Server {
   async fn send_control(&self, msg: C2S) -> Result<(), ServerError> {
     let frame = msg.encode()?;
     let bytes = frame.encode()?;
-    self.control_send.lock().await.write_all(&bytes).await?;
+    let log_control = should_log_control_frame(frame.ty);
+    if log_control {
+      tracing::info!(
+        target: "network::control",
+        "[network/control] sending control frame: type={:?} payload_bytes={}",
+        frame.ty,
+        frame.payload.len()
+      );
+    }
+    if let Err(error) = self.control_send.lock().await.write_all(&bytes).await {
+      if log_control {
+        tracing::warn!(
+          target: "network::control",
+          "[network/control] failed to send control frame: type={:?} error={error}",
+          frame.ty
+        );
+      }
+      return Err(error.into());
+    }
+    if log_control {
+      tracing::info!(target: "network::control", "[network/control] sent control frame: type={:?}", frame.ty);
+    }
     Ok(())
   }
 
@@ -266,7 +287,17 @@ impl Server {
       };
 
       match S2C::decode(&frame) {
-        Ok(message) => return Ok(message),
+        Ok(message) => {
+          if should_log_control_frame(frame.ty) {
+            tracing::info!(
+              target: "network::control",
+              "[network/control] received control frame: type={:?} payload_bytes={}",
+              frame.ty,
+              frame.payload.len()
+            );
+          }
+          return Ok(message);
+        }
         Err(DecodeError::InvalidMessageType(value)) => {
           tracing::warn!(target: "network", "[network] ignoring unsupported server control message type 0x{value:04x}: payload_bytes={}", msg_len - 2);
         }
@@ -623,6 +654,21 @@ impl Server {
   pub async fn ping(&self) -> Result<(), ServerError> {
     self.send_control(C2S::KeepalivePing).await
   }
+}
+
+fn should_log_control_frame(ty: ControlMessageType) -> bool {
+  matches!(
+    ty,
+    ControlMessageType::AuthIdentity
+      | ControlMessageType::AuthResponse
+      | ControlMessageType::ChannelJoin
+      | ControlMessageType::ChannelLeave
+      | ControlMessageType::UserJoinedChannel
+      | ControlMessageType::UserLeftChannel
+      | ControlMessageType::VoiceStateUpdate
+      | ControlMessageType::UserVoiceState
+      | ControlMessageType::ServerError
+  )
 }
 
 fn hex_fingerprint(bytes: &[u8]) -> String {

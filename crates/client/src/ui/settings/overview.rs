@@ -8,6 +8,7 @@ use lurq::{
 
 use crate::{
   routes::{ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS},
+  services::logger,
   session::ServerSession,
   storage::Storage,
   theme,
@@ -28,7 +29,7 @@ const LANGUAGE_DROPDOWN_WIDTH: f32 = 220.0;
 
 pub struct SettingsOverviewScreen {
   start_muted_when_joining: bool,
-  launch_parties_at_login: bool,
+  sentry_reports_enabled: bool,
   debug_mode_enabled: bool,
   locale: String,
 }
@@ -43,13 +44,13 @@ impl Component for SettingsOverviewScreen {
       .and_then(|storage| storage.load_settings().ok())
       .unwrap_or_default();
     let start_muted_when_joining = settings.start_muted_when_joining;
-    let launch_parties_at_login = settings.launch_parties_at_login;
+    let sentry_reports_enabled = settings.sentry_reports_enabled.unwrap_or(false);
     let debug_mode_enabled = settings.debug_mode_enabled;
     let locale = settings.locale;
 
     Self {
       start_muted_when_joining,
-      launch_parties_at_login,
+      sentry_reports_enabled,
       debug_mode_enabled,
       locale,
     }
@@ -167,10 +168,10 @@ impl Component for SettingsOverviewScreen {
                 setting: OverviewBoolSetting::StartMutedWhenJoining,
               }))
               .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
-                title_key: "settings.overview.toggle.login.title",
-                description_key: "settings.overview.toggle.login.description",
-                initial_enabled: self.launch_parties_at_login,
-                setting: OverviewBoolSetting::LaunchPartiesAtLogin,
+                title_key: "settings.overview.toggle.sentry_reports.title",
+                description_key: "settings.overview.toggle.sentry_reports.description",
+                initial_enabled: self.sentry_reports_enabled,
+                setting: OverviewBoolSetting::SentryReportsEnabled,
               }))
               .child(ctx.mount::<OverviewToggleSetting>(OverviewToggleSettingProps {
                 title_key: "settings.overview.toggle.debug_mode.title",
@@ -188,7 +189,7 @@ impl Component for SettingsOverviewScreen {
 #[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
 enum OverviewBoolSetting {
   StartMutedWhenJoining,
-  LaunchPartiesAtLogin,
+  SentryReportsEnabled,
   DebugModeEnabled,
 }
 
@@ -225,10 +226,13 @@ impl Component for OverviewToggleSetting {
         let mut settings = storage.load_settings().unwrap_or_default();
         match props.setting {
           OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
-          OverviewBoolSetting::LaunchPartiesAtLogin => settings.launch_parties_at_login = *enabled,
+          OverviewBoolSetting::SentryReportsEnabled => settings.sentry_reports_enabled = Some(*enabled),
           OverviewBoolSetting::DebugModeEnabled => settings.debug_mode_enabled = *enabled,
         }
         let _ = storage.save_settings(&settings);
+        if props.setting == OverviewBoolSetting::SentryReportsEnabled {
+          logger::apply_sentry_reports_enabled(Some(*enabled));
+        }
         if props.setting == OverviewBoolSetting::DebugModeEnabled
           && let Some(session) = session.as_ref()
         {

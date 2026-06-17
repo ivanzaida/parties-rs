@@ -2,10 +2,14 @@ use std::{
   borrow::Cow,
   collections::HashSet,
   env,
+  ffi::OsString,
   fs::{self, OpenOptions},
   io,
   path::{Path, PathBuf},
-  sync::{Arc, LazyLock, Once, OnceLock, RwLock},
+  sync::{
+    Arc, LazyLock, Once, OnceLock, RwLock,
+    atomic::{AtomicBool, Ordering},
+  },
   time::Duration,
 };
 
@@ -20,6 +24,14 @@ static SEEN_MSGS: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::n
 static LOGGER_INIT: Once = Once::new();
 static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
+static SENTRY_CONFIG: OnceLock<SentryConfig> = OnceLock::new();
+static SENTRY_REPORTS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Debug)]
+struct SentryConfig {
+  args: Vec<OsString>,
+  log_filter_directive: String,
+}
 
 macro_rules! emit_once {
   ($level:expr, $target:literal, $msg:expr) => {
@@ -97,7 +109,11 @@ pub fn init() {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     let log_filter_directive = startup_log_filter_directive(args.clone());
     let filter = log_filter_from_directive(&log_filter_directive);
-    let sentry_enabled = init_sentry(&args, &log_filter_directive);
+    let sentry_layer_enabled = !sentry_disabled(args.iter().cloned());
+    let _ = SENTRY_CONFIG.set(SentryConfig {
+      args: args.clone(),
+      log_filter_directive: log_filter_directive.clone(),
+    });
     let _ = tracing_log::LogTracer::init();
     let explicit_log_file = startup_log_file_arg(args.clone());
     let path = explicit_log_file.clone().or_else(default_log_file_path);
@@ -109,7 +125,7 @@ pub fn init() {
         Ok(file) => {
           let (writer, guard) = tracing_appender::non_blocking(file);
           let _ = LOG_GUARD.set(guard);
-          if init_subscriber(filter.clone(), writer, sentry_enabled).is_ok() {
+          if init_subscriber(filter.clone(), writer, sentry_layer_enabled).is_ok() {
             return;
           }
         }
@@ -119,14 +135,14 @@ pub fn init() {
       }
     }
 
-    let _ = init_subscriber(filter, io::stderr, sentry_enabled);
+    let _ = init_subscriber(filter, io::stderr, sentry_layer_enabled);
   });
 }
 
 fn init_subscriber<W>(
   filter: EnvFilter,
   writer: W,
-  sentry_enabled: bool,
+  sentry_layer_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
   W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
@@ -138,7 +154,7 @@ where
     .with_thread_ids(false)
     .with_thread_names(false)
     .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339());
-  let sentry_layer = sentry_enabled.then(|| {
+  let sentry_layer = sentry_layer_enabled.then(|| {
     sentry_tracing::layer()
       .event_filter(sentry_event_filter)
       .span_filter(sentry_span_filter)
@@ -154,6 +170,10 @@ where
 }
 
 fn sentry_event_filter(metadata: &tracing::Metadata<'_>) -> sentry_tracing::EventFilter {
+  if !SENTRY_REPORTS_ACTIVE.load(Ordering::Relaxed) {
+    return sentry_tracing::EventFilter::Ignore;
+  }
+
   if metadata.target() == "native::windows::seh" {
     return sentry_tracing::EventFilter::Breadcrumb;
   }
@@ -167,6 +187,30 @@ fn sentry_event_filter(metadata: &tracing::Metadata<'_>) -> sentry_tracing::Even
 
 pub fn flush_sentry(timeout: Duration) -> bool {
   SENTRY_GUARD.get().is_some_and(|guard| guard.flush(Some(timeout)))
+}
+
+pub fn apply_sentry_reports_enabled(enabled: Option<bool>) -> bool {
+  match enabled {
+    Some(true) => enable_sentry_reports(),
+    Some(false) | None => {
+      SENTRY_REPORTS_ACTIVE.store(false, Ordering::Relaxed);
+      false
+    }
+  }
+}
+
+pub fn enable_sentry_reports() -> bool {
+  if SENTRY_GUARD.get().is_some() {
+    SENTRY_REPORTS_ACTIVE.store(true, Ordering::Relaxed);
+    return true;
+  }
+
+  let Some(config) = SENTRY_CONFIG.get() else {
+    return false;
+  };
+  let enabled = init_sentry(&config.args, &config.log_filter_directive);
+  SENTRY_REPORTS_ACTIVE.store(enabled, Ordering::Relaxed);
+  enabled
 }
 
 fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
@@ -327,7 +371,11 @@ fn falsy(value: &str) -> bool {
 }
 
 fn scrub_sentry_event(mut event: sentry::protocol::Event<'static>) -> Option<sentry::protocol::Event<'static>> {
-  if is_noisy_dx12_allocator_reset_event(&event) {
+  if !SENTRY_REPORTS_ACTIVE.load(Ordering::Relaxed) {
+    return None;
+  }
+
+  if is_noisy_dx12_render_event(&event) {
     return None;
   }
 
@@ -353,26 +401,27 @@ fn scrub_sentry_event(mut event: sentry::protocol::Event<'static>) -> Option<sen
   Some(event)
 }
 
-fn is_noisy_dx12_allocator_reset_event(event: &sentry::protocol::Event<'_>) -> bool {
-  event.message.as_deref().is_some_and(is_noisy_dx12_allocator_reset_text)
+fn is_noisy_dx12_render_event(event: &sentry::protocol::Event<'_>) -> bool {
+  event.message.as_deref().is_some_and(is_noisy_dx12_render_text)
     || event.logentry.as_ref().is_some_and(|entry| {
-      is_noisy_dx12_allocator_reset_text(&entry.message)
-        || entry.params.iter().any(value_contains_noisy_dx12_allocator_reset)
+      is_noisy_dx12_render_text(&entry.message) || entry.params.iter().any(value_contains_noisy_dx12_render)
     })
-    || event.extra.values().any(value_contains_noisy_dx12_allocator_reset)
+    || event.extra.values().any(value_contains_noisy_dx12_render)
 }
 
-fn value_contains_noisy_dx12_allocator_reset(value: &Value) -> bool {
+fn value_contains_noisy_dx12_render(value: &Value) -> bool {
   match value {
-    Value::String(text) => is_noisy_dx12_allocator_reset_text(text),
-    Value::Array(values) => values.iter().any(value_contains_noisy_dx12_allocator_reset),
-    Value::Object(values) => values.values().any(value_contains_noisy_dx12_allocator_reset),
+    Value::String(text) => is_noisy_dx12_render_text(text),
+    Value::Array(values) => values.iter().any(value_contains_noisy_dx12_render),
+    Value::Object(values) => values.values().any(value_contains_noisy_dx12_render),
     _ => false,
   }
 }
 
-fn is_noisy_dx12_allocator_reset_text(text: &str) -> bool {
-  text.contains("failed to render native dx12 frame") && text.contains("reset dx12 command allocator:")
+fn is_noisy_dx12_render_text(text: &str) -> bool {
+  (text.contains("failed to render native dx12 frame")
+    && (text.contains("reset dx12 command allocator:") || text.contains("HRESULT(0x00000000)")))
+    || text.contains("skipping dx12 image draws after ERROR_MOD_NOT_FOUND")
 }
 
 fn scrub_optional_text(text: &mut Option<String>) {
@@ -902,7 +951,34 @@ mod tests {
       ..Default::default()
     };
 
-    assert!(is_noisy_dx12_allocator_reset_event(&event));
+    assert!(is_noisy_dx12_render_event(&event));
+  }
+
+  #[test]
+  fn sentry_filter_drops_noisy_dx12_success_hresult_render_errors() {
+    let event = sentry::protocol::Event {
+      message: Some(
+        r#"failed to render native dx12 frame: Error { code: HRESULT(0x00000000), message: "The operation completed successfully." }"#.to_owned(),
+      ),
+      ..Default::default()
+    };
+
+    assert!(is_noisy_dx12_render_event(&event));
+  }
+
+  #[test]
+  fn sentry_filter_drops_noisy_dx12_image_draw_fallbacks() {
+    let event = sentry::protocol::Event {
+      logentry: Some(sentry::protocol::LogEntry {
+        message: "render error".to_owned(),
+        params: vec![serde_json::json!(
+          "skipping dx12 image draws after ERROR_MOD_NOT_FOUND; continuing frame so non-image UI can render"
+        )],
+      }),
+      ..Default::default()
+    };
+
+    assert!(is_noisy_dx12_render_event(&event));
   }
 
   #[test]

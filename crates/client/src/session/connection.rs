@@ -352,7 +352,10 @@ where
         session.apply_server_message(message);
       }
       Err(error) => {
-        let error = error.to_string();
+        let mut error = error.to_string();
+        if let Some(close_reason) = server.connection().close_reason() {
+          error = format!("{error}; close_reason={close_reason}");
+        }
         tracing::warn!(target: "network", "[network] lobby receiver error: {error}");
         session.mark_lobby_error(error);
         break;

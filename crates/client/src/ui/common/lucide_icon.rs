@@ -124,6 +124,7 @@ fn name_to_char(name: &str) -> char {
     "x" => '\u{e1b2}',
     "audio-lines" => '\u{e55a}',
     "alert-triangle" | "triangle-alert" => '\u{e193}',
+    "bug" => '\u{e20c}',
     _ => {
       crate::log_once!(warn, target: "ui::icons", "Unknown icon name: {name}");
       '\u{e06f}'

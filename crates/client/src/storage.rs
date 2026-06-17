@@ -9,11 +9,11 @@ use std::{
 };
 
 use lurq::app::component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::{
   identity::LocalIdentity,
-  network::protocol::{ChannelId, PublicKey, Role, SecretKey, UserId},
+  network::protocol::{ChannelId, DEFAULT_PORT, PublicKey, Role, SecretKey, UserId},
 };
 
 #[derive(Debug)]
@@ -21,6 +21,7 @@ pub enum StorageError {
   Io(std::io::Error),
   Sql(rusqlite::Error),
   InvalidBlob(&'static str),
+  InvalidLegacyConfig(String),
   InvalidRole(u8),
   Time(std::time::SystemTimeError),
 }
@@ -31,6 +32,7 @@ impl fmt::Display for StorageError {
       Self::Io(error) => write!(f, "io: {error}"),
       Self::Sql(error) => write!(f, "sqlite: {error}"),
       Self::InvalidBlob(column) => write!(f, "invalid identity blob: {column}"),
+      Self::InvalidLegacyConfig(error) => write!(f, "unsupported legacy config format: {error}"),
       Self::InvalidRole(role) => write!(f, "invalid stored server role: {role}"),
       Self::Time(error) => write!(f, "time: {error}"),
     }
@@ -60,8 +62,8 @@ impl From<std::time::SystemTimeError> for StorageError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppSettings {
   pub start_muted_when_joining: bool,
-  pub launch_parties_at_login: bool,
   pub debug_mode_enabled: bool,
+  pub sentry_reports_enabled: Option<bool>,
   pub display_name: String,
   pub audio_input_device: String,
   pub audio_output_device: String,
@@ -91,8 +93,8 @@ impl Default for AppSettings {
   fn default() -> Self {
     Self {
       start_muted_when_joining: true,
-      launch_parties_at_login: false,
       debug_mode_enabled: false,
+      sentry_reports_enabled: None,
       display_name: default_display_name(),
       audio_input_device: String::new(),
       audio_output_device: String::new(),
@@ -138,6 +140,12 @@ pub struct StoredServer {
   pub certificate_fingerprint: String,
   pub server_password: String,
   pub display_name: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct LegacyPartiesImportSummary {
+  pub imported_identity: bool,
+  pub imported_servers: usize,
 }
 
 impl DevtoolsInspectable for StoredServer {
@@ -308,8 +316,8 @@ impl Storage {
       INSERT OR REPLACE INTO app_settings (
         id,
         start_muted_when_joining,
-        launch_parties_at_login,
         debug_mode_enabled,
+        sentry_reports_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -338,8 +346,8 @@ impl Storage {
       "#,
       params![
         bool_to_int(settings.start_muted_when_joining),
-        bool_to_int(settings.launch_parties_at_login),
         bool_to_int(settings.debug_mode_enabled),
+        settings.sentry_reports_enabled.map(bool_to_int),
         &settings.display_name,
         &settings.audio_input_device,
         &settings.audio_output_device,
@@ -374,8 +382,8 @@ impl Storage {
       r#"
       SELECT
         start_muted_when_joining,
-        launch_parties_at_login,
         debug_mode_enabled,
+        sentry_reports_enabled,
         display_name,
         audio_input_device,
         audio_output_device,
@@ -411,8 +419,8 @@ impl Storage {
 
     Ok(AppSettings {
       start_muted_when_joining: int_to_bool(row.get(0)?),
-      launch_parties_at_login: int_to_bool(row.get(1)?),
-      debug_mode_enabled: int_to_bool(row.get(2)?),
+      debug_mode_enabled: int_to_bool(row.get(1)?),
+      sentry_reports_enabled: row.get::<_, Option<i64>>(2)?.map(int_to_bool),
       display_name: row.get(3)?,
       audio_input_device: row.get(4)?,
       audio_output_device: row.get(5)?,
@@ -558,6 +566,95 @@ impl Storage {
       ],
     )?;
     Ok(())
+  }
+
+  pub fn import_legacy_parties_config(
+    &self,
+    path: impl AsRef<Path>,
+  ) -> Result<LegacyPartiesImportSummary, StorageError> {
+    let legacy = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    validate_legacy_parties_config_schema(&legacy)?;
+    let mut summary = LegacyPartiesImportSummary::default();
+
+    let identity = legacy
+      .query_row(
+        "SELECT seed_phrase, public_key, secret_key FROM identity WHERE id = 1",
+        [],
+        |row| {
+          let seed_phrase: String = row.get(0)?;
+          let public_key_blob: Vec<u8> = row.get(1)?;
+          let secret_key_blob: Vec<u8> = row.get(2)?;
+          Ok((seed_phrase, public_key_blob, secret_key_blob))
+        },
+      )
+      .optional()?;
+
+    if let Some((seed_phrase, public_key_blob, secret_key_blob)) = identity {
+      self.save_identity(&LocalIdentity {
+        seed_phrase: if seed_phrase.trim().is_empty() {
+          None
+        } else {
+          Some(seed_phrase)
+        },
+        public_key: fixed_32::<PublicKey>(&public_key_blob, "public_key")?,
+        secret_key: fixed_32::<SecretKey>(&secret_key_blob, "secret_key")?,
+      })?;
+      summary.imported_identity = true;
+    }
+
+    let mut first_display_name = None;
+    let mut stmt = legacy.prepare(
+      r#"
+      SELECT
+        s.name,
+        s.host,
+        s.port,
+        COALESCE(NULLIF(s.fingerprint, ''), t.fingerprint, ''),
+        s.last_username,
+        s.password
+      FROM saved_servers s
+      LEFT JOIN tofu_certs t ON t.host = s.host AND t.port = s.port
+      ORDER BY s.id ASC
+      "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+      Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, i64>(2)?,
+        row.get::<_, String>(3)?,
+        row.get::<_, String>(4)?,
+        row.get::<_, String>(5)?,
+      ))
+    })?;
+
+    for row in rows {
+      let (server_name, host, port, fingerprint, display_name, password) = row?;
+      let Some(address) = legacy_server_address(&host, port) else {
+        continue;
+      };
+      if first_display_name.is_none() && !display_name.trim().is_empty() {
+        first_display_name = Some(display_name.trim().to_owned());
+      }
+      self.save_server(&StoredServer {
+        address,
+        server_name,
+        user_id: 0,
+        role: Role::User,
+        certificate_fingerprint: fingerprint,
+        server_password: password,
+        display_name,
+      })?;
+      summary.imported_servers += 1;
+    }
+
+    if let Some(display_name) = first_display_name {
+      let mut settings = self.load_settings().unwrap_or_default();
+      settings.display_name = display_name;
+      self.save_settings(&settings)?;
+    }
+
+    Ok(summary)
   }
 
   pub fn load_server(&self, address: &str) -> Result<Option<StoredServer>, StorageError> {
@@ -797,8 +894,8 @@ impl Storage {
       CREATE TABLE IF NOT EXISTS app_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
-        launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
         debug_mode_enabled INTEGER NOT NULL DEFAULT 0,
+        sentry_reports_enabled INTEGER DEFAULT NULL,
         display_name TEXT NOT NULL DEFAULT '',
         audio_input_device TEXT NOT NULL DEFAULT '',
         audio_output_device TEXT NOT NULL DEFAULT '',
@@ -892,12 +989,6 @@ impl Storage {
         [],
       )?;
     }
-    if !column_exists(&conn, "app_settings", "launch_parties_at_login")? {
-      conn.execute(
-        "ALTER TABLE app_settings ADD COLUMN launch_parties_at_login INTEGER NOT NULL DEFAULT 0",
-        [],
-      )?;
-    }
     if !column_exists(&conn, "app_settings", "debug_mode_enabled")? {
       conn.execute(
         "ALTER TABLE app_settings ADD COLUMN debug_mode_enabled INTEGER NOT NULL DEFAULT 0",
@@ -906,6 +997,12 @@ impl Storage {
       if column_exists(&conn, "app_settings", "debug_chat_enabled")? {
         conn.execute("UPDATE app_settings SET debug_mode_enabled = debug_chat_enabled", [])?;
       }
+    }
+    if !column_exists(&conn, "app_settings", "sentry_reports_enabled")? {
+      conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN sentry_reports_enabled INTEGER DEFAULT NULL",
+        [],
+      )?;
     }
     if !column_exists(&conn, "app_settings", "display_name")? {
       conn.execute(
@@ -1126,6 +1223,37 @@ fn bool_to_int(value: bool) -> i64 {
 
 fn int_to_bool(value: i64) -> bool {
   value != 0
+}
+
+fn validate_legacy_parties_config_schema(conn: &Connection) -> Result<(), StorageError> {
+  for (table, columns) in [
+    ("identity", &["id", "seed_phrase", "public_key", "secret_key"][..]),
+    (
+      "saved_servers",
+      &["id", "name", "host", "port", "fingerprint", "last_username", "password"][..],
+    ),
+    ("tofu_certs", &["host", "port", "fingerprint"][..]),
+  ] {
+    for column in columns {
+      if !column_exists(conn, table, column)? {
+        return Err(StorageError::InvalidLegacyConfig(format!("missing {table}.{column}")));
+      }
+    }
+  }
+  Ok(())
+}
+
+fn legacy_server_address(host: &str, port: i64) -> Option<String> {
+  let host = host.trim();
+  if host.is_empty() {
+    return None;
+  }
+  let port = u16::try_from(port).unwrap_or(DEFAULT_PORT);
+  if host.starts_with('[') || !host.contains(':') {
+    Some(format!("{host}:{port}"))
+  } else {
+    Some(format!("[{host}]:{port}"))
+  }
 }
 
 fn default_db_path() -> PathBuf {
@@ -1384,8 +1512,8 @@ mod tests {
 
     let settings = AppSettings {
       start_muted_when_joining: false,
-      launch_parties_at_login: true,
       debug_mode_enabled: true,
+      sentry_reports_enabled: Some(true),
       display_name: "alice".to_owned(),
       audio_input_device: "Microphone".to_owned(),
       audio_output_device: "Speakers".to_owned(),
@@ -1429,7 +1557,6 @@ mod tests {
       CREATE TABLE app_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         start_muted_when_joining INTEGER NOT NULL DEFAULT 1,
-        launch_parties_at_login INTEGER NOT NULL DEFAULT 0,
         debug_chat_enabled INTEGER NOT NULL DEFAULT 0
       );
       INSERT INTO app_settings (id, debug_chat_enabled) VALUES (1, 1);
@@ -1445,6 +1572,117 @@ mod tests {
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(format!("{}-wal", path.display()));
     let _ = fs::remove_file(format!("{}-shm", path.display()));
+  }
+
+  #[test]
+  fn imports_legacy_parties_config() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-legacy-import-{nonce}.db"));
+    let legacy_path = env::temp_dir().join(format!("parties-rs-storage-legacy-source-{nonce}.db"));
+    let conn = Connection::open(&legacy_path).unwrap();
+    conn
+      .execute_batch(
+        r#"
+      CREATE TABLE identity (
+        id INTEGER PRIMARY KEY,
+        seed_phrase TEXT NOT NULL,
+        public_key BLOB NOT NULL,
+        secret_key BLOB NOT NULL
+      );
+      CREATE TABLE saved_servers (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 7800,
+        fingerprint TEXT NOT NULL DEFAULT '',
+        last_username TEXT NOT NULL DEFAULT '',
+        password TEXT NOT NULL DEFAULT ''
+      );
+      CREATE TABLE tofu_certs (
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL,
+        first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (host, port)
+      );
+      "#,
+      )
+      .unwrap();
+    conn
+      .execute(
+        "INSERT INTO identity (id, seed_phrase, public_key, secret_key) VALUES (1, ?1, ?2, ?3)",
+        params!["alpha beta", vec![1_u8; 32], vec![2_u8; 32]],
+      )
+      .unwrap();
+    conn
+      .execute(
+        "INSERT INTO saved_servers (id, name, host, port, fingerprint, last_username, password) VALUES (1, 'Legacy', 'example.com', 7800, '', 'ivan', 'pw')",
+        [],
+      )
+      .unwrap();
+    conn
+      .execute(
+        "INSERT INTO tofu_certs (host, port, fingerprint) VALUES ('example.com', 7800, 'aa:bb')",
+        [],
+      )
+      .unwrap();
+    drop(conn);
+
+    let storage = Storage::open(&path).unwrap();
+    let summary = storage.import_legacy_parties_config(&legacy_path).unwrap();
+
+    assert_eq!(
+      summary,
+      LegacyPartiesImportSummary {
+        imported_identity: true,
+        imported_servers: 1
+      }
+    );
+    assert_eq!(storage.load_identity().unwrap().unwrap().secret_key, [2_u8; 32]);
+    assert_eq!(storage.load_settings().unwrap().display_name, "ivan");
+    assert_eq!(
+      storage.load_server("example.com:7800").unwrap().unwrap(),
+      StoredServer {
+        address: "example.com:7800".to_owned(),
+        server_name: "Legacy".to_owned(),
+        user_id: 0,
+        role: Role::User,
+        certificate_fingerprint: "aa:bb".to_owned(),
+        server_password: "pw".to_owned(),
+        display_name: "ivan".to_owned()
+      }
+    );
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+    let _ = fs::remove_file(&legacy_path);
+    let _ = fs::remove_file(format!("{}-wal", legacy_path.display()));
+    let _ = fs::remove_file(format!("{}-shm", legacy_path.display()));
+  }
+
+  #[test]
+  fn rejects_invalid_legacy_parties_config_format() {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = env::temp_dir().join(format!("parties-rs-storage-invalid-legacy-target-{nonce}.db"));
+    let legacy_path = env::temp_dir().join(format!("parties-rs-storage-invalid-legacy-source-{nonce}.db"));
+    let conn = Connection::open(&legacy_path).unwrap();
+    conn
+      .execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)", [])
+      .unwrap();
+    drop(conn);
+
+    let storage = Storage::open(&path).unwrap();
+    let error = storage.import_legacy_parties_config(&legacy_path).unwrap_err();
+
+    assert!(matches!(error, StorageError::InvalidLegacyConfig(_)));
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+    let _ = fs::remove_file(&legacy_path);
+    let _ = fs::remove_file(format!("{}-wal", legacy_path.display()));
+    let _ = fs::remove_file(format!("{}-shm", legacy_path.display()));
   }
 
   #[test]

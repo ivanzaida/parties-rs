@@ -8,7 +8,7 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_IMPORT_PRIVATE_KEY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE},
+  routes::{ROUTE_IMPORT_LEGACY_CONFIG, ROUTE_IMPORT_PRIVATE_KEY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE},
   theme,
   ui::{
     identity_setup::{
@@ -69,6 +69,15 @@ impl Component for IdentitySetupScreen {
                   title: ctx.t("identity_setup.option.restore.title"),
                   description: ctx.t("identity_setup.option.restore.description"),
                   target_route: Some(ROUTE_RESTORE_IDENTITY),
+                },
+              ))
+              .child(ctx.mount_keyed::<IdentityActionCard>(
+                "legacy",
+                IdentityActionCardProps {
+                  icon: "database",
+                  title: ctx.t("identity_setup.option.legacy.title"),
+                  description: ctx.t("identity_setup.option.legacy.description"),
+                  target_route: Some(ROUTE_IMPORT_LEGACY_CONFIG),
                 },
               ))
               .child(ctx.mount_keyed::<IdentityActionCard>(

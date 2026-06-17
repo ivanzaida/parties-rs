@@ -146,6 +146,18 @@
       }
     }
   },
+  "sentry_reports": {
+    "title": "Share crash reports?",
+    "description": "Anonymous Sentry reports help us find crashes faster and keep the app stable.",
+    "notice": {
+      "label": "SENTRY REPORTS",
+      "detail": "May include crash diagnostics, app version, operating system, and stack traces. Never includes seed phrases, private keys, server credentials, or message content."
+    },
+    "action": {
+      "decline": "Don’t share",
+      "accept": "Share reports"
+    }
+  },
   "identity": {
     "action": {
       "back": "Back",
@@ -235,6 +247,10 @@
         "title": "Restore recovery phrase",
         "description": "Enter an existing 12-word seed phrase"
       },
+      "legacy": {
+        "title": "Import emcifuntik/parties config",
+        "description": "Load identity and saved servers from the old client database"
+      },
       "import": {
         "title": "Import private key",
         "description": "Paste a raw 64-character hex key"
@@ -307,6 +323,26 @@
     "action": {
       "back": "Back",
       "import": "Import identity"
+    }
+  },
+  "identity_import_legacy": {
+    "intro": {
+      "headline": "Bring over your\nold Parties config.",
+      "description": "Import your legacy emcifuntik/parties identity, saved servers, trusted fingerprints, passwords, and display names from the local SQLite database.",
+      "footer": "The source database is read only; imported data is saved locally."
+    },
+    "overline": "IDENTITY · LEGACY IMPORT",
+    "title": "Import old client config",
+    "subtitle": "Reads the legacy database and copies compatible identity and server settings.",
+    "source": {
+      "label": "Source database",
+      "path": "Choose a parties_client.db file",
+      "detail": "Imports identity, saved servers, TOFU fingerprints, server passwords, and last display names."
+    },
+    "action": {
+      "back": "Back",
+      "import": "Import config",
+      "importing": "Importing..."
     }
   },
   "servers": {
@@ -449,9 +485,9 @@
           "title": "Start muted when joining",
           "description": "Join voice channels with microphone muted by default."
         },
-        "login": {
-          "title": "Launch Parties at login",
-          "description": "Start the client automatically when this device signs in."
+        "sentry_reports": {
+          "title": "Share crash reports",
+          "description": "Send anonymous Sentry reports to help diagnose crashes and render failures."
         },
         "debug_mode": {
           "title": "Enable debug mode",

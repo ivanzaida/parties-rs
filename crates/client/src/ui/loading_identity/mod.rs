@@ -16,7 +16,7 @@ use lurq::{
 };
 
 use crate::{
-  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY},
+  routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY, ROUTE_SENTRY_REPORTS},
   services::{
     startup::{StartupProgress, StartupProgressLabels, load_startup_data},
     updater::{StartupUpdateStatus, restart_into_update},
@@ -202,7 +202,9 @@ impl Component for LoadingIdentityScreen {
       if !waiting_for_resume {
         self.navigated.set(true);
         if let Some(navigator) = ctx.navigator() {
-          let route = if restore_update_resume_state.data == Some(true) {
+          let route = if data.sentry_reports_enabled.is_none() {
+            ROUTE_SENTRY_REPORTS
+          } else if restore_update_resume_state.data == Some(true) {
             ROUTE_LOBBY
           } else if data.has_identity {
             ROUTE_CHOOSE_SERVER

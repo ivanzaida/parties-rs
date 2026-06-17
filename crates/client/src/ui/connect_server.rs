@@ -361,7 +361,7 @@ pub async fn connect_and_store(
     .map_err(|error| error.to_string())?
     .ok_or_else(|| errors.identity_missing.clone())?;
 
-  let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+  let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
     tracing::info!(target: "network::connect", "[network/connect] resolved server address: address={address} socket={socket}");
     let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
@@ -393,8 +393,23 @@ pub async fn connect_and_store(
 
     Ok::<_, String>((server, fingerprint, response))
   })
-  .await
-  .map_err(|_| errors.timeout.clone())??;
+  .await;
+  let (server, fingerprint, response) = match connect_result {
+    Ok(Ok(result)) => result,
+    Ok(Err(error)) => {
+      tracing::warn!(target: "network::connect", "[network/connect] connection attempt failed: address={address} error={error}");
+      return Err(error);
+    }
+    Err(_) => {
+      tracing::warn!(
+        target: "network::connect",
+        "[network/connect] connection attempt timed out: address={} timeout_seconds={}",
+        address,
+        CONNECT_TIMEOUT.as_secs()
+      );
+      return Err(errors.timeout.clone());
+    }
+  };
 
   let info = ConnectedServerInfo {
     address: address.clone(),
