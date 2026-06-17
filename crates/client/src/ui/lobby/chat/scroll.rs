@@ -11,7 +11,9 @@ use lurq::{
 
 use super::{
   super::{ChatHistoryAction, ChatHistoryRequest},
-  scroll_policy::{BottomScrollMetrics, plan_bottom_scroll},
+  scroll_policy::{
+    BottomScrollMetrics, chat_scroll_moves_away_from_bottom, chat_scroll_would_chain_vertically, plan_bottom_scroll,
+  },
 };
 use crate::{network::protocol::ChannelId, session::ServerSession, theme};
 
@@ -44,7 +46,18 @@ pub(super) fn chat_messages_scroll(
       style
     })
     .on_scroll(move |event: ScrollEvent| {
-      if event.delta_y.abs() > 0.0 || event.delta_x.abs() > 0.0 || scroll_for_input.is_dragging() {
+      let metrics = BottomScrollMetrics {
+        scroll_y: scroll_for_input.scroll_y(),
+        viewport_height: scroll_for_input.viewport_height(),
+        content_height: scroll_for_input.content_height(),
+      };
+      let dragging = scroll_for_input.is_dragging();
+
+      if chat_scroll_would_chain_vertically(metrics, event.delta_y) {
+        event.prevent_default();
+      }
+
+      if chat_scroll_moves_away_from_bottom(event.delta_y) || dragging {
         if bottom_settle_anchor.get_untracked().is_some() {
           bottom_settle_anchor.set(None);
         }

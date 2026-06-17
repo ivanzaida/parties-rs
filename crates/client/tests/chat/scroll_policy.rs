@@ -1,7 +1,9 @@
 #[path = "../../src/ui/lobby/chat/scroll_policy.rs"]
 mod scroll_policy;
 
-use scroll_policy::{BottomScrollMetrics, plan_bottom_scroll};
+use scroll_policy::{
+  BottomScrollMetrics, chat_scroll_moves_away_from_bottom, chat_scroll_would_chain_vertically, plan_bottom_scroll,
+};
 
 #[test]
 fn anchored_bottom_stays_pending_when_user_reaches_bottom_before_height_settles() {
@@ -88,4 +90,39 @@ fn user_detached_anchor_reattaches_after_reaching_bottom() {
   assert!(plan.scroll_to_bottom_pending);
   assert_eq!(plan.bottom_detached_anchor, None);
   assert_eq!(plan.bottom_settle_anchor, Some((1, 490, 1000.0)));
+}
+
+#[test]
+fn extra_downward_scroll_at_bottom_is_treated_as_boundary_chaining() {
+  let metrics = BottomScrollMetrics {
+    scroll_y: 900.0,
+    viewport_height: 100.0,
+    content_height: 1000.0,
+  };
+
+  assert!(chat_scroll_would_chain_vertically(metrics, -40.0));
+  assert!(!chat_scroll_moves_away_from_bottom(-40.0));
+}
+
+#[test]
+fn upward_scroll_at_bottom_detaches_from_sticky_bottom() {
+  let metrics = BottomScrollMetrics {
+    scroll_y: 900.0,
+    viewport_height: 100.0,
+    content_height: 1000.0,
+  };
+
+  assert!(!chat_scroll_would_chain_vertically(metrics, 40.0));
+  assert!(chat_scroll_moves_away_from_bottom(40.0));
+}
+
+#[test]
+fn upward_scroll_at_top_is_treated_as_boundary_chaining() {
+  let metrics = BottomScrollMetrics {
+    scroll_y: 0.0,
+    viewport_height: 100.0,
+    content_height: 1000.0,
+  };
+
+  assert!(chat_scroll_would_chain_vertically(metrics, 40.0));
 }

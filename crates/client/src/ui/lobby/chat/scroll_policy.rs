@@ -110,6 +110,23 @@ pub fn plan_bottom_scroll(
   }
 }
 
+pub fn chat_scroll_would_chain_vertically(metrics: BottomScrollMetrics, delta_y: f32) -> bool {
+  if delta_y == 0.0 || metrics.viewport_height <= 0.0 || metrics.content_height <= metrics.viewport_height {
+    return false;
+  }
+
+  let max_scroll_y = metrics.content_height - metrics.viewport_height;
+  let scrolling_toward_bottom = delta_y < 0.0;
+  let scrolling_toward_top = delta_y > 0.0;
+
+  (scrolling_toward_bottom && max_scroll_y - metrics.scroll_y <= BOTTOM_EPSILON)
+    || (scrolling_toward_top && metrics.scroll_y <= BOTTOM_EPSILON)
+}
+
+pub const fn chat_scroll_moves_away_from_bottom(delta_y: f32) -> bool {
+  delta_y > 0.0
+}
+
 fn chat_scroll_is_at_bottom(metrics: BottomScrollMetrics) -> bool {
   if metrics.viewport_height <= 0.0 || metrics.content_height <= metrics.viewport_height {
     return false;
