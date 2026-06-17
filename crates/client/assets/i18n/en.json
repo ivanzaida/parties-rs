@@ -600,10 +600,6 @@
           "$value": "Mention",
           "description": "Sound for messages that mention you."
         },
-        "direct_message": {
-          "$value": "Direct message",
-          "description": "Sound for direct messages."
-        },
         "user_kicked": {
           "$value": "User kicked",
           "description": "Sound when a user is kicked."

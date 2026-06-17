@@ -120,13 +120,6 @@ impl Component for SettingsNotificationsScreen {
                 ))
                 .child(notification_sound_setting(
                   ctx,
-                  NotificationSound::DirectMessage,
-                  "settings.notifications.sound.direct_message",
-                  "settings.notifications.sound.direct_message.description",
-                  &self.notification_sound_overrides,
-                ))
-                .child(notification_sound_setting(
-                  ctx,
                   NotificationSound::UserKicked,
                   "settings.notifications.sound.user_kicked",
                   "settings.notifications.sound.user_kicked.description",

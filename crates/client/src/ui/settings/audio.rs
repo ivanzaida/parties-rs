@@ -9,7 +9,7 @@ use lurq::{
     ctx::Ctx,
     events::{KeyboardEvent, MouseButton, MouseEvent},
   },
-  components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text},
+  components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text, TextOverflow},
   core::Signal,
   layout::{
     Alignment, StackAlignment,
@@ -882,9 +882,22 @@ pub(super) fn audio_row(label: &str, description: &str, trailing: Element, divid
     .child(
       Column::new()
         .flex(1.0)
+        .min_width(0.0)
         .spacing(theme::SpacingSize::Xs)
-        .child(Text::styled(label, row_title_style()).nowrap())
-        .child(Text::styled(description, row_subtitle_style()).nowrap()),
+        .child(
+          Text::styled(label, row_title_style())
+            .width(Dimension::Pct(100.0))
+            .min_width(0.0)
+            .nowrap()
+            .text_overflow(TextOverflow::Elipsis),
+        )
+        .child(
+          Text::styled(description, row_subtitle_style())
+            .width(Dimension::Pct(100.0))
+            .min_width(0.0)
+            .nowrap()
+            .text_overflow(TextOverflow::Elipsis),
+        ),
     )
     .child(trailing)
     .into()

@@ -9,7 +9,7 @@ use std::{
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
-    ctx::{Ctx, Modal, Root},
+    ctx::{Ctx, Modal},
     events::KeyboardEvent,
   },
   components::{Column, Row, Stack, Text},
@@ -315,7 +315,7 @@ impl Component for App {
           close_settings.close();
         }
       });
-      root = root.child(Modal::new(settings_layer).open(settings_open).target(Root));
+      root = root.child(Modal::new(settings_layer).open(settings_open));
     }
 
     for layer in window_affordance_layers(ctx) {
