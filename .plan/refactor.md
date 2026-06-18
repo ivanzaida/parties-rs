@@ -366,6 +366,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - wrapped main body routing in a `MainBody` component with a local `Store<Option<MainBodyModel>>`;
   - added a zero-size `MainBodyModelSubscriber` and removed the full-lobby prop from `content::main`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the lobby shell store narrowing slice:
+  - replaced `LobbyScreen`'s `Store<LobbyState>` with `Store<Option<LobbyShellModel>>`;
+  - added `LobbyShellModel` for receiver/disconnect state and initial chat-history targets;
+  - changed the root subscriber to apply only shell-model changes, and updated the disconnected screen to consume the shell model instead of the full lobby.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

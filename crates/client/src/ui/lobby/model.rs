@@ -137,6 +137,17 @@ pub(super) enum MainBodyModel {
 
 impl DevtoolsInspectable for MainBodyModel {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LobbyShellModel {
+  pub(super) disconnected: bool,
+  pub(super) receiver_running: bool,
+  pub(super) auto_reconnect_disabled: bool,
+  pub(super) last_error: Option<String>,
+  pub(super) empty_text_channel_ids: Vec<ChannelId>,
+}
+
+impl DevtoolsInspectable for LobbyShellModel {}
+
 pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> LobbyRailModel {
   LobbyRailModel {
     server_name: info.server_name.clone(),
@@ -157,6 +168,37 @@ pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -
       .screen_shares
       .iter()
       .any(|share| share.sharer_user_id == info.user_id),
+  }
+}
+
+pub(super) fn lobby_shell_model(lobby: &LobbyState) -> LobbyShellModel {
+  let mut empty_text_channel_ids = Vec::new();
+  if let Some(channel_id) = lobby.selected_text_channel_id
+    && lobby
+      .chat_messages_by_channel
+      .get(&channel_id)
+      .is_none_or(Vec::is_empty)
+  {
+    empty_text_channel_ids.push(channel_id);
+  }
+  for channel in &lobby.text_channels {
+    if Some(channel.id) == lobby.selected_text_channel_id
+      || !lobby
+        .chat_messages_by_channel
+        .get(&channel.id)
+        .is_none_or(Vec::is_empty)
+    {
+      continue;
+    }
+    empty_text_channel_ids.push(channel.id);
+  }
+
+  LobbyShellModel {
+    disconnected: lobby.disconnected,
+    receiver_running: lobby.receiver_running,
+    auto_reconnect_disabled: lobby.auto_reconnect_disabled,
+    last_error: lobby.last_error.clone(),
+    empty_text_channel_ids,
   }
 }
 

@@ -8,11 +8,11 @@ use lurq::{
 
 use super::{
   AUTO_RECONNECT_MAX_ATTEMPTS, AUTO_RECONNECT_RETRY_DELAY_MS, ReconnectAction, ReconnectRequest,
-  layout::lobby_layout_metrics,
+  layout::lobby_layout_metrics, model::LobbyShellModel,
 };
 use crate::{
   routes::ROUTE_CHOOSE_SERVER,
-  session::{ConnectedServerInfo, LobbyState, ServerSession},
+  session::{ConnectedServerInfo, ServerSession},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -20,7 +20,7 @@ use crate::{
 pub(super) fn disconnected_lobby(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &LobbyShellModel,
   session: ServerSession,
   reconnect: &ReconnectAction,
   reconnect_attempt: Signal<u32>,
@@ -31,7 +31,7 @@ pub(super) fn disconnected_lobby(
   let reconnect_state = reconnect.state().get();
   let auto_attempt = reconnect_attempt.get();
   let should_auto_reconnect =
-    !lobby.auto_reconnect_disabled && !reconnect_state.is_pending() && auto_attempt < AUTO_RECONNECT_MAX_ATTEMPTS;
+    !model.auto_reconnect_disabled && !reconnect_state.is_pending() && auto_attempt < AUTO_RECONNECT_MAX_ATTEMPTS;
   let display_attempt = if should_auto_reconnect {
     let next_attempt = auto_attempt + 1;
     reconnect_attempt.set(next_attempt);
@@ -49,7 +49,7 @@ pub(super) fn disconnected_lobby(
   };
   let reconnecting = reconnect_state.is_pending() || should_auto_reconnect;
   let reconnect_exhausted =
-    !lobby.auto_reconnect_disabled && !reconnecting && display_attempt >= AUTO_RECONNECT_MAX_ATTEMPTS;
+    !model.auto_reconnect_disabled && !reconnecting && display_attempt >= AUTO_RECONNECT_MAX_ATTEMPTS;
   let reconnect_address = info.address.clone();
   let reconnect_action = reconnect.clone();
   let manual_attempt = reconnect_attempt.clone();
@@ -75,7 +75,7 @@ pub(super) fn disconnected_lobby(
   };
   let detail = reconnect_state
     .error
-    .or_else(|| lobby.last_error.clone())
+    .or_else(|| model.last_error.clone())
     .map(|error| {
       ctx
         .t_args("lobby.disconnected.footer_error", [("error", error)])

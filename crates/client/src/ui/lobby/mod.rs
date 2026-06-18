@@ -20,7 +20,7 @@ use crate::{
   network::protocol::{ChannelId, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
-  session::{ConnectedServerInfo, LobbySnapshot, LobbyState, ServerSession, chat_commands::ChatCommandRegistry},
+  session::{ConnectedServerInfo, LobbySnapshot, ServerSession, chat_commands::ChatCommandRegistry},
   storage::{AppSettings, Storage},
   theme,
   ui::loader::loader,
@@ -52,6 +52,7 @@ use actions::{
 use chat::ChatCommandInvalidFeedback;
 use content::main;
 use disconnected::disconnected_lobby;
+use model::{LobbyShellModel, lobby_shell_model};
 use rail::{LobbyRail, LobbyRailProps};
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
@@ -113,8 +114,7 @@ pub struct LobbyScreen {
   stream_source_index: Signal<usize>,
   stream_audio_enabled: Signal<bool>,
   reconnect_attempt: Signal<u32>,
-  lobby_store_initialized: Signal<bool>,
-  lobby_store: Store<LobbyState>,
+  shell_model_store: Store<Option<LobbyShellModel>>,
 }
 
 impl Component for LobbyScreen {
@@ -138,8 +138,7 @@ impl Component for LobbyScreen {
       stream_source_index: ctx.signal(0),
       stream_audio_enabled: ctx.signal(true),
       reconnect_attempt: ctx.signal(0),
-      lobby_store_initialized: ctx.signal(false),
-      lobby_store: ctx.store(LobbyState::default()),
+      shell_model_store: ctx.store(None),
     }
   }
 
@@ -148,7 +147,7 @@ impl Component for LobbyScreen {
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
-    ctx.provide(self.lobby_store.clone());
+    ctx.provide(self.shell_model_store.clone());
 
     let Some(info) = session.info() else {
       if let Some(navigator) = ctx.navigator() {
@@ -168,15 +167,17 @@ impl Component for LobbyScreen {
       .unwrap_or_else(AppSettings::default)
       .debug_mode_enabled;
 
-    if !self.lobby_store_initialized.get_untracked() {
-      self.lobby_store.set(session.lobby());
-      self.lobby_store_initialized.set(true);
+    if self.shell_model_store.with(Option::is_none) {
+      apply_lobby_shell_model(&self.shell_model_store, lobby_shell_model(&session.lobby()));
     }
-    let mut lobby = self.lobby_store.get();
+    let shell_model = self
+      .shell_model_store
+      .get()
+      .unwrap_or_else(|| lobby_shell_model(&session.lobby()));
     let receiver = receiver_action(ctx, session.clone());
     if !session.shutdown_requested()
-      && !lobby.disconnected
-      && !lobby.receiver_running
+      && !shell_model.disconnected
+      && !shell_model.receiver_running
       && !receiver.state().get().is_pending()
     {
       receiver.run(());
@@ -184,32 +185,12 @@ impl Component for LobbyScreen {
     let chat_history = chat_history_action(ctx, session.clone());
     if !chat_history.is_active() {
       let mut history_requests = Vec::new();
-      if let Some(channel_id) = lobby.selected_text_channel_id
-        && lobby
-          .chat_messages_by_channel
-          .get(&channel_id)
-          .is_none_or(Vec::is_empty)
-        && session.begin_chat_history_request(channel_id, 0)
-      {
-        lobby.chat_history_loading.insert(channel_id);
-        history_requests.push(ChatHistoryRequest {
-          channel_id,
-          before_id: 0,
-        });
-      }
-      for channel in &lobby.text_channels {
-        if Some(channel.id) == lobby.selected_text_channel_id
-          || !lobby
-            .chat_messages_by_channel
-            .get(&channel.id)
-            .is_none_or(Vec::is_empty)
-          || !session.begin_chat_history_request(channel.id, 0)
-        {
+      for channel_id in shell_model.empty_text_channel_ids.iter().copied() {
+        if !session.begin_chat_history_request(channel_id, 0) {
           continue;
         }
-        lobby.chat_history_loading.insert(channel.id);
         history_requests.push(ChatHistoryRequest {
-          channel_id: channel.id,
+          channel_id,
           before_id: 0,
         });
       }
@@ -224,8 +205,15 @@ impl Component for LobbyScreen {
     let stop_watching = stop_watching_action(ctx, session.clone());
     let reconnect = reconnect_action(ctx, storage.clone(), session.clone());
 
-    if lobby.disconnected {
-      return disconnected_lobby(ctx, &info, &lobby, session, &reconnect, self.reconnect_attempt.clone());
+    if shell_model.disconnected {
+      return disconnected_lobby(
+        ctx,
+        &info,
+        &shell_model,
+        session,
+        &reconnect,
+        self.reconnect_attempt.clone(),
+      );
     } else if self.reconnect_attempt.get_untracked() != 0 {
       self.reconnect_attempt.set(0);
     }
@@ -246,7 +234,7 @@ impl Component for LobbyScreen {
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .clip()
-      .child(ctx.mount::<LobbyStoreSubscriber>(()))
+      .child(ctx.mount::<LobbyShellModelSubscriber>(()))
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         debug_mode_enabled,
@@ -308,13 +296,13 @@ impl Component for LobbyScreen {
 
 impl lurq::app::component::DevtoolsInspectable for LobbySnapshot {}
 
-struct LobbyStoreSubscriber {
+struct LobbyShellModelSubscriber {
   generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
   receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
 }
 
-impl Component for LobbyStoreSubscriber {
+impl Component for LobbyShellModelSubscriber {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
@@ -329,9 +317,11 @@ impl Component for LobbyStoreSubscriber {
     let Some(session) = ctx.use_context::<ServerSession>() else {
       return empty_spy_node();
     };
-    let Some(lobby_store) = ctx.use_context::<Store<LobbyState>>() else {
+    let Some(shell_model_store) = ctx.use_context::<Store<Option<LobbyShellModel>>>() else {
       return empty_spy_node();
     };
+    apply_lobby_shell_model(&shell_model_store, lobby_shell_model(&session.lobby()));
+
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
@@ -342,37 +332,43 @@ impl Component for LobbyStoreSubscriber {
     let wait_generation = self.generation.get();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
+      let session = session.clone();
       async move {
         let mut receiver = receiver.lock().await;
         let snapshot = match receiver.changed().await {
           Ok(()) => receiver.borrow().clone(),
           Err(_) => LobbySnapshot {
             generation: wait_generation,
-            lobby: LobbyState::default(),
+            lobby: session.lobby(),
           },
         };
-        Ok::<_, String>(snapshot)
+        Ok::<_, String>((snapshot.generation, lobby_shell_model(&snapshot.lobby)))
       }
     });
     let state = update.state().get();
     if state.is_fulfilled()
-      && let Some(snapshot) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot.generation)
+      && let Some((snapshot_generation, model)) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
     {
       tracing::info!(
         target: "lobby::state",
-        "[lobby:state] subscriber applied lobby update generation={} text_channels={} voice_channels={}",
-        snapshot.generation,
-        snapshot.lobby.text_channels.len(),
-        snapshot.lobby.channels.len()
+        "[lobby:state] shell subscriber applied lobby update generation={} empty_text_channels={} disconnected={}",
+        snapshot_generation,
+        model.empty_text_channel_ids.len(),
+        model.disconnected
       );
-      let snapshot_generation = snapshot.generation;
-      lobby_store.set(snapshot.lobby);
+      apply_lobby_shell_model(&shell_model_store, model);
       self.applied_generation.set(Some(snapshot_generation));
       self.generation.set(wait_generation.wrapping_add(1));
     }
 
     empty_spy_node()
+  }
+}
+
+fn apply_lobby_shell_model(model_store: &Store<Option<LobbyShellModel>>, model: LobbyShellModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
   }
 }
 
