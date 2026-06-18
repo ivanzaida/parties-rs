@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use super::{chat_pane_model, floating_stream_preview_model, lobby_rail_model, stream_watching_model};
+use super::{
+  chat_pane_model, floating_stream_preview_model, lobby_rail_model, lobby_shell_model, main_body_model,
+  main_top_bar_model, stream_browser_model, stream_watching_model,
+};
 use crate::{
   network::protocol::{
     ChannelId, Role, UserId, VideoCodecId,
@@ -254,6 +257,111 @@ fn chat_pane_model_ignores_voice_presence_only_updates() {
     .expect("voice users")
     .push(user(9, "another", true, false));
   let after = chat_pane_model(&info, &lobby, 30, true);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn main_top_bar_model_ignores_chat_message_only_updates() {
+  let mut lobby = LobbyState {
+    text_channels: vec![text_channel(30, "chat")],
+    selected_text_channel_id: Some(30),
+    users_by_channel: HashMap::from([(10, vec![user(7, "local", false, false)])]),
+    ..LobbyState::default()
+  };
+  let before = main_top_bar_model(&lobby, false);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = main_top_bar_model(&lobby, false);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn main_body_model_ignores_chat_message_only_updates() {
+  let mut lobby = LobbyState {
+    text_channels: vec![text_channel(30, "chat")],
+    selected_text_channel_id: Some(30),
+    ..LobbyState::default()
+  };
+  let before = main_body_model(&lobby, false);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = main_body_model(&lobby, false);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn stream_browser_model_ignores_chat_message_only_updates() {
+  let channel = voice_channel(10, "General");
+  let mut lobby = LobbyState {
+    users_by_channel: HashMap::from([(
+      10,
+      vec![user(7, "local", false, false), user(8, "remote", false, false)],
+    )]),
+    screen_shares: vec![share(8)],
+    watching_user_id: Some(8),
+    ..LobbyState::default()
+  };
+  let before = stream_browser_model(&lobby, &channel);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = stream_browser_model(&lobby, &channel);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn stream_watching_model_ignores_chat_message_only_updates() {
+  let mut lobby = LobbyState {
+    users_by_channel: HashMap::from([(10, vec![user(8, "remote", false, false)])]),
+    screen_shares: vec![share(8)],
+    watching_user_id: Some(8),
+    ..LobbyState::default()
+  };
+  let before = stream_watching_model(&lobby, 10);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = stream_watching_model(&lobby, 10);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn floating_stream_preview_model_ignores_chat_message_only_updates() {
+  let mut lobby = LobbyState {
+    channels: vec![voice_channel(10, "General")],
+    users_by_channel: HashMap::from([(10, vec![user(8, "remote", false, false)])]),
+    screen_shares: vec![share(8)],
+    watching_user_id: Some(8),
+    ..LobbyState::default()
+  };
+  let before = floating_stream_preview_model(&lobby);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = floating_stream_preview_model(&lobby);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn lobby_shell_model_ignores_voice_presence_only_updates() {
+  let mut lobby = LobbyState {
+    text_channels: vec![text_channel(30, "chat")],
+    selected_text_channel_id: Some(30),
+    chat_messages_by_channel: HashMap::from([(30, vec![chat_message(1, 30, 8)])]),
+    users_by_channel: HashMap::from([(10, vec![user(8, "remote", false, false)])]),
+    ..LobbyState::default()
+  };
+  let before = lobby_shell_model(&lobby);
+
+  lobby
+    .users_by_channel
+    .get_mut(&10)
+    .expect("voice users")
+    .push(user(9, "another", false, false));
+  let after = lobby_shell_model(&lobby);
 
   assert_eq!(before, after);
 }

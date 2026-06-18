@@ -439,6 +439,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added one shared `LobbyModelSubscription` helper for lobby watch receiver ownership and generation dedupe;
   - replaced duplicated subscriber watch loops across shell, rail, chat, main content, stream browser, watched stream, and floating preview;
   - kept each component subscribed to only its own selected model and preserved model equality checks before store updates.
+- Expanded selector invalidation guard tests:
+  - covered shell, main top bar, main body, stream browser, watched stream, and floating preview models;
+  - proved chat-message-only and voice-presence-only updates do not invalidate unrelated subscribed models.
 
 ## Non-Goals
 
