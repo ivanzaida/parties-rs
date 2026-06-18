@@ -22,6 +22,8 @@ pub(super) struct WatchedChannelScreenShare {
   pub(super) stream: ChannelScreenShare,
 }
 
+impl DevtoolsInspectable for WatchedChannelScreenShare {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct StreamBrowserModel {
   pub(super) channel: LobbyChannel,

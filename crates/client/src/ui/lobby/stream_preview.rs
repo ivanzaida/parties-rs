@@ -1,17 +1,26 @@
+use std::sync::Arc;
+
 use lurq::{
-  app::{ctx::Ctx, events::MouseEvent},
-  components::{Column, Row, Stack, Text, TextOverflow},
+  app::{
+    component::{Component, DevtoolsInspectable},
+    ctx::{Ctx, Modal, Root},
+    events::MouseEvent,
+  },
+  components::{Column, Rect, Row, Stack, Text, TextOverflow},
+  core::{Signal, Store},
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
+use parking_lot::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   StopWatchingAction,
-  model::{WatchedChannelScreenShare, stream_speaking},
+  model::{WatchedChannelScreenShare, floating_stream_preview_model, stream_speaking},
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
 };
 use crate::{
-  session::ServerSession,
+  session::{LobbySnapshot, ServerSession},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -23,6 +32,158 @@ const PREVIEW_TOP_GAP: f32 = 14.0;
 const PREVIEW_FOOTER_HEIGHT: f32 = 54.0;
 
 pub(super) fn floating_stream_preview(
+  ctx: &mut Ctx,
+  debug_user_ids: bool,
+  session: ServerSession,
+  stop_watching: &StopWatchingAction,
+) -> Element {
+  ctx.mount::<FloatingStreamPreviewPane>(FloatingStreamPreviewPaneProps {
+    debug_user_ids,
+    session,
+    stop_watching: stop_watching.clone(),
+  })
+}
+
+#[derive(Clone)]
+struct FloatingStreamPreviewPaneProps {
+  debug_user_ids: bool,
+  session: ServerSession,
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for FloatingStreamPreviewPaneProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.debug_user_ids == other.debug_user_ids
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+impl DevtoolsInspectable for FloatingStreamPreviewPaneProps {}
+
+struct FloatingStreamPreviewPane {
+  model_store: Store<Option<WatchedChannelScreenShare>>,
+}
+
+impl Component for FloatingStreamPreviewPane {
+  type Props = FloatingStreamPreviewPaneProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    ctx.provide(self.model_store.clone());
+    if let Some(session) = ctx.use_context::<ServerSession>() {
+      apply_floating_preview_model(&self.model_store, floating_stream_preview_model(&session.lobby()));
+    }
+
+    let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(());
+    let Some(watched) = self.model_store.get() else {
+      let empty: Element = Column::new().width(0.0).height(0.0).child(subscriber).into();
+      return empty;
+    };
+
+    let preview: Element = Column::new()
+      .width(0.0)
+      .height(0.0)
+      .child(subscriber)
+      .child(
+        Modal::new(floating_stream_preview_view(
+          ctx,
+          watched,
+          props.debug_user_ids,
+          props.session,
+          &props.stop_watching,
+        ))
+        .target(Root)
+        .dismiss_on_escape(false),
+      )
+      .into();
+    preview
+  }
+}
+
+struct FloatingStreamPreviewModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for FloatingStreamPreviewModelSubscriber {
+  type Props = ();
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<WatchedChannelScreenShare>>>() else {
+      return empty_subscriber_node();
+    };
+
+    apply_floating_preview_model(&model_store, floating_stream_preview_model(&session.lobby()));
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let wait_generation = self.generation.get();
+    let session_for_update = session.clone();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let session = session_for_update.clone();
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        Ok::<_, String>((snapshot.generation, floating_stream_preview_model(&snapshot.lobby)))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, model)) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_floating_preview_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_floating_preview_model(
+  model_store: &Store<Option<WatchedChannelScreenShare>>,
+  model: Option<WatchedChannelScreenShare>,
+) {
+  if model_store.with(|current| current.as_ref() != model.as_ref()) {
+    model_store.set(model);
+  }
+}
+
+fn empty_subscriber_node() -> Element {
+  Rect::new(0.0, 0.0).into()
+}
+
+fn floating_stream_preview_view(
   ctx: &mut Ctx,
   watched: WatchedChannelScreenShare,
   debug_user_ids: bool,

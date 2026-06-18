@@ -351,6 +351,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added a zero-size `StreamWatchingModelSubscriber` that updates only the selected channel watched-stream model;
   - stopped deriving and passing `StreamWatchingModel` from the main body, letting the stream channel wrapper switch between browser and watched-stream views.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the floating stream preview fine-grained subscription slice:
+  - wrapped the root floating preview in a zero-size `FloatingStreamPreviewPane` with a local `Store<Option<WatchedChannelScreenShare>>`;
+  - added a zero-size `FloatingStreamPreviewModelSubscriber` that updates only the floating-preview model;
+  - stopped deriving `floating_stream_preview_model` in `LobbyScreen`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

@@ -52,7 +52,6 @@ use actions::{
 use chat::ChatCommandInvalidFeedback;
 use content::main;
 use disconnected::disconnected_lobby;
-use model::floating_stream_preview_model;
 use rail::{LobbyRail, LobbyRailProps};
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
@@ -297,10 +296,12 @@ impl Component for LobbyScreen {
       );
     }
 
-    if let Some(watched) = floating_stream_preview_model(&lobby) {
-      let preview = floating_stream_preview(ctx, watched, debug_mode_enabled, session.clone(), &stop_watching);
-      body = body.child(Modal::new(preview).target(Root).dismiss_on_escape(false));
-    }
+    body = body.child(floating_stream_preview(
+      ctx,
+      debug_mode_enabled,
+      session.clone(),
+      &stop_watching,
+    ));
 
     body.into()
   }
