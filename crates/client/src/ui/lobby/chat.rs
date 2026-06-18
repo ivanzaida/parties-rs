@@ -136,7 +136,6 @@ impl Component for TextChannelDetail {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
       let info = props.info.clone();
       let channel_id = props.channel.id();
@@ -150,6 +149,7 @@ impl Component for TextChannelDetail {
       session: props.session.clone(),
       channel_id: props.channel.id(),
       server_backed: props.channel.is_server_backed(),
+      model_store: self.model_store.clone(),
     });
     let Some(model) = self.model_store.get() else {
       return Column::new()
@@ -188,6 +188,7 @@ struct ChatPaneModelSubscriberProps {
   session: ServerSession,
   channel_id: ChannelId,
   server_backed: bool,
+  model_store: Store<Option<ChatPaneModel>>,
 }
 
 impl PartialEq for ChatPaneModelSubscriberProps {
@@ -216,14 +217,11 @@ impl Component for ChatPaneModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<ChatPaneModel>>>() else {
-      return empty_subscriber_node();
-    };
 
     let info = props.info.clone();
     let channel_id = props.channel_id;
     let server_backed = props.server_backed;
-    apply_current_model(&model_store, &props.session, |lobby| {
+    apply_current_model(&props.model_store, &props.session, |lobby| {
       chat_pane_model(&info, lobby, channel_id, server_backed)
     });
 
@@ -235,7 +233,7 @@ impl Component for ChatPaneModelSubscriber {
           chat_pane_model(&info, &snapshot.lobby, channel_id, server_backed)
         })
     {
-      apply_model(&model_store, model);
+      apply_model(&props.model_store, model);
     }
 
     empty_subscriber_node()

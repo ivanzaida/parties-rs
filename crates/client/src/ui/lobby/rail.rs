@@ -110,10 +110,10 @@ impl Component for LobbyRail {
     let select_text_channel = SelectTextChannelAction::new(props.session.clone());
     let select_debug_chat = SelectDebugChatAction::new(props.session.clone());
     let local_voice_state = props.session.local_voice_state();
-    ctx.provide(self.model_store.clone());
     let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
       info: props.info.clone(),
       session: props.session.clone(),
+      model_store: self.model_store.clone(),
     });
     let Some(model) = self.model_store.get() else {
       return empty_rail(ctx, subscriber);
@@ -141,6 +141,7 @@ impl Component for LobbyRail {
 struct LobbyRailModelSubscriberProps {
   info: ConnectedServerInfo,
   session: ServerSession,
+  model_store: Store<Option<LobbyRailModel>>,
 }
 
 impl PartialEq for LobbyRailModelSubscriberProps {
@@ -166,12 +167,11 @@ impl Component for LobbyRailModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<LobbyRailModel>>>() else {
-      return empty_subscriber_node();
-    };
 
     let info = props.info.clone();
-    apply_current_model(&model_store, &props.session, |lobby| lobby_rail_model(&info, lobby));
+    apply_current_model(&props.model_store, &props.session, |lobby| {
+      lobby_rail_model(&info, lobby)
+    });
 
     let info = props.info.clone();
     if let Some((_snapshot_generation, model)) =
@@ -181,7 +181,7 @@ impl Component for LobbyRailModelSubscriber {
           lobby_rail_model(&info, &snapshot.lobby)
         })
     {
-      apply_model(&model_store, model);
+      apply_model(&props.model_store, model);
     }
 
     empty_subscriber_node()

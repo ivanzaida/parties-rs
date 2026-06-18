@@ -72,10 +72,10 @@ impl Component for FloatingStreamPreviewPane {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    ctx.provide(self.model_store.clone());
     apply_current_optional_model(&self.model_store, &props.session, floating_stream_preview_model);
 
     let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(FloatingStreamPreviewModelSubscriberProps {
+      model_store: self.model_store.clone(),
       session: props.session.clone(),
     });
     let Some(watched) = self.model_store.get() else {
@@ -105,6 +105,7 @@ impl Component for FloatingStreamPreviewPane {
 
 #[derive(Clone)]
 struct FloatingStreamPreviewModelSubscriberProps {
+  model_store: Store<Option<WatchedChannelScreenShare>>,
   session: ServerSession,
 }
 
@@ -131,16 +132,13 @@ impl Component for FloatingStreamPreviewModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<WatchedChannelScreenShare>>>() else {
-      return empty_subscriber_node();
-    };
 
-    apply_current_optional_model(&model_store, &props.session, floating_stream_preview_model);
+    apply_current_optional_model(&props.model_store, &props.session, floating_stream_preview_model);
 
     if let Some((_snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
       floating_stream_preview_model(&snapshot.lobby)
     }) {
-      apply_optional_model(&model_store, model);
+      apply_optional_model(&props.model_store, model);
     }
 
     empty_subscriber_node()

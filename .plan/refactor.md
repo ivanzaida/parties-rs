@@ -458,6 +458,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Centralized current-model hydration:
   - added shared helpers for deriving the current model from `ServerSession`;
   - removed direct `session.lobby()` calls from render-path lobby components, leaving full snapshot reads in the subscription helper and debug reports.
+- Completed explicit model-store subscriber props:
+  - passed local model stores directly into shell, rail, chat, content, stream browser, watched stream, and floating-preview subscribers;
+  - removed remaining local model-store context reads from lobby subscribers.
 
 ## Non-Goals
 

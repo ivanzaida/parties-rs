@@ -131,11 +131,11 @@ impl Component for MainTopBar {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    ctx.provide(self.model_store.clone());
     apply_current_model(&self.model_store, &props.session, |lobby| {
       main_top_bar_model(lobby, props.debug_mode_enabled)
     });
     let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
+      model_store: self.model_store.clone(),
       session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
     });
@@ -153,6 +153,7 @@ impl Component for MainTopBar {
 
 #[derive(Clone)]
 struct MainTopBarModelSubscriberProps {
+  model_store: Store<Option<MainTopBarModel>>,
   session: ServerSession,
   debug_mode_enabled: bool,
 }
@@ -180,11 +181,8 @@ impl Component for MainTopBarModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<MainTopBarModel>>>() else {
-      return empty_subscriber_node();
-    };
 
-    apply_current_model(&model_store, &props.session, |lobby| {
+    apply_current_model(&props.model_store, &props.session, |lobby| {
       main_top_bar_model(lobby, props.debug_mode_enabled)
     });
 
@@ -196,7 +194,7 @@ impl Component for MainTopBarModelSubscriber {
           main_top_bar_model(&snapshot.lobby, debug_mode_enabled)
         })
     {
-      apply_model(&model_store, model);
+      apply_model(&props.model_store, model);
     }
 
     empty_subscriber_node()
@@ -484,11 +482,11 @@ impl Component for MainBody {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    ctx.provide(self.model_store.clone());
     apply_current_model(&self.model_store, &props.session, |lobby| {
       main_body_model(lobby, props.debug_mode_enabled)
     });
     let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
+      model_store: self.model_store.clone(),
       session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
     });
@@ -502,6 +500,7 @@ impl Component for MainBody {
 
 #[derive(Clone)]
 struct MainBodyModelSubscriberProps {
+  model_store: Store<Option<MainBodyModel>>,
   session: ServerSession,
   debug_mode_enabled: bool,
 }
@@ -529,11 +528,8 @@ impl Component for MainBodyModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<MainBodyModel>>>() else {
-      return empty_subscriber_node();
-    };
 
-    apply_current_model(&model_store, &props.session, |lobby| {
+    apply_current_model(&props.model_store, &props.session, |lobby| {
       main_body_model(lobby, props.debug_mode_enabled)
     });
 
@@ -545,7 +541,7 @@ impl Component for MainBodyModelSubscriber {
           main_body_model(&snapshot.lobby, debug_mode_enabled)
         })
     {
-      apply_model(&model_store, model);
+      apply_model(&props.model_store, model);
     }
 
     empty_subscriber_node()

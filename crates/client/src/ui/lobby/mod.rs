@@ -149,7 +149,6 @@ impl Component for LobbyScreen {
     };
     let storage = ctx.use_context::<Storage>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
-    ctx.provide(self.shell_model_store.clone());
 
     let Some(info) = session.info() else {
       if let Some(navigator) = ctx.navigator() {
@@ -247,6 +246,7 @@ impl Component for LobbyScreen {
       .clip()
       .child(ctx.mount::<LobbyShellModelSubscriber>(LobbyShellModelSubscriberProps {
         session: session.clone(),
+        model_store: self.shell_model_store.clone(),
       }))
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
@@ -310,6 +310,7 @@ impl Component for LobbyScreen {
 #[derive(Clone)]
 struct LobbyShellModelSubscriberProps {
   session: ServerSession,
+  model_store: Store<Option<LobbyShellModel>>,
 }
 
 impl PartialEq for LobbyShellModelSubscriberProps {
@@ -335,10 +336,7 @@ impl Component for LobbyShellModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(shell_model_store) = ctx.use_context::<Store<Option<LobbyShellModel>>>() else {
-      return empty_spy_node();
-    };
-    apply_current_model(&shell_model_store, &props.session, lobby_shell_model);
+    apply_current_model(&props.model_store, &props.session, lobby_shell_model);
 
     if let Some((snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
       lobby_shell_model(&snapshot.lobby)
@@ -350,7 +348,7 @@ impl Component for LobbyShellModelSubscriber {
         model.empty_text_channel_ids.len(),
         model.disconnected
       );
-      apply_model(&shell_model_store, model);
+      apply_model(&props.model_store, model);
     }
 
     empty_spy_node()

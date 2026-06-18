@@ -132,7 +132,6 @@ impl Component for StreamWatchingPane {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
       let channel_id = props.channel.id;
       apply_current_optional_model(&self.model_store, &props.session, |lobby| {
@@ -140,6 +139,7 @@ impl Component for StreamWatchingPane {
       });
     }
     let subscriber = ctx.mount::<StreamWatchingModelSubscriber>(StreamWatchingModelSubscriberProps {
+      model_store: self.model_store.clone(),
       session: props.session.clone(),
       channel_id: props.channel.id,
     });
@@ -208,6 +208,7 @@ fn stream_watching_view(
 
 #[derive(Clone)]
 struct StreamWatchingModelSubscriberProps {
+  model_store: Store<Option<StreamWatchingModel>>,
   session: ServerSession,
   channel_id: ChannelId,
 }
@@ -235,11 +236,8 @@ impl Component for StreamWatchingModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(model_store) = ctx.use_context::<Store<Option<StreamWatchingModel>>>() else {
-      return empty_subscriber_node();
-    };
 
-    apply_current_optional_model(&model_store, &props.session, |lobby| {
+    apply_current_optional_model(&props.model_store, &props.session, |lobby| {
       stream_watching_model(lobby, props.channel_id)
     });
 
@@ -251,7 +249,7 @@ impl Component for StreamWatchingModelSubscriber {
           stream_watching_model(&snapshot.lobby, channel_id)
         })
     {
-      apply_optional_model(&model_store, model);
+      apply_optional_model(&props.model_store, model);
     }
 
     empty_subscriber_node()
