@@ -20,7 +20,7 @@ use super::{
   session_identity::same_session,
   shared::error_notice,
   stream_watching::{stream_channel_detail, stream_watching_top_bar},
-  subscription::{LobbyModelSubscription, apply_model},
+  subscription::{LobbyModelSubscription, apply_current_model, apply_model},
 };
 use crate::{
   network::protocol::ChannelId,
@@ -132,10 +132,9 @@ impl Component for MainTopBar {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_model(
-      &self.model_store,
-      main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
-    );
+    apply_current_model(&self.model_store, &props.session, |lobby| {
+      main_top_bar_model(lobby, props.debug_mode_enabled)
+    });
     let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
       session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
@@ -185,10 +184,9 @@ impl Component for MainTopBarModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_model(
-      &model_store,
-      main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
-    );
+    apply_current_model(&model_store, &props.session, |lobby| {
+      main_top_bar_model(lobby, props.debug_mode_enabled)
+    });
 
     let debug_mode_enabled = props.debug_mode_enabled;
     if let Some((_snapshot_generation, model)) =
@@ -487,10 +485,9 @@ impl Component for MainBody {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_model(
-      &self.model_store,
-      main_body_model(&props.session.lobby(), props.debug_mode_enabled),
-    );
+    apply_current_model(&self.model_store, &props.session, |lobby| {
+      main_body_model(lobby, props.debug_mode_enabled)
+    });
     let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
       session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
@@ -536,10 +533,9 @@ impl Component for MainBodyModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_model(
-      &model_store,
-      main_body_model(&props.session.lobby(), props.debug_mode_enabled),
-    );
+    apply_current_model(&model_store, &props.session, |lobby| {
+      main_body_model(lobby, props.debug_mode_enabled)
+    });
 
     let debug_mode_enabled = props.debug_mode_enabled;
     if let Some((_snapshot_generation, model)) =

@@ -20,7 +20,7 @@ use super::{
   session_identity::same_session,
   shared::error_notice,
   stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
-  subscription::{LobbyModelSubscription, apply_model},
+  subscription::{LobbyModelSubscription, apply_current_model, apply_model},
 };
 use crate::{
   network::protocol::UserId,
@@ -94,10 +94,10 @@ impl Component for StreamBrowserPane {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_model(
-        &self.model_store,
-        stream_browser_model(&props.session.lobby(), &props.channel),
-      );
+      let channel = props.channel.clone();
+      apply_current_model(&self.model_store, &props.session, |lobby| {
+        stream_browser_model(lobby, &channel)
+      });
     }
     let subscriber = ctx.mount::<StreamBrowserModelSubscriber>(StreamBrowserModelSubscriberProps {
       session: props.session.clone(),
@@ -197,10 +197,10 @@ impl Component for StreamBrowserModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_model(
-      &model_store,
-      stream_browser_model(&props.session.lobby(), &props.channel),
-    );
+    let channel = props.channel.clone();
+    apply_current_model(&model_store, &props.session, |lobby| {
+      stream_browser_model(lobby, &channel)
+    });
 
     let channel = props.channel.clone();
     if let Some((_snapshot_generation, model)) =

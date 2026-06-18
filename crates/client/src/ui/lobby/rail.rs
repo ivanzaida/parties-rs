@@ -28,7 +28,7 @@ use crate::{
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
       session_identity::same_session,
-      subscription::{LobbyModelSubscription, apply_model},
+      subscription::{LobbyModelSubscription, apply_current_model, apply_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
     },
@@ -170,7 +170,8 @@ impl Component for LobbyRailModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_model(&model_store, lobby_rail_model(&props.info, &props.session.lobby()));
+    let info = props.info.clone();
+    apply_current_model(&model_store, &props.session, |lobby| lobby_rail_model(&info, lobby));
 
     let info = props.info.clone();
     if let Some((_snapshot_generation, model)) =

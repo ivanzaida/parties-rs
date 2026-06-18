@@ -19,7 +19,7 @@ use super::{
   session_identity::{same_session, session_address},
   stream_browser::stream_browser,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
-  subscription::{LobbyModelSubscription, apply_optional_model},
+  subscription::{LobbyModelSubscription, apply_current_optional_model, apply_optional_model},
 };
 use crate::{
   network::protocol::{ChannelId, UserId},
@@ -134,10 +134,10 @@ impl Component for StreamWatchingPane {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_optional_model(
-        &self.model_store,
-        stream_watching_model(&props.session.lobby(), props.channel.id),
-      );
+      let channel_id = props.channel.id;
+      apply_current_optional_model(&self.model_store, &props.session, |lobby| {
+        stream_watching_model(lobby, channel_id)
+      });
     }
     let subscriber = ctx.mount::<StreamWatchingModelSubscriber>(StreamWatchingModelSubscriberProps {
       session: props.session.clone(),
@@ -239,10 +239,9 @@ impl Component for StreamWatchingModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_optional_model(
-      &model_store,
-      stream_watching_model(&props.session.lobby(), props.channel_id),
-    );
+    apply_current_optional_model(&model_store, &props.session, |lobby| {
+      stream_watching_model(lobby, props.channel_id)
+    });
 
     let channel_id = props.channel_id;
     if let Some((_snapshot_generation, model)) =

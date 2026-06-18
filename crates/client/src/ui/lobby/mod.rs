@@ -56,7 +56,7 @@ use rail::{LobbyRail, LobbyRailProps, RailStreamActions};
 use session_identity::same_session;
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
-use subscription::{LobbyModelSubscription, apply_model};
+use subscription::{LobbyModelSubscription, apply_current_model, apply_model, current_model};
 
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
 type ChatHistoryAction = lurq::app::ctx::FutureAction<Vec<ChatHistoryRequest>, (), String>;
@@ -170,12 +170,12 @@ impl Component for LobbyScreen {
       .debug_mode_enabled;
 
     if self.shell_model_store.with(Option::is_none) {
-      apply_model(&self.shell_model_store, lobby_shell_model(&session.lobby()));
+      apply_current_model(&self.shell_model_store, &session, lobby_shell_model);
     }
     let shell_model = self
       .shell_model_store
       .get()
-      .unwrap_or_else(|| lobby_shell_model(&session.lobby()));
+      .unwrap_or_else(|| current_model(&session, lobby_shell_model));
     let receiver = receiver_action(ctx, session.clone());
     if !session.shutdown_requested()
       && !shell_model.disconnected
@@ -338,7 +338,7 @@ impl Component for LobbyShellModelSubscriber {
     let Some(shell_model_store) = ctx.use_context::<Store<Option<LobbyShellModel>>>() else {
       return empty_spy_node();
     };
-    apply_model(&shell_model_store, lobby_shell_model(&props.session.lobby()));
+    apply_current_model(&shell_model_store, &props.session, lobby_shell_model);
 
     if let Some((snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
       lobby_shell_model(&snapshot.lobby)

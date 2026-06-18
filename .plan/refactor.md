@@ -455,6 +455,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Split debug report generation out of lobby actions:
   - moved debug user/voice/stream/channel/audio/video report builders into `ui/lobby/debug_reports.rs`;
   - kept command dispatch in `actions.rs` focused on parsing/running actions instead of owning full lobby-state inspection helpers.
+- Centralized current-model hydration:
+  - added shared helpers for deriving the current model from `ServerSession`;
+  - removed direct `session.lobby()` calls from render-path lobby components, leaving full snapshot reads in the subscription helper and debug reports.
 
 ## Non-Goals
 

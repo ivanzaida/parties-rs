@@ -38,7 +38,7 @@ use super::{
   model::{ChatPaneModel, chat_pane_model},
   session_identity::same_session,
   shared::error_notice,
-  subscription::{LobbyModelSubscription, apply_model},
+  subscription::{LobbyModelSubscription, apply_current_model, apply_model},
 };
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
@@ -138,15 +138,12 @@ impl Component for TextChannelDetail {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_model(
-        &self.model_store,
-        chat_pane_model(
-          &props.info,
-          &props.session.lobby(),
-          props.channel.id(),
-          props.channel.is_server_backed(),
-        ),
-      );
+      let info = props.info.clone();
+      let channel_id = props.channel.id();
+      let server_backed = props.channel.is_server_backed();
+      apply_current_model(&self.model_store, &props.session, |lobby| {
+        chat_pane_model(&info, lobby, channel_id, server_backed)
+      });
     }
     let subscriber = ctx.mount::<ChatPaneModelSubscriber>(ChatPaneModelSubscriberProps {
       info: props.info.clone(),
@@ -223,19 +220,14 @@ impl Component for ChatPaneModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_model(
-      &model_store,
-      chat_pane_model(
-        &props.info,
-        &props.session.lobby(),
-        props.channel_id,
-        props.server_backed,
-      ),
-    );
-
     let info = props.info.clone();
     let channel_id = props.channel_id;
     let server_backed = props.server_backed;
+    apply_current_model(&model_store, &props.session, |lobby| {
+      chat_pane_model(&info, lobby, channel_id, server_backed)
+    });
+
+    let info = props.info.clone();
     if let Some((_snapshot_generation, model)) =
       self
         .subscription

@@ -15,7 +15,7 @@ use super::{
   model::{WatchedChannelScreenShare, floating_stream_preview_model, stream_speaking},
   session_identity::same_session,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
-  subscription::{LobbyModelSubscription, apply_optional_model},
+  subscription::{LobbyModelSubscription, apply_current_optional_model, apply_optional_model},
 };
 use crate::{
   session::ServerSession,
@@ -73,7 +73,7 @@ impl Component for FloatingStreamPreviewPane {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_optional_model(&self.model_store, floating_stream_preview_model(&props.session.lobby()));
+    apply_current_optional_model(&self.model_store, &props.session, floating_stream_preview_model);
 
     let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(FloatingStreamPreviewModelSubscriberProps {
       session: props.session.clone(),
@@ -135,7 +135,7 @@ impl Component for FloatingStreamPreviewModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_optional_model(&model_store, floating_stream_preview_model(&props.session.lobby()));
+    apply_current_optional_model(&model_store, &props.session, floating_stream_preview_model);
 
     if let Some((_snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
       floating_stream_preview_model(&snapshot.lobby)

@@ -7,7 +7,7 @@ use lurq::{
 use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use crate::session::{LobbySnapshot, ServerSession};
+use crate::session::{LobbySnapshot, LobbyState, ServerSession};
 
 pub(super) struct LobbyModelSubscription {
   generation: Signal<u64>,
@@ -76,6 +76,22 @@ where
   }
 }
 
+pub(super) fn current_model<M, F>(session: &ServerSession, select: F) -> M
+where
+  F: FnOnce(&LobbyState) -> M,
+{
+  let lobby = session.lobby();
+  select(&lobby)
+}
+
+pub(super) fn apply_current_model<M, F>(model_store: &Store<Option<M>>, session: &ServerSession, select: F)
+where
+  M: DevtoolsInspectable + Clone + PartialEq + Send + Sync + 'static,
+  F: FnOnce(&LobbyState) -> M,
+{
+  apply_model(model_store, current_model(session, select));
+}
+
 pub(super) fn apply_optional_model<M>(model_store: &Store<Option<M>>, model: Option<M>)
 where
   M: DevtoolsInspectable + Clone + PartialEq + Send + Sync + 'static,
@@ -83,4 +99,13 @@ where
   if model_store.with(|current| current.as_ref() != model.as_ref()) {
     model_store.set(model);
   }
+}
+
+pub(super) fn apply_current_optional_model<M, F>(model_store: &Store<Option<M>>, session: &ServerSession, select: F)
+where
+  M: DevtoolsInspectable + Clone + PartialEq + Send + Sync + 'static,
+  F: FnOnce(&LobbyState) -> Option<M>,
+{
+  let lobby = session.lobby();
+  apply_optional_model(model_store, select(&lobby));
 }
