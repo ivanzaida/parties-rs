@@ -423,6 +423,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added `ChatActions` as the chat pane action contract;
   - replaced separate `chat_history` and `send_chat` component props through content/chat boundaries;
   - kept lower-level chat helpers receiving only the action they invoke.
+- Completed the rail stream action grouping slice:
+  - added `RailStreamActions` for rail stream controls;
+  - replaced separate rail stream props with one grouped action prop;
+  - kept rail internals passing only watch or stop/start controls to the rows that render them.
 
 ## Non-Goals
 

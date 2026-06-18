@@ -56,15 +56,20 @@ impl VoiceControlFuture {
 }
 
 #[derive(Clone)]
+pub(super) struct RailStreamActions {
+  pub start_stream_modal_open: Signal<bool>,
+  pub stop_stream: StopStreamAction,
+  pub watch_stream: WatchStreamAction,
+}
+
+#[derive(Clone)]
 pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub debug_mode_enabled: bool,
   pub session: ServerSession,
   pub storage: Option<Storage>,
-  pub start_stream_modal_open: Signal<bool>,
   pub settings_popup: Option<SettingsPopupHandle>,
-  pub stop_stream: StopStreamAction,
-  pub watch_stream: WatchStreamAction,
+  pub stream_actions: RailStreamActions,
 }
 
 impl PartialEq for LobbyRailProps {
@@ -121,10 +126,8 @@ impl Component for LobbyRail {
       subscriber,
       &model,
       props.debug_mode_enabled,
-      props.start_stream_modal_open.clone(),
       props.settings_popup,
-      &props.stop_stream,
-      &props.watch_stream,
+      &props.stream_actions,
       props.storage,
       Some(props.session),
       local_voice_state,
@@ -289,10 +292,8 @@ fn rail(
   subscriber: Element,
   model: &LobbyRailModel,
   debug_mode_enabled: bool,
-  start_stream_modal_open: Signal<bool>,
   settings_popup: Option<SettingsPopupHandle>,
-  stop_stream: &StopStreamAction,
-  watch_stream: &WatchStreamAction,
+  stream_actions: &RailStreamActions,
   storage: Option<Storage>,
   leave_session: Option<ServerSession>,
   local_voice_state: Option<(bool, bool)>,
@@ -323,15 +324,14 @@ fn rail(
           select_text_channel,
           select_debug_chat,
           join_channel,
-          watch_stream,
+          &stream_actions.watch_stream,
         ))
         .child(rail_bottom(
           ctx,
           model,
           debug_mode_enabled,
-          start_stream_modal_open,
           settings_popup,
-          stop_stream,
+          stream_actions,
           local_voice_state,
           voice_control,
         )),
@@ -527,9 +527,8 @@ fn rail_bottom(
   ctx: &mut Ctx,
   model: &LobbyRailModel,
   debug_user_ids: bool,
-  start_stream_modal_open: Signal<bool>,
   settings_popup: Option<SettingsPopupHandle>,
-  stop_stream: &StopStreamAction,
+  stream_actions: &RailStreamActions,
   local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
@@ -544,9 +543,9 @@ fn rail_bottom(
     .child(control_row(
       ctx,
       model,
-      start_stream_modal_open,
+      stream_actions.start_stream_modal_open.clone(),
       settings_popup,
-      stop_stream,
+      &stream_actions.stop_stream,
       local_voice_state,
       voice_control,
     ))

@@ -53,7 +53,7 @@ use chat::{ChatActions, ChatCommandInvalidFeedback};
 use content::main;
 use disconnected::disconnected_lobby;
 use model::{LobbyShellModel, lobby_shell_model};
-use rail::{LobbyRail, LobbyRailProps};
+use rail::{LobbyRail, LobbyRailProps, RailStreamActions};
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
 
@@ -207,6 +207,11 @@ impl Component for LobbyScreen {
     let start_stream = start_stream_action(ctx, storage.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
     let watch_stream = watch_stream_action(ctx, storage.clone(), session.clone());
+    let rail_stream_actions = RailStreamActions {
+      start_stream_modal_open: self.start_stream_modal_open.clone(),
+      stop_stream: stop_stream.clone(),
+      watch_stream: watch_stream.clone(),
+    };
     let stop_watching = stop_watching_action(ctx, session.clone());
     let reconnect = reconnect_action(ctx, storage.clone(), session.clone());
 
@@ -247,10 +252,8 @@ impl Component for LobbyScreen {
         debug_mode_enabled,
         session: session.clone(),
         storage: storage.clone(),
-        start_stream_modal_open: self.start_stream_modal_open.clone(),
         settings_popup: settings_popup.clone(),
-        stop_stream: stop_stream.clone(),
-        watch_stream: watch_stream.clone(),
+        stream_actions: rail_stream_actions,
       }))
       .child(main(
         ctx,
