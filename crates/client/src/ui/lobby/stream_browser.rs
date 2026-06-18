@@ -111,6 +111,7 @@ impl Component for StreamBrowserPane {
       );
     }
     let subscriber = ctx.mount::<StreamBrowserModelSubscriber>(StreamBrowserModelSubscriberProps {
+      session: props.session.clone(),
       channel: props.channel.clone(),
     });
     let Some(model) = self.model_store.get() else {
@@ -181,9 +182,17 @@ fn stream_browser_view(
     .into()
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct StreamBrowserModelSubscriberProps {
+  session: ServerSession,
   channel: LobbyChannel,
+}
+
+impl PartialEq for StreamBrowserModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.channel == other.channel
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
 }
 
 impl DevtoolsInspectable for StreamBrowserModelSubscriberProps {}
@@ -207,23 +216,23 @@ impl Component for StreamBrowserModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
     let Some(model_store) = ctx.use_context::<Store<Option<StreamBrowserModel>>>() else {
       return empty_subscriber_node();
     };
 
-    apply_stream_browser_model(&model_store, stream_browser_model(&session.lobby(), &props.channel));
+    apply_stream_browser_model(
+      &model_store,
+      stream_browser_model(&props.session.lobby(), &props.channel),
+    );
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
     let wait_generation = self.generation.get();
-    let session_for_update = session.clone();
+    let session_for_update = props.session.clone();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let channel = props.channel.clone();

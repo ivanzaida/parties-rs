@@ -147,6 +147,8 @@ impl Component for TextChannelDetail {
       );
     }
     let subscriber = ctx.mount::<ChatPaneModelSubscriber>(ChatPaneModelSubscriberProps {
+      info: props.info.clone(),
+      session: props.session.clone(),
       channel_id: props.channel.id(),
       server_backed: props.channel.is_server_backed(),
     });
@@ -181,10 +183,21 @@ impl Component for TextChannelDetail {
   }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct ChatPaneModelSubscriberProps {
+  info: ConnectedServerInfo,
+  session: ServerSession,
   channel_id: ChannelId,
   server_backed: bool,
+}
+
+impl PartialEq for ChatPaneModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && self.channel_id == other.channel_id
+      && self.server_backed == other.server_backed
+  }
 }
 
 impl DevtoolsInspectable for ChatPaneModelSubscriberProps {}
@@ -208,31 +221,33 @@ impl Component for ChatPaneModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
     let Some(model_store) = ctx.use_context::<Store<Option<ChatPaneModel>>>() else {
       return empty_subscriber_node();
     };
 
-    if let Some(info) = session.info() {
-      apply_chat_pane_model(
-        &model_store,
-        chat_pane_model(&info, &session.lobby(), props.channel_id, props.server_backed),
-      );
-    }
+    apply_chat_pane_model(
+      &model_store,
+      chat_pane_model(
+        &props.info,
+        &props.session.lobby(),
+        props.channel_id,
+        props.server_backed,
+      ),
+    );
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
-    let session = session.clone();
+    let session = props.session.clone();
+    let info = props.info.clone();
     let wait_generation = self.generation.get();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session.clone();
+      let info = info.clone();
       async move {
         let mut receiver = receiver.lock().await;
         let snapshot = match receiver.changed().await {
@@ -241,9 +256,6 @@ impl Component for ChatPaneModelSubscriber {
             generation: wait_generation,
             lobby: session.lobby(),
           },
-        };
-        let Some(info) = session.info() else {
-          return Ok::<_, String>((snapshot.generation, None));
         };
 
         Ok::<_, String>((

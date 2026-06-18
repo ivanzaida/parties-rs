@@ -146,6 +146,7 @@ impl Component for MainTopBar {
       main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
     );
     let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
+      session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
     });
     let model = self.model_store.get().unwrap_or(MainTopBarModel::VoiceDefault);
@@ -160,9 +161,17 @@ impl Component for MainTopBar {
   }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct MainTopBarModelSubscriberProps {
+  session: ServerSession,
   debug_mode_enabled: bool,
+}
+
+impl PartialEq for MainTopBarModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.debug_mode_enabled == other.debug_mode_enabled
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
 }
 
 impl DevtoolsInspectable for MainTopBarModelSubscriberProps {}
@@ -186,26 +195,23 @@ impl Component for MainTopBarModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
     let Some(model_store) = ctx.use_context::<Store<Option<MainTopBarModel>>>() else {
       return empty_subscriber_node();
     };
 
     apply_main_top_bar_model(
       &model_store,
-      main_top_bar_model(&session.lobby(), props.debug_mode_enabled),
+      main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
     );
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
     let wait_generation = self.generation.get();
-    let session_for_update = session.clone();
+    let session_for_update = props.session.clone();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session_for_update.clone();
@@ -544,6 +550,7 @@ impl Component for MainBody {
       main_body_model(&props.session.lobby(), props.debug_mode_enabled),
     );
     let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
+      session: props.session.clone(),
       debug_mode_enabled: props.debug_mode_enabled,
     });
     let model = self
@@ -554,9 +561,17 @@ impl Component for MainBody {
   }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct MainBodyModelSubscriberProps {
+  session: ServerSession,
   debug_mode_enabled: bool,
+}
+
+impl PartialEq for MainBodyModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.debug_mode_enabled == other.debug_mode_enabled
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
 }
 
 impl DevtoolsInspectable for MainBodyModelSubscriberProps {}
@@ -580,26 +595,23 @@ impl Component for MainBodyModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
     let Some(model_store) = ctx.use_context::<Store<Option<MainBodyModel>>>() else {
       return empty_subscriber_node();
     };
 
     apply_main_body_model(
       &model_store,
-      main_body_model(&session.lobby(), props.debug_mode_enabled),
+      main_body_model(&props.session.lobby(), props.debug_mode_enabled),
     );
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
     let wait_generation = self.generation.get();
-    let session_for_update = session.clone();
+    let session_for_update = props.session.clone();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session_for_update.clone();

@@ -110,6 +110,7 @@ impl Component for LobbyRail {
     ctx.provide(self.model_store.clone());
     let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
       info: props.info.clone(),
+      session: props.session.clone(),
     });
     let Some(model) = self.model_store.get() else {
       return empty_rail(ctx, subscriber);
@@ -135,9 +136,17 @@ impl Component for LobbyRail {
   }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct LobbyRailModelSubscriberProps {
   info: ConnectedServerInfo,
+  session: ServerSession,
+}
+
+impl PartialEq for LobbyRailModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
 }
 
 impl DevtoolsInspectable for LobbyRailModelSubscriberProps {}
@@ -161,26 +170,25 @@ impl Component for LobbyRailModelSubscriber {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
     let Some(model_store) = ctx.use_context::<Store<Option<LobbyRailModel>>>() else {
       return empty_subscriber_node();
     };
 
-    apply_rail_model(&model_store, lobby_rail_model(&props.info, &session.lobby()));
+    apply_rail_model(&model_store, lobby_rail_model(&props.info, &props.session.lobby()));
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
-    let session = session.clone();
+    let session = props.session.clone();
+    let info = props.info.clone();
     let wait_generation = self.generation.get();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session.clone();
+      let info = info.clone();
       async move {
         let mut receiver = receiver.lock().await;
         let snapshot = match receiver.changed().await {
@@ -190,10 +198,6 @@ impl Component for LobbyRailModelSubscriber {
             lobby: session.lobby(),
           },
         };
-        let Some(info) = session.info() else {
-          return Ok::<_, String>((snapshot.generation, None));
-        };
-
         Ok::<_, String>((snapshot.generation, Some(lobby_rail_model(&info, &snapshot.lobby))))
       }
     });

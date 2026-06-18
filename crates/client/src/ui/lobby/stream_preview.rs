@@ -78,7 +78,9 @@ impl Component for FloatingStreamPreviewPane {
     ctx.provide(self.model_store.clone());
     apply_floating_preview_model(&self.model_store, floating_stream_preview_model(&props.session.lobby()));
 
-    let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(());
+    let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(FloatingStreamPreviewModelSubscriberProps {
+      session: props.session.clone(),
+    });
     let Some(watched) = self.model_store.get() else {
       let empty: Element = Column::new().width(0.0).height(0.0).child(subscriber).into();
       return empty;
@@ -104,6 +106,19 @@ impl Component for FloatingStreamPreviewPane {
   }
 }
 
+#[derive(Clone)]
+struct FloatingStreamPreviewModelSubscriberProps {
+  session: ServerSession,
+}
+
+impl PartialEq for FloatingStreamPreviewModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+impl DevtoolsInspectable for FloatingStreamPreviewModelSubscriberProps {}
+
 struct FloatingStreamPreviewModelSubscriber {
   generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
@@ -111,7 +126,7 @@ struct FloatingStreamPreviewModelSubscriber {
 }
 
 impl Component for FloatingStreamPreviewModelSubscriber {
-  type Props = ();
+  type Props = FloatingStreamPreviewModelSubscriberProps;
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
@@ -122,23 +137,21 @@ impl Component for FloatingStreamPreviewModelSubscriber {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_subscriber_node();
-    };
+    let props = ctx.props::<Self::Props>().clone();
     let Some(model_store) = ctx.use_context::<Store<Option<WatchedChannelScreenShare>>>() else {
       return empty_subscriber_node();
     };
 
-    apply_floating_preview_model(&model_store, floating_stream_preview_model(&session.lobby()));
+    apply_floating_preview_model(&model_store, floating_stream_preview_model(&props.session.lobby()));
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
     let wait_generation = self.generation.get();
-    let session_for_update = session.clone();
+    let session_for_update = props.session.clone();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session_for_update.clone();

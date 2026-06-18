@@ -407,6 +407,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed `ServerSession` and `Storage` into `LobbyRail` from the lobby boundary;
   - built rail actions from explicit props instead of hidden context reads;
   - left the rail model subscriber as the only rail component reading context for lobby-watch updates.
+- Completed the subscriber session dependency cleanup slice:
+  - passed `ServerSession` explicitly into shell, rail, chat, content, and stream model subscribers;
+  - removed subscriber `ServerSession` context reads from lobby components;
+  - left subscriber context reads limited to their local model stores.
 
 ## Non-Goals
 

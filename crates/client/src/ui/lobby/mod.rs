@@ -235,7 +235,9 @@ impl Component for LobbyScreen {
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .clip()
-      .child(ctx.mount::<LobbyShellModelSubscriber>(()))
+      .child(ctx.mount::<LobbyShellModelSubscriber>(LobbyShellModelSubscriberProps {
+        session: session.clone(),
+      }))
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         debug_mode_enabled,
@@ -301,6 +303,19 @@ impl Component for LobbyScreen {
 
 impl lurq::app::component::DevtoolsInspectable for LobbySnapshot {}
 
+#[derive(Clone)]
+struct LobbyShellModelSubscriberProps {
+  session: ServerSession,
+}
+
+impl PartialEq for LobbyShellModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+impl lurq::app::component::DevtoolsInspectable for LobbyShellModelSubscriberProps {}
+
 struct LobbyShellModelSubscriber {
   generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
@@ -308,7 +323,7 @@ struct LobbyShellModelSubscriber {
 }
 
 impl Component for LobbyShellModelSubscriber {
-  type Props = ();
+  type Props = LobbyShellModelSubscriberProps;
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
@@ -319,22 +334,21 @@ impl Component for LobbyShellModelSubscriber {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let Some(session) = ctx.use_context::<ServerSession>() else {
-      return empty_spy_node();
-    };
+    let props = ctx.props::<Self::Props>().clone();
     let Some(shell_model_store) = ctx.use_context::<Store<Option<LobbyShellModel>>>() else {
       return empty_spy_node();
     };
-    apply_lobby_shell_model(&shell_model_store, lobby_shell_model(&session.lobby()));
+    apply_lobby_shell_model(&shell_model_store, lobby_shell_model(&props.session.lobby()));
 
     let receiver = {
       let mut receiver = self.receiver.lock();
       receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
         .clone()
     };
 
     let wait_generation = self.generation.get();
+    let session = props.session.clone();
     let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       let session = session.clone();
