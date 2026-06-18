@@ -22,13 +22,29 @@ use crate::{
 };
 
 #[derive(Clone)]
+pub(super) struct SelectTextChannelAction {
+  session: ServerSession,
+}
+
+impl SelectTextChannelAction {
+  pub(super) fn new(session: ServerSession) -> Self {
+    Self { session }
+  }
+
+  fn run(&self, channel_id: ChannelId) {
+    self.session.select_text_channel(channel_id);
+  }
+}
+
+#[derive(Clone)]
 pub(super) struct TextChannelsProps {
   pub channels: Vec<TextChannelRowModel>,
+  pub select_channel: Option<SelectTextChannelAction>,
 }
 
 impl PartialEq for TextChannelsProps {
   fn eq(&self, other: &Self) -> bool {
-    self.channels == other.channels
+    self.channels == other.channels && self.select_channel.is_some() == other.select_channel.is_some()
   }
 }
 
@@ -122,11 +138,10 @@ impl Component for TextChannels {
             ),
         );
       } else {
-        let session = ctx.use_context::<ServerSession>();
         section = section.with_children(ctx.for_each(
           props.channels,
           |row| row.channel.id,
-          move |ctx, row| text_channel_row(ctx, &row, session.clone()),
+          move |ctx, row| text_channel_row(ctx, &row, props.select_channel.clone()),
         ));
       }
     }
@@ -135,7 +150,11 @@ impl Component for TextChannels {
   }
 }
 
-fn text_channel_row(ctx: &mut Ctx, model: &TextChannelRowModel, session: Option<ServerSession>) -> Element {
+fn text_channel_row(
+  ctx: &mut Ctx,
+  model: &TextChannelRowModel,
+  select_channel: Option<SelectTextChannelAction>,
+) -> Element {
   let selected = model.selected;
   let channel_id = model.channel.id;
   let channel_color = if selected {
@@ -178,8 +197,8 @@ fn text_channel_row(ctx: &mut Ctx, model: &TextChannelRowModel, session: Option<
     );
   }
 
-  if let Some(session) = session {
-    row = row.on_click(move |_| session.select_text_channel(channel_id));
+  if let Some(select_channel) = select_channel {
+    row = row.on_click(move |_| select_channel.run(channel_id));
   }
 
   row.into()

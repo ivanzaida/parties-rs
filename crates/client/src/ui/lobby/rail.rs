@@ -28,10 +28,10 @@ use crate::{
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
     lobby::{
-      debug_channels::{DebugChannels, DebugChannelsProps},
+      debug_channels::{DebugChannels, DebugChannelsProps, SelectDebugChatAction},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
-      text_channels::{TextChannels, TextChannelsProps},
+      text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
     },
     settings::SettingsPopupHandle,
@@ -100,7 +100,9 @@ impl Component for LobbyRail {
     let join_channel = session
       .clone()
       .map(|session| join_channel_action(ctx, session, storage.clone()));
-    let voice_control = session.map(|session| voice_control_action(ctx, session));
+    let voice_control = session.clone().map(|session| voice_control_action(ctx, session));
+    let select_text_channel = session.clone().map(SelectTextChannelAction::new);
+    let select_debug_chat = session.map(SelectDebugChatAction::new);
     ctx.provide(self.model_store.clone());
     let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
       info: props.info.clone(),
@@ -117,6 +119,8 @@ impl Component for LobbyRail {
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
       &props.watch_stream,
+      select_text_channel,
+      select_debug_chat,
       join_channel.as_ref(),
       voice_control.as_ref(),
     )
@@ -276,6 +280,8 @@ fn rail(
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
+  select_text_channel: Option<SelectTextChannelAction>,
+  select_debug_chat: Option<SelectDebugChatAction>,
   join_channel: Option<&JoinChannelAction>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
@@ -296,6 +302,8 @@ fn rail(
           ctx,
           model,
           debug_mode_enabled,
+          select_text_channel,
+          select_debug_chat,
           join_channel,
           watch_stream,
         ))
@@ -425,6 +433,8 @@ fn rail_channels(
   ctx: &mut Ctx,
   model: &LobbyRailModel,
   debug_mode_enabled: bool,
+  select_text_channel: Option<SelectTextChannelAction>,
+  select_debug_chat: Option<SelectDebugChatAction>,
   join_channel: Option<&JoinChannelAction>,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -436,6 +446,7 @@ fn rail_channels(
     .padding_horizontal(metrics.rail_padding_x)
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
       channels: model.text_channels.clone(),
+      select_channel: select_text_channel,
     }));
 
   channels = channels.child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
@@ -451,6 +462,7 @@ fn rail_channels(
   if debug_mode_enabled {
     channels = channels.child(ctx.mount::<DebugChannels>(DebugChannelsProps {
       selected: model.debug_chat_selected,
+      select_debug_chat,
     }));
   }
 

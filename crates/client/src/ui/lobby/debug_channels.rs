@@ -15,9 +15,31 @@ use crate::{
   ui::lobby::channel_section::{aligned_channel_icon_with_color, section_head},
 };
 
+#[derive(Clone)]
+pub(super) struct SelectDebugChatAction {
+  session: ServerSession,
+}
+
+impl SelectDebugChatAction {
+  pub(super) fn new(session: ServerSession) -> Self {
+    Self { session }
+  }
+
+  fn run(&self) {
+    self.session.select_debug_chat();
+  }
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct DebugChannelsProps {
   pub selected: bool,
+  pub select_debug_chat: Option<SelectDebugChatAction>,
+}
+
+impl PartialEq for SelectDebugChatAction {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
 }
 
 impl DevtoolsInspectable for DebugChannelsProps {
@@ -59,15 +81,14 @@ impl Component for DebugChannels {
       ));
 
     if is_expanded {
-      let session = ctx.use_context::<ServerSession>();
-      section = section.child(debug_chat_row(ctx, props.selected, session));
+      section = section.child(debug_chat_row(ctx, props.selected, props.select_debug_chat));
     }
 
     section
   }
 }
 
-fn debug_chat_row(ctx: &mut Ctx, selected: bool, session: Option<ServerSession>) -> Element {
+fn debug_chat_row(ctx: &mut Ctx, selected: bool, select_debug_chat: Option<SelectDebugChatAction>) -> Element {
   let channel_color = if selected {
     theme::palette().accent
   } else {
@@ -101,8 +122,8 @@ fn debug_chat_row(ctx: &mut Ctx, selected: bool, session: Option<ServerSession>)
         }),
     );
 
-  if let Some(session) = session {
-    row = row.on_click(move |_| session.select_debug_chat());
+  if let Some(select_debug_chat) = select_debug_chat {
+    row = row.on_click(move |_| select_debug_chat.run());
   }
 
   row.into()

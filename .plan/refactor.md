@@ -371,6 +371,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added `LobbyShellModel` for receiver/disconnect state and initial chat-history targets;
   - changed the root subscriber to apply only shell-model changes, and updated the disconnected screen to consume the shell model instead of the full lobby.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the first rail action cleanup slice:
+  - added explicit text-channel and debug-chat select action handles;
+  - passed those actions from `LobbyRail` into text/debug channel props;
+  - removed hidden `ServerSession` context reads from `TextChannels` and `DebugChannels`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
