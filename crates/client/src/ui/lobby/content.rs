@@ -63,6 +63,7 @@ pub(super) fn main(
     .child(main_top_bar(
       ctx,
       debug_mode_enabled,
+      session.clone(),
       start_stream_modal_open.clone(),
       stop_watching,
     ))
@@ -95,11 +96,13 @@ pub(super) fn main(
 fn main_top_bar(
   ctx: &mut Ctx,
   debug_mode_enabled: bool,
+  session: ServerSession,
   start_stream_modal_open: Signal<bool>,
   stop_watching: &StopWatchingAction,
 ) -> Element {
   ctx.mount::<MainTopBar>(MainTopBarProps {
     debug_mode_enabled,
+    session,
     start_stream_modal_open,
     stop_watching: stop_watching.clone(),
   })
@@ -108,6 +111,7 @@ fn main_top_bar(
 #[derive(Clone)]
 struct MainTopBarProps {
   debug_mode_enabled: bool,
+  session: ServerSession,
   start_stream_modal_open: Signal<bool>,
   stop_watching: StopWatchingAction,
 }
@@ -115,6 +119,7 @@ struct MainTopBarProps {
 impl PartialEq for MainTopBarProps {
   fn eq(&self, other: &Self) -> bool {
     self.debug_mode_enabled == other.debug_mode_enabled
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
   }
 }
 
@@ -136,12 +141,10 @@ impl Component for MainTopBar {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    if let Some(session) = ctx.use_context::<ServerSession>() {
-      apply_main_top_bar_model(
-        &self.model_store,
-        main_top_bar_model(&session.lobby(), props.debug_mode_enabled),
-      );
-    }
+    apply_main_top_bar_model(
+      &self.model_store,
+      main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
+    );
     let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
       debug_mode_enabled: props.debug_mode_enabled,
     });
@@ -536,12 +539,10 @@ impl Component for MainBody {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    if let Some(session) = ctx.use_context::<ServerSession>() {
-      apply_main_body_model(
-        &self.model_store,
-        main_body_model(&session.lobby(), props.debug_mode_enabled),
-      );
-    }
+    apply_main_body_model(
+      &self.model_store,
+      main_body_model(&props.session.lobby(), props.debug_mode_enabled),
+    );
     let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
       debug_mode_enabled: props.debug_mode_enabled,
     });

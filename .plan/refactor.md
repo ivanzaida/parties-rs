@@ -395,6 +395,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed `ServerSession` explicitly into the stream browser pane;
   - initialized stream browser, watched stream, and floating preview stores from props instead of hidden context reads;
   - kept stream model subscribers as the only stream components reading `ServerSession` context for lobby-watch updates.
+- Completed the main content session cleanup slice:
+  - passed `ServerSession` explicitly into the main top bar component;
+  - initialized main top-bar and body model stores from props instead of hidden context reads;
+  - kept main content model subscribers as the only content components reading `ServerSession` context for lobby-watch updates.
 
 ## Non-Goals
 
