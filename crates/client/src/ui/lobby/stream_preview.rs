@@ -11,8 +11,7 @@ use super::{
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
 };
 use crate::{
-  network::protocol::ChannelId,
-  session::{LobbyState, ServerSession},
+  session::ServerSession,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -25,26 +24,19 @@ const PREVIEW_FOOTER_HEIGHT: f32 = 54.0;
 
 pub(super) fn floating_stream_preview(
   ctx: &mut Ctx,
-  lobby: &LobbyState,
   watched: WatchedChannelScreenShare<'_>,
   debug_user_ids: bool,
   session: ServerSession,
   stop_watching: &StopWatchingAction,
-) -> Option<Element> {
-  if main_pane_shows_watched_stream(lobby, watched.channel.id) {
-    return None;
-  }
-
+) -> Element {
   let x = preview_x(ctx);
   let y = preview_y();
   let channel_id = watched.channel.id;
 
-  Some(
-    preview_card(ctx, watched, debug_user_ids, session.clone(), stop_watching)
-      .absolute(x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-      .on_click(move |_| session.open_stream_browser(channel_id))
-      .into(),
-  )
+  preview_card(ctx, watched, debug_user_ids, session.clone(), stop_watching)
+    .absolute(x, y, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+    .on_click(move |_| session.open_stream_browser(channel_id))
+    .into()
 }
 
 fn preview_x(ctx: &Ctx) -> f32 {
@@ -54,14 +46,6 @@ fn preview_x(ctx: &Ctx) -> f32 {
 
 fn preview_y() -> f32 {
   PREVIEW_TOP_GAP
-}
-
-fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: ChannelId) -> bool {
-  if lobby.debug_chat_selected || lobby.selected_text_channel_id.is_some() {
-    return false;
-  }
-
-  lobby.stream_browser_channel_id == Some(watched_channel_id)
 }
 
 fn preview_card(

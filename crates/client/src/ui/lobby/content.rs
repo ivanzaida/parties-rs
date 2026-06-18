@@ -13,10 +13,13 @@ use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
-  model::{screen_shares_for_channel, selected_text_channel, stream_browser_channel, unique_lobby_member_count},
+  model::{
+    selected_text_channel, stream_browser_channel, stream_browser_model, stream_watching_model,
+    unique_lobby_member_count,
+  },
   shared::error_notice,
   stream_browser::stream_browser,
-  stream_watching::{stream_watching, stream_watching_top_bar, watched_stream_for_channel},
+  stream_watching::{stream_watching, stream_watching_top_bar},
 };
 use crate::{
   network::protocol::{ChannelId, UserId},
@@ -112,8 +115,14 @@ fn main_top_bar(
   }
 
   if let Some(channel) = stream_browser_channel(lobby) {
-    if let Some(stream) = watched_stream_for_channel(lobby, channel.id) {
-      return stream_watching_top_bar(ctx, stream, debug_mode_enabled, start_stream_modal_open, stop_watching);
+    if let Some(model) = stream_watching_model(lobby, channel.id) {
+      return stream_watching_top_bar(
+        ctx,
+        model.stream,
+        debug_mode_enabled,
+        start_stream_modal_open,
+        stop_watching,
+      );
     }
 
     let user_count = lobby.users_by_channel.get(&channel.id).map(Vec::len).unwrap_or(0);
@@ -343,24 +352,14 @@ fn main_body(
   }
 
   if let Some(channel) = stream_browser_channel(lobby) {
-    if let Some(stream) = watched_stream_for_channel(lobby, channel.id) {
-      return stream_watching(
-        ctx,
-        stream,
-        screen_shares_for_channel(lobby, channel.id),
-        lobby.last_error.as_deref(),
-        debug_mode_enabled,
-        storage,
-        session,
-        watch_stream,
-      );
+    if let Some(model) = stream_watching_model(lobby, channel.id) {
+      return stream_watching(ctx, model, debug_mode_enabled, storage, session, watch_stream);
     }
 
     return stream_browser(
       ctx,
-      channel,
+      stream_browser_model(lobby, channel),
       info.user_id,
-      lobby,
       debug_mode_enabled,
       start_stream_modal_open,
       stop_stream,

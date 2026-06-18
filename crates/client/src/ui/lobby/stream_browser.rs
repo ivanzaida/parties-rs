@@ -13,13 +13,13 @@ use lurq::{
 use super::{
   StopStreamAction, StopWatchingAction, WatchStreamAction,
   layout::lobby_layout_metrics,
-  model::{ChannelScreenShare, screen_shares_for_channel, stream_speaking},
+  model::{ChannelScreenShare, StreamBrowserModel, stream_speaking},
   shared::error_notice,
   stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
 };
 use crate::{
   network::protocol::UserId,
-  session::{LobbyChannel, LobbyScreenShare, LobbyState, LobbyUser},
+  session::{LobbyChannel, LobbyScreenShare, LobbyUser},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -33,38 +33,31 @@ const LOBBY_STREAM_FOOTER_HEIGHT: f32 = 58.0;
 
 pub(super) fn stream_browser(
   ctx: &mut Ctx,
-  channel: &LobbyChannel,
+  model: StreamBrowserModel<'_>,
   local_user_id: UserId,
-  lobby: &LobbyState,
   debug_user_ids: bool,
   _start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
   _stop_watching: &StopWatchingAction,
 ) -> Element {
-  let streams = screen_shares_for_channel(lobby, channel.id);
-  let users = lobby
-    .users_by_channel
-    .get(&channel.id)
-    .map(Vec::as_slice)
-    .unwrap_or(&[]);
   let mut content = Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(12.0)
     .padding(LOBBY_GRID_PADDING)
     .child(merged_lobby_grid(
       ctx,
-      channel,
-      users,
-      streams,
+      model.channel,
+      model.users,
+      model.streams,
       local_user_id,
-      lobby.watching_user_id,
+      model.watching_user_id,
       debug_user_ids,
       stop_stream,
       watch_stream,
     ));
 
-  if let Some(error) = lobby.last_error.as_deref() {
+  if let Some(error) = model.error {
     content = content.child(error_notice(ctx, error));
   }
 

@@ -287,6 +287,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - moved rail-only derivations for channel rows, local user state, connection status, and local streaming into `ui/lobby/model.rs`;
   - added a direct unit test for `lobby_rail_model`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the stream model slice:
+  - added stream browser, watched stream, and floating-preview selectors;
+  - removed direct full-lobby arguments from stream browser, watched stream, and floating preview renderers;
+  - added selector tests for watched-stream models and floating-preview visibility.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

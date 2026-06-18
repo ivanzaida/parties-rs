@@ -11,10 +11,11 @@ use lurq::{
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
+#[cfg(test)]
 pub(super) use super::model::watched_stream_for_channel;
 use super::{
   StopWatchingAction, WatchStreamAction,
-  model::{ChannelScreenShare, stream_speaking},
+  model::{ChannelScreenShare, StreamWatchingModel, stream_speaking},
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
 };
 use crate::{
@@ -68,14 +69,13 @@ pub(super) fn stream_watching_top_bar(
 
 pub(super) fn stream_watching(
   ctx: &mut Ctx,
-  stream: ChannelScreenShare<'_>,
-  streams: Vec<ChannelScreenShare<'_>>,
-  error: Option<&str>,
+  model: StreamWatchingModel<'_>,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
 ) -> Element {
+  let StreamWatchingModel { stream, streams, error } = model;
   let watched_user_id = stream.share.sharer_user_id;
   let mut body = Column::new()
     .width(Dimension::Pct(100.0))

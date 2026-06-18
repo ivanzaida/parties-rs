@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::lobby_rail_model;
+use super::{floating_stream_preview_model, lobby_rail_model, stream_watching_model};
 use crate::{
   network::protocol::{ChannelId, Role, UserId, VideoCodecId, control::ScreenShareMetadata},
   session::{
@@ -113,4 +113,55 @@ fn lobby_rail_model_collects_rail_only_state() {
   assert!(model.local_user_in_voice);
   assert!(model.local_streaming);
   assert!(model.debug_chat_selected);
+}
+
+#[test]
+fn stream_watching_model_collects_current_channel_streams_and_error() {
+  let lobby = LobbyState {
+    users_by_channel: HashMap::from([(
+      10,
+      vec![user(7, "local", false, false), user(8, "remote", false, false)],
+    )]),
+    screen_shares: vec![share(7), share(8), share(9)],
+    watching_user_id: Some(8),
+    last_error: Some("stream warning".to_owned()),
+    ..LobbyState::default()
+  };
+
+  let model = stream_watching_model(&lobby, 10).expect("watching model");
+
+  assert_eq!(model.stream.share.sharer_user_id, 8);
+  assert_eq!(model.stream.user.map(|user| user.username.as_str()), Some("remote"));
+  assert_eq!(
+    model
+      .streams
+      .iter()
+      .map(|stream| stream.share.sharer_user_id)
+      .collect::<Vec<_>>(),
+    vec![7, 8]
+  );
+  assert_eq!(model.error, Some("stream warning"));
+}
+
+#[test]
+fn floating_stream_preview_model_hides_when_main_pane_shows_watched_stream() {
+  let lobby = LobbyState {
+    channels: vec![voice_channel(10, "General")],
+    stream_browser_channel_id: Some(10),
+    users_by_channel: HashMap::from([(10, vec![user(7, "local", false, false)])]),
+    screen_shares: vec![share(7)],
+    watching_user_id: Some(7),
+    ..LobbyState::default()
+  };
+
+  assert!(floating_stream_preview_model(&lobby).is_none());
+
+  let lobby = LobbyState {
+    selected_text_channel_id: Some(30),
+    ..lobby
+  };
+
+  let preview = floating_stream_preview_model(&lobby).expect("floating preview");
+  assert_eq!(preview.channel.id, 10);
+  assert_eq!(preview.stream.share.sharer_user_id, 7);
 }

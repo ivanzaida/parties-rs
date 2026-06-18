@@ -18,6 +18,20 @@ pub(super) struct WatchedChannelScreenShare<'a> {
   pub(super) stream: ChannelScreenShare<'a>,
 }
 
+pub(super) struct StreamBrowserModel<'a> {
+  pub(super) channel: &'a LobbyChannel,
+  pub(super) users: &'a [LobbyUser],
+  pub(super) streams: Vec<ChannelScreenShare<'a>>,
+  pub(super) watching_user_id: Option<UserId>,
+  pub(super) error: Option<&'a str>,
+}
+
+pub(super) struct StreamWatchingModel<'a> {
+  pub(super) stream: ChannelScreenShare<'a>,
+  pub(super) streams: Vec<ChannelScreenShare<'a>>,
+  pub(super) error: Option<&'a str>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TextChannelRowModel {
   pub(super) channel: LobbyTextChannel,
@@ -132,9 +146,44 @@ pub(super) fn stream_browser_channel(lobby: &LobbyState) -> Option<&LobbyChannel
   lobby.channels.iter().find(|channel| channel.id == channel_id)
 }
 
+pub(super) fn stream_browser_model<'a>(lobby: &'a LobbyState, channel: &'a LobbyChannel) -> StreamBrowserModel<'a> {
+  StreamBrowserModel {
+    channel,
+    users: lobby
+      .users_by_channel
+      .get(&channel.id)
+      .map(Vec::as_slice)
+      .unwrap_or(&[]),
+    streams: screen_shares_for_channel(lobby, channel.id),
+    watching_user_id: lobby.watching_user_id,
+    error: lobby.last_error.as_deref(),
+  }
+}
+
+pub(super) fn stream_watching_model(lobby: &LobbyState, channel_id: ChannelId) -> Option<StreamWatchingModel<'_>> {
+  Some(StreamWatchingModel {
+    stream: watched_stream_for_channel(lobby, channel_id)?,
+    streams: screen_shares_for_channel(lobby, channel_id),
+    error: lobby.last_error.as_deref(),
+  })
+}
+
+pub(super) fn floating_stream_preview_model(lobby: &LobbyState) -> Option<WatchedChannelScreenShare<'_>> {
+  let watched = watched_stream(lobby)?;
+  (!main_pane_shows_watched_stream(lobby, watched.channel.id)).then_some(watched)
+}
+
 fn selected_voice_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
   let channel_id = lobby.selected_channel_id?;
   lobby.channels.iter().find(|channel| channel.id == channel_id)
+}
+
+fn main_pane_shows_watched_stream(lobby: &LobbyState, watched_channel_id: ChannelId) -> bool {
+  if lobby.debug_chat_selected || lobby.selected_text_channel_id.is_some() {
+    return false;
+  }
+
+  lobby.stream_browser_channel_id == Some(watched_channel_id)
 }
 
 pub(super) fn unique_lobby_member_count(lobby: &LobbyState) -> usize {
