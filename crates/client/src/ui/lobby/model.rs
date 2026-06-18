@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-  network::protocol::{ChannelId, Role, UserId},
+  network::protocol::{ChannelId, Role, UserId, control::ChatMessage as ProtocolChatMessage},
   session::{
     ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyScreenShare, LobbyState, LobbyTextChannel,
     LobbyUser,
@@ -29,6 +29,14 @@ pub(super) struct StreamBrowserModel<'a> {
 pub(super) struct StreamWatchingModel<'a> {
   pub(super) stream: ChannelScreenShare<'a>,
   pub(super) streams: Vec<ChannelScreenShare<'a>>,
+  pub(super) error: Option<&'a str>,
+}
+
+pub(super) struct ChatPaneModel<'a> {
+  pub(super) local_user_id: UserId,
+  pub(super) messages: &'a [ProtocolChatMessage],
+  pub(super) initial_history_loading: bool,
+  pub(super) can_page: bool,
   pub(super) error: Option<&'a str>,
 }
 
@@ -171,6 +179,37 @@ pub(super) fn stream_watching_model(lobby: &LobbyState, channel_id: ChannelId) -
 pub(super) fn floating_stream_preview_model(lobby: &LobbyState) -> Option<WatchedChannelScreenShare<'_>> {
   let watched = watched_stream(lobby)?;
   (!main_pane_shows_watched_stream(lobby, watched.channel.id)).then_some(watched)
+}
+
+pub(super) fn chat_pane_model<'a>(
+  info: &ConnectedServerInfo,
+  lobby: &'a LobbyState,
+  channel_id: ChannelId,
+  server_backed: bool,
+) -> ChatPaneModel<'a> {
+  let messages = if server_backed {
+    lobby
+      .chat_messages_by_channel
+      .get(&channel_id)
+      .map(Vec::as_slice)
+      .unwrap_or(&[])
+  } else {
+    lobby.debug_chat_messages.as_slice()
+  };
+  let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
+
+  ChatPaneModel {
+    local_user_id: info.user_id,
+    messages,
+    initial_history_loading: messages.is_empty()
+      && lobby.chat_history_loading.contains(&channel_id)
+      && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true),
+    can_page: server_backed
+      && oldest_message_id != 0
+      && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true)
+      && !lobby.chat_history_loading.contains(&channel_id),
+    error: lobby.last_error.as_deref(),
+  }
 }
 
 fn selected_voice_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {

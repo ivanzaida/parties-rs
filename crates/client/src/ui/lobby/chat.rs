@@ -30,10 +30,10 @@ use message::{ChatMessage, ChatMessageProps};
 use scroll::{chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom};
 use timeline::{chat_day_divider, local_chat_date};
 
-use super::{ChatHistoryAction, SendChatAction, shared::error_notice};
+use super::{ChatHistoryAction, SendChatAction, model::ChatPaneModel, shared::error_notice};
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
-  session::{ConnectedServerInfo, LobbyState, ServerSession},
+  session::ServerSession,
   theme,
   ui::loader::loader,
 };
@@ -41,8 +41,7 @@ use crate::{
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
   channel: ChatChannel,
-  info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: ChatPaneModel<'_>,
   message_input: Signal<String>,
   command_selected_index: Signal<usize>,
   command_scroll_state: ScrollState,
@@ -62,25 +61,14 @@ pub(super) fn text_channel_detail(
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
-  let messages: &[ProtocolChatMessage] = if channel.is_server_backed() {
-    lobby
-      .chat_messages_by_channel
-      .get(&channel_id)
-      .map(Vec::as_slice)
-      .unwrap_or(&[])
-  } else {
-    lobby.debug_chat_messages.as_slice()
-  };
+  let messages = model.messages;
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
-  let newest_message_from_local = messages.last().is_some_and(|message| message.sender_id == info.user_id);
-  let initial_history_loading = messages.is_empty()
-    && lobby.chat_history_loading.contains(&channel_id)
-    && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true);
-  let can_page = channel.is_server_backed()
-    && oldest_message_id != 0
-    && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true)
-    && !lobby.chat_history_loading.contains(&channel_id);
+  let newest_message_from_local = messages
+    .last()
+    .is_some_and(|message| message.sender_id == model.local_user_id);
+  let initial_history_loading = model.initial_history_loading;
+  let can_page = model.can_page;
   let channel_changed = chat_bottom_anchor
     .get_untracked()
     .is_none_or(|(anchor_channel_id, _)| anchor_channel_id != channel_id);
@@ -142,7 +130,7 @@ pub(super) fn text_channel_detail(
       );
     }
 
-    if let Some(error) = lobby.last_error.as_deref() {
+    if let Some(error) = model.error {
       messages_column = messages_column.child(error_notice(ctx, error));
     }
     chat_messages_scroll(
@@ -158,13 +146,7 @@ pub(super) fn text_channel_detail(
       can_page,
     )
   } else {
-    let messages_content = chat_messages_content(
-      ctx,
-      &messages,
-      lobby.last_error.as_deref(),
-      info.user_id,
-      debug_user_ids,
-    );
+    let messages_content = chat_messages_content(ctx, &messages, model.error, model.local_user_id, debug_user_ids);
     chat_messages_scroll(
       ScrollVertical::new(messages_content),
       chat_scroll_state,

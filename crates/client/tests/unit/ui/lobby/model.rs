@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 
-use super::{floating_stream_preview_model, lobby_rail_model, stream_watching_model};
+use super::{chat_pane_model, floating_stream_preview_model, lobby_rail_model, stream_watching_model};
 use crate::{
-  network::protocol::{ChannelId, Role, UserId, VideoCodecId, control::ScreenShareMetadata},
+  network::protocol::{
+    ChannelId, Role, UserId, VideoCodecId,
+    control::{ChatMessage, ScreenShareMetadata},
+  },
   session::{
     ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, LobbyScreenShare,
     LobbyState, LobbyTextChannel, LobbyUser,
@@ -57,6 +60,19 @@ fn share(sharer_user_id: UserId) -> LobbyScreenShare {
       width: 1920,
       height: 1080,
     },
+  }
+}
+
+fn chat_message(id: u64, channel_id: ChannelId, sender_id: UserId) -> ChatMessage {
+  ChatMessage {
+    id,
+    channel_id,
+    sender_id,
+    sender_name: format!("user-{sender_id}"),
+    timestamp: id,
+    text: format!("message {id}"),
+    pinned: false,
+    attachments: Vec::new(),
   }
 }
 
@@ -164,4 +180,38 @@ fn floating_stream_preview_model_hides_when_main_pane_shows_watched_stream() {
   let preview = floating_stream_preview_model(&lobby).expect("floating preview");
   assert_eq!(preview.channel.id, 10);
   assert_eq!(preview.stream.share.sharer_user_id, 7);
+}
+
+#[test]
+fn chat_pane_model_collects_messages_and_paging_state() {
+  let lobby = LobbyState {
+    chat_messages_by_channel: HashMap::from([(30, vec![chat_message(5, 30, 8), chat_message(6, 30, 7)])]),
+    chat_history_has_more: HashMap::from([(30, true)]),
+    last_error: Some("chat warning".to_owned()),
+    ..LobbyState::default()
+  };
+
+  let model = chat_pane_model(&info(7), &lobby, 30, true);
+
+  assert_eq!(model.local_user_id, 7);
+  assert_eq!(model.messages.len(), 2);
+  assert_eq!(model.messages[0].id, 5);
+  assert!(!model.initial_history_loading);
+  assert!(model.can_page);
+  assert_eq!(model.error, Some("chat warning"));
+}
+
+#[test]
+fn chat_pane_model_tracks_initial_history_loading_without_messages() {
+  let lobby = LobbyState {
+    chat_history_loading: [30].into_iter().collect(),
+    chat_history_has_more: HashMap::from([(30, true)]),
+    ..LobbyState::default()
+  };
+
+  let model = chat_pane_model(&info(7), &lobby, 30, true);
+
+  assert!(model.messages.is_empty());
+  assert!(model.initial_history_loading);
+  assert!(!model.can_page);
 }

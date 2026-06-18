@@ -14,7 +14,7 @@ use super::{
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
   model::{
-    selected_text_channel, stream_browser_channel, stream_browser_model, stream_watching_model,
+    chat_pane_model, selected_text_channel, stream_browser_channel, stream_browser_model, stream_watching_model,
     unique_lobby_member_count,
   },
   shared::error_notice,
@@ -305,11 +305,11 @@ fn main_body(
 ) -> Element {
   if debug_mode_enabled && lobby.debug_chat_selected {
     let channel = ChatChannel::debug(ctx);
+    let model = chat_pane_model(info, lobby, channel.id(), channel.is_server_backed());
     return text_channel_detail(
       ctx,
       channel,
-      info,
-      lobby,
+      model,
       message_input,
       chat_command_selected_index,
       chat_command_scroll_state,
@@ -329,11 +329,11 @@ fn main_body(
 
   if let Some(channel) = selected_text_channel(lobby) {
     let channel = ChatChannel::server_text(ctx, channel, lobby.chat_command_registry.clone());
+    let model = chat_pane_model(info, lobby, channel.id(), channel.is_server_backed());
     return text_channel_detail(
       ctx,
       channel,
-      info,
-      lobby,
+      model,
       message_input,
       chat_command_selected_index,
       chat_command_scroll_state,

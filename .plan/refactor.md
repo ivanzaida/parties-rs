@@ -292,6 +292,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - removed direct full-lobby arguments from stream browser, watched stream, and floating preview renderers;
   - added selector tests for watched-stream models and floating-preview visibility.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the chat pane model slice:
+  - added `ChatPaneModel` for message selection, initial history loading, paging availability, local user id, and last error;
+  - removed direct full-lobby arguments from `text_channel_detail`;
+  - added selector tests for chat paging and initial loading state.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
