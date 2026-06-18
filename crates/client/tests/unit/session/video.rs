@@ -66,3 +66,43 @@ fn video_packet_queue_returns_none_when_stopped_without_packets() {
   assert!(batch.is_empty());
   assert!(dropped_senders.is_empty());
 }
+
+#[test]
+fn latest_watched_frame_number_uses_frame_order_not_queue_order() {
+  let batch = vec![
+    video_packet(7, 12),
+    video_packet(7, 10),
+    video_packet(9, 99),
+    video_packet(7, 11),
+  ];
+
+  assert_eq!(latest_watched_frame_number(&batch, Some(7)), Some(12));
+}
+
+#[test]
+fn watched_video_batch_orders_frames_from_expected_number() {
+  let mut batch = vec![
+    video_packet(7, 13),
+    video_packet(7, 10),
+    video_packet(9, 1),
+    video_packet(7, 12),
+    video_packet(7, 11),
+  ];
+
+  order_watched_video_batch(&mut batch, 7, Some(11));
+
+  let frames = batch
+    .iter()
+    .filter(|packet| packet.sender_id == 7)
+    .map(|packet| packet.frame.frame_number)
+    .collect::<Vec<_>>();
+  assert_eq!(frames, vec![11, 12, 13, 10]);
+}
+
+#[test]
+fn video_frame_number_comparison_handles_wraparound() {
+  assert!(frame_number_before(u32::MAX, 1));
+  assert!(frame_number_after(1, u32::MAX));
+  assert!(!frame_number_before(20, 10));
+  assert!(!frame_number_after(10, 20));
+}

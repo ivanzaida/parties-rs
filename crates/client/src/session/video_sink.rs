@@ -1,6 +1,6 @@
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc};
 
 use lurq::{
   core::Signal,
@@ -72,7 +72,6 @@ pub(super) struct VideoFrameSink {
   frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
-  revision_marks: Arc<Mutex<HashMap<UserId, Instant>>>,
   lobby: Arc<Mutex<LobbyState>>,
   revision: Signal<u64>,
   #[cfg(target_os = "windows")]
@@ -85,7 +84,6 @@ impl VideoFrameSink {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
-      revision_marks: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       revision,
       #[cfg(target_os = "windows")]
@@ -103,7 +101,6 @@ impl VideoFrameSink {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
-      revision_marks: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       revision,
       dx12_video_surfaces: Some(dx12_video_surfaces),
@@ -114,7 +111,6 @@ impl VideoFrameSink {
     self.frames.lock().clear();
     self.errors.lock().clear();
     self.metadata.lock().clear();
-    self.revision_marks.lock().clear();
   }
 
   pub(super) fn image_data(&self, user_id: UserId) -> Option<ImageData> {
@@ -127,19 +123,16 @@ impl VideoFrameSink {
 
   pub(super) fn retain_user(&self, watched_user_id: Option<UserId>) {
     let mut frames = self.frames.lock();
-    let mut marks = self.revision_marks.lock();
     let mut errors = self.errors.lock();
     let mut metadata = self.metadata.lock();
     match watched_user_id {
       Some(user_id) => {
         frames.retain(|cached_user_id, _| *cached_user_id == user_id);
-        marks.retain(|cached_user_id, _| *cached_user_id == user_id);
         errors.retain(|cached_user_id, _| *cached_user_id == user_id);
         metadata.retain(|cached_user_id, _| *cached_user_id == user_id);
       }
       None => {
         frames.clear();
-        marks.clear();
         errors.clear();
         metadata.clear();
       }
@@ -148,7 +141,6 @@ impl VideoFrameSink {
 
   pub(super) fn clear_user(&self, user_id: UserId) {
     self.frames.lock().remove(&user_id);
-    self.revision_marks.lock().remove(&user_id);
     self.errors.lock().remove(&user_id);
     self.metadata.lock().remove(&user_id);
   }
@@ -204,7 +196,7 @@ impl VideoFrameSink {
     }
     self.clear_error(frame.sender_id);
 
-    let mut force_revision = true;
+    let mut force_revision = false;
     #[cfg(target_os = "macos")]
     if !prefer_cpu_frame && let Some(native_image) = frame.native_image.clone() {
       {
@@ -250,10 +242,10 @@ impl VideoFrameSink {
             let _span = crate::services::profiler::span("video.render.cpu_image_create");
             match frame.format {
               DecodedVideoPixelFormat::Rgba8 => {
-                StreamingImage::new_rgba_manual_redraw(frame.pixels, u32::from(frame.width), u32::from(frame.height))
+                StreamingImage::new_rgba(frame.pixels, u32::from(frame.width), u32::from(frame.height))
               }
               DecodedVideoPixelFormat::Nv12 => {
-                StreamingImage::new_nv12_manual_redraw(frame.pixels, u32::from(frame.width), u32::from(frame.height))
+                StreamingImage::new_nv12(frame.pixels, u32::from(frame.width), u32::from(frame.height))
               }
             }
           };
@@ -271,7 +263,7 @@ impl VideoFrameSink {
       },
     );
 
-    if force_revision || self.should_bump_video_revision(frame.sender_id) {
+    if force_revision {
       self.bump_revision();
     }
   }
@@ -433,13 +425,12 @@ impl VideoFrameSink {
 
     force_revision |= self.update_share_metadata(sender_id, ScreenShareMetadata { codec, width, height });
 
-    let bump_revision = force_revision || self.should_bump_video_revision(sender_id);
-    if bump_revision && (bumped_version == 1 || bumped_version % 120 == 0) {
+    if force_revision && (bumped_version == 1 || bumped_version % 120 == 0) {
       tracing::info!(target: "video::decode",
         "[video:decode] bumping video revision for DX12 frame: user={sender_id} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} forced={force_revision}"
       );
     }
-    if bump_revision {
+    if force_revision {
       self.bump_revision();
     }
   }
@@ -475,22 +466,6 @@ impl VideoFrameSink {
     };
     self.metadata.lock().insert(sender_id, share.metadata.clone());
     changed
-  }
-
-  fn should_bump_video_revision(&self, user_id: UserId) -> bool {
-    let now = Instant::now();
-    let mut marks = self.revision_marks.lock();
-    match marks.get_mut(&user_id) {
-      Some(last) if now.duration_since(*last) < video::VIDEO_REVISION_INTERVAL => false,
-      Some(last) => {
-        *last = now;
-        true
-      }
-      None => {
-        marks.insert(user_id, now);
-        true
-      }
-    }
   }
 
   fn bump_revision(&self) {

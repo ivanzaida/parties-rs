@@ -27,7 +27,6 @@ use crate::{
 
 pub(super) const MAX_QUEUED_VIDEO_PACKETS: usize = 12;
 pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
-pub(super) const VIDEO_REVISION_INTERVAL: Duration = Duration::from_millis(16);
 const KEYFRAME_REQUEST_RETRY_INTERVAL: Duration = Duration::from_millis(750);
 const SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_VIDEO_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
@@ -442,14 +441,12 @@ pub(super) fn run_video_receiver<S>(
     }
 
     let last_batch_queued = batch.len();
-    let latest_watched_packet_index = batch
-      .iter()
-      .enumerate()
-      .filter(|(_, packet)| Some(packet.sender_id) == watched_user)
-      .map(|(index, _)| index)
-      .last();
+    if let Some(user_id) = watched_user {
+      order_watched_video_batch(&mut batch, user_id, expected_frame_numbers.get(&user_id).copied());
+    }
+    let latest_watched_frame_number = latest_watched_frame_number(&batch, watched_user);
 
-    for (packet_index, packet) in batch.drain(..).enumerate() {
+    for packet in batch.drain(..) {
       if Some(packet.sender_id) != watched_user {
         decode_pool.remove_user(packet.sender_id);
         awaiting_keyframes.remove(&packet.sender_id);
@@ -520,34 +517,22 @@ pub(super) fn run_video_receiver<S>(
             expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
           }
           Some(expected_frame_number) => {
-            if !packet_config.hardware_decoding {
-              expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
-              tracing::warn!(target: "video::decode",
-                "[video:decode] software decode continuing across video frame gap for user {}: expected={} actual={}",
-                packet.sender_id,
-                expected_frame_number,
-                packet.frame.frame_number
-              );
-            } else {
-              awaiting_decoded_output.remove(&packet.sender_id);
-              expected_frame_numbers.remove(&packet.sender_id);
-              decode_pool.reset_user(packet.sender_id);
-              if awaiting_keyframes.insert(packet.sender_id) {
-                request_keyframe_for(
-                  &runtime,
-                  &server,
-                  &mut last_keyframe_requests,
-                  packet.sender_id,
-                  "video frame gap detected",
-                );
-              }
-              tracing::warn!(target: "video::decode",
-                "[video:decode] video frame gap for user {}: expected={} actual={}; waiting for keyframe",
+            if frame_number_before(packet.frame.frame_number, expected_frame_number) {
+              tracing::debug!(target: "video::decode",
+                "[video:decode] dropping stale video frame for user {}: expected={} actual={}",
                 packet.sender_id,
                 expected_frame_number,
                 packet.frame.frame_number
               );
               continue;
+            } else {
+              expected_frame_numbers.insert(packet.sender_id, packet.frame.frame_number.wrapping_add(1));
+              tracing::debug!(target: "video::decode",
+                "[video:decode] continuing across video frame gap for user {}: expected={} actual={}",
+                packet.sender_id,
+                expected_frame_number,
+                packet.frame.frame_number
+              );
             }
           }
           None => {
@@ -568,8 +553,8 @@ pub(super) fn run_video_receiver<S>(
       }
 
       let received_count = increment_counter(&mut received_counts, packet.sender_id);
-      let output =
-        Some(packet_index) == latest_watched_packet_index || awaiting_decoded_output.contains(&packet.sender_id);
+      let output = latest_watched_frame_number == Some(packet.frame.frame_number)
+        || awaiting_decoded_output.contains(&packet.sender_id);
       let had_known_decoder_failure = decode_pool.has_decoder_failure(packet.sender_id, &packet_config);
       if should_log_video_count(received_count) {
         tracing::debug!(target: "video::decode",
@@ -810,6 +795,53 @@ fn windows_dx12_surface_decode_allowed(codec: VideoCodecId) -> bool {
     Some(WINDOWS_AMD_VENDOR_ID) => codec == VideoCodecId::H264,
     _ => false,
   }
+}
+
+fn order_watched_video_batch(
+  batch: &mut [ForwardedVideoFrame],
+  watched_user_id: UserId,
+  expected_frame_number: Option<u32>,
+) {
+  batch.sort_by_key(|packet| {
+    if packet.sender_id != watched_user_id {
+      return (1_u8, u32::MAX);
+    }
+
+    let frame_number = packet.frame.frame_number;
+    let distance = expected_frame_number.map_or(frame_number, |expected| {
+      if frame_number_before(frame_number, expected) {
+        u32::MAX
+      } else {
+        frame_number.wrapping_sub(expected)
+      }
+    });
+
+    (0_u8, distance)
+  });
+}
+
+fn latest_watched_frame_number(batch: &[ForwardedVideoFrame], watched_user_id: Option<UserId>) -> Option<u32> {
+  batch
+    .iter()
+    .filter(|packet| Some(packet.sender_id) == watched_user_id)
+    .map(|packet| packet.frame.frame_number)
+    .reduce(|latest, frame_number| {
+      if frame_number_after(frame_number, latest) {
+        frame_number
+      } else {
+        latest
+      }
+    })
+}
+
+fn frame_number_before(frame_number: u32, expected_frame_number: u32) -> bool {
+  let delta = expected_frame_number.wrapping_sub(frame_number);
+  delta != 0 && delta < (u32::MAX / 2)
+}
+
+fn frame_number_after(frame_number: u32, previous_frame_number: u32) -> bool {
+  let delta = frame_number.wrapping_sub(previous_frame_number);
+  delta != 0 && delta < (u32::MAX / 2)
 }
 
 fn video_receiver_debug_snapshot(
