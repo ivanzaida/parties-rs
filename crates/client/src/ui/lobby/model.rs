@@ -6,7 +6,7 @@ use crate::{
   network::protocol::{ChannelId, Role, UserId, control::ChatMessage as ProtocolChatMessage},
   session::{
     ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyScreenShare, LobbyState, LobbyTextChannel,
-    LobbyUser,
+    LobbyUser, chat_commands::ChatCommandRegistry,
   },
 };
 
@@ -97,6 +97,26 @@ pub(super) struct LobbyRailModel {
 
 impl DevtoolsInspectable for LobbyRailModel {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MainTopBarModel {
+  DebugChat,
+  Text {
+    channel: LobbyTextChannel,
+    command_registry: ChatCommandRegistry,
+    member_count: usize,
+  },
+  StreamWatching {
+    stream: ChannelScreenShare,
+  },
+  StreamBrowser {
+    channel: LobbyChannel,
+    user_count: usize,
+  },
+  VoiceDefault,
+}
+
+impl DevtoolsInspectable for MainTopBarModel {}
+
 pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> LobbyRailModel {
   LobbyRailModel {
     server_name: info.server_name.clone(),
@@ -118,6 +138,33 @@ pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -
       .iter()
       .any(|share| share.sharer_user_id == info.user_id),
   }
+}
+
+pub(super) fn main_top_bar_model(lobby: &LobbyState, debug_mode_enabled: bool) -> MainTopBarModel {
+  if debug_mode_enabled && lobby.debug_chat_selected {
+    return MainTopBarModel::DebugChat;
+  }
+
+  if let Some(channel) = selected_text_channel(lobby) {
+    return MainTopBarModel::Text {
+      channel: channel.clone(),
+      command_registry: lobby.chat_command_registry.clone(),
+      member_count: unique_lobby_member_count(lobby),
+    };
+  }
+
+  if let Some(channel) = stream_browser_channel(lobby) {
+    if let Some(model) = stream_watching_model(lobby, channel.id) {
+      return MainTopBarModel::StreamWatching { stream: model.stream };
+    }
+
+    return MainTopBarModel::StreamBrowser {
+      channel: channel.clone(),
+      user_count: lobby.users_by_channel.get(&channel.id).map(Vec::len).unwrap_or(0),
+    };
+  }
+
+  MainTopBarModel::VoiceDefault
 }
 
 pub(super) fn text_channel_rows(lobby: &LobbyState) -> Vec<TextChannelRowModel> {

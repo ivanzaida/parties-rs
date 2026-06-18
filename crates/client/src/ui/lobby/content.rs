@@ -1,25 +1,32 @@
+use std::sync::Arc;
+
 use lurq::{
-  app::ctx::Ctx,
-  components::{Column, Row, Text},
-  core::Signal,
+  app::{
+    component::{Component, DevtoolsInspectable},
+    ctx::Ctx,
+  },
+  components::{Column, Rect, Row, Text},
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::{Justify, ScrollState},
   },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, dimension::Dimension},
 };
+use parking_lot::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
-  model::{selected_text_channel, stream_browser_channel, stream_watching_model, unique_lobby_member_count},
+  model::{MainTopBarModel, main_top_bar_model, selected_text_channel, stream_browser_channel},
   shared::error_notice,
   stream_watching::{stream_channel_detail, stream_watching_top_bar},
 };
 use crate::{
-  network::protocol::{ChannelId, UserId},
-  session::{ConnectedServerInfo, LobbyChannel, LobbyState, ServerSession},
+  network::protocol::ChannelId,
+  session::{ConnectedServerInfo, LobbyChannel, LobbySnapshot, LobbyState, ServerSession},
   storage::Storage,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -56,11 +63,8 @@ pub(super) fn main(
     .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
     .child(main_top_bar(
       ctx,
-      info.user_id,
-      lobby,
       debug_mode_enabled,
       start_stream_modal_open.clone(),
-      stop_stream,
       stop_watching,
     ))
     .child(main_body(
@@ -92,56 +96,215 @@ pub(super) fn main(
 
 fn main_top_bar(
   ctx: &mut Ctx,
-  _local_user_id: UserId,
-  lobby: &LobbyState,
   debug_mode_enabled: bool,
   start_stream_modal_open: Signal<bool>,
-  _stop_stream: &StopStreamAction,
+  stop_watching: &StopWatchingAction,
+) -> Element {
+  ctx.mount::<MainTopBar>(MainTopBarProps {
+    debug_mode_enabled,
+    start_stream_modal_open,
+    stop_watching: stop_watching.clone(),
+  })
+}
+
+#[derive(Clone)]
+struct MainTopBarProps {
+  debug_mode_enabled: bool,
+  start_stream_modal_open: Signal<bool>,
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for MainTopBarProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.debug_mode_enabled == other.debug_mode_enabled
+  }
+}
+
+impl DevtoolsInspectable for MainTopBarProps {}
+
+struct MainTopBar {
+  model_store: Store<Option<MainTopBarModel>>,
+}
+
+impl Component for MainTopBar {
+  type Props = MainTopBarProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    ctx.provide(self.model_store.clone());
+    if let Some(session) = ctx.use_context::<ServerSession>() {
+      apply_main_top_bar_model(
+        &self.model_store,
+        main_top_bar_model(&session.lobby(), props.debug_mode_enabled),
+      );
+    }
+    let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
+      debug_mode_enabled: props.debug_mode_enabled,
+    });
+    let model = self.model_store.get().unwrap_or(MainTopBarModel::VoiceDefault);
+    main_top_bar_view(
+      ctx,
+      subscriber,
+      model,
+      props.debug_mode_enabled,
+      props.start_stream_modal_open,
+      &props.stop_watching,
+    )
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct MainTopBarModelSubscriberProps {
+  debug_mode_enabled: bool,
+}
+
+impl DevtoolsInspectable for MainTopBarModelSubscriberProps {}
+
+struct MainTopBarModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for MainTopBarModelSubscriber {
+  type Props = MainTopBarModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<MainTopBarModel>>>() else {
+      return empty_subscriber_node();
+    };
+
+    apply_main_top_bar_model(
+      &model_store,
+      main_top_bar_model(&session.lobby(), props.debug_mode_enabled),
+    );
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let wait_generation = self.generation.get();
+    let session_for_update = session.clone();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let session = session_for_update.clone();
+      let debug_mode_enabled = props.debug_mode_enabled;
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        Ok::<_, String>((
+          snapshot.generation,
+          main_top_bar_model(&snapshot.lobby, debug_mode_enabled),
+        ))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, model)) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_main_top_bar_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_main_top_bar_model(model_store: &Store<Option<MainTopBarModel>>, model: MainTopBarModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
+  }
+}
+
+fn empty_subscriber_node() -> Element {
+  Rect::new(0.0, 0.0).into()
+}
+
+fn main_top_bar_view(
+  ctx: &mut Ctx,
+  subscriber: Element,
+  model: MainTopBarModel,
+  debug_mode_enabled: bool,
+  start_stream_modal_open: Signal<bool>,
   stop_watching: &StopWatchingAction,
 ) -> Element {
   let metrics = lobby_layout_metrics(ctx);
-  if debug_mode_enabled && lobby.debug_chat_selected {
-    let channel = ChatChannel::debug(ctx);
-    return chat_channel_top_bar(ctx, &channel, None);
-  }
-
-  if let Some(channel) = selected_text_channel(lobby) {
-    let channel = ChatChannel::server_text(ctx, channel, lobby.chat_command_registry.clone());
-    return chat_channel_top_bar(ctx, &channel, Some(unique_lobby_member_count(lobby)));
-  }
-
-  if let Some(channel) = stream_browser_channel(lobby) {
-    if let Some(model) = stream_watching_model(lobby, channel.id) {
-      return stream_watching_top_bar(
-        ctx,
-        model.stream,
-        debug_mode_enabled,
-        start_stream_modal_open,
-        stop_watching,
-      );
+  match model {
+    MainTopBarModel::DebugChat => {
+      let channel = ChatChannel::debug(ctx);
+      chat_channel_top_bar(ctx, subscriber, &channel, None)
     }
-
-    let user_count = lobby.users_by_channel.get(&channel.id).map(Vec::len).unwrap_or(0);
-    return voice_stream_top_bar(ctx, channel, user_count);
+    MainTopBarModel::Text {
+      channel,
+      command_registry,
+      member_count,
+    } => {
+      let channel = ChatChannel::server_text(ctx, &channel, command_registry);
+      chat_channel_top_bar(ctx, subscriber, &channel, Some(member_count))
+    }
+    MainTopBarModel::StreamWatching { stream } => stream_watching_top_bar(
+      ctx,
+      subscriber,
+      stream,
+      debug_mode_enabled,
+      start_stream_modal_open,
+      stop_watching,
+    ),
+    MainTopBarModel::StreamBrowser { channel, user_count } => {
+      voice_stream_top_bar(ctx, subscriber, &channel, user_count)
+    }
+    MainTopBarModel::VoiceDefault => Row::new()
+      .width(Dimension::Pct(100.0))
+      .height(56.0)
+      .align_items(Alignment::Center)
+      .spacing(theme::SpacingSize::Md)
+      .padding_horizontal(metrics.top_bar_padding_x)
+      .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+      .child(subscriber)
+      .child(ctx.mount::<LucideIcon>(LucideIconProps {
+        icon: "volume-2",
+        size: 16.0,
+        color: theme::palette().text_secondary,
+      }))
+      .child(Text::new(&ctx.t("lobby.title")).variant(theme::TypographyStyle::Heading))
+      .into(),
   }
-
-  Row::new()
-    .width(Dimension::Pct(100.0))
-    .height(56.0)
-    .align_items(Alignment::Center)
-    .spacing(theme::SpacingSize::Md)
-    .padding_horizontal(metrics.top_bar_padding_x)
-    .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
-    .child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon: "volume-2",
-      size: 16.0,
-      color: theme::palette().text_secondary,
-    }))
-    .child(Text::new(&ctx.t("lobby.title")).variant(theme::TypographyStyle::Heading))
-    .into()
 }
 
-fn chat_channel_top_bar(ctx: &mut Ctx, channel: &ChatChannel, member_count: Option<usize>) -> Element {
+fn chat_channel_top_bar(
+  ctx: &mut Ctx,
+  subscriber: Element,
+  channel: &ChatChannel,
+  member_count: Option<usize>,
+) -> Element {
   let metrics = lobby_layout_metrics(ctx);
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
@@ -150,6 +313,7 @@ fn chat_channel_top_bar(ctx: &mut Ctx, channel: &ChatChannel, member_count: Opti
     .spacing(12.0)
     .padding_horizontal(metrics.top_bar_padding_x)
     .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+    .child(subscriber)
     .child(top_bar_plain_icon(ctx, channel.icon(), 18.0))
     .child(top_bar_label(
       channel.name(),
@@ -195,7 +359,7 @@ fn chat_channel_top_bar(ctx: &mut Ctx, channel: &ChatChannel, member_count: Opti
   row.into()
 }
 
-fn voice_stream_top_bar(ctx: &mut Ctx, channel: &LobbyChannel, user_count: usize) -> Element {
+fn voice_stream_top_bar(ctx: &mut Ctx, subscriber: Element, channel: &LobbyChannel, user_count: usize) -> Element {
   let metrics = lobby_layout_metrics(ctx);
   Row::new()
     .width(Dimension::Pct(100.0))
@@ -204,6 +368,7 @@ fn voice_stream_top_bar(ctx: &mut Ctx, channel: &LobbyChannel, user_count: usize
     .spacing(10.0)
     .padding_horizontal(metrics.top_bar_padding_x)
     .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+    .child(subscriber)
     .child(top_bar_plain_icon(ctx, "volume-2", 16.0))
     .child(top_bar_label(
       &channel.name,

@@ -39,6 +39,7 @@ const STREAM_VOLUME_VALUE_SPACING: f32 = 8.0;
 
 pub(super) fn stream_watching_top_bar(
   ctx: &mut Ctx,
+  subscriber: Element,
   stream: ChannelScreenShare,
   debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
@@ -54,6 +55,7 @@ pub(super) fn stream_watching_top_bar(
     .justify(Justify::SpaceBetween)
     .padding_horizontal(20.0)
     .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
+    .child(subscriber)
     .child(
       Row::new()
         .align_items(Alignment::Center)

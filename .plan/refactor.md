@@ -356,6 +356,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added a zero-size `FloatingStreamPreviewModelSubscriber` that updates only the floating-preview model;
   - stopped deriving `floating_stream_preview_model` in `LobbyScreen`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the main top bar fine-grained subscription slice:
+  - added `MainTopBarModel` for debug chat, text chat, watched stream, stream browser, and default voice top-bar states;
+  - wrapped the top bar in a `MainTopBar` component with a local `Store<Option<MainTopBarModel>>`;
+  - added a zero-size `MainTopBarModelSubscriber` and stopped deriving top-bar state from the full lobby in `content::main`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
