@@ -411,6 +411,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed `ServerSession` explicitly into shell, rail, chat, content, and stream model subscribers;
   - removed subscriber `ServerSession` context reads from lobby components;
   - left subscriber context reads limited to their local model stores.
+- Completed the user menu action grouping slice:
+  - added `UserMenuActions` as the explicit moderation action contract for the user context overlay;
+  - replaced four separate overlay action props with one grouped action prop;
+  - kept overlay prop comparison focused on model data and action availability.
 
 ## Non-Goals
 

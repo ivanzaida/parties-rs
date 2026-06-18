@@ -32,6 +32,23 @@ pub(super) type SetUserVoiceStateAction = lurq::app::ctx::FutureAction<(UserId, 
 pub(super) type DisconnectUserAction = lurq::app::ctx::FutureAction<UserId, (), String>;
 pub(super) type KickUserAction = lurq::app::ctx::FutureAction<UserId, (), String>;
 
+#[derive(Clone, Default)]
+pub(super) struct UserMenuActions {
+  pub set_role: Option<SetRoleAction>,
+  pub set_user_voice_state: Option<SetUserVoiceStateAction>,
+  pub disconnect_user: Option<DisconnectUserAction>,
+  pub kick_user: Option<KickUserAction>,
+}
+
+impl PartialEq for UserMenuActions {
+  fn eq(&self, other: &Self) -> bool {
+    self.set_role.is_some() == other.set_role.is_some()
+      && self.set_user_voice_state.is_some() == other.set_user_voice_state.is_some()
+      && self.disconnect_user.is_some() == other.disconnect_user.is_some()
+      && self.kick_user.is_some() == other.kick_user.is_some()
+  }
+}
+
 const USER_CONTEXT_MENU_WIDTH: f32 = 286.0;
 const USER_CONTEXT_MENU_HORIZONTAL_PADDING: f32 = 10.0;
 const USER_VOLUME_SLIDER_WIDTH: f32 = USER_CONTEXT_MENU_WIDTH - USER_CONTEXT_MENU_HORIZONTAL_PADDING * 2.0;
@@ -53,10 +70,7 @@ pub(super) struct UserContextOverlayProps {
   pub role_menu_user_id: Signal<Option<UserId>>,
   pub session: Option<ServerSession>,
   pub storage: Option<Storage>,
-  pub set_role: Option<SetRoleAction>,
-  pub set_user_voice_state: Option<SetUserVoiceStateAction>,
-  pub disconnect_user: Option<DisconnectUserAction>,
-  pub kick_user: Option<KickUserAction>,
+  pub actions: UserMenuActions,
   pub debug_user_ids: bool,
 }
 
@@ -68,10 +82,7 @@ impl PartialEq for UserContextOverlayProps {
       && self.local_role == other.local_role
       && self.session.is_some() == other.session.is_some()
       && self.storage.is_some() == other.storage.is_some()
-      && self.set_role.is_some() == other.set_role.is_some()
-      && self.set_user_voice_state.is_some() == other.set_user_voice_state.is_some()
-      && self.disconnect_user.is_some() == other.disconnect_user.is_some()
-      && self.kick_user.is_some() == other.kick_user.is_some()
+      && self.actions == other.actions
       && self.debug_user_ids == other.debug_user_ids
   }
 }
@@ -179,15 +190,18 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
   let target_user_id = props.user.user_id;
   let can_moderate = target_user_id != props.local_user_id && props.local_role.can_moderate(props.user.role);
   let can_set_role =
-    can_moderate && props.local_role.has_permission(Permission::ManageRoles) && props.set_role.is_some();
-  let can_mute =
-    can_moderate && props.local_role.has_permission(Permission::MuteOthers) && props.set_user_voice_state.is_some();
-  let can_deafen =
-    can_moderate && props.local_role.has_permission(Permission::DeafenOthers) && props.set_user_voice_state.is_some();
-  let can_disconnect =
-    can_moderate && props.local_role.has_permission(Permission::KickFromChannel) && props.disconnect_user.is_some();
+    can_moderate && props.local_role.has_permission(Permission::ManageRoles) && props.actions.set_role.is_some();
+  let can_mute = can_moderate
+    && props.local_role.has_permission(Permission::MuteOthers)
+    && props.actions.set_user_voice_state.is_some();
+  let can_deafen = can_moderate
+    && props.local_role.has_permission(Permission::DeafenOthers)
+    && props.actions.set_user_voice_state.is_some();
+  let can_disconnect = can_moderate
+    && props.local_role.has_permission(Permission::KickFromChannel)
+    && props.actions.disconnect_user.is_some();
   let can_kick =
-    can_moderate && props.local_role.has_permission(Permission::KickFromServer) && props.kick_user.is_some();
+    can_moderate && props.local_role.has_permission(Permission::KickFromServer) && props.actions.kick_user.is_some();
   let role_menu_open = props.role_menu_user_id.get() == Some(target_user_id);
   let volume_control_key = format!("user-volume-{target_user_id}");
   let normalization_control_key = format!("user-normalization-{target_user_id}");
@@ -228,7 +242,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
     menu = menu.child(menu_separator()).child(admin_section_label(ctx));
   }
 
-  if let Some(set_role) = props.set_role.clone().filter(|_| can_set_role) {
+  if let Some(set_role) = props.actions.set_role.clone().filter(|_| can_set_role) {
     let open_role_menu = props.role_menu_user_id.clone();
     let label = ctx.t("lobby.voice_menu.set_role");
     menu = menu.child(menu_item(ctx, "shield", &label, false).on_click(move |_| {
@@ -254,7 +268,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
     }
   }
 
-  if let Some(set_user_voice_state) = props.set_user_voice_state.clone().filter(|_| can_mute) {
+  if let Some(set_user_voice_state) = props.actions.set_user_voice_state.clone().filter(|_| can_mute) {
     let close_context = props.context_user_id.clone();
     let close_menu = props.context_menu_open.clone();
     let close_anchor = props.context_menu_anchor.clone();
@@ -278,7 +292,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
     }));
   }
 
-  if let Some(set_user_voice_state) = props.set_user_voice_state.filter(|_| can_deafen) {
+  if let Some(set_user_voice_state) = props.actions.set_user_voice_state.filter(|_| can_deafen) {
     let close_context = props.context_user_id.clone();
     let close_menu = props.context_menu_open.clone();
     let close_anchor = props.context_menu_anchor.clone();
@@ -306,7 +320,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
     }));
   }
 
-  if let Some(disconnect_user) = props.disconnect_user.filter(|_| can_disconnect) {
+  if let Some(disconnect_user) = props.actions.disconnect_user.filter(|_| can_disconnect) {
     let close_context = props.context_user_id.clone();
     let close_menu = props.context_menu_open.clone();
     let close_anchor = props.context_menu_anchor.clone();
@@ -323,7 +337,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
     }));
   }
 
-  if let Some(kick_user) = props.kick_user.filter(|_| can_kick) {
+  if let Some(kick_user) = props.actions.kick_user.filter(|_| can_kick) {
     let close_context = props.context_user_id.clone();
     let close_menu = props.context_menu_open.clone();
     let close_anchor = props.context_menu_anchor.clone();

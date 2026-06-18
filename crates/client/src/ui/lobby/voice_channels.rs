@@ -20,7 +20,7 @@ use super::{
   WatchStreamAction,
   user_context_overlay::{
     DisconnectUserAction, KickUserAction, SetRoleAction, SetUserVoiceStateAction, UserContextOverlay,
-    UserContextOverlayProps, close_user_context_menu,
+    UserContextOverlayProps, UserMenuActions, close_user_context_menu,
   },
 };
 use crate::{
@@ -250,10 +250,12 @@ impl Component for VoiceChannels {
       let modal_anchor = self.context_menu_anchor.clone();
       let modal_role_menu_user_id = self.role_menu_user_id.clone();
       let modal_session = session.clone();
-      let modal_set_role = set_role.clone();
-      let modal_set_user_voice_state = set_user_voice_state.clone();
-      let modal_disconnect_user = disconnect_user.clone();
-      let modal_kick_user = kick_user.clone();
+      let modal_actions = UserMenuActions {
+        set_role: set_role.clone(),
+        set_user_voice_state: set_user_voice_state.clone(),
+        disconnect_user: disconnect_user.clone(),
+        kick_user: kick_user.clone(),
+      };
       let local_user_id = props.local_user_id;
       let local_role = props.local_role;
       body = body.child(
@@ -268,10 +270,7 @@ impl Component for VoiceChannels {
           role_menu_user_id: modal_role_menu_user_id,
           session: modal_session,
           storage: props.storage.clone(),
-          set_role: modal_set_role,
-          set_user_voice_state: modal_set_user_voice_state,
-          disconnect_user: modal_disconnect_user,
-          kick_user: modal_kick_user,
+          actions: modal_actions,
           debug_user_ids: props.debug_user_ids,
         }))
         .open(self.context_menu_open.clone())
