@@ -64,6 +64,12 @@ impl JoinChannelAction {
   }
 }
 
+impl PartialEq for JoinChannelAction {
+  fn eq(&self, other: &Self) -> bool {
+    same_session(&self.session, &other.session)
+  }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct VoiceChannelActions {
   pub session: Option<ServerSession>,
@@ -73,9 +79,21 @@ pub(super) struct VoiceChannelActions {
 
 impl PartialEq for VoiceChannelActions {
   fn eq(&self, other: &Self) -> bool {
-    self.session.is_some() == other.session.is_some()
-      && self.join_channel.is_some() == other.join_channel.is_some()
+    same_optional_session(self.session.as_ref(), other.session.as_ref())
+      && self.join_channel == other.join_channel
       && self.watch_stream.is_some() == other.watch_stream.is_some()
+  }
+}
+
+fn same_session(left: &ServerSession, right: &ServerSession) -> bool {
+  left.info().map(|info| info.address) == right.info().map(|info| info.address)
+}
+
+fn same_optional_session(left: Option<&ServerSession>, right: Option<&ServerSession>) -> bool {
+  match (left, right) {
+    (Some(left), Some(right)) => same_session(left, right),
+    (None, None) => true,
+    _ => false,
   }
 }
 

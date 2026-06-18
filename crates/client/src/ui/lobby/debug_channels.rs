@@ -37,8 +37,8 @@ pub(super) struct DebugChannelsProps {
 }
 
 impl PartialEq for SelectDebugChatAction {
-  fn eq(&self, _other: &Self) -> bool {
-    true
+  fn eq(&self, other: &Self) -> bool {
+    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
   }
 }
 

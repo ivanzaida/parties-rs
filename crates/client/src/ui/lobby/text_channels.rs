@@ -36,16 +36,16 @@ impl SelectTextChannelAction {
   }
 }
 
-#[derive(Clone)]
+impl PartialEq for SelectTextChannelAction {
+  fn eq(&self, other: &Self) -> bool {
+    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+#[derive(Clone, PartialEq)]
 pub(super) struct TextChannelsProps {
   pub channels: Vec<TextChannelRowModel>,
   pub select_channel: Option<SelectTextChannelAction>,
-}
-
-impl PartialEq for TextChannelsProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.channels == other.channels && self.select_channel.is_some() == other.select_channel.is_some()
-  }
 }
 
 impl DevtoolsInspectable for TextChannelsProps {

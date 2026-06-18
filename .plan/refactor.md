@@ -442,6 +442,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Expanded selector invalidation guard tests:
   - covered shell, main top bar, main body, stream browser, watched stream, and floating preview models;
   - proved chat-message-only and voice-presence-only updates do not invalidate unrelated subscribed models.
+- Completed action equality cleanup:
+  - made text/debug channel selection actions compare by connected server identity;
+  - made join-channel and optional user-control sessions compare by connected server identity;
+  - kept opaque future-only actions compared by availability where no stable identity is exposed.
 
 ## Non-Goals
 

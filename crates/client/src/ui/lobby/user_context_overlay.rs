@@ -80,7 +80,7 @@ impl PartialEq for UserContextOverlayProps {
       && self.channel_name == other.channel_name
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
-      && self.session.is_some() == other.session.is_some()
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
       && self.actions == other.actions
       && self.debug_user_ids == other.debug_user_ids
@@ -466,7 +466,7 @@ struct UserVolumeControlProps {
 impl PartialEq for UserVolumeControlProps {
   fn eq(&self, other: &Self) -> bool {
     self.user_id == other.user_id
-      && self.session.is_some() == other.session.is_some()
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
   }
 }
@@ -499,8 +499,20 @@ struct UserNormalizationToggleProps {
 impl PartialEq for UserNormalizationToggleProps {
   fn eq(&self, other: &Self) -> bool {
     self.user_id == other.user_id
-      && self.session.is_some() == other.session.is_some()
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
+  }
+}
+
+fn same_session(left: &ServerSession, right: &ServerSession) -> bool {
+  left.info().map(|info| info.address) == right.info().map(|info| info.address)
+}
+
+fn same_optional_session(left: Option<&ServerSession>, right: Option<&ServerSession>) -> bool {
+  match (left, right) {
+    (Some(left), Some(right)) => same_session(left, right),
+    (None, None) => true,
+    _ => false,
   }
 }
 
