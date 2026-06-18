@@ -514,6 +514,10 @@ impl ServerSession {
     self.lobby.lock().clone()
   }
 
+  pub fn selected_channel_id(&self) -> Option<ChannelId> {
+    self.lobby.lock().selected_channel_id
+  }
+
   pub fn subscribe_lobby_updates(&self) -> watch::Receiver<LobbySnapshot> {
     self.lobby_updates.subscribe()
   }

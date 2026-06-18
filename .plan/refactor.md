@@ -449,6 +449,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Consolidated lobby session identity checks:
   - added shared helpers for server address extraction and session equality;
   - replaced repeated inline `ServerSession::info().address` comparisons across lobby props and controls.
+- Removed field-only lobby snapshot reads:
+  - added `ServerSession::selected_channel_id()`;
+  - changed join-channel and reconnect actions to read only the selected voice channel id instead of cloning the full lobby state.
 
 ## Non-Goals
 

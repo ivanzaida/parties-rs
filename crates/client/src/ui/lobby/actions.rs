@@ -1011,7 +1011,7 @@ async fn reconnect_saved_server(
   session: ServerSession,
   errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
-  let reconnect_channel_id = session.lobby().selected_channel_id;
+  let reconnect_channel_id = session.selected_channel_id();
   let reconnect_voice_state = reconnect_channel_id.and_then(|_| session.local_voice_state());
   let display_name = if server.display_name.trim().is_empty() {
     storage.load_settings().map_err(|error| error.to_string())?.display_name

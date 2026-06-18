@@ -56,7 +56,7 @@ impl JoinChannelAction {
   }
 
   pub(super) fn run(&self, channel_id: ChannelId) {
-    let previous_channel_id = self.session.lobby().selected_channel_id;
+    let previous_channel_id = self.session.selected_channel_id();
     self.session.select_channel(channel_id);
     self.task.run(JoinChannelRequest {
       channel_id,
