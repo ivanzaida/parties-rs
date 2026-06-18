@@ -464,6 +464,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Tightened shared subscriber session binding:
   - keyed `LobbyModelSubscription` receivers by connected server identity;
   - reset receiver state and applied generation when a reused subscriber receives a different `ServerSession`.
+- Narrowed rail header and bottom component boundaries:
+  - mounted rail header and bottom status/control areas as explicit components;
+  - passed each section only the model fields and action handles it renders, reducing rerenders from unrelated rail model changes.
 
 ## Non-Goals
 

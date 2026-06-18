@@ -15,10 +15,10 @@ use lurq::{
 
 use super::{StopStreamAction, WatchStreamAction};
 use crate::{
-  network::protocol::Role,
+  network::protocol::{Role, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{ConnectedServerInfo, LobbyConnectionWarningKind, ServerSession},
+  session::{ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -27,7 +27,7 @@ use crate::{
       debug_channels::{DebugChannels, DebugChannelsProps, SelectDebugChatAction},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
-      session_identity::same_session,
+      session_identity::{same_optional_session, same_session},
       subscription::{LobbyModelSubscription, apply_current_model, apply_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
@@ -50,6 +50,12 @@ impl VoiceControlFuture {
       self.session.leave_channel_locally();
     }
     self.task.run(action);
+  }
+}
+
+impl PartialEq for VoiceControlFuture {
+  fn eq(&self, other: &Self) -> bool {
+    same_session(&self.session, &other.session)
   }
 }
 
@@ -278,7 +284,11 @@ fn rail(
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-        .child(rail_header(ctx, model, debug_mode_enabled, leave_session.clone()))
+        .child(ctx.mount::<RailHeader>(RailHeaderProps {
+          model: RailHeaderModel::from(model),
+          debug_user_ids: debug_mode_enabled,
+          leave_session: leave_session.clone(),
+        }))
         .child(rail_channels(
           ctx,
           model,
@@ -290,15 +300,15 @@ fn rail(
           join_channel,
           &stream_actions.watch_stream,
         ))
-        .child(rail_bottom(
-          ctx,
-          model,
-          debug_mode_enabled,
+        .child(ctx.mount::<RailBottom>(RailBottomProps {
+          model: RailBottomModel::from(model),
+          debug_user_ids: debug_mode_enabled,
           settings_popup,
-          stream_actions,
+          start_stream_modal_open: stream_actions.start_stream_modal_open.clone(),
+          stop_stream: stream_actions.stop_stream.clone(),
           local_voice_state,
-          voice_control,
-        )),
+          voice_control: voice_control.cloned(),
+        })),
     )
     .child(
       Rect::new(RAIL_DIVIDER_WIDTH, 1.0)
@@ -323,15 +333,74 @@ fn empty_subscriber_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct RailHeaderModel {
+  server_name: String,
+  display_name: String,
+  user_id: UserId,
+  role: Role,
+  local_user_name: Option<String>,
+}
+
+impl From<&LobbyRailModel> for RailHeaderModel {
+  fn from(model: &LobbyRailModel) -> Self {
+    Self {
+      server_name: model.server_name.clone(),
+      display_name: model.display_name.clone(),
+      user_id: model.user_id,
+      role: model.role,
+      local_user_name: model.local_user_name.clone(),
+    }
+  }
+}
+
+#[derive(Clone)]
+struct RailHeaderProps {
+  model: RailHeaderModel,
+  debug_user_ids: bool,
+  leave_session: Option<ServerSession>,
+}
+
+impl PartialEq for RailHeaderProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.model == other.model
+      && self.debug_user_ids == other.debug_user_ids
+      && same_optional_session(self.leave_session.as_ref(), other.leave_session.as_ref())
+  }
+}
+
+impl DevtoolsInspectable for RailHeaderProps {}
+
+struct RailHeader;
+
+impl Component for RailHeader {
+  type Props = RailHeaderProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    rail_header(ctx, &props.model, props.debug_user_ids, props.leave_session)
+  }
+}
+
 fn rail_header(
   ctx: &mut Ctx,
-  model: &LobbyRailModel,
+  model: &RailHeaderModel,
   debug_user_ids: bool,
   leave_session: Option<ServerSession>,
 ) -> Element {
   let unknown_server = ctx.t("lobby.server.unknown");
   let server_name = server_name(&model.server_name, unknown_server.as_ref());
-  let user_label = local_user_label(ctx, model, debug_user_ids);
+  let user_label = local_user_label_fields(
+    ctx,
+    model.user_id,
+    &model.display_name,
+    model.local_user_name.as_deref(),
+    debug_user_ids,
+  );
   let role = ctx.t(role_label_lower_key(model.role));
   let sub = ctx.t_args(
     "lobby.rail.user_meta",
@@ -489,12 +558,93 @@ fn rail_scrollbar_style() -> ScrollBarStyle {
   }
 }
 
-fn rail_bottom(
-  ctx: &mut Ctx,
-  model: &LobbyRailModel,
+#[derive(Clone, PartialEq, Eq)]
+struct RailBottomModel {
+  selected_voice_channel: Option<LobbyChannel>,
+  connection_warning: Option<LobbyConnectionWarning>,
+  disconnected: bool,
+  display_name: String,
+  user_id: UserId,
+  role: Role,
+  local_user_name: Option<String>,
+  ping_ms: Option<u32>,
+  local_voice_state: (bool, bool),
+  local_user_in_voice: bool,
+  local_streaming: bool,
+}
+
+impl From<&LobbyRailModel> for RailBottomModel {
+  fn from(model: &LobbyRailModel) -> Self {
+    Self {
+      selected_voice_channel: model.selected_voice_channel.clone(),
+      connection_warning: model.connection_warning.clone(),
+      disconnected: model.disconnected,
+      display_name: model.display_name.clone(),
+      user_id: model.user_id,
+      role: model.role,
+      local_user_name: model.local_user_name.clone(),
+      ping_ms: model.ping_ms,
+      local_voice_state: model.local_voice_state,
+      local_user_in_voice: model.local_user_in_voice,
+      local_streaming: model.local_streaming,
+    }
+  }
+}
+
+#[derive(Clone)]
+struct RailBottomProps {
+  model: RailBottomModel,
   debug_user_ids: bool,
   settings_popup: Option<SettingsPopupHandle>,
-  stream_actions: &RailStreamActions,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: StopStreamAction,
+  local_voice_state: Option<(bool, bool)>,
+  voice_control: Option<VoiceControlFuture>,
+}
+
+impl PartialEq for RailBottomProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.model == other.model
+      && self.debug_user_ids == other.debug_user_ids
+      && self.settings_popup.is_some() == other.settings_popup.is_some()
+      && self.local_voice_state == other.local_voice_state
+      && self.voice_control == other.voice_control
+  }
+}
+
+impl DevtoolsInspectable for RailBottomProps {}
+
+struct RailBottom;
+
+impl Component for RailBottom {
+  type Props = RailBottomProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    rail_bottom(
+      ctx,
+      &props.model,
+      props.debug_user_ids,
+      props.settings_popup,
+      props.start_stream_modal_open,
+      &props.stop_stream,
+      props.local_voice_state,
+      props.voice_control.as_ref(),
+    )
+  }
+}
+
+fn rail_bottom(
+  ctx: &mut Ctx,
+  model: &RailBottomModel,
+  debug_user_ids: bool,
+  settings_popup: Option<SettingsPopupHandle>,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
   local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
@@ -509,16 +659,16 @@ fn rail_bottom(
     .child(control_row(
       ctx,
       model,
-      stream_actions.start_stream_modal_open.clone(),
+      start_stream_modal_open,
       settings_popup,
-      &stream_actions.stop_stream,
+      stop_stream,
       local_voice_state,
       voice_control,
     ))
     .into()
 }
 
-fn connection_status(ctx: &mut Ctx, model: &LobbyRailModel) -> Element {
+fn connection_status(ctx: &mut Ctx, model: &RailBottomModel) -> Element {
   let selected = model.selected_voice_channel.as_ref();
   let warning = (!model.disconnected)
     .then_some(model.connection_warning.as_ref())
@@ -634,7 +784,7 @@ fn status_sub(dot_color: Option<theme::PaletteColor>, label: &str) -> Element {
     .into()
 }
 
-fn local_user_row(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> Element {
+fn local_user_row(ctx: &mut Ctx, model: &RailBottomModel, debug_user_ids: bool) -> Element {
   let avatar_name = model.local_user_name.clone().unwrap_or_else(|| {
     let display_name = model.display_name.trim();
     if display_name.is_empty() {
@@ -645,7 +795,13 @@ fn local_user_row(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -
       display_name.to_owned()
     }
   });
-  let username = local_user_label(ctx, model, debug_user_ids);
+  let username = local_user_label_fields(
+    ctx,
+    model.user_id,
+    &model.display_name,
+    model.local_user_name.as_deref(),
+    debug_user_ids,
+  );
   let role = ctx.t(role_label_lower_key(model.role));
   let ping_label = model
     .ping_ms
@@ -687,7 +843,7 @@ fn local_user_row(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -
 
 fn control_row(
   ctx: &mut Ctx,
-  model: &LobbyRailModel,
+  model: &RailBottomModel,
   start_stream_modal_open: Signal<bool>,
   settings_popup: Option<SettingsPopupHandle>,
   stop_stream: &StopStreamAction,
@@ -883,17 +1039,33 @@ fn server_name<'a>(name: &'a str, fallback: &'a str) -> &'a str {
 }
 
 fn local_user_label(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> String {
-  let name = model.local_user_name.clone().unwrap_or_else(|| {
-    let display_name = model.display_name.trim();
+  local_user_label_fields(
+    ctx,
+    model.user_id,
+    &model.display_name,
+    model.local_user_name.as_deref(),
+    debug_user_ids,
+  )
+}
+
+fn local_user_label_fields(
+  ctx: &mut Ctx,
+  user_id: UserId,
+  display_name: &str,
+  local_user_name: Option<&str>,
+  debug_user_ids: bool,
+) -> String {
+  let name = local_user_name.map(str::to_owned).unwrap_or_else(|| {
+    let display_name = display_name.trim();
     if display_name.is_empty() {
       ctx
-        .t_args("lobby.user.fallback", [("id", model.user_id.to_string())])
+        .t_args("lobby.user.fallback", [("id", user_id.to_string())])
         .to_string()
     } else {
       display_name.to_owned()
     }
   });
-  super::shared::user_display_name(model.user_id, &name, debug_user_ids)
+  super::shared::user_display_name(user_id, &name, debug_user_ids)
 }
 
 fn initials_for(name: &str) -> String {
