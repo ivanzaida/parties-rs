@@ -70,6 +70,7 @@ pub(super) struct VoiceChannelsProps {
   pub local_user_id: UserId,
   pub local_role: Role,
   pub debug_user_ids: bool,
+  pub session: Option<ServerSession>,
   pub join_channel: Option<JoinChannelAction>,
   pub watch_stream: Option<WatchStreamAction>,
 }
@@ -81,6 +82,7 @@ impl PartialEq for VoiceChannelsProps {
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
       && self.debug_user_ids == other.debug_user_ids
+      && self.session.is_some() == other.session.is_some()
       && self.join_channel.is_some() == other.join_channel.is_some()
       && self.watch_stream.is_some() == other.watch_stream.is_some()
   }
@@ -173,7 +175,7 @@ impl Component for VoiceChannels {
       );
     }
     let is_expanded = self.expanded.get();
-    let session = ctx.use_context::<ServerSession>();
+    let session = props.session.clone();
     let set_role = session.clone().map(|session| set_role_action(ctx, session));
     let set_user_voice_state = session.clone().map(|session| set_user_voice_state_action(ctx, session));
     let disconnect_user = session.clone().map(|session| disconnect_user_action(ctx, session));

@@ -381,6 +381,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed the current local voice state from `LobbyRail` into the voice control row;
   - removed hidden `ServerSession` context reads from those rail leaf controls.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the voice channel action cleanup slice:
+  - passed the session handle explicitly from `LobbyRail` into `VoiceChannels`;
+  - kept user-menu action construction local to `VoiceChannels`, but removed its hidden `ServerSession` context read;
+  - voice channel rows now receive their stream-browser/session dependency through props.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

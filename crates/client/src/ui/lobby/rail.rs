@@ -302,11 +302,12 @@ fn rail(
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-        .child(rail_header(ctx, model, debug_mode_enabled, leave_session))
+        .child(rail_header(ctx, model, debug_mode_enabled, leave_session.clone()))
         .child(rail_channels(
           ctx,
           model,
           debug_mode_enabled,
+          leave_session.clone(),
           select_text_channel,
           select_debug_chat,
           join_channel,
@@ -443,6 +444,7 @@ fn rail_channels(
   ctx: &mut Ctx,
   model: &LobbyRailModel,
   debug_mode_enabled: bool,
+  session: Option<ServerSession>,
   select_text_channel: Option<SelectTextChannelAction>,
   select_debug_chat: Option<SelectDebugChatAction>,
   join_channel: Option<&JoinChannelAction>,
@@ -465,6 +467,7 @@ fn rail_channels(
     local_user_id: model.user_id,
     local_role: model.role,
     debug_user_ids: debug_mode_enabled,
+    session,
     join_channel: join_channel.cloned(),
     watch_stream: Some(watch_stream.clone()),
   }));
