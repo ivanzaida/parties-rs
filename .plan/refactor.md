@@ -431,6 +431,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added `VoiceChannelActions` for voice channel row actions;
   - replaced separate voice channel session/join/watch props with one grouped action prop;
   - kept voice channel internals passing only join/watch/session handles to the rows that need them.
+- Added selector invalidation guard tests:
+  - proved rail models ignore chat-message-only updates;
+  - proved chat pane models ignore voice-presence-only updates;
+  - covered the fine-grained subscription rule with pure selector equality tests.
 
 ## Non-Goals
 

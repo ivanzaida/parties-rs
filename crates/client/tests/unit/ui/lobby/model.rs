@@ -218,3 +218,42 @@ fn chat_pane_model_tracks_initial_history_loading_without_messages() {
   assert!(model.initial_history_loading);
   assert!(!model.can_page);
 }
+
+#[test]
+fn rail_model_ignores_chat_message_only_updates() {
+  let mut lobby = LobbyState {
+    channels: vec![voice_channel(10, "General")],
+    selected_channel_id: Some(10),
+    text_channels: vec![text_channel(30, "chat")],
+    selected_text_channel_id: Some(30),
+    users_by_channel: HashMap::from([(10, vec![user(7, "local", false, false)])]),
+    ..LobbyState::default()
+  };
+  let info = info(7);
+  let before = lobby_rail_model(&info, &lobby);
+
+  lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
+  let after = lobby_rail_model(&info, &lobby);
+
+  assert_eq!(before, after);
+}
+
+#[test]
+fn chat_pane_model_ignores_voice_presence_only_updates() {
+  let mut lobby = LobbyState {
+    chat_messages_by_channel: HashMap::from([(30, vec![chat_message(1, 30, 8)])]),
+    users_by_channel: HashMap::from([(10, vec![user(8, "remote", false, false)])]),
+    ..LobbyState::default()
+  };
+  let info = info(7);
+  let before = chat_pane_model(&info, &lobby, 30, true);
+
+  lobby
+    .users_by_channel
+    .get_mut(&10)
+    .expect("voice users")
+    .push(user(9, "another", true, false));
+  let after = chat_pane_model(&info, &lobby, 30, true);
+
+  assert_eq!(before, after);
+}
