@@ -1,7 +1,6 @@
 use std::{
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
-  sync::Arc,
   time::Instant,
 };
 
@@ -19,8 +18,6 @@ use lurq::{
   },
   node::{Element, HitTestBehavior, dimension::Dimension},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 mod channel;
 mod composer;
@@ -40,10 +37,11 @@ use super::{
   ChatHistoryAction, SendChatAction,
   model::{ChatPaneModel, chat_pane_model},
   shared::error_notice,
+  subscription::{LobbyModelSubscription, apply_model},
 };
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
-  session::{ConnectedServerInfo, LobbySnapshot, ServerSession},
+  session::{ConnectedServerInfo, ServerSession},
   theme,
   ui::loader::loader,
 };
@@ -139,7 +137,7 @@ impl Component for TextChannelDetail {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_chat_pane_model(
+      apply_model(
         &self.model_store,
         chat_pane_model(
           &props.info,
@@ -206,9 +204,7 @@ impl PartialEq for ChatPaneModelSubscriberProps {
 impl DevtoolsInspectable for ChatPaneModelSubscriberProps {}
 
 struct ChatPaneModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for ChatPaneModelSubscriber {
@@ -216,9 +212,7 @@ impl Component for ChatPaneModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -228,7 +222,7 @@ impl Component for ChatPaneModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_chat_pane_model(
+    apply_model(
       &model_store,
       chat_pane_model(
         &props.info,
@@ -238,57 +232,20 @@ impl Component for ChatPaneModelSubscriber {
       ),
     );
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let session = props.session.clone();
     let info = props.info.clone();
-    let wait_generation = self.generation.get();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session.clone();
-      let info = info.clone();
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-
-        Ok::<_, String>((
-          snapshot.generation,
-          Some(chat_pane_model(
-            &info,
-            &snapshot.lobby,
-            props.channel_id,
-            props.server_backed,
-          )),
-        ))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, Some(model))) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    let channel_id = props.channel_id;
+    let server_backed = props.server_backed;
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          chat_pane_model(&info, &snapshot.lobby, channel_id, server_backed)
+        })
     {
-      apply_chat_pane_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_chat_pane_model(model_store: &Store<Option<ChatPaneModel>>, model: ChatPaneModel) {
-  if model_store.with(|current| current.as_ref() != Some(&model)) {
-    model_store.set(Some(model));
   }
 }
 

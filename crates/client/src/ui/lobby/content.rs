@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use lurq::{
   app::{
     component::{Component, DevtoolsInspectable},
@@ -13,8 +11,6 @@ use lurq::{
   },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, dimension::Dimension},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   StopWatchingAction, WatchStreamAction,
@@ -23,10 +19,11 @@ use super::{
   model::{MainBodyModel, MainTopBarModel, main_body_model, main_top_bar_model},
   shared::error_notice,
   stream_watching::{stream_channel_detail, stream_watching_top_bar},
+  subscription::{LobbyModelSubscription, apply_model},
 };
 use crate::{
   network::protocol::ChannelId,
-  session::{ConnectedServerInfo, LobbyChannel, LobbySnapshot, ServerSession},
+  session::{ConnectedServerInfo, LobbyChannel, ServerSession},
   storage::Storage,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -135,7 +132,7 @@ impl Component for MainTopBar {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_main_top_bar_model(
+    apply_model(
       &self.model_store,
       main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
     );
@@ -171,9 +168,7 @@ impl PartialEq for MainTopBarModelSubscriberProps {
 impl DevtoolsInspectable for MainTopBarModelSubscriberProps {}
 
 struct MainTopBarModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for MainTopBarModelSubscriber {
@@ -181,9 +176,7 @@ impl Component for MainTopBarModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -193,55 +186,23 @@ impl Component for MainTopBarModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_main_top_bar_model(
+    apply_model(
       &model_store,
       main_top_bar_model(&props.session.lobby(), props.debug_mode_enabled),
     );
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session_for_update = props.session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session_for_update.clone();
-      let debug_mode_enabled = props.debug_mode_enabled;
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((
-          snapshot.generation,
-          main_top_bar_model(&snapshot.lobby, debug_mode_enabled),
-        ))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    let debug_mode_enabled = props.debug_mode_enabled;
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          main_top_bar_model(&snapshot.lobby, debug_mode_enabled)
+        })
     {
-      apply_main_top_bar_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_main_top_bar_model(model_store: &Store<Option<MainTopBarModel>>, model: MainTopBarModel) {
-  if model_store.with(|current| current.as_ref() != Some(&model)) {
-    model_store.set(Some(model));
   }
 }
 
@@ -527,7 +488,7 @@ impl Component for MainBody {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_main_body_model(
+    apply_model(
       &self.model_store,
       main_body_model(&props.session.lobby(), props.debug_mode_enabled),
     );
@@ -559,9 +520,7 @@ impl PartialEq for MainBodyModelSubscriberProps {
 impl DevtoolsInspectable for MainBodyModelSubscriberProps {}
 
 struct MainBodyModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for MainBodyModelSubscriber {
@@ -569,9 +528,7 @@ impl Component for MainBodyModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -581,55 +538,23 @@ impl Component for MainBodyModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_main_body_model(
+    apply_model(
       &model_store,
       main_body_model(&props.session.lobby(), props.debug_mode_enabled),
     );
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session_for_update = props.session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session_for_update.clone();
-      let debug_mode_enabled = props.debug_mode_enabled;
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((
-          snapshot.generation,
-          main_body_model(&snapshot.lobby, debug_mode_enabled),
-        ))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    let debug_mode_enabled = props.debug_mode_enabled;
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          main_body_model(&snapshot.lobby, debug_mode_enabled)
+        })
     {
-      apply_main_body_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_main_body_model(model_store: &Store<Option<MainBodyModel>>, model: MainBodyModel) {
-  if model_store.with(|current| current.as_ref() != Some(&model)) {
-    model_store.set(Some(model));
   }
 }
 

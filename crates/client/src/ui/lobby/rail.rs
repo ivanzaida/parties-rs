@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
@@ -14,15 +12,13 @@ use lurq::{
   },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{StopStreamAction, WatchStreamAction};
 use crate::{
   network::protocol::Role,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{ConnectedServerInfo, LobbyConnectionWarningKind, LobbySnapshot, ServerSession},
+  session::{ConnectedServerInfo, LobbyConnectionWarningKind, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -31,6 +27,7 @@ use crate::{
       debug_channels::{DebugChannels, DebugChannelsProps, SelectDebugChatAction},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
+      subscription::{LobbyModelSubscription, apply_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
     },
@@ -155,9 +152,7 @@ impl PartialEq for LobbyRailModelSubscriberProps {
 impl DevtoolsInspectable for LobbyRailModelSubscriberProps {}
 
 struct LobbyRailModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for LobbyRailModelSubscriber {
@@ -165,9 +160,7 @@ impl Component for LobbyRailModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -177,50 +170,20 @@ impl Component for LobbyRailModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_rail_model(&model_store, lobby_rail_model(&props.info, &props.session.lobby()));
+    apply_model(&model_store, lobby_rail_model(&props.info, &props.session.lobby()));
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let session = props.session.clone();
     let info = props.info.clone();
-    let wait_generation = self.generation.get();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session.clone();
-      let info = info.clone();
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((snapshot.generation, Some(lobby_rail_model(&info, &snapshot.lobby))))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, Some(model))) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          lobby_rail_model(&info, &snapshot.lobby)
+        })
     {
-      apply_rail_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_rail_model(model_store: &Store<Option<LobbyRailModel>>, model: LobbyRailModel) {
-  if model_store.with(|current| current.as_ref() != Some(&model)) {
-    model_store.set(Some(model));
   }
 }
 

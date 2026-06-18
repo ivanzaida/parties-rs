@@ -435,6 +435,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - proved rail models ignore chat-message-only updates;
   - proved chat pane models ignore voice-presence-only updates;
   - covered the fine-grained subscription rule with pure selector equality tests.
+- Completed the subscriber plumbing extraction slice:
+  - added one shared `LobbyModelSubscription` helper for lobby watch receiver ownership and generation dedupe;
+  - replaced duplicated subscriber watch loops across shell, rail, chat, main content, stream browser, watched stream, and floating preview;
+  - kept each component subscribed to only its own selected model and preserved model equality checks before store updates.
 
 ## Non-Goals
 

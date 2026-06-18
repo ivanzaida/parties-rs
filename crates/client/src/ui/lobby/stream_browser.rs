@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use lurq::{
   app::{
     component::{Component, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Rect, Row, ScrollVertical, Stack, Text, TextOverflow},
-  core::{Signal, Store},
+  core::Store,
   layout::{
     Alignment, StackAlignment,
     layout_kind::Justify,
@@ -14,8 +12,6 @@ use lurq::{
   },
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   WatchStreamAction,
@@ -23,10 +19,11 @@ use super::{
   model::{ChannelScreenShare, StreamBrowserModel, stream_browser_model, stream_speaking},
   shared::error_notice,
   stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
+  subscription::{LobbyModelSubscription, apply_model},
 };
 use crate::{
   network::protocol::UserId,
-  session::{LobbyChannel, LobbyScreenShare, LobbySnapshot, LobbyUser, ServerSession},
+  session::{LobbyChannel, LobbyScreenShare, LobbyUser, ServerSession},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -96,7 +93,7 @@ impl Component for StreamBrowserPane {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_stream_browser_model(
+      apply_model(
         &self.model_store,
         stream_browser_model(&props.session.lobby(), &props.channel),
       );
@@ -182,9 +179,7 @@ impl PartialEq for StreamBrowserModelSubscriberProps {
 impl DevtoolsInspectable for StreamBrowserModelSubscriberProps {}
 
 struct StreamBrowserModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for StreamBrowserModelSubscriber {
@@ -192,9 +187,7 @@ impl Component for StreamBrowserModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -204,52 +197,23 @@ impl Component for StreamBrowserModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_stream_browser_model(
+    apply_model(
       &model_store,
       stream_browser_model(&props.session.lobby(), &props.channel),
     );
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session_for_update = props.session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let channel = props.channel.clone();
-      let session = session_for_update.clone();
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((snapshot.generation, stream_browser_model(&snapshot.lobby, &channel)))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    let channel = props.channel.clone();
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          stream_browser_model(&snapshot.lobby, &channel)
+        })
     {
-      apply_stream_browser_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_stream_browser_model(model_store: &Store<Option<StreamBrowserModel>>, model: StreamBrowserModel) {
-  if model_store.with(|current| current.as_ref() != Some(&model)) {
-    model_store.set(Some(model));
   }
 }
 

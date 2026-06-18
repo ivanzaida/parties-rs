@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use lurq::{
   app::{
     component::{Component, DevtoolsInspectable},
@@ -7,20 +5,19 @@ use lurq::{
     events::MouseEvent,
   },
   components::{Column, Rect, Row, Stack, Text, TextOverflow},
-  core::{Signal, Store},
+  core::Store,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   StopWatchingAction,
   model::{WatchedChannelScreenShare, floating_stream_preview_model, stream_speaking},
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
+  subscription::{LobbyModelSubscription, apply_optional_model},
 };
 use crate::{
-  session::{LobbySnapshot, ServerSession},
+  session::ServerSession,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -76,7 +73,7 @@ impl Component for FloatingStreamPreviewPane {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    apply_floating_preview_model(&self.model_store, floating_stream_preview_model(&props.session.lobby()));
+    apply_optional_model(&self.model_store, floating_stream_preview_model(&props.session.lobby()));
 
     let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(FloatingStreamPreviewModelSubscriberProps {
       session: props.session.clone(),
@@ -120,9 +117,7 @@ impl PartialEq for FloatingStreamPreviewModelSubscriberProps {
 impl DevtoolsInspectable for FloatingStreamPreviewModelSubscriberProps {}
 
 struct FloatingStreamPreviewModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for FloatingStreamPreviewModelSubscriber {
@@ -130,9 +125,7 @@ impl Component for FloatingStreamPreviewModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: Mutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -142,51 +135,15 @@ impl Component for FloatingStreamPreviewModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_floating_preview_model(&model_store, floating_stream_preview_model(&props.session.lobby()));
+    apply_optional_model(&model_store, floating_stream_preview_model(&props.session.lobby()));
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session_for_update = props.session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session_for_update.clone();
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((snapshot.generation, floating_stream_preview_model(&snapshot.lobby)))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
-    {
-      apply_floating_preview_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+    if let Some((_snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
+      floating_stream_preview_model(&snapshot.lobby)
+    }) {
+      apply_optional_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_floating_preview_model(
-  model_store: &Store<Option<WatchedChannelScreenShare>>,
-  model: Option<WatchedChannelScreenShare>,
-) {
-  if model_store.with(|current| current.as_ref() != model.as_ref()) {
-    model_store.set(model);
   }
 }
 

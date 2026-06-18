@@ -10,8 +10,6 @@ use lurq::{
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
-use parking_lot::Mutex as ParkingMutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 #[cfg(test)]
 pub(super) use super::model::watched_stream_for_channel;
@@ -20,10 +18,11 @@ use super::{
   model::{ChannelScreenShare, StreamWatchingModel, stream_speaking, stream_watching_model},
   stream_browser::stream_browser,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
+  subscription::{LobbyModelSubscription, apply_optional_model},
 };
 use crate::{
   network::protocol::{ChannelId, UserId},
-  session::{LobbyChannel, LobbyScreenShare, LobbySnapshot, ServerSession},
+  session::{LobbyChannel, LobbyScreenShare, ServerSession},
   storage::Storage,
   theme,
   ui::common::{
@@ -134,7 +133,7 @@ impl Component for StreamWatchingPane {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
     if self.model_store.with(Option::is_none) {
-      apply_stream_watching_model(
+      apply_optional_model(
         &self.model_store,
         stream_watching_model(&props.session.lobby(), props.channel.id),
       );
@@ -222,9 +221,7 @@ impl PartialEq for StreamWatchingModelSubscriberProps {
 impl DevtoolsInspectable for StreamWatchingModelSubscriberProps {}
 
 struct StreamWatchingModelSubscriber {
-  generation: Signal<u64>,
-  applied_generation: Signal<Option<u64>>,
-  receiver: ParkingMutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for StreamWatchingModelSubscriber {
@@ -232,9 +229,7 @@ impl Component for StreamWatchingModelSubscriber {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
-      applied_generation: ctx.signal(None),
-      receiver: ParkingMutex::new(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -244,52 +239,23 @@ impl Component for StreamWatchingModelSubscriber {
       return empty_subscriber_node();
     };
 
-    apply_stream_watching_model(
+    apply_optional_model(
       &model_store,
       stream_watching_model(&props.session.lobby(), props.channel_id),
     );
 
-    let receiver = {
-      let mut receiver = self.receiver.lock();
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(props.session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session_for_update = props.session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session_for_update.clone();
-      let channel_id = props.channel_id;
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((snapshot.generation, stream_watching_model(&snapshot.lobby, channel_id)))
-      }
-    });
-    let state = update.state().get();
-    if state.is_fulfilled()
-      && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    let channel_id = props.channel_id;
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          stream_watching_model(&snapshot.lobby, channel_id)
+        })
     {
-      apply_stream_watching_model(&model_store, model);
-      self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
+      apply_optional_model(&model_store, model);
     }
 
     empty_subscriber_node()
-  }
-}
-
-fn apply_stream_watching_model(model_store: &Store<Option<StreamWatchingModel>>, model: Option<StreamWatchingModel>) {
-  if model_store.with(|current| current.as_ref() != model.as_ref()) {
-    model_store.set(model);
   }
 }
 
