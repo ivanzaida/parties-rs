@@ -1,20 +1,26 @@
 use std::{
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
+  sync::Arc,
   time::Instant,
 };
 
 use chrono::Local;
 use lurq::{
-  app::ctx::{CollisionStrategy, Ctx, Overlay, Placement},
-  components::{Column, Row, ScrollVertical, Text},
-  core::Signal,
+  app::{
+    component::{Component, DevtoolsInspectable},
+    ctx::{CollisionStrategy, Ctx, Overlay, Placement},
+  },
+  components::{Column, Rect, Row, ScrollVertical, Text},
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::{Justify, ScrollState},
   },
   node::{Element, HitTestBehavior, dimension::Dimension},
 };
+use parking_lot::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 mod channel;
 mod composer;
@@ -30,16 +36,254 @@ use message::{ChatMessage, ChatMessageProps};
 use scroll::{chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom};
 use timeline::{chat_day_divider, local_chat_date};
 
-use super::{ChatHistoryAction, SendChatAction, model::ChatPaneModel, shared::error_notice};
+use super::{
+  ChatHistoryAction, SendChatAction,
+  model::{ChatPaneModel, chat_pane_model},
+  shared::error_notice,
+};
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
-  session::ServerSession,
+  session::{ConnectedServerInfo, LobbySnapshot, ServerSession},
   theme,
   ui::loader::loader,
 };
 
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
+  channel: ChatChannel,
+  info: ConnectedServerInfo,
+  message_input: Signal<String>,
+  command_selected_index: Signal<usize>,
+  command_scroll_state: ScrollState,
+  command_invalid_feedback: ChatCommandInvalidFeedback,
+  chat_scroll_state: ScrollState,
+  chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  debug_user_ids: bool,
+  session: ServerSession,
+  chat_history: &ChatHistoryAction,
+  send_chat: &SendChatAction,
+) -> Element {
+  let key = format!("text-channel-detail-{}", channel.id());
+  ctx.mount_keyed::<TextChannelDetail>(
+    &key,
+    TextChannelDetailProps {
+      channel,
+      info,
+      message_input,
+      command_selected_index,
+      command_scroll_state,
+      command_invalid_feedback,
+      chat_scroll_state,
+      chat_bottom_anchor,
+      chat_bottom_settle_anchor,
+      chat_bottom_detached_anchor,
+      chat_top_anchor,
+      chat_prepend_settle_anchor,
+      debug_user_ids,
+      session,
+      chat_history: chat_history.clone(),
+      send_chat: send_chat.clone(),
+    },
+  )
+}
+
+#[derive(Clone)]
+struct TextChannelDetailProps {
+  channel: ChatChannel,
+  info: ConnectedServerInfo,
+  message_input: Signal<String>,
+  command_selected_index: Signal<usize>,
+  command_scroll_state: ScrollState,
+  command_invalid_feedback: ChatCommandInvalidFeedback,
+  chat_scroll_state: ScrollState,
+  chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  debug_user_ids: bool,
+  session: ServerSession,
+  chat_history: ChatHistoryAction,
+  send_chat: SendChatAction,
+}
+
+impl PartialEq for TextChannelDetailProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.channel == other.channel && self.info == other.info && self.debug_user_ids == other.debug_user_ids
+  }
+}
+
+impl DevtoolsInspectable for TextChannelDetailProps {}
+
+struct TextChannelDetail {
+  model_store: Store<Option<ChatPaneModel>>,
+}
+
+impl Component for TextChannelDetail {
+  type Props = TextChannelDetailProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    ctx.provide(self.model_store.clone());
+    if self.model_store.with(Option::is_none) {
+      apply_chat_pane_model(
+        &self.model_store,
+        chat_pane_model(
+          &props.info,
+          &props.session.lobby(),
+          props.channel.id(),
+          props.channel.is_server_backed(),
+        ),
+      );
+    }
+    let subscriber = ctx.mount::<ChatPaneModelSubscriber>(ChatPaneModelSubscriberProps {
+      channel_id: props.channel.id(),
+      server_backed: props.channel.is_server_backed(),
+    });
+    let Some(model) = self.model_store.get() else {
+      return Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .child(subscriber)
+        .into();
+    };
+
+    text_channel_detail_view(
+      ctx,
+      subscriber,
+      props.channel,
+      model,
+      props.message_input,
+      props.command_selected_index,
+      props.command_scroll_state,
+      props.command_invalid_feedback,
+      props.chat_scroll_state,
+      props.chat_bottom_anchor,
+      props.chat_bottom_settle_anchor,
+      props.chat_bottom_detached_anchor,
+      props.chat_top_anchor,
+      props.chat_prepend_settle_anchor,
+      props.debug_user_ids,
+      props.session,
+      &props.chat_history,
+      &props.send_chat,
+    )
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct ChatPaneModelSubscriberProps {
+  channel_id: ChannelId,
+  server_backed: bool,
+}
+
+impl DevtoolsInspectable for ChatPaneModelSubscriberProps {}
+
+struct ChatPaneModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for ChatPaneModelSubscriber {
+  type Props = ChatPaneModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<ChatPaneModel>>>() else {
+      return empty_subscriber_node();
+    };
+
+    if let Some(info) = session.info() {
+      apply_chat_pane_model(
+        &model_store,
+        chat_pane_model(&info, &session.lobby(), props.channel_id, props.server_backed),
+      );
+    }
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let session = session.clone();
+    let wait_generation = self.generation.get();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let session = session.clone();
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        let Some(info) = session.info() else {
+          return Ok::<_, String>((snapshot.generation, None));
+        };
+
+        Ok::<_, String>((
+          snapshot.generation,
+          Some(chat_pane_model(
+            &info,
+            &snapshot.lobby,
+            props.channel_id,
+            props.server_backed,
+          )),
+        ))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, Some(model))) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_chat_pane_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_chat_pane_model(model_store: &Store<Option<ChatPaneModel>>, model: ChatPaneModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
+  }
+}
+
+fn empty_subscriber_node() -> Element {
+  Rect::new(0.0, 0.0).into()
+}
+
+fn text_channel_detail_view(
+  ctx: &mut Ctx,
+  subscriber: Element,
   channel: ChatChannel,
   model: ChatPaneModel,
   message_input: Signal<String>,
@@ -173,6 +417,7 @@ pub(super) fn text_channel_detail(
     .width(Dimension::Pct(100.0))
     .height(Dimension::Pct(100.0))
     .flex(1.0)
+    .child(subscriber)
     .child(messages_scroll)
     .child(chat_composer(
       ctx,

@@ -331,6 +331,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - `LobbyRail` now owns a local `Store<Option<LobbyRailModel>>` and receives only connection identity/debug props;
   - the subscriber advances the full lobby watch, but only updates the visible rail store when `LobbyRailModel` changes.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the chat pane fine-grained subscription slice:
+  - wrapped the chat detail view in a `TextChannelDetail` component with a local `Store<Option<ChatPaneModel>>`;
+  - added a zero-size `ChatPaneModelSubscriber` that updates only the selected chat model;
+  - stopped deriving and passing `ChatPaneModel` from `content.rs`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

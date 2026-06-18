@@ -16,7 +16,7 @@ enum ChatChannelKind {
   Debug,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::ui::lobby) struct ChatChannel {
   id: ChannelId,
   name: Arc<str>,
