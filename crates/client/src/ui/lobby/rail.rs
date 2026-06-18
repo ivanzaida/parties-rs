@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
   components::{Column, Rect, Row, ScrollVertical, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -12,13 +14,15 @@ use lurq::{
   },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
+use parking_lot::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{StopStreamAction, WatchStreamAction};
 use crate::{
-  network::protocol::{ChannelId, Role},
+  network::protocol::Role,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{LobbyConnectionWarningKind, ServerSession},
+  session::{ConnectedServerInfo, LobbyConnectionWarningKind, LobbySnapshot, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -26,7 +30,7 @@ use crate::{
     lobby::{
       debug_channels::{DebugChannels, DebugChannelsProps},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
-      model::LobbyRailModel,
+      model::{LobbyRailModel, lobby_rail_model},
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
     },
@@ -53,7 +57,7 @@ impl VoiceControlFuture {
 
 #[derive(Clone)]
 pub(super) struct LobbyRailProps {
-  pub model: LobbyRailModel,
+  pub info: ConnectedServerInfo,
   pub debug_mode_enabled: bool,
   pub start_stream_modal_open: Signal<bool>,
   pub stop_stream: StopStreamAction,
@@ -62,7 +66,7 @@ pub(super) struct LobbyRailProps {
 
 impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
-    self.model == other.model && self.debug_mode_enabled == other.debug_mode_enabled
+    self.info == other.info && self.debug_mode_enabled == other.debug_mode_enabled
   }
 }
 
@@ -71,47 +75,22 @@ impl DevtoolsInspectable for LobbyRailProps {
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
-      self.model.server_name.clone(),
-    ));
-    formatter.buffer_mut().push(ComponentInfo::with_value(
-      "channels",
-      std::any::type_name::<usize>(),
-      self.model.voice_channels.len().to_string(),
-    ));
-    formatter.buffer_mut().push(ComponentInfo::with_value(
-      "text_channels",
-      std::any::type_name::<usize>(),
-      self.model.text_channels.len().to_string(),
-    ));
-    formatter.buffer_mut().push(ComponentInfo::with_value(
-      "selected_channel_id",
-      std::any::type_name::<Option<ChannelId>>(),
-      format!(
-        "{:?}",
-        self.model.selected_voice_channel.as_ref().map(|channel| channel.id)
-      ),
-    ));
-    formatter.buffer_mut().push(ComponentInfo::with_value(
-      "selected_text_channels",
-      std::any::type_name::<usize>(),
-      self
-        .model
-        .text_channels
-        .iter()
-        .filter(|channel| channel.selected)
-        .count()
-        .to_string(),
+      self.info.server_name.clone(),
     ));
   }
 }
 
-pub(super) struct LobbyRail;
+pub(super) struct LobbyRail {
+  model_store: Store<Option<LobbyRailModel>>,
+}
 
 impl Component for LobbyRail {
   type Props = LobbyRailProps;
 
-  fn create(_ctx: &mut Ctx) -> Self {
-    Self
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -122,10 +101,18 @@ impl Component for LobbyRail {
       .clone()
       .map(|session| join_channel_action(ctx, session, storage.clone()));
     let voice_control = session.map(|session| voice_control_action(ctx, session));
+    ctx.provide(self.model_store.clone());
+    let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
+      info: props.info.clone(),
+    });
+    let Some(model) = self.model_store.get() else {
+      return empty_rail(ctx, subscriber);
+    };
 
     rail(
       ctx,
-      &props.model,
+      subscriber,
+      &model,
       props.debug_mode_enabled,
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
@@ -133,6 +120,88 @@ impl Component for LobbyRail {
       join_channel.as_ref(),
       voice_control.as_ref(),
     )
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct LobbyRailModelSubscriberProps {
+  info: ConnectedServerInfo,
+}
+
+impl DevtoolsInspectable for LobbyRailModelSubscriberProps {}
+
+struct LobbyRailModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for LobbyRailModelSubscriber {
+  type Props = LobbyRailModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<LobbyRailModel>>>() else {
+      return empty_subscriber_node();
+    };
+
+    apply_rail_model(&model_store, lobby_rail_model(&props.info, &session.lobby()));
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let session = session.clone();
+    let wait_generation = self.generation.get();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let session = session.clone();
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        let Some(info) = session.info() else {
+          return Ok::<_, String>((snapshot.generation, None));
+        };
+
+        Ok::<_, String>((snapshot.generation, Some(lobby_rail_model(&info, &snapshot.lobby))))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, Some(model))) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_rail_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_rail_model(model_store: &Store<Option<LobbyRailModel>>, model: LobbyRailModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
   }
 }
 
@@ -201,6 +270,7 @@ fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFu
 
 fn rail(
   ctx: &mut Ctx,
+  subscriber: Element,
   model: &LobbyRailModel,
   debug_mode_enabled: bool,
   start_stream_modal_open: Signal<bool>,
@@ -215,6 +285,7 @@ fn rail(
     .width(metrics.rail_width)
     .height(Dimension::Pct(100.0))
     .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
+    .child(subscriber)
     .child(
       Column::new()
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
@@ -243,6 +314,21 @@ fn rail(
         .background(BackgroundColor::Palette(theme::PaletteColor::Border)),
     )
     .into()
+}
+
+fn empty_rail(ctx: &mut Ctx, subscriber: Element) -> Element {
+  let metrics = lobby_layout_metrics(ctx);
+  Row::new()
+    .border_right(Border::inside(1.0, theme::PaletteColor::Border))
+    .width(metrics.rail_width)
+    .height(Dimension::Pct(100.0))
+    .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
+    .child(subscriber)
+    .into()
+}
+
+fn empty_subscriber_node() -> Element {
+  Rect::new(0.0, 0.0).into()
 }
 
 fn rail_header(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> Element {

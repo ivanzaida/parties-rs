@@ -326,6 +326,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - removed direct full-lobby arguments from `text_channel_detail`;
   - added selector tests for chat paging and initial loading state.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the first fine-grained subscription slice:
+  - moved rail model updates into a zero-size `LobbyRailModelSubscriber`;
+  - `LobbyRail` now owns a local `Store<Option<LobbyRailModel>>` and receives only connection identity/debug props;
+  - the subscriber advances the full lobby watch, but only updates the visible rail store when `LobbyRailModel` changes.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

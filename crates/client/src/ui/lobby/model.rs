@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use lurq::app::component::DevtoolsInspectable;
+
 use crate::{
   network::protocol::{ChannelId, Role, UserId, control::ChatMessage as ProtocolChatMessage},
   session::{
@@ -79,6 +81,8 @@ pub(super) struct LobbyRailModel {
   pub(super) local_user_in_voice: bool,
   pub(super) local_streaming: bool,
 }
+
+impl DevtoolsInspectable for LobbyRailModel {}
 
 pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> LobbyRailModel {
   LobbyRailModel {
