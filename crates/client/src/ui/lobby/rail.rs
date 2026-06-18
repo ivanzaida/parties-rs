@@ -32,7 +32,7 @@ use crate::{
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
-      voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
+      voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
     },
     settings::SettingsPopupHandle,
   },
@@ -481,10 +481,12 @@ fn rail_channels(
     local_user_id: model.user_id,
     local_role: model.role,
     debug_user_ids: debug_mode_enabled,
-    session,
     storage,
-    join_channel: join_channel.cloned(),
-    watch_stream: Some(watch_stream.clone()),
+    actions: VoiceChannelActions {
+      session,
+      join_channel: join_channel.cloned(),
+      watch_stream: Some(watch_stream.clone()),
+    },
   }));
 
   if debug_mode_enabled {

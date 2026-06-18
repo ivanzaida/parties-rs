@@ -427,6 +427,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added `RailStreamActions` for rail stream controls;
   - replaced separate rail stream props with one grouped action prop;
   - kept rail internals passing only watch or stop/start controls to the rows that render them.
+- Completed the voice channel action grouping slice:
+  - added `VoiceChannelActions` for voice channel row actions;
+  - replaced separate voice channel session/join/watch props with one grouped action prop;
+  - kept voice channel internals passing only join/watch/session handles to the rows that need them.
 
 ## Non-Goals
 

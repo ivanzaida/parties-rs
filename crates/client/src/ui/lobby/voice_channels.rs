@@ -64,6 +64,21 @@ impl JoinChannelAction {
   }
 }
 
+#[derive(Clone, Default)]
+pub(super) struct VoiceChannelActions {
+  pub session: Option<ServerSession>,
+  pub join_channel: Option<JoinChannelAction>,
+  pub watch_stream: Option<WatchStreamAction>,
+}
+
+impl PartialEq for VoiceChannelActions {
+  fn eq(&self, other: &Self) -> bool {
+    self.session.is_some() == other.session.is_some()
+      && self.join_channel.is_some() == other.join_channel.is_some()
+      && self.watch_stream.is_some() == other.watch_stream.is_some()
+  }
+}
+
 #[derive(Clone)]
 pub(super) struct VoiceChannelsProps {
   pub channels: Vec<VoiceChannelRowModel>,
@@ -71,10 +86,8 @@ pub(super) struct VoiceChannelsProps {
   pub local_user_id: UserId,
   pub local_role: Role,
   pub debug_user_ids: bool,
-  pub session: Option<ServerSession>,
   pub storage: Option<Storage>,
-  pub join_channel: Option<JoinChannelAction>,
-  pub watch_stream: Option<WatchStreamAction>,
+  pub actions: VoiceChannelActions,
 }
 
 impl PartialEq for VoiceChannelsProps {
@@ -84,10 +97,8 @@ impl PartialEq for VoiceChannelsProps {
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
       && self.debug_user_ids == other.debug_user_ids
-      && self.session.is_some() == other.session.is_some()
       && self.storage.is_some() == other.storage.is_some()
-      && self.join_channel.is_some() == other.join_channel.is_some()
-      && self.watch_stream.is_some() == other.watch_stream.is_some()
+      && self.actions == other.actions
   }
 }
 
@@ -178,7 +189,7 @@ impl Component for VoiceChannels {
       );
     }
     let is_expanded = self.expanded.get();
-    let session = props.session.clone();
+    let session = props.actions.session.clone();
     let set_role = session.clone().map(|session| set_role_action(ctx, session));
     let set_user_voice_state = session.clone().map(|session| set_user_voice_state_action(ctx, session));
     let disconnect_user = session.clone().map(|session| disconnect_user_action(ctx, session));
@@ -213,8 +224,8 @@ impl Component for VoiceChannels {
           ),
       );
     } else {
-      let join_channel = props.join_channel.clone();
-      let watch_stream = props.watch_stream.clone();
+      let join_channel = props.actions.join_channel.clone();
+      let watch_stream = props.actions.watch_stream.clone();
       let debug_user_ids = props.debug_user_ids;
       let context_user_id = self.context_user_id.clone();
       let context_menu_open = self.context_menu_open.clone();
