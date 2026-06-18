@@ -15,10 +15,10 @@ use lurq::{
 
 use super::{StopStreamAction, WatchStreamAction};
 use crate::{
-  network::protocol::{ChannelId, Role, UserId},
+  network::protocol::{ChannelId, Role},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{ConnectedServerInfo, LobbyConnectionWarningKind, LobbyState, ServerSession},
+  session::{LobbyConnectionWarningKind, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -26,7 +26,7 @@ use crate::{
     lobby::{
       debug_channels::{DebugChannels, DebugChannelsProps},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
-      model::{text_channel_rows, voice_channel_rows},
+      model::LobbyRailModel,
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
     },
@@ -53,8 +53,7 @@ impl VoiceControlFuture {
 
 #[derive(Clone)]
 pub(super) struct LobbyRailProps {
-  pub info: ConnectedServerInfo,
-  pub lobby: LobbyState,
+  pub model: LobbyRailModel,
   pub debug_mode_enabled: bool,
   pub start_stream_modal_open: Signal<bool>,
   pub stop_stream: StopStreamAction,
@@ -63,7 +62,7 @@ pub(super) struct LobbyRailProps {
 
 impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
-    self.info == other.info && self.lobby == other.lobby && self.debug_mode_enabled == other.debug_mode_enabled
+    self.model == other.model && self.debug_mode_enabled == other.debug_mode_enabled
   }
 }
 
@@ -72,27 +71,36 @@ impl DevtoolsInspectable for LobbyRailProps {
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "server_name",
       std::any::type_name::<String>(),
-      self.info.server_name.clone(),
+      self.model.server_name.clone(),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "channels",
       std::any::type_name::<usize>(),
-      self.lobby.channels.len().to_string(),
+      self.model.voice_channels.len().to_string(),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "text_channels",
       std::any::type_name::<usize>(),
-      self.lobby.text_channels.len().to_string(),
+      self.model.text_channels.len().to_string(),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
-      format!("{:?}", self.lobby.selected_channel_id),
+      format!(
+        "{:?}",
+        self.model.selected_voice_channel.as_ref().map(|channel| channel.id)
+      ),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
-      "selected_text_channel_id",
-      std::any::type_name::<Option<ChannelId>>(),
-      format!("{:?}", self.lobby.selected_text_channel_id),
+      "selected_text_channels",
+      std::any::type_name::<usize>(),
+      self
+        .model
+        .text_channels
+        .iter()
+        .filter(|channel| channel.selected)
+        .count()
+        .to_string(),
     ));
   }
 }
@@ -117,8 +125,7 @@ impl Component for LobbyRail {
 
     rail(
       ctx,
-      &props.info,
-      &props.lobby,
+      &props.model,
       props.debug_mode_enabled,
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
@@ -194,8 +201,7 @@ fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFu
 
 fn rail(
   ctx: &mut Ctx,
-  info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &LobbyRailModel,
   debug_mode_enabled: bool,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
@@ -214,19 +220,17 @@ fn rail(
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-        .child(rail_header(ctx, info, lobby, debug_mode_enabled))
+        .child(rail_header(ctx, model, debug_mode_enabled))
         .child(rail_channels(
           ctx,
-          info,
-          lobby,
+          model,
           debug_mode_enabled,
           join_channel,
           watch_stream,
         ))
         .child(rail_bottom(
           ctx,
-          info,
-          lobby,
+          model,
           debug_mode_enabled,
           start_stream_modal_open,
           stop_stream,
@@ -241,11 +245,11 @@ fn rail(
     .into()
 }
 
-fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState, debug_user_ids: bool) -> Element {
+fn rail_header(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> Element {
   let unknown_server = ctx.t("lobby.server.unknown");
-  let server_name = server_name(info, unknown_server.as_ref());
-  let user_label = local_user_label(ctx, lobby, info, debug_user_ids);
-  let role = ctx.t(role_label_lower_key(info.role));
+  let server_name = server_name(&model.server_name, unknown_server.as_ref());
+  let user_label = local_user_label(ctx, model, debug_user_ids);
+  let role = ctx.t(role_label_lower_key(model.role));
   let sub = ctx.t_args(
     "lobby.rail.user_meta",
     [("user", user_label.clone()), ("role", role.to_string())],
@@ -272,7 +276,7 @@ fn rail_header(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState, de
         ),
     );
 
-  if info.role.can_edit_server_settings() {
+  if model.role.can_edit_server_settings() {
     row = row.child(server_settings_button(ctx));
   }
 
@@ -333,8 +337,7 @@ fn leave_button(ctx: &mut Ctx) -> Element {
 
 fn rail_channels(
   ctx: &mut Ctx,
-  info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &LobbyRailModel,
   debug_mode_enabled: bool,
   join_channel: Option<&JoinChannelAction>,
   watch_stream: &WatchStreamAction,
@@ -346,14 +349,14 @@ fn rail_channels(
     .padding_vertical(metrics.rail_padding_y)
     .padding_horizontal(metrics.rail_padding_x)
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
-      channels: text_channel_rows(lobby),
+      channels: model.text_channels.clone(),
     }));
 
   channels = channels.child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
-    channels: voice_channel_rows(lobby, info.user_id),
-    disconnected: lobby.disconnected,
-    local_user_id: info.user_id,
-    local_role: info.role,
+    channels: model.voice_channels.clone(),
+    disconnected: model.disconnected,
+    local_user_id: model.user_id,
+    local_role: model.role,
     debug_user_ids: debug_mode_enabled,
     join_channel: join_channel.cloned(),
     watch_stream: Some(watch_stream.clone()),
@@ -361,7 +364,7 @@ fn rail_channels(
 
   if debug_mode_enabled {
     channels = channels.child(ctx.mount::<DebugChannels>(DebugChannelsProps {
-      selected: lobby.debug_chat_selected,
+      selected: model.debug_chat_selected,
     }));
   }
 
@@ -396,8 +399,7 @@ fn rail_scrollbar_style() -> ScrollBarStyle {
 
 fn rail_bottom(
   ctx: &mut Ctx,
-  info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &LobbyRailModel,
   debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
@@ -409,12 +411,11 @@ fn rail_bottom(
     .spacing(theme::SpacingSize::Md)
     .padding_vertical(metrics.rail_padding_y)
     .padding_horizontal(metrics.rail_padding_x)
-    .child(connection_status(ctx, lobby))
-    .child(local_user_row(ctx, info, lobby, debug_user_ids))
+    .child(connection_status(ctx, model))
+    .child(local_user_row(ctx, model, debug_user_ids))
     .child(control_row(
       ctx,
-      info,
-      lobby,
+      model,
       start_stream_modal_open,
       stop_stream,
       voice_control,
@@ -422,18 +423,16 @@ fn rail_bottom(
     .into()
 }
 
-fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
-  let selected = lobby
-    .selected_channel_id
-    .and_then(|id| lobby.channels.iter().find(|channel| channel.id == id));
-  let warning = (!lobby.disconnected)
-    .then_some(lobby.connection_warning.as_ref())
+fn connection_status(ctx: &mut Ctx, model: &LobbyRailModel) -> Element {
+  let selected = model.selected_voice_channel.as_ref();
+  let warning = (!model.disconnected)
+    .then_some(model.connection_warning.as_ref())
     .flatten();
   let fallback_title = ctx.t("lobby.connection.not_in_channel");
-  let connected_to_voice = selected.is_some() && !lobby.disconnected;
+  let connected_to_voice = selected.is_some() && !model.disconnected;
   let title = if let Some(warning) = warning {
     ctx.t(connection_warning_title_key(&warning.kind)).to_string()
-  } else if lobby.disconnected {
+  } else if model.disconnected {
     ctx.t("lobby.status.disconnected").to_string()
   } else if connected_to_voice {
     ctx.t("lobby.connection.voice_connected").to_string()
@@ -459,14 +458,14 @@ fn connection_status(ctx: &mut Ctx, lobby: &LobbyState) -> Element {
         [("channel", channel.name.clone()), ("status", status.to_string())],
       )
       .to_string()
-  } else if lobby.disconnected {
+  } else if model.disconnected {
     ctx.t("lobby.connection.not_in_channel").to_string()
   } else {
     ctx.t("lobby.connection.connected").to_string()
   };
   let (status_icon, icon_color) = if warning.is_some() {
     ("triangle-alert", theme::palette().warning)
-  } else if lobby.disconnected {
+  } else if model.disconnected {
     ("unplug", theme::palette().danger)
   } else if connected_to_voice {
     ("audio-lines", theme::palette().success)
@@ -540,20 +539,20 @@ fn status_sub(dot_color: Option<theme::PaletteColor>, label: &str) -> Element {
     .into()
 }
 
-fn local_user_row(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState, debug_user_ids: bool) -> Element {
-  let avatar_name = local_user_name(lobby, info).unwrap_or_else(|| {
-    let display_name = info.display_name.trim();
+fn local_user_row(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> Element {
+  let avatar_name = model.local_user_name.clone().unwrap_or_else(|| {
+    let display_name = model.display_name.trim();
     if display_name.is_empty() {
       ctx
-        .t_args("lobby.user.fallback", [("id", info.user_id.to_string())])
+        .t_args("lobby.user.fallback", [("id", model.user_id.to_string())])
         .to_string()
     } else {
       display_name.to_owned()
     }
   });
-  let username = local_user_label(ctx, lobby, info, debug_user_ids);
-  let role = ctx.t(role_label_lower_key(info.role));
-  let ping_label = lobby
+  let username = local_user_label(ctx, model, debug_user_ids);
+  let role = ctx.t(role_label_lower_key(model.role));
+  let ping_label = model
     .ping_ms
     .map(|ping_ms| ctx.t_args("lobby.rail.ping_ms", [("value", ping_ms.to_string())]));
 
@@ -593,8 +592,7 @@ fn local_user_row(ctx: &mut Ctx, info: &ConnectedServerInfo, lobby: &LobbyState,
 
 fn control_row(
   ctx: &mut Ctx,
-  info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &LobbyRailModel,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   voice_control: Option<&VoiceControlFuture>,
@@ -602,15 +600,12 @@ fn control_row(
   let (muted, deafened) = ctx
     .use_context::<ServerSession>()
     .and_then(|session| session.local_voice_state())
-    .unwrap_or_else(|| local_voice_state(lobby, info));
+    .unwrap_or(model.local_voice_state);
   let mic_icon = if muted { "mic-off" } else { "mic" };
   let headphones_icon = if deafened { "headphone-off" } else { "headphones" };
   let mute_locked = muted && deafened;
-  let connected_to_voice = local_user_in_voice(lobby, info.user_id) && !lobby.disconnected;
-  let local_streaming = lobby
-    .screen_shares
-    .iter()
-    .any(|share| share.sharer_user_id == info.user_id);
+  let connected_to_voice = model.local_user_in_voice && !model.disconnected;
+  let local_streaming = model.local_streaming;
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -749,13 +744,6 @@ fn icon_button(ctx: &mut Ctx, icon: &'static str, active: bool, disabled: bool) 
   button
 }
 
-fn local_user_in_voice(lobby: &LobbyState, local_user_id: UserId) -> bool {
-  lobby
-    .users_by_channel
-    .values()
-    .any(|users| users.iter().any(|user| user.user_id == local_user_id))
-}
-
 fn local_avatar(name: &str) -> Element {
   Row::new()
     .width(30.0)
@@ -797,45 +785,22 @@ pub(super) fn server_avatar(name: &str, size: f32, accent: bool) -> Element {
     .into()
 }
 
-fn server_name<'a>(info: &'a ConnectedServerInfo, fallback: &'a str) -> &'a str {
-  if info.server_name.trim().is_empty() {
-    fallback
-  } else {
-    info.server_name.as_str()
-  }
+fn server_name<'a>(name: &'a str, fallback: &'a str) -> &'a str {
+  if name.trim().is_empty() { fallback } else { name }
 }
 
-fn local_user_name(lobby: &LobbyState, info: &ConnectedServerInfo) -> Option<String> {
-  lobby
-    .users
-    .iter()
-    .chain(lobby.users_by_channel.values().flatten())
-    .find(|user| user.user_id == info.user_id)
-    .map(|user| user.username.clone())
-}
-
-fn local_user_label(ctx: &mut Ctx, lobby: &LobbyState, info: &ConnectedServerInfo, debug_user_ids: bool) -> String {
-  let name = local_user_name(lobby, info).unwrap_or_else(|| {
-    let display_name = info.display_name.trim();
+fn local_user_label(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> String {
+  let name = model.local_user_name.clone().unwrap_or_else(|| {
+    let display_name = model.display_name.trim();
     if display_name.is_empty() {
       ctx
-        .t_args("lobby.user.fallback", [("id", info.user_id.to_string())])
+        .t_args("lobby.user.fallback", [("id", model.user_id.to_string())])
         .to_string()
     } else {
       display_name.to_owned()
     }
   });
-  super::shared::user_display_name(info.user_id, &name, debug_user_ids)
-}
-
-fn local_voice_state(lobby: &LobbyState, info: &ConnectedServerInfo) -> (bool, bool) {
-  lobby
-    .users
-    .iter()
-    .chain(lobby.users_by_channel.values().flatten())
-    .find(|user| user.user_id == info.user_id)
-    .map(|user| (user.muted, user.deafened))
-    .unwrap_or((false, false))
+  super::shared::user_display_name(model.user_id, &name, debug_user_ids)
 }
 
 fn initials_for(name: &str) -> String {

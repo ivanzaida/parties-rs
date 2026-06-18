@@ -52,7 +52,7 @@ use actions::{
 use chat::ChatCommandInvalidFeedback;
 use content::main;
 use disconnected::disconnected_lobby;
-use model::watched_stream;
+use model::{lobby_rail_model, watched_stream};
 use rail::{LobbyRail, LobbyRailProps};
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
@@ -249,8 +249,7 @@ impl Component for LobbyScreen {
       .clip()
       .child(ctx.mount::<LobbyStoreSubscriber>(()))
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
-        info: info.clone(),
-        lobby: lobby.clone(),
+        model: lobby_rail_model(&info, &lobby),
         debug_mode_enabled,
         start_stream_modal_open: self.start_stream_modal_open.clone(),
         stop_stream: stop_stream.clone(),

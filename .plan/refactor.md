@@ -282,6 +282,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - `cargo check --config .cargo/local-lurq.toml -p client`;
   - `cargo test --config .cargo/local-lurq.toml -p client --lib`;
   - `cargo test --config .cargo/local-lurq.toml --target-dir target\client-test -p client --test chat`.
+- Completed the rail model slice:
+  - replaced `LobbyRailProps { info, lobby }` with a `LobbyRailModel`;
+  - moved rail-only derivations for channel rows, local user state, connection status, and local streaming into `ui/lobby/model.rs`;
+  - added a direct unit test for `lobby_rail_model`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
