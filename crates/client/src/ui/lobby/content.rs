@@ -13,10 +13,7 @@ use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
-  model::{
-    selected_text_channel, stream_browser_channel, stream_browser_model, stream_watching_model,
-    unique_lobby_member_count,
-  },
+  model::{selected_text_channel, stream_browser_channel, stream_watching_model, unique_lobby_member_count},
   shared::error_notice,
   stream_browser::stream_browser,
   stream_watching::{stream_watching, stream_watching_top_bar},
@@ -356,7 +353,7 @@ fn main_body(
 
     return stream_browser(
       ctx,
-      stream_browser_model(lobby, channel),
+      channel.clone(),
       info.user_id,
       debug_mode_enabled,
       start_stream_modal_open,

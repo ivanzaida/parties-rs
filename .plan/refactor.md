@@ -341,6 +341,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added devtools support for stream browser/watching models so they can be stored in component-local stores;
   - updated stream renderers and tests for owned stream share/user data.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the stream browser fine-grained subscription slice:
+  - wrapped stream browsing in a `StreamBrowserPane` component with a local `Store<Option<StreamBrowserModel>>`;
+  - added a zero-size `StreamBrowserModelSubscriber` that updates only the selected channel stream browser model;
+  - stopped deriving and passing `StreamBrowserModel` from `content.rs`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

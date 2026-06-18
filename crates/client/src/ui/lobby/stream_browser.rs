@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use lurq::{
-  app::ctx::Ctx,
-  components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
-  core::Signal,
+  app::{
+    component::{Component, DevtoolsInspectable},
+    ctx::Ctx,
+  },
+  components::{Column, Rect, Row, ScrollVertical, Stack, Text, TextOverflow},
+  core::{Signal, Store},
   layout::{
     Alignment, StackAlignment,
     layout_kind::Justify,
@@ -9,17 +14,19 @@ use lurq::{
   },
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
+use parking_lot::Mutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
   StopStreamAction, StopWatchingAction, WatchStreamAction,
   layout::lobby_layout_metrics,
-  model::{ChannelScreenShare, StreamBrowserModel, stream_speaking},
+  model::{ChannelScreenShare, StreamBrowserModel, stream_browser_model, stream_speaking},
   shared::error_notice,
   stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
 };
 use crate::{
   network::protocol::UserId,
-  session::{LobbyChannel, LobbyScreenShare, LobbyUser},
+  session::{LobbyChannel, LobbyScreenShare, LobbySnapshot, LobbyUser, ServerSession},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -33,6 +40,102 @@ const LOBBY_STREAM_FOOTER_HEIGHT: f32 = 58.0;
 
 pub(super) fn stream_browser(
   ctx: &mut Ctx,
+  channel: LobbyChannel,
+  local_user_id: UserId,
+  debug_user_ids: bool,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: &StopStreamAction,
+  watch_stream: &WatchStreamAction,
+  stop_watching: &StopWatchingAction,
+) -> Element {
+  let key = format!("stream-browser-{}", channel.id);
+  ctx.mount_keyed::<StreamBrowserPane>(
+    &key,
+    StreamBrowserPaneProps {
+      channel,
+      local_user_id,
+      debug_user_ids,
+      start_stream_modal_open,
+      stop_stream: stop_stream.clone(),
+      watch_stream: watch_stream.clone(),
+      stop_watching: stop_watching.clone(),
+    },
+  )
+}
+
+#[derive(Clone)]
+struct StreamBrowserPaneProps {
+  channel: LobbyChannel,
+  local_user_id: UserId,
+  debug_user_ids: bool,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: StopStreamAction,
+  watch_stream: WatchStreamAction,
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for StreamBrowserPaneProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.channel == other.channel
+      && self.local_user_id == other.local_user_id
+      && self.debug_user_ids == other.debug_user_ids
+  }
+}
+
+impl DevtoolsInspectable for StreamBrowserPaneProps {}
+
+struct StreamBrowserPane {
+  model_store: Store<Option<StreamBrowserModel>>,
+}
+
+impl Component for StreamBrowserPane {
+  type Props = StreamBrowserPaneProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    ctx.provide(self.model_store.clone());
+    if let Some(session) = ctx.use_context::<ServerSession>()
+      && self.model_store.with(Option::is_none)
+    {
+      apply_stream_browser_model(
+        &self.model_store,
+        stream_browser_model(&session.lobby(), &props.channel),
+      );
+    }
+    let subscriber = ctx.mount::<StreamBrowserModelSubscriber>(StreamBrowserModelSubscriberProps {
+      channel: props.channel.clone(),
+    });
+    let Some(model) = self.model_store.get() else {
+      return Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .child(subscriber)
+        .into();
+    };
+
+    stream_browser_view(
+      ctx,
+      subscriber,
+      model,
+      props.local_user_id,
+      props.debug_user_ids,
+      props.start_stream_modal_open,
+      &props.stop_stream,
+      &props.watch_stream,
+      &props.stop_watching,
+    )
+  }
+}
+
+fn stream_browser_view(
+  ctx: &mut Ctx,
+  subscriber: Element,
   model: StreamBrowserModel,
   local_user_id: UserId,
   debug_user_ids: bool,
@@ -45,6 +148,7 @@ pub(super) fn stream_browser(
     .width(Dimension::Pct(100.0))
     .spacing(12.0)
     .padding(LOBBY_GRID_PADDING)
+    .child(subscriber)
     .child(merged_lobby_grid(
       ctx,
       &model.channel,
@@ -73,6 +177,89 @@ pub(super) fn stream_browser(
       style
     })
     .into()
+}
+
+#[derive(Clone, PartialEq)]
+struct StreamBrowserModelSubscriberProps {
+  channel: LobbyChannel,
+}
+
+impl DevtoolsInspectable for StreamBrowserModelSubscriberProps {}
+
+struct StreamBrowserModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for StreamBrowserModelSubscriber {
+  type Props = StreamBrowserModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<StreamBrowserModel>>>() else {
+      return empty_subscriber_node();
+    };
+
+    apply_stream_browser_model(&model_store, stream_browser_model(&session.lobby(), &props.channel));
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let wait_generation = self.generation.get();
+    let session_for_update = session.clone();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let channel = props.channel.clone();
+      let session = session_for_update.clone();
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        Ok::<_, String>((snapshot.generation, stream_browser_model(&snapshot.lobby, &channel)))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, model)) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_stream_browser_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_stream_browser_model(model_store: &Store<Option<StreamBrowserModel>>, model: StreamBrowserModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
+  }
+}
+
+fn empty_subscriber_node() -> Element {
+  Rect::new(0.0, 0.0).into()
 }
 
 fn lobby_stream_scrollbar_style() -> ScrollBarStyle {
