@@ -11,16 +11,15 @@ use lurq::{
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
+pub(super) use super::model::watched_stream_for_channel;
 use super::{
   StopWatchingAction, WatchStreamAction,
-  stream_shared::{
-    ChannelScreenShare, live_badge, resolution_badge, screen_shares_for_channel, stream_avatar, stream_footer_meta,
-    stream_name, stream_speaking,
-  },
+  model::{ChannelScreenShare, stream_speaking},
+  stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
 };
 use crate::{
-  network::protocol::{ChannelId, UserId},
-  session::{LobbyScreenShare, LobbyState, ServerSession},
+  network::protocol::UserId,
+  session::{LobbyScreenShare, ServerSession},
   storage::Storage,
   theme,
   ui::common::{
@@ -33,13 +32,6 @@ const STREAM_VOLUME_CONTROL_WIDTH: f32 = 168.0;
 const STREAM_VOLUME_TRACK_WIDTH: f32 = 104.0;
 const STREAM_VOLUME_VALUE_WIDTH: f32 = 36.0;
 const STREAM_VOLUME_VALUE_SPACING: f32 = 8.0;
-
-pub(super) fn watched_stream_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Option<ChannelScreenShare<'_>> {
-  let watching_user_id = lobby.watching_user_id?;
-  screen_shares_for_channel(lobby, channel_id)
-    .into_iter()
-    .find(|stream| stream.share.sharer_user_id == watching_user_id)
-}
 
 pub(super) fn stream_watching_top_bar(
   ctx: &mut Ctx,

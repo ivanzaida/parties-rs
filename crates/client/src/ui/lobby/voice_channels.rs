@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use lurq::{
   app::{
@@ -7,7 +7,7 @@ use lurq::{
     events::{MouseButton, MouseEvent},
   },
   components::{Column, Row, Text},
-  core::{Signal, Store},
+  core::Signal,
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -25,10 +25,11 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
-  session::{LobbyChannel, LobbyState, LobbyUser, ServerSession},
+  session::{LobbyUser, ServerSession},
   theme,
   ui::lobby::{
     channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
+    model::{VoiceChannelRowModel, VoiceUserRowModel},
     shared::user_display_name,
   },
 };
@@ -44,23 +45,17 @@ pub(super) struct JoinChannelRequest {
 #[derive(Clone)]
 pub(super) struct JoinChannelAction {
   session: ServerSession,
-  lobby_store: Store<LobbyState>,
   task: JoinChannelTask,
 }
 
 impl JoinChannelAction {
-  pub(super) fn new(session: ServerSession, lobby_store: Store<LobbyState>, task: JoinChannelTask) -> Self {
-    Self {
-      session,
-      lobby_store,
-      task,
-    }
+  pub(super) fn new(session: ServerSession, task: JoinChannelTask) -> Self {
+    Self { session, task }
   }
 
   pub(super) fn run(&self, channel_id: ChannelId) {
     let previous_channel_id = self.session.lobby().selected_channel_id;
     self.session.select_channel(channel_id);
-    self.lobby_store.set(self.session.lobby());
     self.task.run(JoinChannelRequest {
       channel_id,
       previous_channel_id,
@@ -70,10 +65,7 @@ impl JoinChannelAction {
 
 #[derive(Clone)]
 pub(super) struct VoiceChannelsProps {
-  pub channels: Vec<LobbyChannel>,
-  pub users_by_channel: HashMap<ChannelId, Vec<LobbyUser>>,
-  pub streaming_user_ids: Vec<UserId>,
-  pub selected_channel_id: Option<ChannelId>,
+  pub channels: Vec<VoiceChannelRowModel>,
   pub disconnected: bool,
   pub local_user_id: UserId,
   pub local_role: Role,
@@ -85,9 +77,6 @@ pub(super) struct VoiceChannelsProps {
 impl PartialEq for VoiceChannelsProps {
   fn eq(&self, other: &Self) -> bool {
     self.channels == other.channels
-      && self.users_by_channel == other.users_by_channel
-      && self.streaming_user_ids == other.streaming_user_ids
-      && self.selected_channel_id == other.selected_channel_id
       && self.disconnected == other.disconnected
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
@@ -107,17 +96,35 @@ impl DevtoolsInspectable for VoiceChannelsProps {
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "selected_channel_id",
       std::any::type_name::<Option<ChannelId>>(),
-      format!("{:?}", self.selected_channel_id),
+      format!(
+        "{:?}",
+        self
+          .channels
+          .iter()
+          .find(|channel| channel.selected)
+          .map(|channel| channel.channel.id)
+      ),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "users_by_channel",
       std::any::type_name::<usize>(),
-      self.users_by_channel.values().map(Vec::len).sum::<usize>().to_string(),
+      self
+        .channels
+        .iter()
+        .map(|channel| channel.users.len())
+        .sum::<usize>()
+        .to_string(),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
       "streaming_user_ids",
       std::any::type_name::<usize>(),
-      self.streaming_user_ids.len().to_string(),
+      self
+        .channels
+        .iter()
+        .flat_map(|channel| channel.users.iter())
+        .filter(|user| user.streaming)
+        .count()
+        .to_string(),
     ));
   }
 }
@@ -152,9 +159,10 @@ impl Component for VoiceChannels {
         || self.context_user_id.get_untracked().is_none_or(|user_id| {
           user_id == props.local_user_id
             || !props
-              .users_by_channel
-              .values()
-              .any(|users| users.iter().any(|user| user.user_id == user_id))
+              .channels
+              .iter()
+              .flat_map(|channel| channel.users.iter())
+              .any(|user| user.user.user_id == user_id)
         }))
     {
       close_user_context_menu(
@@ -171,7 +179,6 @@ impl Component for VoiceChannels {
     let disconnect_user = session.clone().map(|session| disconnect_user_action(ctx, session));
     let kick_user = session.clone().map(|session| kick_user_action(ctx, session));
     let channels_for_menu = props.channels.clone();
-    let users_by_channel_for_menu = props.users_by_channel.clone();
     let mut body = Column::new()
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Xs)
@@ -201,12 +208,8 @@ impl Component for VoiceChannels {
           ),
       );
     } else {
-      let users_by_channel = props.users_by_channel.clone();
-      let selected_channel_id = props.selected_channel_id;
-      let local_user_id = props.local_user_id;
       let join_channel = props.join_channel.clone();
       let watch_stream = props.watch_stream.clone();
-      let streaming_user_ids = props.streaming_user_ids.clone();
       let debug_user_ids = props.debug_user_ids;
       let context_user_id = self.context_user_id.clone();
       let context_menu_open = self.context_menu_open.clone();
@@ -215,18 +218,13 @@ impl Component for VoiceChannels {
       let session_for_channels = session.clone();
       let channel_groups = ctx.for_each(
         props.channels,
-        |channel| channel.id,
+        |channel| channel.channel.id,
         move |ctx, channel| {
-          let users = users_by_channel.get(&channel.id).cloned().unwrap_or_default();
           channel_group(
             ctx,
             &channel,
-            selected_channel_id,
-            local_user_id,
             join_channel.as_ref(),
             watch_stream.as_ref(),
-            users,
-            streaming_user_ids.clone(),
             session_for_channels.clone(),
             context_user_id.clone(),
             context_menu_open.clone(),
@@ -239,11 +237,9 @@ impl Component for VoiceChannels {
       body = body.with_children(channel_groups);
     }
 
-    if let Some((modal_user, modal_channel_name)) = context_menu_target(
-      &channels_for_menu,
-      &users_by_channel_for_menu,
-      self.context_user_id.get_untracked(),
-    ) {
+    if let Some((modal_user, modal_channel_name)) =
+      context_menu_target(&channels_for_menu, self.context_user_id.get_untracked())
+    {
       let modal_context_user_id = self.context_user_id.clone();
       let modal_context_menu_open = self.context_menu_open.clone();
       let modal_anchor = self.context_menu_anchor.clone();
@@ -282,19 +278,16 @@ impl Component for VoiceChannels {
 }
 
 fn context_menu_target(
-  channels: &[LobbyChannel],
-  users_by_channel: &HashMap<ChannelId, Vec<LobbyUser>>,
+  channels: &[VoiceChannelRowModel],
   target_user_id: Option<UserId>,
 ) -> Option<(LobbyUser, String)> {
   let target_user_id = target_user_id?;
   channels.iter().find_map(|channel| {
-    users_by_channel.get(&channel.id).and_then(|users| {
-      users
-        .iter()
-        .find(|user| user.user_id == target_user_id)
-        .cloned()
-        .map(|user| (user, channel.name.clone()))
-    })
+    channel
+      .users
+      .iter()
+      .find(|row| row.user.user_id == target_user_id)
+      .map(|row| (row.user.clone(), channel.channel.name.clone()))
   })
 }
 
@@ -360,13 +353,9 @@ fn kick_user_action(ctx: &mut Ctx, session: ServerSession) -> KickUserAction {
 
 fn channel_group(
   ctx: &mut Ctx,
-  channel: &LobbyChannel,
-  selected_channel_id: Option<ChannelId>,
-  local_user_id: UserId,
+  channel: &VoiceChannelRowModel,
   join_channel: Option<&JoinChannelAction>,
   watch_stream: Option<&WatchStreamAction>,
-  mut users: Vec<LobbyUser>,
-  streaming_user_ids: Vec<UserId>,
   session: Option<ServerSession>,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
@@ -374,25 +363,24 @@ fn channel_group(
   role_menu_user_id: Signal<Option<UserId>>,
   debug_user_ids: bool,
 ) -> Element {
+  let mut users = channel.users.clone();
   users.sort_by(|left, right| {
     left
+      .user
       .username
       .to_lowercase()
-      .cmp(&right.username.to_lowercase())
-      .then_with(|| left.username.cmp(&right.username))
-      .then_with(|| left.user_id.cmp(&right.user_id))
+      .cmp(&right.user.username.to_lowercase())
+      .then_with(|| left.user.username.cmp(&right.user.username))
+      .then_with(|| left.user.user_id.cmp(&right.user.user_id))
   });
 
   let user_rows = ctx.for_each(
     users,
-    |user| user.user_id,
-    move |ctx, user| {
-      let streaming = streaming_user_ids.contains(&user.user_id);
+    |row| row.user.user_id,
+    move |ctx, row| {
       channel_user_row(
         ctx,
-        &user,
-        user.user_id == local_user_id,
-        streaming,
+        &row,
         watch_stream,
         context_user_id.clone(),
         context_menu_open.clone(),
@@ -406,19 +394,19 @@ fn channel_group(
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(2.0)
-    .child(channel_row(ctx, channel, selected_channel_id, join_channel, session))
+    .child(channel_row(ctx, channel, join_channel, session))
     .with_children(user_rows)
     .into()
 }
 
 fn channel_row(
   ctx: &mut Ctx,
-  channel: &LobbyChannel,
-  selected_channel_id: Option<ChannelId>,
+  model: &VoiceChannelRowModel,
   join_channel: Option<&JoinChannelAction>,
   session: Option<ServerSession>,
 ) -> Element {
-  let selected = selected_channel_id == Some(channel.id);
+  let selected = model.selected;
+  let channel = &model.channel;
   let channel_id = channel.id;
   let count = channel.user_count.to_string();
   let channel_color = if selected {
@@ -484,9 +472,7 @@ fn channel_row(
 
 fn channel_user_row(
   ctx: &mut Ctx,
-  user: &LobbyUser,
-  local: bool,
-  streaming: bool,
+  model: &VoiceUserRowModel,
   watch_stream: Option<&WatchStreamAction>,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
@@ -494,6 +480,9 @@ fn channel_user_row(
   role_menu_user_id: Signal<Option<UserId>>,
   debug_user_ids: bool,
 ) -> Element {
+  let user = &model.user;
+  let local = model.local;
+  let streaming = model.streaming;
   let speaking = user.speaking && !user.muted && !user.deafened;
   let user_id = user.user_id;
   let open_context = context_user_id.clone();

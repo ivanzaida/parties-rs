@@ -20,7 +20,7 @@ use crate::{
   network::protocol::{ChannelId, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
-  session::{ConnectedServerInfo, LobbyState, ServerSession, chat_commands::ChatCommandRegistry},
+  session::{ConnectedServerInfo, LobbySnapshot, LobbyState, ServerSession, chat_commands::ChatCommandRegistry},
   storage::{AppSettings, Storage},
   theme,
   ui::loader::loader,
@@ -33,6 +33,7 @@ mod content;
 mod debug_channels;
 mod disconnected;
 mod layout;
+mod model;
 mod rail;
 mod shared;
 mod stream_browser;
@@ -51,10 +52,10 @@ use actions::{
 use chat::ChatCommandInvalidFeedback;
 use content::main;
 use disconnected::disconnected_lobby;
+use model::watched_stream;
 use rail::{LobbyRail, LobbyRailProps};
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
-use stream_shared::watched_stream;
 
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
 type ChatHistoryAction = lurq::app::ctx::FutureAction<Vec<ChatHistoryRequest>, (), String>;
@@ -113,6 +114,7 @@ pub struct LobbyScreen {
   stream_source_index: Signal<usize>,
   stream_audio_enabled: Signal<bool>,
   reconnect_attempt: Signal<u32>,
+  lobby_store_initialized: Signal<bool>,
   lobby_store: Store<LobbyState>,
 }
 
@@ -137,6 +139,7 @@ impl Component for LobbyScreen {
       stream_source_index: ctx.signal(0),
       stream_audio_enabled: ctx.signal(true),
       reconnect_attempt: ctx.signal(0),
+      lobby_store_initialized: ctx.signal(false),
       lobby_store: ctx.store(LobbyState::default()),
     }
   }
@@ -166,9 +169,9 @@ impl Component for LobbyScreen {
       .unwrap_or_else(AppSettings::default)
       .debug_mode_enabled;
 
-    let session_lobby = session.lobby();
-    if self.lobby_store.with(|lobby| lobby != &session_lobby) {
-      self.lobby_store.set(session_lobby);
+    if !self.lobby_store_initialized.get_untracked() {
+      self.lobby_store.set(session.lobby());
+      self.lobby_store_initialized.set(true);
     }
     let mut lobby = self.lobby_store.get();
     let receiver = receiver_action(ctx, session.clone());
@@ -244,7 +247,7 @@ impl Component for LobbyScreen {
       .height(Dimension::Pct(100.0))
       .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceBase))
       .clip()
-      .child(ctx.mount::<LobbyStateSpy>(()))
+      .child(ctx.mount::<LobbyStoreSubscriber>(()))
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         lobby: lobby.clone(),
@@ -312,21 +315,15 @@ impl Component for LobbyScreen {
   }
 }
 
-#[derive(Clone, PartialEq)]
-struct LobbyStateUpdate {
-  generation: u64,
-  lobby: LobbyState,
-}
+impl lurq::app::component::DevtoolsInspectable for LobbySnapshot {}
 
-impl lurq::app::component::DevtoolsInspectable for LobbyStateUpdate {}
-
-struct LobbyStateSpy {
+struct LobbyStoreSubscriber {
   generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbyState>>>>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
 }
 
-impl Component for LobbyStateSpy {
+impl Component for LobbyStoreSubscriber {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
@@ -351,36 +348,37 @@ impl Component for LobbyStateSpy {
         .clone()
     };
 
-    let generation = self.generation.get();
-    let update = ctx.future(generation, move |generation| {
+    let wait_generation = self.generation.get();
+    let update = ctx.future(wait_generation, move |wait_generation| {
       let receiver = receiver.clone();
       async move {
         let mut receiver = receiver.lock().await;
-        let lobby = match receiver.changed().await {
+        let snapshot = match receiver.changed().await {
           Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbyState::default(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: LobbyState::default(),
+          },
         };
-        Ok::<_, String>(LobbyStateUpdate { generation, lobby })
+        Ok::<_, String>(snapshot)
       }
     });
     let state = update.state().get();
     if state.is_fulfilled()
-      && let Some(update) = state.data
-      && update.generation == generation
-      && self.applied_generation.get_untracked() != Some(update.generation)
+      && let Some(snapshot) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot.generation)
     {
-      if lobby_store.with(|lobby| lobby != &update.lobby) {
-        tracing::info!(
-          target: "lobby::state",
-          "[lobby:state] spy applied lobby update generation={} text_channels={} voice_channels={}",
-          update.generation,
-          update.lobby.text_channels.len(),
-          update.lobby.channels.len()
-        );
-        lobby_store.set(update.lobby);
-      }
-      self.applied_generation.set(Some(generation));
-      self.generation.set(generation.wrapping_add(1));
+      tracing::info!(
+        target: "lobby::state",
+        "[lobby:state] subscriber applied lobby update generation={} text_channels={} voice_channels={}",
+        snapshot.generation,
+        snapshot.lobby.text_channels.len(),
+        snapshot.lobby.channels.len()
+      );
+      let snapshot_generation = snapshot.generation;
+      lobby_store.set(snapshot.lobby);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
     }
 
     empty_spy_node()

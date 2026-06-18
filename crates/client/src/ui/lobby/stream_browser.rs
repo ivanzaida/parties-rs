@@ -13,11 +13,9 @@ use lurq::{
 use super::{
   StopStreamAction, StopWatchingAction, WatchStreamAction,
   layout::lobby_layout_metrics,
+  model::{ChannelScreenShare, screen_shares_for_channel, stream_speaking},
   shared::error_notice,
-  stream_shared::{
-    ChannelScreenShare, initials_for_user, live_badge, resolution_badge, screen_shares_for_channel, stream_avatar,
-    stream_footer_meta, stream_name, stream_speaking,
-  },
+  stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
 };
 use crate::{
   network::protocol::UserId,

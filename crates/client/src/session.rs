@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::{
   sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
   },
   time::{Duration, Instant},
 };
@@ -48,6 +48,44 @@ pub use lobby::{
 pub use video::VideoReceiverDebugSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LobbySnapshot {
+  pub generation: u64,
+  pub lobby: LobbyState,
+}
+
+#[derive(Clone)]
+struct LobbyUpdatePublisher {
+  lobby: Arc<Mutex<LobbyState>>,
+  generation: Arc<AtomicU64>,
+  updates: watch::Sender<LobbySnapshot>,
+}
+
+impl LobbyUpdatePublisher {
+  fn new(lobby: Arc<Mutex<LobbyState>>, initial_lobby: LobbyState) -> Self {
+    let initial = LobbySnapshot {
+      generation: 0,
+      lobby: initial_lobby,
+    };
+    let (updates, _) = watch::channel(initial);
+    Self {
+      lobby,
+      generation: Arc::new(AtomicU64::new(0)),
+      updates,
+    }
+  }
+
+  fn subscribe(&self) -> watch::Receiver<LobbySnapshot> {
+    self.updates.subscribe()
+  }
+
+  fn publish(&self) {
+    let generation = self.generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    let lobby = self.lobby.lock().clone();
+    let _ = self.updates.send(LobbySnapshot { generation, lobby });
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VideoStreamError {
   pub title: String,
   pub message: String,
@@ -65,14 +103,14 @@ pub struct ServerSession {
   streams: Arc<video_stream::StreamRuntime>,
   video_sink: Arc<video_sink::VideoFrameSink>,
   video_hardware_decoding: Arc<AtomicBool>,
-  lobby_updates: watch::Sender<LobbyState>,
+  lobby_updates: LobbyUpdatePublisher,
 }
 
 impl Default for ServerSession {
   fn default() -> Self {
     let initial_lobby = LobbyState::default();
     let lobby = Arc::new(Mutex::new(initial_lobby.clone()));
-    let (lobby_updates, _) = watch::channel(initial_lobby);
+    let lobby_updates = LobbyUpdatePublisher::new(lobby.clone(), initial_lobby);
     Self {
       connection: Arc::new(connection::ConnectionRuntime::new()),
       lobby: lobby.clone(),
@@ -476,7 +514,7 @@ impl ServerSession {
     self.lobby.lock().clone()
   }
 
-  pub fn subscribe_lobby_updates(&self) -> watch::Receiver<LobbyState> {
+  pub fn subscribe_lobby_updates(&self) -> watch::Receiver<LobbySnapshot> {
     self.lobby_updates.subscribe()
   }
 
@@ -485,7 +523,7 @@ impl ServerSession {
   }
 
   fn publish_lobby_update(&self) {
-    let _ = self.lobby_updates.send(self.lobby());
+    self.lobby_updates.publish();
   }
 
   pub fn select_channel(&self, channel_id: ChannelId) {

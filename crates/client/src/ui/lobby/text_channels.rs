@@ -13,23 +13,22 @@ use lurq::{
 
 use crate::{
   network::protocol::ChannelId,
-  session::{LobbyTextChannel, ServerSession},
+  session::ServerSession,
   theme,
-  ui::lobby::channel_section::{aligned_channel_icon_with_color, section_head},
+  ui::lobby::{
+    channel_section::{aligned_channel_icon_with_color, section_head},
+    model::TextChannelRowModel,
+  },
 };
 
 #[derive(Clone)]
 pub(super) struct TextChannelsProps {
-  pub channels: Vec<LobbyTextChannel>,
-  pub selected_channel_id: Option<ChannelId>,
-  pub unread_channel_ids: HashSet<ChannelId>,
+  pub channels: Vec<TextChannelRowModel>,
 }
 
 impl PartialEq for TextChannelsProps {
   fn eq(&self, other: &Self) -> bool {
     self.channels == other.channels
-      && self.selected_channel_id == other.selected_channel_id
-      && self.unread_channel_ids == other.unread_channel_ids
   }
 }
 
@@ -41,9 +40,14 @@ impl DevtoolsInspectable for TextChannelsProps {
       self.channels.len().to_string(),
     ));
     formatter.buffer_mut().push(ComponentInfo::with_value(
-      "selected_channel_id",
-      std::any::type_name::<Option<ChannelId>>(),
-      format!("{:?}", self.selected_channel_id),
+      "selected_channels",
+      std::any::type_name::<usize>(),
+      self
+        .channels
+        .iter()
+        .filter(|channel| channel.selected)
+        .count()
+        .to_string(),
     ));
   }
 }
@@ -72,25 +76,25 @@ impl Component for TextChannels {
     let is_expanded = self.expanded.get();
     tracing::debug!(
       target: "lobby::text_channels",
-      "[lobby:text_channels] render channels={} selected={:?} unread={}",
+      "[lobby:text_channels] render channels={} selected={} unread={}",
       props.channels.len(),
-      props.selected_channel_id,
-      props.unread_channel_ids.len()
+      props.channels.iter().filter(|channel| channel.selected).count(),
+      props.channels.iter().filter(|channel| channel.unread).count()
     );
     if let Ok(mut mounted_channel_ids) = self.mounted_channel_ids.lock() {
-      for channel in &props.channels {
-        if mounted_channel_ids.insert(channel.id) {
+      for row in &props.channels {
+        if mounted_channel_ids.insert(row.channel.id) {
           tracing::info!(
             target: "lobby::text_channels",
-            "[lobby:text_channels] channel mounted id={} name='{}' selected={:?} total_channels={}",
-            channel.id,
-            channel.name,
-            props.selected_channel_id,
+            "[lobby:text_channels] channel mounted id={} name='{}' selected={} total_channels={}",
+            row.channel.id,
+            row.channel.name,
+            row.selected,
             props.channels.len()
           );
         }
       }
-      mounted_channel_ids.retain(|id| props.channels.iter().any(|channel| channel.id == *id));
+      mounted_channel_ids.retain(|id| props.channels.iter().any(|row| row.channel.id == *id));
     }
     let mut section = Column::new()
       .width(Dimension::Pct(100.0))
@@ -118,16 +122,11 @@ impl Component for TextChannels {
             ),
         );
       } else {
-        let selected_channel_id = props.selected_channel_id;
-        let unread_channel_ids = props.unread_channel_ids.clone();
         let session = ctx.use_context::<ServerSession>();
         section = section.with_children(ctx.for_each(
           props.channels,
-          |channel| channel.id,
-          move |ctx, channel| {
-            let unread = unread_channel_ids.contains(&channel.id);
-            text_channel_row(ctx, &channel, selected_channel_id, unread, session.clone())
-          },
+          |row| row.channel.id,
+          move |ctx, row| text_channel_row(ctx, &row, session.clone()),
         ));
       }
     }
@@ -136,15 +135,9 @@ impl Component for TextChannels {
   }
 }
 
-fn text_channel_row(
-  ctx: &mut Ctx,
-  channel: &LobbyTextChannel,
-  selected_channel_id: Option<ChannelId>,
-  unread: bool,
-  session: Option<ServerSession>,
-) -> Element {
-  let selected = selected_channel_id == Some(channel.id);
-  let channel_id = channel.id;
+fn text_channel_row(ctx: &mut Ctx, model: &TextChannelRowModel, session: Option<ServerSession>) -> Element {
+  let selected = model.selected;
+  let channel_id = model.channel.id;
   let channel_color = if selected {
     theme::palette().accent
   } else {
@@ -167,7 +160,7 @@ fn text_channel_row(
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .child(aligned_channel_icon_with_color(ctx, "hash", 16.0, channel_color))
     .child(
-      Text::new(&channel.name)
+      Text::new(&model.channel.name)
         .width(Dimension::Pct(100.0))
         .flex(1.0)
         .variant(theme::TypographyStyle::Description)
@@ -177,7 +170,7 @@ fn text_channel_row(
           theme::PaletteColor::TextSecondary
         }),
     );
-  if unread {
+  if model.unread {
     row = row.child(
       Rect::new(7.0, 7.0)
         .rounded(4.0)

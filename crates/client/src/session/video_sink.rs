@@ -4,9 +4,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use lurq::images::{ImageData, StreamingImage};
 use parking_lot::Mutex;
-use tokio::sync::watch;
 
-use super::{LobbyState, VideoStreamError, video};
+use super::{LobbyState, LobbyUpdatePublisher, VideoStreamError, video};
 use crate::{
   network::protocol::{UserId, control::ScreenShareMetadata},
   services::video::{DecodedVideoFrame, DecodedVideoPixelFormat},
@@ -75,13 +74,13 @@ pub(super) struct VideoFrameSink {
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
   lobby: Arc<Mutex<LobbyState>>,
-  lobby_updates: watch::Sender<LobbyState>,
+  lobby_updates: LobbyUpdatePublisher,
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
 }
 
 impl VideoFrameSink {
-  pub(super) fn new(lobby: Arc<Mutex<LobbyState>>, lobby_updates: watch::Sender<LobbyState>) -> Self {
+  pub(super) fn new(lobby: Arc<Mutex<LobbyState>>, lobby_updates: LobbyUpdatePublisher) -> Self {
     Self {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
@@ -96,7 +95,7 @@ impl VideoFrameSink {
   #[cfg(target_os = "windows")]
   pub(super) fn with_dx12_video_surface_allocator(
     lobby: Arc<Mutex<LobbyState>>,
-    lobby_updates: watch::Sender<LobbyState>,
+    lobby_updates: LobbyUpdatePublisher,
     dx12_video_surfaces: lurq::app::dx12_render::Dx12VideoSurfaceAllocator,
   ) -> Self {
     Self {
@@ -480,7 +479,7 @@ impl VideoFrameSink {
   }
 
   fn publish_lobby_update(&self) {
-    let _ = self.lobby_updates.send(self.lobby.lock().clone());
+    self.lobby_updates.publish();
   }
 }
 

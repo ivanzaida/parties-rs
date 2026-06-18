@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use lurq::{
   app::ctx::Ctx,
   components::{Row, Text},
@@ -7,81 +5,21 @@ use lurq::{
   node::{BackgroundColor, Element, color::Color},
 };
 
+use super::model::ChannelScreenShare;
+#[cfg(test)]
+pub(super) use super::model::{screen_shares_for_channel, stream_speaking, watched_stream};
 use crate::{
-  network::protocol::{ChannelId, UserId, VideoCodecId},
-  session::{LobbyChannel, LobbyScreenShare, LobbyState, LobbyUser},
+  network::protocol::{UserId, VideoCodecId},
+  session::LobbyScreenShare,
   theme,
   ui::lobby::shared::user_display_name,
 };
-
-pub(super) struct ChannelScreenShare<'a> {
-  pub(super) share: &'a LobbyScreenShare,
-  pub(super) user: Option<&'a LobbyUser>,
-}
-
-pub(super) struct WatchedChannelScreenShare<'a> {
-  pub(super) channel: &'a LobbyChannel,
-  pub(super) stream: ChannelScreenShare<'a>,
-}
-
-pub(super) fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Vec<ChannelScreenShare<'_>> {
-  let Some(users) = lobby.users_by_channel.get(&channel_id) else {
-    return Vec::new();
-  };
-  let user_ids = users.iter().map(|user| user.user_id).collect::<HashSet<_>>();
-
-  lobby
-    .screen_shares
-    .iter()
-    .filter(|share| user_ids.contains(&share.sharer_user_id))
-    .map(|share| ChannelScreenShare {
-      share,
-      user: users.iter().find(|user| user.user_id == share.sharer_user_id),
-    })
-    .collect()
-}
-
-pub(super) fn watched_stream(lobby: &LobbyState) -> Option<WatchedChannelScreenShare<'_>> {
-  let watched_user_id = lobby.watching_user_id?;
-
-  for channel in &lobby.channels {
-    let Some(users) = lobby.users_by_channel.get(&channel.id) else {
-      continue;
-    };
-    let Some(user) = users.iter().find(|user| user.user_id == watched_user_id) else {
-      continue;
-    };
-    let Some(share) = lobby
-      .screen_shares
-      .iter()
-      .find(|share| share.sharer_user_id == watched_user_id)
-    else {
-      continue;
-    };
-
-    return Some(WatchedChannelScreenShare {
-      channel,
-      stream: ChannelScreenShare {
-        share,
-        user: Some(user),
-      },
-    });
-  }
-
-  None
-}
 
 pub(super) fn stream_name(ctx: &mut Ctx, stream: &ChannelScreenShare<'_>, debug_user_ids: bool) -> String {
   stream
     .user
     .map(|user| user_display_name(user.user_id, &user.username, debug_user_ids))
     .unwrap_or_else(|| fallback_user_name(ctx, stream.share.sharer_user_id))
-}
-
-pub(super) fn stream_speaking(stream: &ChannelScreenShare<'_>) -> bool {
-  stream
-    .user
-    .is_some_and(|user| user.speaking && !user.muted && !user.deafened)
 }
 
 pub(super) fn live_badge(ctx: &mut Ctx) -> Element {

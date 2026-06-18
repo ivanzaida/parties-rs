@@ -7,9 +7,8 @@ use lurq::{
 
 use super::{
   StopWatchingAction,
-  stream_shared::{
-    WatchedChannelScreenShare, live_badge, resolution_badge, stream_avatar, stream_name, stream_speaking,
-  },
+  model::{WatchedChannelScreenShare, stream_speaking},
+  stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
 };
 use crate::{
   network::protocol::ChannelId,

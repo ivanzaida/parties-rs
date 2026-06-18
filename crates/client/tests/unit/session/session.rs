@@ -84,6 +84,30 @@ fn screen_share_started(user_id: UserId) -> S2C {
 }
 
 #[test]
+fn test_lobby_update_snapshots_publish_monotonic_generations() {
+  let session = connected_session();
+  let mut updates = session.subscribe_lobby_updates();
+
+  assert_eq!(updates.borrow().generation, 0);
+
+  session.apply_server_message(S2C::ChannelList(ChannelList {
+    channels: vec![channel_info(6, "General")],
+  }));
+
+  assert!(updates.has_changed().unwrap());
+  let first = updates.borrow_and_update().clone();
+  assert_eq!(first.generation, 1);
+  assert_eq!(first.lobby.channels[0].id, 6);
+
+  session.select_channel(6);
+
+  assert!(updates.has_changed().unwrap());
+  let second = updates.borrow_and_update().clone();
+  assert!(second.generation > first.generation);
+  assert_eq!(second.lobby.selected_channel_id, Some(6));
+}
+
+#[test]
 fn test_connected_session_applies_channel_user_and_local_voice_state() {
   let session = connected_session();
   session.apply_server_message(S2C::ChannelList(ChannelList {

@@ -4,7 +4,7 @@ use lurq::{
     ctx::Ctx,
   },
   components::{Column, Rect, Row, ScrollVertical, Text},
-  core::{Signal, Store},
+  core::Signal,
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -26,6 +26,7 @@ use crate::{
     lobby::{
       debug_channels::{DebugChannels, DebugChannelsProps},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
+      model::{text_channel_rows, voice_channel_rows},
       text_channels::{TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
     },
@@ -38,7 +39,6 @@ type VoiceControlTask = lurq::app::ctx::FutureAction<VoiceControlAction, (), Str
 #[derive(Clone)]
 struct VoiceControlFuture {
   session: ServerSession,
-  lobby_store: Store<LobbyState>,
   task: VoiceControlTask,
 }
 
@@ -46,7 +46,6 @@ impl VoiceControlFuture {
   fn run(&self, action: VoiceControlAction) {
     if action == VoiceControlAction::LeaveChannel {
       self.session.leave_channel_locally();
-      self.lobby_store.set(self.session.lobby());
     }
     self.task.run(action);
   }
@@ -110,15 +109,11 @@ impl Component for LobbyRail {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let session = ctx.use_context::<ServerSession>();
-    let lobby_store = ctx.use_context::<Store<LobbyState>>();
     let storage = ctx.use_context::<Storage>();
     let join_channel = session
       .clone()
-      .zip(lobby_store.clone())
-      .map(|(session, lobby_store)| join_channel_action(ctx, session, storage.clone(), lobby_store));
-    let voice_control = session
-      .zip(lobby_store)
-      .map(|(session, lobby_store)| voice_control_action(ctx, session, lobby_store));
+      .map(|session| join_channel_action(ctx, session, storage.clone()));
+    let voice_control = session.map(|session| voice_control_action(ctx, session));
 
     rail(
       ctx,
@@ -134,12 +129,7 @@ impl Component for LobbyRail {
   }
 }
 
-fn join_channel_action(
-  ctx: &mut Ctx,
-  session: ServerSession,
-  storage: Option<Storage>,
-  lobby_store: Store<LobbyState>,
-) -> JoinChannelAction {
+fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<Storage>) -> JoinChannelAction {
   let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   let task_session = session.clone();
   let task = ctx.future_action(move |request: JoinChannelRequest| {
@@ -188,10 +178,10 @@ fn join_channel_action(
       Ok(())
     }
   });
-  JoinChannelAction::new(session, lobby_store, task)
+  JoinChannelAction::new(session, task)
 }
 
-fn voice_control_action(ctx: &mut Ctx, session: ServerSession, lobby_store: Store<LobbyState>) -> VoiceControlFuture {
+fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFuture {
   let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   let task_session = session.clone();
   let task = ctx.future_action(move |control| {
@@ -199,11 +189,7 @@ fn voice_control_action(ctx: &mut Ctx, session: ServerSession, lobby_store: Stor
     let no_connected_server = no_connected_server.clone();
     async move { apply_voice_control(session, control, no_connected_server).await }
   });
-  VoiceControlFuture {
-    session,
-    lobby_store,
-    task,
-  }
+  VoiceControlFuture { session, task }
 }
 
 fn rail(
@@ -360,16 +346,11 @@ fn rail_channels(
     .padding_vertical(metrics.rail_padding_y)
     .padding_horizontal(metrics.rail_padding_x)
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
-      channels: lobby.text_channels.clone(),
-      selected_channel_id: lobby.selected_text_channel_id,
-      unread_channel_ids: lobby.unread_text_channel_ids.clone(),
+      channels: text_channel_rows(lobby),
     }));
 
   channels = channels.child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
-    channels: lobby.channels.clone(),
-    users_by_channel: lobby.users_by_channel.clone(),
-    streaming_user_ids: lobby.screen_shares.iter().map(|share| share.sharer_user_id).collect(),
-    selected_channel_id: lobby.selected_channel_id,
+    channels: voice_channel_rows(lobby, info.user_id),
     disconnected: lobby.disconnected,
     local_user_id: info.user_id,
     local_role: info.role,

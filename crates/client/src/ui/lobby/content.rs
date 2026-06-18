@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Row, Text},
@@ -15,14 +13,14 @@ use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
+  model::{screen_shares_for_channel, selected_text_channel, stream_browser_channel, unique_lobby_member_count},
   shared::error_notice,
   stream_browser::stream_browser,
-  stream_shared::screen_shares_for_channel,
   stream_watching::{stream_watching, stream_watching_top_bar, watched_stream_for_channel},
 };
 use crate::{
   network::protocol::{ChannelId, UserId},
-  session::{ConnectedServerInfo, LobbyChannel, LobbyState, LobbyTextChannel, ServerSession},
+  session::{ConnectedServerInfo, LobbyChannel, LobbyState, ServerSession},
   storage::Storage,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -376,26 +374,6 @@ fn main_body(
   }
 
   select_channel_state(ctx, lobby.last_error.as_deref())
-}
-
-fn selected_text_channel(lobby: &LobbyState) -> Option<&LobbyTextChannel> {
-  let channel_id = lobby.selected_text_channel_id?;
-  lobby.text_channels.iter().find(|channel| channel.id == channel_id)
-}
-
-fn stream_browser_channel(lobby: &LobbyState) -> Option<&LobbyChannel> {
-  let channel_id = lobby.stream_browser_channel_id?;
-  lobby.channels.iter().find(|channel| channel.id == channel_id)
-}
-
-fn unique_lobby_member_count(lobby: &LobbyState) -> usize {
-  let mut users = HashSet::new();
-
-  for user in lobby.users_by_channel.values().flatten() {
-    users.insert(user.user_id);
-  }
-
-  users.len()
 }
 
 fn empty_voice_state(ctx: &mut Ctx, error: Option<&str>) -> Element {

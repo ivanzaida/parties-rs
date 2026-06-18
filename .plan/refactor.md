@@ -266,6 +266,23 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 7. Group action handles and remove leaf-context lookups.
 8. Split `LobbyState` into domains only after behavior-preserving work is stable.
 
+## Progress
+
+2026-06-18:
+
+- Committed the dirty pre-refactor checkpoint as `bbb5b06`.
+- Completed the first behavior-preserving slice:
+  - removed direct rail/voice action writes to `Store<LobbyState>`;
+  - added generated `LobbySnapshot` updates from `ServerSession`;
+  - replaced `LobbyStateSpy` with a generation-aware lobby store subscriber;
+  - added `ui/lobby/model.rs` selectors and migrated stream/content derivations;
+  - slimmed text and voice channel props to row models.
+- Verified with:
+  - `cargo fmt --all --check`;
+  - `cargo check --config .cargo/local-lurq.toml -p client`;
+  - `cargo test --config .cargo/local-lurq.toml -p client --lib`;
+  - `cargo test --config .cargo/local-lurq.toml --target-dir target\client-test -p client --test chat`.
+
 ## Non-Goals
 
 - Do not rewrite the transport protocol.
@@ -273,4 +290,3 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Do not move audio/video runtime state into the UI store.
 - Do not refactor native video code as part of this store cleanup.
 - Do not change visual design unless component prop changes expose a real rendering bug.
-
