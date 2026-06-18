@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
-  StopStreamAction, StopWatchingAction, WatchStreamAction,
+  WatchStreamAction,
   layout::lobby_layout_metrics,
   model::{ChannelScreenShare, StreamBrowserModel, stream_browser_model, stream_speaking},
   shared::error_notice,
@@ -44,10 +44,7 @@ pub(super) fn stream_browser(
   local_user_id: UserId,
   debug_user_ids: bool,
   session: ServerSession,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
-  stop_watching: &StopWatchingAction,
 ) -> Element {
   let key = format!("stream-browser-{}", channel.id);
   ctx.mount_keyed::<StreamBrowserPane>(
@@ -57,10 +54,7 @@ pub(super) fn stream_browser(
       local_user_id,
       debug_user_ids,
       session,
-      start_stream_modal_open,
-      stop_stream: stop_stream.clone(),
       watch_stream: watch_stream.clone(),
-      stop_watching: stop_watching.clone(),
     },
   )
 }
@@ -71,10 +65,7 @@ struct StreamBrowserPaneProps {
   local_user_id: UserId,
   debug_user_ids: bool,
   session: ServerSession,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: StopStreamAction,
   watch_stream: WatchStreamAction,
-  stop_watching: StopWatchingAction,
 }
 
 impl PartialEq for StreamBrowserPaneProps {
@@ -128,10 +119,7 @@ impl Component for StreamBrowserPane {
       model,
       props.local_user_id,
       props.debug_user_ids,
-      props.start_stream_modal_open,
-      &props.stop_stream,
       &props.watch_stream,
-      &props.stop_watching,
     )
   }
 }
@@ -142,10 +130,7 @@ fn stream_browser_view(
   model: StreamBrowserModel,
   local_user_id: UserId,
   debug_user_ids: bool,
-  _start_stream_modal_open: Signal<bool>,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
-  _stop_watching: &StopWatchingAction,
 ) -> Element {
   let mut content = Column::new()
     .width(Dimension::Pct(100.0))
@@ -160,7 +145,6 @@ fn stream_browser_view(
       local_user_id,
       model.watching_user_id,
       debug_user_ids,
-      stop_stream,
       watch_stream,
     ));
 
@@ -296,7 +280,6 @@ fn merged_lobby_grid(
   local_user_id: UserId,
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
 ) -> Element {
   let columns = lobby_grid_columns(ctx);
@@ -315,7 +298,6 @@ fn merged_lobby_grid(
         stream,
         watching_user_id,
         debug_user_ids,
-        stop_stream,
         watch_stream,
         card_width,
       ));
@@ -337,7 +319,6 @@ fn merged_lobby_grid(
       stream,
       watching_user_id,
       debug_user_ids,
-      stop_stream,
       watch_stream,
       card_width,
     ));
@@ -398,7 +379,6 @@ fn merged_stream_card(
   stream: ChannelScreenShare,
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
-  _stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
   card_width: f32,
 ) -> Element {

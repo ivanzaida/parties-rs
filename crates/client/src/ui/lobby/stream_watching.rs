@@ -16,7 +16,7 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 #[cfg(test)]
 pub(super) use super::model::watched_stream_for_channel;
 use super::{
-  StopStreamAction, StopWatchingAction, WatchStreamAction,
+  StopWatchingAction, WatchStreamAction,
   model::{ChannelScreenShare, StreamWatchingModel, stream_speaking, stream_watching_model},
   stream_browser::stream_browser,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
@@ -79,10 +79,7 @@ pub(super) fn stream_channel_detail(
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
-  stop_watching: &StopWatchingAction,
 ) -> Element {
   let key = format!("stream-channel-detail-{}", channel.id);
   ctx.mount_keyed::<StreamWatchingPane>(
@@ -93,10 +90,7 @@ pub(super) fn stream_channel_detail(
       debug_user_ids,
       storage,
       session,
-      start_stream_modal_open,
-      stop_stream: stop_stream.clone(),
       watch_stream: watch_stream.clone(),
-      stop_watching: stop_watching.clone(),
     },
   )
 }
@@ -108,10 +102,7 @@ struct StreamWatchingPaneProps {
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: StopStreamAction,
   watch_stream: WatchStreamAction,
-  stop_watching: StopWatchingAction,
 }
 
 impl PartialEq for StreamWatchingPaneProps {
@@ -164,10 +155,7 @@ impl Component for StreamWatchingPane {
           props.local_user_id,
           props.debug_user_ids,
           props.session.clone(),
-          props.start_stream_modal_open,
-          &props.stop_stream,
           &props.watch_stream,
-          &props.stop_watching,
         ))
         .into();
     };

@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
-  ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
+  ChatHistoryAction, SendChatAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
   model::{MainBodyModel, MainTopBarModel, main_body_model, main_top_bar_model},
@@ -51,7 +51,6 @@ pub(super) fn main(
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
   start_stream_modal_open: Signal<bool>,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
   stop_watching: &StopWatchingAction,
 ) -> Element {
@@ -85,10 +84,7 @@ pub(super) fn main(
       session,
       chat_history,
       send_chat,
-      start_stream_modal_open,
-      stop_stream,
       watch_stream,
-      stop_watching,
     ))
     .into()
 }
@@ -465,10 +461,7 @@ fn main_body(
   session: ServerSession,
   chat_history: &ChatHistoryAction,
   send_chat: &SendChatAction,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
-  stop_watching: &StopWatchingAction,
 ) -> Element {
   ctx.mount::<MainBody>(MainBodyProps {
     info: info.clone(),
@@ -487,10 +480,7 @@ fn main_body(
     session,
     chat_history: chat_history.clone(),
     send_chat: send_chat.clone(),
-    start_stream_modal_open,
-    stop_stream: stop_stream.clone(),
     watch_stream: watch_stream.clone(),
-    stop_watching: stop_watching.clone(),
   })
 }
 
@@ -512,10 +502,7 @@ struct MainBodyProps {
   session: ServerSession,
   chat_history: ChatHistoryAction,
   send_chat: SendChatAction,
-  start_stream_modal_open: Signal<bool>,
-  stop_stream: StopStreamAction,
   watch_stream: WatchStreamAction,
-  stop_watching: StopWatchingAction,
 }
 
 impl PartialEq for MainBodyProps {
@@ -707,10 +694,7 @@ fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, prop
       props.debug_mode_enabled,
       props.storage,
       props.session,
-      props.start_stream_modal_open,
-      &props.stop_stream,
       &props.watch_stream,
-      &props.stop_watching,
     ),
     MainBodyModel::EmptyVoice { error } => empty_voice_state(ctx, error.as_deref()),
     MainBodyModel::SelectChannel { error } => select_channel_state(ctx, error.as_deref()),

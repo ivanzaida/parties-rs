@@ -415,6 +415,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added `UserMenuActions` as the explicit moderation action contract for the user context overlay;
   - replaced four separate overlay action props with one grouped action prop;
   - kept overlay prop comparison focused on model data and action availability.
+- Completed the stream body action slimming slice:
+  - removed unused start-stream, stop-stream, and stop-watching props from stream browser/body components;
+  - kept `watch_stream` as the only stream-browser/body action dependency;
+  - left stop-stream in the rail controls and stop-watching/start-stream in the top bar where they are rendered.
 
 ## Non-Goals
 

@@ -267,7 +267,6 @@ impl Component for LobbyScreen {
         &chat_history,
         &send_chat,
         self.start_stream_modal_open.clone(),
-        &stop_stream,
         &watch_stream,
         &stop_watching,
       ));
