@@ -23,7 +23,7 @@ use crate::{
   session::{ConnectedServerInfo, LobbySnapshot, ServerSession, chat_commands::ChatCommandRegistry},
   storage::{AppSettings, Storage},
   theme,
-  ui::loader::loader,
+  ui::{loader::loader, settings::SettingsPopupHandle},
 };
 
 mod actions;
@@ -147,6 +147,7 @@ impl Component for LobbyScreen {
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
+    let settings_popup = ctx.use_context::<SettingsPopupHandle>();
     ctx.provide(self.shell_model_store.clone());
 
     let Some(info) = session.info() else {
@@ -239,6 +240,7 @@ impl Component for LobbyScreen {
         info: info.clone(),
         debug_mode_enabled,
         start_stream_modal_open: self.start_stream_modal_open.clone(),
+        settings_popup: settings_popup.clone(),
         stop_stream: stop_stream.clone(),
         watch_stream: watch_stream.clone(),
       }))
@@ -275,6 +277,7 @@ impl Component for LobbyScreen {
           modal_source_index,
           modal_audio_enabled,
           modal_stream_codec,
+          settings_popup.clone(),
           modal_start_stream,
           modal_start_submitted,
         ))

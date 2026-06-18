@@ -87,6 +87,7 @@ pub(super) fn start_stream_modal(
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
   stream_codec_label: String,
+  settings_popup: Option<SettingsPopupHandle>,
   start_stream: StartStreamAction,
   start_submitted: Signal<bool>,
 ) -> Element {
@@ -95,7 +96,6 @@ pub(super) fn start_stream_modal(
   let modal_height = window.logical_height();
   let metrics = stream_modal_metrics(ctx);
   let close_on_escape = open.clone();
-  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let settings_open = settings_popup.as_ref().is_some_and(SettingsPopupHandle::is_open);
   let dialog_ref = ctx.element_ref();
   let close_on_outside = open.clone();
@@ -159,6 +159,7 @@ pub(super) fn start_stream_modal(
     source_kind,
     source_index,
     audio_enabled,
+    settings_popup,
     start_stream,
     start_submitted,
   ));
@@ -744,12 +745,12 @@ fn stream_modal_actions(
   source_kind: Signal<ScreenShareSourceKind>,
   source_index: Signal<usize>,
   audio_enabled: Signal<bool>,
+  settings_popup: Option<SettingsPopupHandle>,
   start_stream: StartStreamAction,
   start_submitted: Signal<bool>,
 ) -> Element {
   let close = open.clone();
   let settings_submitted = start_submitted.clone();
-  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let navigator = ctx.navigator();
   let cancel_submitted = start_submitted.clone();
   let run_submitted = start_submitted.clone();

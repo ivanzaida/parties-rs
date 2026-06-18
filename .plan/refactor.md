@@ -399,6 +399,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed `ServerSession` explicitly into the main top bar component;
   - initialized main top-bar and body model stores from props instead of hidden context reads;
   - kept main content model subscribers as the only content components reading `ServerSession` context for lobby-watch updates.
+- Completed the settings-popup dependency cleanup slice:
+  - read `SettingsPopupHandle` once at the lobby boundary;
+  - passed the handle explicitly into the rail controls and stream modal;
+  - removed leaf `SettingsPopupHandle` context reads from lobby controls.
 
 ## Non-Goals
 

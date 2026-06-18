@@ -60,13 +60,16 @@ pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub debug_mode_enabled: bool,
   pub start_stream_modal_open: Signal<bool>,
+  pub settings_popup: Option<SettingsPopupHandle>,
   pub stop_stream: StopStreamAction,
   pub watch_stream: WatchStreamAction,
 }
 
 impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
-    self.info == other.info && self.debug_mode_enabled == other.debug_mode_enabled
+    self.info == other.info
+      && self.debug_mode_enabled == other.debug_mode_enabled
+      && self.settings_popup.is_some() == other.settings_popup.is_some()
   }
 }
 
@@ -118,6 +121,7 @@ impl Component for LobbyRail {
       &model,
       props.debug_mode_enabled,
       props.start_stream_modal_open.clone(),
+      props.settings_popup,
       &props.stop_stream,
       &props.watch_stream,
       storage,
@@ -282,6 +286,7 @@ fn rail(
   model: &LobbyRailModel,
   debug_mode_enabled: bool,
   start_stream_modal_open: Signal<bool>,
+  settings_popup: Option<SettingsPopupHandle>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
   storage: Option<Storage>,
@@ -321,6 +326,7 @@ fn rail(
           model,
           debug_mode_enabled,
           start_stream_modal_open,
+          settings_popup,
           stop_stream,
           local_voice_state,
           voice_control,
@@ -518,6 +524,7 @@ fn rail_bottom(
   model: &LobbyRailModel,
   debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
+  settings_popup: Option<SettingsPopupHandle>,
   stop_stream: &StopStreamAction,
   local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
@@ -534,6 +541,7 @@ fn rail_bottom(
       ctx,
       model,
       start_stream_modal_open,
+      settings_popup,
       stop_stream,
       local_voice_state,
       voice_control,
@@ -712,6 +720,7 @@ fn control_row(
   ctx: &mut Ctx,
   model: &LobbyRailModel,
   start_stream_modal_open: Signal<bool>,
+  settings_popup: Option<SettingsPopupHandle>,
   stop_stream: &StopStreamAction,
   local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
@@ -759,7 +768,6 @@ fn control_row(
     !connected_to_voice,
   ));
 
-  let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   if let Some(settings_popup) = settings_popup {
     row = row.child(icon_button(ctx, "settings", false, false).on_click(move |_| settings_popup.open()));
   } else {
