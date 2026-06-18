@@ -403,6 +403,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - read `SettingsPopupHandle` once at the lobby boundary;
   - passed the handle explicitly into the rail controls and stream modal;
   - removed leaf `SettingsPopupHandle` context reads from lobby controls.
+- Completed the rail service dependency cleanup slice:
+  - passed `ServerSession` and `Storage` into `LobbyRail` from the lobby boundary;
+  - built rail actions from explicit props instead of hidden context reads;
+  - left the rail model subscriber as the only rail component reading context for lobby-watch updates.
 
 ## Non-Goals
 

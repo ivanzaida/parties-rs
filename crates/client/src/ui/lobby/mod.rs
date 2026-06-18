@@ -239,6 +239,8 @@ impl Component for LobbyScreen {
       .child(ctx.mount::<LobbyRail>(LobbyRailProps {
         info: info.clone(),
         debug_mode_enabled,
+        session: session.clone(),
+        storage: storage.clone(),
         start_stream_modal_open: self.start_stream_modal_open.clone(),
         settings_popup: settings_popup.clone(),
         stop_stream: stop_stream.clone(),

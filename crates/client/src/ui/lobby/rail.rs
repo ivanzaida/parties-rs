@@ -59,6 +59,8 @@ impl VoiceControlFuture {
 pub(super) struct LobbyRailProps {
   pub info: ConnectedServerInfo,
   pub debug_mode_enabled: bool,
+  pub session: ServerSession,
+  pub storage: Option<Storage>,
   pub start_stream_modal_open: Signal<bool>,
   pub settings_popup: Option<SettingsPopupHandle>,
   pub stop_stream: StopStreamAction,
@@ -69,6 +71,8 @@ impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
     self.info == other.info
       && self.debug_mode_enabled == other.debug_mode_enabled
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && self.storage.is_some() == other.storage.is_some()
       && self.settings_popup.is_some() == other.settings_popup.is_some()
   }
 }
@@ -98,15 +102,11 @@ impl Component for LobbyRail {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let session = ctx.use_context::<ServerSession>();
-    let storage = ctx.use_context::<Storage>();
-    let join_channel = session
-      .clone()
-      .map(|session| join_channel_action(ctx, session, storage.clone()));
-    let voice_control = session.clone().map(|session| voice_control_action(ctx, session));
-    let select_text_channel = session.clone().map(SelectTextChannelAction::new);
-    let select_debug_chat = session.clone().map(SelectDebugChatAction::new);
-    let local_voice_state = session.as_ref().and_then(ServerSession::local_voice_state);
+    let join_channel = join_channel_action(ctx, props.session.clone(), props.storage.clone());
+    let voice_control = voice_control_action(ctx, props.session.clone());
+    let select_text_channel = SelectTextChannelAction::new(props.session.clone());
+    let select_debug_chat = SelectDebugChatAction::new(props.session.clone());
+    let local_voice_state = props.session.local_voice_state();
     ctx.provide(self.model_store.clone());
     let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
       info: props.info.clone(),
@@ -124,13 +124,13 @@ impl Component for LobbyRail {
       props.settings_popup,
       &props.stop_stream,
       &props.watch_stream,
-      storage,
-      session,
+      props.storage,
+      Some(props.session),
       local_voice_state,
-      select_text_channel,
-      select_debug_chat,
-      join_channel.as_ref(),
-      voice_control.as_ref(),
+      Some(select_text_channel),
+      Some(select_debug_chat),
+      Some(&join_channel),
+      Some(&voice_control),
     )
   }
 }
