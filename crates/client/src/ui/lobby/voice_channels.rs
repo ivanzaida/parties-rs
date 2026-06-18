@@ -31,6 +31,7 @@ use crate::{
   ui::lobby::{
     channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
     model::{VoiceChannelRowModel, VoiceUserRowModel},
+    session_identity::{same_optional_session, same_session},
     shared::user_display_name,
   },
 };
@@ -82,18 +83,6 @@ impl PartialEq for VoiceChannelActions {
     same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.join_channel == other.join_channel
       && self.watch_stream.is_some() == other.watch_stream.is_some()
-  }
-}
-
-fn same_session(left: &ServerSession, right: &ServerSession) -> bool {
-  left.info().map(|info| info.address) == right.info().map(|info| info.address)
-}
-
-fn same_optional_session(left: Option<&ServerSession>, right: Option<&ServerSession>) -> bool {
-  match (left, right) {
-    (Some(left), Some(right)) => same_session(left, right),
-    (None, None) => true,
-    _ => false,
   }
 }
 

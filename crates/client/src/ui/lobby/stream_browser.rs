@@ -17,6 +17,7 @@ use super::{
   WatchStreamAction,
   layout::lobby_layout_metrics,
   model::{ChannelScreenShare, StreamBrowserModel, stream_browser_model, stream_speaking},
+  session_identity::same_session,
   shared::error_notice,
   stream_shared::{initials_for_user, live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
   subscription::{LobbyModelSubscription, apply_model},
@@ -70,7 +71,7 @@ impl PartialEq for StreamBrowserPaneProps {
     self.channel == other.channel
       && self.local_user_id == other.local_user_id
       && self.debug_user_ids == other.debug_user_ids
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
   }
 }
 
@@ -171,8 +172,7 @@ struct StreamBrowserModelSubscriberProps {
 
 impl PartialEq for StreamBrowserModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.channel == other.channel
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.channel == other.channel && same_session(&self.session, &other.session)
   }
 }
 

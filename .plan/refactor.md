@@ -446,6 +446,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - made text/debug channel selection actions compare by connected server identity;
   - made join-channel and optional user-control sessions compare by connected server identity;
   - kept opaque future-only actions compared by availability where no stable identity is exposed.
+- Consolidated lobby session identity checks:
+  - added shared helpers for server address extraction and session equality;
+  - replaced repeated inline `ServerSession::info().address` comparisons across lobby props and controls.
 
 ## Non-Goals
 

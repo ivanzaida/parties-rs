@@ -27,6 +27,7 @@ use crate::{
       debug_channels::{DebugChannels, DebugChannelsProps, SelectDebugChatAction},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       model::{LobbyRailModel, lobby_rail_model},
+      session_identity::same_session,
       subscription::{LobbyModelSubscription, apply_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
@@ -73,7 +74,7 @@ impl PartialEq for LobbyRailProps {
   fn eq(&self, other: &Self) -> bool {
     self.info == other.info
       && self.debug_mode_enabled == other.debug_mode_enabled
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
       && self.storage.is_some() == other.storage.is_some()
       && self.settings_popup.is_some() == other.settings_popup.is_some()
   }
@@ -144,8 +145,7 @@ struct LobbyRailModelSubscriberProps {
 
 impl PartialEq for LobbyRailModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.info == other.info
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.info == other.info && same_session(&self.session, &other.session)
   }
 }
 

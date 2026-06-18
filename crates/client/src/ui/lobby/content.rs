@@ -17,6 +17,7 @@ use super::{
   chat::{ChatActions, ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
   model::{MainBodyModel, MainTopBarModel, main_body_model, main_top_bar_model},
+  session_identity::same_session,
   shared::error_notice,
   stream_watching::{stream_channel_detail, stream_watching_top_bar},
   subscription::{LobbyModelSubscription, apply_model},
@@ -109,8 +110,7 @@ struct MainTopBarProps {
 
 impl PartialEq for MainTopBarProps {
   fn eq(&self, other: &Self) -> bool {
-    self.debug_mode_enabled == other.debug_mode_enabled
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.debug_mode_enabled == other.debug_mode_enabled && same_session(&self.session, &other.session)
   }
 }
 
@@ -160,8 +160,7 @@ struct MainTopBarModelSubscriberProps {
 
 impl PartialEq for MainTopBarModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.debug_mode_enabled == other.debug_mode_enabled
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.debug_mode_enabled == other.debug_mode_enabled && same_session(&self.session, &other.session)
   }
 }
 
@@ -466,7 +465,7 @@ impl PartialEq for MainBodyProps {
     self.info == other.info
       && self.debug_mode_enabled == other.debug_mode_enabled
       && self.storage.is_some() == other.storage.is_some()
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
   }
 }
 
@@ -512,8 +511,7 @@ struct MainBodyModelSubscriberProps {
 
 impl PartialEq for MainBodyModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.debug_mode_enabled == other.debug_mode_enabled
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.debug_mode_enabled == other.debug_mode_enabled && same_session(&self.session, &other.session)
   }
 }
 

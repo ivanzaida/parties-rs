@@ -13,6 +13,7 @@ use lurq::{
 use super::{
   StopWatchingAction,
   model::{WatchedChannelScreenShare, floating_stream_preview_model, stream_speaking},
+  session_identity::same_session,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
   subscription::{LobbyModelSubscription, apply_optional_model},
 };
@@ -50,8 +51,7 @@ struct FloatingStreamPreviewPaneProps {
 
 impl PartialEq for FloatingStreamPreviewPaneProps {
   fn eq(&self, other: &Self) -> bool {
-    self.debug_user_ids == other.debug_user_ids
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.debug_user_ids == other.debug_user_ids && same_session(&self.session, &other.session)
   }
 }
 
@@ -110,7 +110,7 @@ struct FloatingStreamPreviewModelSubscriberProps {
 
 impl PartialEq for FloatingStreamPreviewModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    same_session(&self.session, &other.session)
   }
 }
 

@@ -16,6 +16,7 @@ pub(super) use super::model::watched_stream_for_channel;
 use super::{
   StopWatchingAction, WatchStreamAction,
   model::{ChannelScreenShare, StreamWatchingModel, stream_speaking, stream_watching_model},
+  session_identity::{same_session, session_address},
   stream_browser::stream_browser,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_footer_meta, stream_name},
   subscription::{LobbyModelSubscription, apply_optional_model},
@@ -110,7 +111,7 @@ impl PartialEq for StreamWatchingPaneProps {
       && self.local_user_id == other.local_user_id
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
   }
 }
 
@@ -213,8 +214,7 @@ struct StreamWatchingModelSubscriberProps {
 
 impl PartialEq for StreamWatchingModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.channel_id == other.channel_id
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    self.channel_id == other.channel_id && same_session(&self.session, &other.session)
   }
 }
 
@@ -298,7 +298,7 @@ impl PartialEq for WatchedStreamStageProps {
       && self.user == other.user
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
   }
 }
 
@@ -631,7 +631,7 @@ struct StreamVolumeControlProps {
 impl PartialEq for StreamVolumeControlProps {
   fn eq(&self, other: &Self) -> bool {
     self.user_id == other.user_id
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
       && self.storage.is_some() == other.storage.is_some()
   }
 }
@@ -659,7 +659,7 @@ impl Component for StreamVolumeControl {
 
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
-    let server_id = props.session.info().map(|info| info.address);
+    let server_id = session_address(&props.session);
     let initial = load_stream_volume(
       props.storage.as_ref(),
       &props.session,
@@ -702,7 +702,7 @@ impl Component for StreamVolumeControl {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let server_id = props.session.info().map(|info| info.address);
+    let server_id = session_address(&props.session);
 
     *self.apply_session.lock().expect("stream volume session lock poisoned") = props.session.clone();
 

@@ -21,7 +21,10 @@ use crate::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
     common::percent_slider::{PercentSliderSaveAction, percent_slider_control},
     lobby::{
-      channel_section::aligned_channel_icon_with_color, shared::user_display_name, voice_channels::user_avatar_sized,
+      channel_section::aligned_channel_icon_with_color,
+      session_identity::{optional_session_address, same_optional_session},
+      shared::user_display_name,
+      voice_channels::user_avatar_sized,
     },
     settings::settings_toggle_track,
   },
@@ -504,18 +507,6 @@ impl PartialEq for UserNormalizationToggleProps {
   }
 }
 
-fn same_session(left: &ServerSession, right: &ServerSession) -> bool {
-  left.info().map(|info| info.address) == right.info().map(|info| info.address)
-}
-
-fn same_optional_session(left: Option<&ServerSession>, right: Option<&ServerSession>) -> bool {
-  match (left, right) {
-    (Some(left), Some(right)) => same_session(left, right),
-    (None, None) => true,
-    _ => false,
-  }
-}
-
 impl DevtoolsInspectable for UserNormalizationToggleProps {
   fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
     formatter.buffer_mut().push(ComponentInfo::with_value(
@@ -537,10 +528,7 @@ impl Component for UserNormalizationToggle {
 
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
-    let server_id = props
-      .session
-      .as_ref()
-      .and_then(|session| session.info().map(|info| info.address));
+    let server_id = optional_session_address(props.session.as_ref());
     let initial = load_user_normalization(
       props.storage.as_ref(),
       props.session.as_ref(),
@@ -560,10 +548,7 @@ impl Component for UserNormalizationToggle {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let server_id = props
-      .session
-      .as_ref()
-      .and_then(|session| session.info().map(|info| info.address));
+    let server_id = optional_session_address(props.session.as_ref());
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let enabled = load_user_normalization(
@@ -596,10 +581,7 @@ impl Component for UserVolumeControl {
 
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
-    let initial_server_id = props
-      .session
-      .as_ref()
-      .and_then(|session| session.info().map(|info| info.address));
+    let initial_server_id = optional_session_address(props.session.as_ref());
     let initial = load_user_volume(
       props.storage.as_ref(),
       props.session.as_ref(),
@@ -647,10 +629,7 @@ impl Component for UserVolumeControl {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let server_id = props
-      .session
-      .as_ref()
-      .and_then(|session| session.info().map(|info| info.address));
+    let server_id = optional_session_address(props.session.as_ref());
 
     *self.apply_session.lock().expect("user volume session lock poisoned") = props.session.clone();
 

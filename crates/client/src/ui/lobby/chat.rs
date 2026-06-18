@@ -36,6 +36,7 @@ use timeline::{chat_day_divider, local_chat_date};
 use super::{
   ChatHistoryAction, SendChatAction,
   model::{ChatPaneModel, chat_pane_model},
+  session_identity::same_session,
   shared::error_notice,
   subscription::{LobbyModelSubscription, apply_model},
 };
@@ -195,7 +196,7 @@ struct ChatPaneModelSubscriberProps {
 impl PartialEq for ChatPaneModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
     self.info == other.info
-      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+      && same_session(&self.session, &other.session)
       && self.channel_id == other.channel_id
       && self.server_backed == other.server_backed
   }

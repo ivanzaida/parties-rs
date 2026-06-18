@@ -12,7 +12,10 @@ use lurq::{
 use crate::{
   session::ServerSession,
   theme,
-  ui::lobby::channel_section::{aligned_channel_icon_with_color, section_head},
+  ui::lobby::{
+    channel_section::{aligned_channel_icon_with_color, section_head},
+    session_identity::same_session,
+  },
 };
 
 #[derive(Clone)]
@@ -38,7 +41,7 @@ pub(super) struct DebugChannelsProps {
 
 impl PartialEq for SelectDebugChatAction {
   fn eq(&self, other: &Self) -> bool {
-    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    same_session(&self.session, &other.session)
   }
 }
 

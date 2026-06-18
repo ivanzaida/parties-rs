@@ -18,6 +18,7 @@ use crate::{
   ui::lobby::{
     channel_section::{aligned_channel_icon_with_color, section_head},
     model::TextChannelRowModel,
+    session_identity::same_session,
   },
 };
 
@@ -38,7 +39,7 @@ impl SelectTextChannelAction {
 
 impl PartialEq for SelectTextChannelAction {
   fn eq(&self, other: &Self) -> bool {
-    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    same_session(&self.session, &other.session)
   }
 }
 

@@ -31,6 +31,7 @@ mod disconnected;
 mod layout;
 mod model;
 mod rail;
+mod session_identity;
 mod shared;
 mod stream_browser;
 mod stream_modal;
@@ -51,6 +52,7 @@ use content::main;
 use disconnected::disconnected_lobby;
 use model::{LobbyShellModel, lobby_shell_model};
 use rail::{LobbyRail, LobbyRailProps, RailStreamActions};
+use session_identity::same_session;
 use stream_modal::start_stream_modal;
 use stream_preview::floating_stream_preview;
 use subscription::{LobbyModelSubscription, apply_model};
@@ -311,7 +313,7 @@ struct LobbyShellModelSubscriberProps {
 
 impl PartialEq for LobbyShellModelSubscriberProps {
   fn eq(&self, other: &Self) -> bool {
-    self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+    same_session(&self.session, &other.session)
   }
 }
 
