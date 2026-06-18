@@ -336,6 +336,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added a zero-size `ChatPaneModelSubscriber` that updates only the selected chat model;
   - stopped deriving and passing `ChatPaneModel` from `content.rs`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the owned stream model prerequisite:
+  - converted stream browser, watched stream, and floating preview models from borrowed lobby references to owned comparable structs;
+  - added devtools support for stream browser/watching models so they can be stored in component-local stores;
+  - updated stream renderers and tests for owned stream share/user data.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

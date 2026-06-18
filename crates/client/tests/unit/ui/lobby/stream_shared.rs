@@ -58,7 +58,7 @@ fn screen_shares_for_channel_returns_only_streams_for_users_in_that_channel() {
   assert_eq!(
     streams
       .iter()
-      .filter_map(|stream| stream.user.map(|user| user.username.as_str()))
+      .filter_map(|stream| stream.user.as_ref().map(|user| user.username.as_str()))
       .collect::<Vec<_>>(),
     vec!["two", "one"]
   );
@@ -88,7 +88,10 @@ fn watched_stream_resolves_channel_user_and_share() {
 
   assert_eq!(watched.channel.id, 10);
   assert_eq!(watched.stream.share.sharer_user_id, 2);
-  assert_eq!(watched.stream.user.map(|user| user.username.as_str()), Some("two"));
+  assert_eq!(
+    watched.stream.user.as_ref().map(|user| user.username.as_str()),
+    Some("two")
+  );
 }
 
 #[test]
@@ -109,23 +112,20 @@ fn stream_speaking_requires_unmuted_undeafened_user() {
   let mut active_user = user(2, "two");
   active_user.speaking = true;
   let active_stream = super::ChannelScreenShare {
-    share: &share,
-    user: Some(&active_user),
+    share: share.clone(),
+    user: Some(active_user.clone()),
   };
   assert!(stream_speaking(&active_stream));
 
   let mut muted_user = active_user.clone();
   muted_user.muted = true;
   let muted_stream = super::ChannelScreenShare {
-    share: &share,
-    user: Some(&muted_user),
+    share: share.clone(),
+    user: Some(muted_user),
   };
   assert!(!stream_speaking(&muted_stream));
 
-  let missing_user_stream = super::ChannelScreenShare {
-    share: &share,
-    user: None,
-  };
+  let missing_user_stream = super::ChannelScreenShare { share, user: None };
   assert!(!stream_speaking(&missing_user_stream));
 }
 

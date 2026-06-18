@@ -36,7 +36,7 @@ const STREAM_VOLUME_VALUE_SPACING: f32 = 8.0;
 
 pub(super) fn stream_watching_top_bar(
   ctx: &mut Ctx,
-  stream: ChannelScreenShare<'_>,
+  stream: ChannelScreenShare,
   debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
   stop_watching: &StopWatchingAction,
@@ -69,7 +69,7 @@ pub(super) fn stream_watching_top_bar(
 
 pub(super) fn stream_watching(
   ctx: &mut Ctx,
-  model: StreamWatchingModel<'_>,
+  model: StreamWatchingModel,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
@@ -92,7 +92,7 @@ pub(super) fn stream_watching(
       watch_stream,
     ));
 
-  if let Some(error) = error {
+  if let Some(error) = error.as_deref() {
     body = body.child(super::shared::error_notice(ctx, error));
   }
 
@@ -101,7 +101,7 @@ pub(super) fn stream_watching(
 
 fn stage(
   ctx: &mut Ctx,
-  stream: &ChannelScreenShare<'_>,
+  stream: &ChannelScreenShare,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: &ServerSession,
@@ -111,7 +111,7 @@ fn stage(
     &key,
     WatchedStreamStageProps {
       share: stream.share.clone(),
-      user: stream.user.cloned(),
+      user: stream.user.clone(),
       debug_user_ids,
       storage,
       session: session.clone(),
@@ -164,8 +164,8 @@ impl Component for WatchedStreamStage {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let stream = ChannelScreenShare {
-      share: &props.share,
-      user: props.user.as_ref(),
+      share: props.share.clone(),
+      user: props.user.clone(),
     };
     watched_stream_stage(
       ctx,
@@ -180,7 +180,7 @@ impl Component for WatchedStreamStage {
 
 fn watched_stream_stage(
   ctx: &mut Ctx,
-  stream: &ChannelScreenShare<'_>,
+  stream: &ChannelScreenShare,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: &ServerSession,
@@ -223,7 +223,7 @@ fn watched_stream_stage(
     let name = stream_name(ctx, stream, debug_user_ids);
     let avatar_name = stream_name(ctx, stream, false);
     let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-    let meta = stream_footer_meta(ctx, &name, stream.share);
+    let meta = stream_footer_meta(ctx, &name, &stream.share);
     let speaking = stream_speaking(stream);
 
     stage = stage.child(
@@ -238,7 +238,7 @@ fn watched_stream_stage(
             .align_items(Alignment::Center)
             .justify(Justify::SpaceBetween)
             .child(live_badge(ctx))
-            .child(resolution_badge(ctx, stream.share)),
+            .child(resolution_badge(ctx, &stream.share)),
         )
         .child(
           Row::new()
@@ -304,7 +304,7 @@ fn stream_error_panel(ctx: &mut Ctx, title: &str, message: &str) -> Element {
 fn stream_switcher(
   ctx: &mut Ctx,
   watched_user_id: UserId,
-  streams: Vec<ChannelScreenShare<'_>>,
+  streams: Vec<ChannelScreenShare>,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -329,7 +329,7 @@ fn stream_switcher(
 
 fn switcher_card(
   ctx: &mut Ctx,
-  stream: ChannelScreenShare<'_>,
+  stream: ChannelScreenShare,
   watched_user_id: UserId,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
@@ -359,7 +359,7 @@ fn switcher_card(
     )
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .child(mini_thumb(ctx, stream.share))
+    .child(mini_thumb(ctx, &stream.share))
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))

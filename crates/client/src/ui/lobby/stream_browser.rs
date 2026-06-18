@@ -33,7 +33,7 @@ const LOBBY_STREAM_FOOTER_HEIGHT: f32 = 58.0;
 
 pub(super) fn stream_browser(
   ctx: &mut Ctx,
-  model: StreamBrowserModel<'_>,
+  model: StreamBrowserModel,
   local_user_id: UserId,
   debug_user_ids: bool,
   _start_stream_modal_open: Signal<bool>,
@@ -47,8 +47,8 @@ pub(super) fn stream_browser(
     .padding(LOBBY_GRID_PADDING)
     .child(merged_lobby_grid(
       ctx,
-      model.channel,
-      model.users,
+      &model.channel,
+      &model.users,
       model.streams,
       local_user_id,
       model.watching_user_id,
@@ -57,7 +57,7 @@ pub(super) fn stream_browser(
       watch_stream,
     ));
 
-  if let Some(error) = model.error {
+  if let Some(error) = model.error.as_deref() {
     content = content.child(error_notice(ctx, error));
   }
 
@@ -94,7 +94,7 @@ fn merged_lobby_grid(
   ctx: &mut Ctx,
   channel: &LobbyChannel,
   users: &[LobbyUser],
-  streams: Vec<ChannelScreenShare<'_>>,
+  streams: Vec<ChannelScreenShare>,
   local_user_id: UserId,
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
@@ -197,7 +197,7 @@ fn lobby_grid_content_width(ctx: &Ctx) -> f32 {
 fn merged_stream_card(
   ctx: &mut Ctx,
   _channel: &LobbyChannel,
-  stream: ChannelScreenShare<'_>,
+  stream: ChannelScreenShare,
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
   _stop_stream: &StopStreamAction,
@@ -210,7 +210,7 @@ fn merged_stream_card(
   let watching = watching_user_id == Some(sharer_id);
   let speaking = stream_speaking(&stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-  let footer_meta = stream_footer_meta(ctx, &name, stream.share);
+  let footer_meta = stream_footer_meta(ctx, &name, &stream.share);
   let action = watch_stream.clone();
 
   let mut card = Column::new()
@@ -235,7 +235,7 @@ fn merged_stream_card(
     )
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .child(stream_thumbnail(ctx, stream.share))
+    .child(stream_thumbnail(ctx, &stream.share))
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))

@@ -10,29 +10,37 @@ use crate::{
   },
 };
 
-pub(super) struct ChannelScreenShare<'a> {
-  pub(super) share: &'a LobbyScreenShare,
-  pub(super) user: Option<&'a LobbyUser>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ChannelScreenShare {
+  pub(super) share: LobbyScreenShare,
+  pub(super) user: Option<LobbyUser>,
 }
 
-pub(super) struct WatchedChannelScreenShare<'a> {
-  pub(super) channel: &'a LobbyChannel,
-  pub(super) stream: ChannelScreenShare<'a>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct WatchedChannelScreenShare {
+  pub(super) channel: LobbyChannel,
+  pub(super) stream: ChannelScreenShare,
 }
 
-pub(super) struct StreamBrowserModel<'a> {
-  pub(super) channel: &'a LobbyChannel,
-  pub(super) users: &'a [LobbyUser],
-  pub(super) streams: Vec<ChannelScreenShare<'a>>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StreamBrowserModel {
+  pub(super) channel: LobbyChannel,
+  pub(super) users: Vec<LobbyUser>,
+  pub(super) streams: Vec<ChannelScreenShare>,
   pub(super) watching_user_id: Option<UserId>,
-  pub(super) error: Option<&'a str>,
+  pub(super) error: Option<String>,
 }
 
-pub(super) struct StreamWatchingModel<'a> {
-  pub(super) stream: ChannelScreenShare<'a>,
-  pub(super) streams: Vec<ChannelScreenShare<'a>>,
-  pub(super) error: Option<&'a str>,
+impl DevtoolsInspectable for StreamBrowserModel {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StreamWatchingModel {
+  pub(super) stream: ChannelScreenShare,
+  pub(super) streams: Vec<ChannelScreenShare>,
+  pub(super) error: Option<String>,
 }
+
+impl DevtoolsInspectable for StreamWatchingModel {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ChatPaneModel {
@@ -161,29 +169,25 @@ pub(super) fn stream_browser_channel(lobby: &LobbyState) -> Option<&LobbyChannel
   lobby.channels.iter().find(|channel| channel.id == channel_id)
 }
 
-pub(super) fn stream_browser_model<'a>(lobby: &'a LobbyState, channel: &'a LobbyChannel) -> StreamBrowserModel<'a> {
+pub(super) fn stream_browser_model(lobby: &LobbyState, channel: &LobbyChannel) -> StreamBrowserModel {
   StreamBrowserModel {
-    channel,
-    users: lobby
-      .users_by_channel
-      .get(&channel.id)
-      .map(Vec::as_slice)
-      .unwrap_or(&[]),
+    channel: channel.clone(),
+    users: lobby.users_by_channel.get(&channel.id).cloned().unwrap_or_default(),
     streams: screen_shares_for_channel(lobby, channel.id),
     watching_user_id: lobby.watching_user_id,
-    error: lobby.last_error.as_deref(),
+    error: lobby.last_error.clone(),
   }
 }
 
-pub(super) fn stream_watching_model(lobby: &LobbyState, channel_id: ChannelId) -> Option<StreamWatchingModel<'_>> {
+pub(super) fn stream_watching_model(lobby: &LobbyState, channel_id: ChannelId) -> Option<StreamWatchingModel> {
   Some(StreamWatchingModel {
     stream: watched_stream_for_channel(lobby, channel_id)?,
     streams: screen_shares_for_channel(lobby, channel_id),
-    error: lobby.last_error.as_deref(),
+    error: lobby.last_error.clone(),
   })
 }
 
-pub(super) fn floating_stream_preview_model(lobby: &LobbyState) -> Option<WatchedChannelScreenShare<'_>> {
+pub(super) fn floating_stream_preview_model(lobby: &LobbyState) -> Option<WatchedChannelScreenShare> {
   let watched = watched_stream(lobby)?;
   (!main_pane_shows_watched_stream(lobby, watched.channel.id)).then_some(watched)
 }
@@ -242,7 +246,7 @@ pub(super) fn unique_lobby_member_count(lobby: &LobbyState) -> usize {
   users.len()
 }
 
-pub(super) fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Vec<ChannelScreenShare<'_>> {
+pub(super) fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Vec<ChannelScreenShare> {
   let Some(users) = lobby.users_by_channel.get(&channel_id) else {
     return Vec::new();
   };
@@ -253,13 +257,13 @@ pub(super) fn screen_shares_for_channel(lobby: &LobbyState, channel_id: ChannelI
     .iter()
     .filter(|share| user_ids.contains(&share.sharer_user_id))
     .map(|share| ChannelScreenShare {
-      share,
-      user: users.iter().find(|user| user.user_id == share.sharer_user_id),
+      share: share.clone(),
+      user: users.iter().find(|user| user.user_id == share.sharer_user_id).cloned(),
     })
     .collect()
 }
 
-pub(super) fn watched_stream(lobby: &LobbyState) -> Option<WatchedChannelScreenShare<'_>> {
+pub(super) fn watched_stream(lobby: &LobbyState) -> Option<WatchedChannelScreenShare> {
   let watched_user_id = lobby.watching_user_id?;
 
   for channel in &lobby.channels {
@@ -278,10 +282,10 @@ pub(super) fn watched_stream(lobby: &LobbyState) -> Option<WatchedChannelScreenS
     };
 
     return Some(WatchedChannelScreenShare {
-      channel,
+      channel: channel.clone(),
       stream: ChannelScreenShare {
-        share,
-        user: Some(user),
+        share: share.clone(),
+        user: Some(user.clone()),
       },
     });
   }
@@ -289,16 +293,17 @@ pub(super) fn watched_stream(lobby: &LobbyState) -> Option<WatchedChannelScreenS
   None
 }
 
-pub(super) fn watched_stream_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Option<ChannelScreenShare<'_>> {
+pub(super) fn watched_stream_for_channel(lobby: &LobbyState, channel_id: ChannelId) -> Option<ChannelScreenShare> {
   let watching_user_id = lobby.watching_user_id?;
   screen_shares_for_channel(lobby, channel_id)
     .into_iter()
     .find(|stream| stream.share.sharer_user_id == watching_user_id)
 }
 
-pub(super) fn stream_speaking(stream: &ChannelScreenShare<'_>) -> bool {
+pub(super) fn stream_speaking(stream: &ChannelScreenShare) -> bool {
   stream
     .user
+    .as_ref()
     .is_some_and(|user| user.speaking && !user.muted && !user.deafened)
 }
 

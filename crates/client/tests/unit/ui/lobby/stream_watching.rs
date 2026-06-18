@@ -51,7 +51,7 @@ fn watched_stream_for_channel_returns_selected_stream_only_for_matching_channel(
   let stream = watched_stream_for_channel(&lobby, 10).expect("watched stream in channel");
 
   assert_eq!(stream.share.sharer_user_id, 2);
-  assert_eq!(stream.user.map(|user| user.user_id), Some(2));
+  assert_eq!(stream.user.as_ref().map(|user| user.user_id), Some(2));
   assert!(watched_stream_for_channel(&lobby, 20).is_none());
 }
 

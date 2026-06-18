@@ -24,7 +24,7 @@ const PREVIEW_FOOTER_HEIGHT: f32 = 54.0;
 
 pub(super) fn floating_stream_preview(
   ctx: &mut Ctx,
-  watched: WatchedChannelScreenShare<'_>,
+  watched: WatchedChannelScreenShare,
   debug_user_ids: bool,
   session: ServerSession,
   stop_watching: &StopWatchingAction,
@@ -50,7 +50,7 @@ fn preview_y() -> f32 {
 
 fn preview_card(
   ctx: &mut Ctx,
-  watched: WatchedChannelScreenShare<'_>,
+  watched: WatchedChannelScreenShare,
   debug_user_ids: bool,
   session: ServerSession,
   stop_watching: &StopWatchingAction,
@@ -94,7 +94,7 @@ fn preview_card(
 
 fn preview_image(
   ctx: &mut Ctx,
-  watched: &WatchedChannelScreenShare<'_>,
+  watched: &WatchedChannelScreenShare,
   session: &ServerSession,
   stop_watching: &StopWatchingAction,
 ) -> Element {
@@ -141,7 +141,7 @@ fn preview_image(
               Row::new()
                 .align_items(Alignment::Center)
                 .spacing(8.0)
-                .child(resolution_badge(ctx, watched.stream.share))
+                .child(resolution_badge(ctx, &watched.stream.share))
                 .child(close_preview_button(ctx, stop_watching)),
             ),
         ),

@@ -147,7 +147,10 @@ fn stream_watching_model_collects_current_channel_streams_and_error() {
   let model = stream_watching_model(&lobby, 10).expect("watching model");
 
   assert_eq!(model.stream.share.sharer_user_id, 8);
-  assert_eq!(model.stream.user.map(|user| user.username.as_str()), Some("remote"));
+  assert_eq!(
+    model.stream.user.as_ref().map(|user| user.username.as_str()),
+    Some("remote")
+  );
   assert_eq!(
     model
       .streams
@@ -156,7 +159,7 @@ fn stream_watching_model_collects_current_channel_streams_and_error() {
       .collect::<Vec<_>>(),
     vec![7, 8]
   );
-  assert_eq!(model.error, Some("stream warning"));
+  assert_eq!(model.error.as_deref(), Some("stream warning"));
 }
 
 #[test]
