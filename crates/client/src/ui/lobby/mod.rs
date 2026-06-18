@@ -257,7 +257,6 @@ impl Component for LobbyScreen {
       .child(main(
         ctx,
         &info,
-        &lobby,
         self.message_input.clone(),
         self.chat_command_selected_index.clone(),
         self.chat_command_scroll_state.clone(),

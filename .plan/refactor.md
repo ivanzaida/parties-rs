@@ -361,6 +361,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - wrapped the top bar in a `MainTopBar` component with a local `Store<Option<MainTopBarModel>>`;
   - added a zero-size `MainTopBarModelSubscriber` and stopped deriving top-bar state from the full lobby in `content::main`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the main body fine-grained subscription slice:
+  - added `MainBodyModel` for debug chat, text chat, stream channel, empty voice, and select-channel states;
+  - wrapped main body routing in a `MainBody` component with a local `Store<Option<MainBodyModel>>`;
+  - added a zero-size `MainBodyModelSubscriber` and removed the full-lobby prop from `content::main`.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

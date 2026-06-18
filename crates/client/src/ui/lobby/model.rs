@@ -117,6 +117,26 @@ pub(super) enum MainTopBarModel {
 
 impl DevtoolsInspectable for MainTopBarModel {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MainBodyModel {
+  DebugChat,
+  Text {
+    channel: LobbyTextChannel,
+    command_registry: ChatCommandRegistry,
+  },
+  StreamChannel {
+    channel: LobbyChannel,
+  },
+  EmptyVoice {
+    error: Option<String>,
+  },
+  SelectChannel {
+    error: Option<String>,
+  },
+}
+
+impl DevtoolsInspectable for MainBodyModel {}
+
 pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> LobbyRailModel {
   LobbyRailModel {
     server_name: info.server_name.clone(),
@@ -165,6 +185,35 @@ pub(super) fn main_top_bar_model(lobby: &LobbyState, debug_mode_enabled: bool) -
   }
 
   MainTopBarModel::VoiceDefault
+}
+
+pub(super) fn main_body_model(lobby: &LobbyState, debug_mode_enabled: bool) -> MainBodyModel {
+  if debug_mode_enabled && lobby.debug_chat_selected {
+    return MainBodyModel::DebugChat;
+  }
+
+  if let Some(channel) = selected_text_channel(lobby) {
+    return MainBodyModel::Text {
+      channel: channel.clone(),
+      command_registry: lobby.chat_command_registry.clone(),
+    };
+  }
+
+  if let Some(channel) = stream_browser_channel(lobby) {
+    return MainBodyModel::StreamChannel {
+      channel: channel.clone(),
+    };
+  }
+
+  if lobby.channels.is_empty() {
+    return MainBodyModel::EmptyVoice {
+      error: lobby.last_error.clone(),
+    };
+  }
+
+  MainBodyModel::SelectChannel {
+    error: lobby.last_error.clone(),
+  }
 }
 
 pub(super) fn text_channel_rows(lobby: &LobbyState) -> Vec<TextChannelRowModel> {

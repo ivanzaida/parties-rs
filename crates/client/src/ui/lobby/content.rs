@@ -20,13 +20,13 @@ use super::{
   ChatHistoryAction, SendChatAction, StopStreamAction, StopWatchingAction, WatchStreamAction,
   chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
-  model::{MainTopBarModel, main_top_bar_model, selected_text_channel, stream_browser_channel},
+  model::{MainBodyModel, MainTopBarModel, main_body_model, main_top_bar_model},
   shared::error_notice,
   stream_watching::{stream_channel_detail, stream_watching_top_bar},
 };
 use crate::{
   network::protocol::ChannelId,
-  session::{ConnectedServerInfo, LobbyChannel, LobbySnapshot, LobbyState, ServerSession},
+  session::{ConnectedServerInfo, LobbyChannel, LobbySnapshot, ServerSession},
   storage::Storage,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -35,7 +35,6 @@ use crate::{
 pub(super) fn main(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
   message_input: Signal<String>,
   chat_command_selected_index: Signal<usize>,
   chat_command_scroll_state: ScrollState,
@@ -70,7 +69,6 @@ pub(super) fn main(
     .child(main_body(
       ctx,
       info,
-      lobby,
       message_input,
       chat_command_selected_index,
       chat_command_scroll_state,
@@ -443,7 +441,6 @@ fn top_bar_icon(ctx: &mut Ctx, icon: &'static str) -> Element {
 fn main_body(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
   message_input: Signal<String>,
   chat_command_selected_index: Signal<usize>,
   chat_command_scroll_state: ScrollState,
@@ -464,72 +461,258 @@ fn main_body(
   watch_stream: &WatchStreamAction,
   stop_watching: &StopWatchingAction,
 ) -> Element {
-  if debug_mode_enabled && lobby.debug_chat_selected {
-    let channel = ChatChannel::debug(ctx);
-    return text_channel_detail(
+  ctx.mount::<MainBody>(MainBodyProps {
+    info: info.clone(),
+    message_input,
+    chat_command_selected_index,
+    chat_command_scroll_state,
+    chat_command_invalid_feedback,
+    chat_scroll_state,
+    chat_bottom_anchor,
+    chat_bottom_settle_anchor,
+    chat_bottom_detached_anchor,
+    chat_top_anchor,
+    chat_prepend_settle_anchor,
+    debug_mode_enabled,
+    storage,
+    session,
+    chat_history: chat_history.clone(),
+    send_chat: send_chat.clone(),
+    start_stream_modal_open,
+    stop_stream: stop_stream.clone(),
+    watch_stream: watch_stream.clone(),
+    stop_watching: stop_watching.clone(),
+  })
+}
+
+#[derive(Clone)]
+struct MainBodyProps {
+  info: ConnectedServerInfo,
+  message_input: Signal<String>,
+  chat_command_selected_index: Signal<usize>,
+  chat_command_scroll_state: ScrollState,
+  chat_command_invalid_feedback: ChatCommandInvalidFeedback,
+  chat_scroll_state: ScrollState,
+  chat_bottom_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_bottom_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  chat_bottom_detached_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_top_anchor: Signal<Option<(ChannelId, u64)>>,
+  chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
+  debug_mode_enabled: bool,
+  storage: Option<Storage>,
+  session: ServerSession,
+  chat_history: ChatHistoryAction,
+  send_chat: SendChatAction,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: StopStreamAction,
+  watch_stream: WatchStreamAction,
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for MainBodyProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info
+      && self.debug_mode_enabled == other.debug_mode_enabled
+      && self.storage.is_some() == other.storage.is_some()
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+impl DevtoolsInspectable for MainBodyProps {}
+
+struct MainBody {
+  model_store: Store<Option<MainBodyModel>>,
+}
+
+impl Component for MainBody {
+  type Props = MainBodyProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      model_store: ctx.store(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    ctx.provide(self.model_store.clone());
+    if let Some(session) = ctx.use_context::<ServerSession>() {
+      apply_main_body_model(
+        &self.model_store,
+        main_body_model(&session.lobby(), props.debug_mode_enabled),
+      );
+    }
+    let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
+      debug_mode_enabled: props.debug_mode_enabled,
+    });
+    let model = self
+      .model_store
+      .get()
+      .unwrap_or(MainBodyModel::SelectChannel { error: None });
+    main_body_view(ctx, subscriber, model, props)
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct MainBodyModelSubscriberProps {
+  debug_mode_enabled: bool,
+}
+
+impl DevtoolsInspectable for MainBodyModelSubscriberProps {}
+
+struct MainBodyModelSubscriber {
+  generation: Signal<u64>,
+  applied_generation: Signal<Option<u64>>,
+  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
+}
+
+impl Component for MainBodyModelSubscriber {
+  type Props = MainBodyModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      generation: ctx.signal(0),
+      applied_generation: ctx.signal(None),
+      receiver: Mutex::new(None),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(session) = ctx.use_context::<ServerSession>() else {
+      return empty_subscriber_node();
+    };
+    let Some(model_store) = ctx.use_context::<Store<Option<MainBodyModel>>>() else {
+      return empty_subscriber_node();
+    };
+
+    apply_main_body_model(
+      &model_store,
+      main_body_model(&session.lobby(), props.debug_mode_enabled),
+    );
+
+    let receiver = {
+      let mut receiver = self.receiver.lock();
+      receiver
+        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
+        .clone()
+    };
+    let wait_generation = self.generation.get();
+    let session_for_update = session.clone();
+    let update = ctx.future(wait_generation, move |wait_generation| {
+      let receiver = receiver.clone();
+      let session = session_for_update.clone();
+      let debug_mode_enabled = props.debug_mode_enabled;
+      async move {
+        let mut receiver = receiver.lock().await;
+        let snapshot = match receiver.changed().await {
+          Ok(()) => receiver.borrow().clone(),
+          Err(_) => LobbySnapshot {
+            generation: wait_generation,
+            lobby: session.lobby(),
+          },
+        };
+        Ok::<_, String>((
+          snapshot.generation,
+          main_body_model(&snapshot.lobby, debug_mode_enabled),
+        ))
+      }
+    });
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, model)) = state.data
+      && self.applied_generation.get_untracked() != Some(snapshot_generation)
+    {
+      apply_main_body_model(&model_store, model);
+      self.applied_generation.set(Some(snapshot_generation));
+      self.generation.set(wait_generation.wrapping_add(1));
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn apply_main_body_model(model_store: &Store<Option<MainBodyModel>>, model: MainBodyModel) {
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
+  }
+}
+
+fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, props: MainBodyProps) -> Element {
+  let body = match model {
+    MainBodyModel::DebugChat => {
+      let channel = ChatChannel::debug(ctx);
+      text_channel_detail(
+        ctx,
+        channel,
+        props.info,
+        props.message_input,
+        props.chat_command_selected_index,
+        props.chat_command_scroll_state,
+        props.chat_command_invalid_feedback,
+        props.chat_scroll_state,
+        props.chat_bottom_anchor,
+        props.chat_bottom_settle_anchor,
+        props.chat_bottom_detached_anchor,
+        props.chat_top_anchor,
+        props.chat_prepend_settle_anchor,
+        props.debug_mode_enabled,
+        props.session,
+        &props.chat_history,
+        &props.send_chat,
+      )
+    }
+    MainBodyModel::Text {
+      channel,
+      command_registry,
+    } => {
+      let channel = ChatChannel::server_text(ctx, &channel, command_registry);
+      text_channel_detail(
+        ctx,
+        channel,
+        props.info,
+        props.message_input,
+        props.chat_command_selected_index,
+        props.chat_command_scroll_state,
+        props.chat_command_invalid_feedback,
+        props.chat_scroll_state,
+        props.chat_bottom_anchor,
+        props.chat_bottom_settle_anchor,
+        props.chat_bottom_detached_anchor,
+        props.chat_top_anchor,
+        props.chat_prepend_settle_anchor,
+        props.debug_mode_enabled,
+        props.session,
+        &props.chat_history,
+        &props.send_chat,
+      )
+    }
+    MainBodyModel::StreamChannel { channel } => stream_channel_detail(
       ctx,
       channel,
-      info.clone(),
-      message_input,
-      chat_command_selected_index,
-      chat_command_scroll_state,
-      chat_command_invalid_feedback,
-      chat_scroll_state,
-      chat_bottom_anchor,
-      chat_bottom_settle_anchor,
-      chat_bottom_detached_anchor,
-      chat_top_anchor,
-      chat_prepend_settle_anchor,
-      debug_mode_enabled,
-      session,
-      chat_history,
-      send_chat,
-    );
-  }
+      props.info.user_id,
+      props.debug_mode_enabled,
+      props.storage,
+      props.session,
+      props.start_stream_modal_open,
+      &props.stop_stream,
+      &props.watch_stream,
+      &props.stop_watching,
+    ),
+    MainBodyModel::EmptyVoice { error } => empty_voice_state(ctx, error.as_deref()),
+    MainBodyModel::SelectChannel { error } => select_channel_state(ctx, error.as_deref()),
+  };
 
-  if let Some(channel) = selected_text_channel(lobby) {
-    let channel = ChatChannel::server_text(ctx, channel, lobby.chat_command_registry.clone());
-    return text_channel_detail(
-      ctx,
-      channel,
-      info.clone(),
-      message_input,
-      chat_command_selected_index,
-      chat_command_scroll_state,
-      chat_command_invalid_feedback,
-      chat_scroll_state,
-      chat_bottom_anchor,
-      chat_bottom_settle_anchor,
-      chat_bottom_detached_anchor,
-      chat_top_anchor,
-      chat_prepend_settle_anchor,
-      debug_mode_enabled,
-      session,
-      chat_history,
-      send_chat,
-    );
-  }
+  with_subscriber(subscriber, body)
+}
 
-  if let Some(channel) = stream_browser_channel(lobby) {
-    return stream_channel_detail(
-      ctx,
-      channel.clone(),
-      info.user_id,
-      debug_mode_enabled,
-      storage,
-      session,
-      start_stream_modal_open,
-      stop_stream,
-      watch_stream,
-      stop_watching,
-    );
-  }
-
-  if lobby.channels.is_empty() {
-    return empty_voice_state(ctx, lobby.last_error.as_deref());
-  }
-
-  select_channel_state(ctx, lobby.last_error.as_deref())
+fn with_subscriber(subscriber: Element, body: Element) -> Element {
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .flex(1.0)
+    .child(subscriber)
+    .child(body)
+    .into()
 }
 
 fn empty_voice_state(ctx: &mut Ctx, error: Option<&str>) -> Element {
