@@ -1,7 +1,7 @@
 use lurq::{
-  components::{Rect, Slider},
+  components::Slider,
   core::Signal,
-  node::{BackgroundColor, Element, SliderPartStyle, color::Color},
+  node::{BackgroundColor, SliderPartStyle, color::Color},
 };
 
 use crate::theme;
@@ -13,63 +13,48 @@ pub const THUMB_SIZE: f32 = 16.0;
 pub const THUMB_RADIUS: f32 = 8.0;
 pub const THUMB_BORDER: f32 = 2.0;
 
-pub fn travel_width(width: f32) -> f32 {
-  (width - THUMB_SIZE).max(0.0)
-}
-
-fn track_offset() -> f32 {
-  THUMB_SIZE * 0.5
-}
-
-fn track_y() -> f32 {
-  (SLIDER_HEIGHT - TRACK_HEIGHT) * 0.5
-}
-
-pub fn track(width: f32) -> Element {
-  Rect::new(travel_width(width), TRACK_HEIGHT)
-    .absolute_position(track_offset(), track_y())
-    .rounded(TRACK_RADIUS)
-    .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
-    .into()
-}
-
-pub fn fill(width: f32) -> Element {
-  Rect::new(width, TRACK_HEIGHT)
-    .absolute_position(track_offset(), track_y())
-    .rounded(TRACK_RADIUS)
-    .background(BackgroundColor::Palette(theme::PaletteColor::Accent))
-    .into()
-}
-
 pub fn slider(value: Signal<i32>, width: f32, min: i32, max: i32) -> Slider {
+  let palette = theme::palette();
   Slider::new(value)
     .range(min, max)
     .width(width)
     .height(SLIDER_HEIGHT)
-    .track_style(invisible_track(width))
-    .track_hovered_style(invisible_track(width))
-    .thumb_style(thumb(theme::palette().accent))
-    .thumb_hovered_style(thumb(theme::palette().accent_hover))
+    .track_style(track(width, palette.surface_raised))
+    .track_hovered_style(track(width, palette.surface_input))
+    .fill_style(fill(palette.accent))
+    .fill_hovered_style(fill(palette.accent_hover))
+    .thumb_style(thumb(palette.accent))
+    .thumb_hovered_style(thumb(palette.accent_hover))
 }
 
 pub fn slider_f32(value: Signal<f32>, width: f32, min: f32, max: f32, step: f32) -> Slider {
+  let palette = theme::palette();
   Slider::new_f32(value)
     .range_f32(min, max)
     .step(step)
     .width(width)
     .height(SLIDER_HEIGHT)
-    .track_style(invisible_track(width))
-    .track_hovered_style(invisible_track(width))
-    .thumb_style(thumb(theme::palette().accent))
-    .thumb_hovered_style(thumb(theme::palette().accent_hover))
+    .track_style(track(width, palette.surface_raised))
+    .track_hovered_style(track(width, palette.surface_input))
+    .fill_style(fill(palette.accent))
+    .fill_hovered_style(fill(palette.accent_hover))
+    .thumb_style(thumb(palette.accent))
+    .thumb_hovered_style(thumb(palette.accent_hover))
 }
 
-fn invisible_track(width: f32) -> SliderPartStyle {
+fn track(width: f32, color: Color) -> SliderPartStyle {
   SliderPartStyle::new()
     .width(width)
     .height(TRACK_HEIGHT)
     .rounded(TRACK_RADIUS)
-    .background(Color::from_hex("#00000000"))
+    .background(color)
+}
+
+fn fill(color: Color) -> SliderPartStyle {
+  SliderPartStyle::new()
+    .height(TRACK_HEIGHT)
+    .rounded(TRACK_RADIUS)
+    .background(color)
 }
 
 fn thumb(color: Color) -> SliderPartStyle {

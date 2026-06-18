@@ -45,6 +45,7 @@ mod stream_preview;
 mod stream_shared;
 mod stream_watching;
 mod text_channels;
+mod user_context_overlay;
 mod voice_channels;
 
 use actions::{

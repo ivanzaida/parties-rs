@@ -5,9 +5,9 @@ use lurq::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
-  components::{Column, Row, ScrollVertical, Stack, Text},
+  components::{Column, Row, ScrollVertical, Text},
   core::Signal,
-  layout::{Alignment, StackAlignment, text_style::TextStyle},
+  layout::{Alignment, text_style::TextStyle},
   node::{Element, dimension::Dimension},
 };
 
@@ -477,8 +477,6 @@ fn fps_options(ctx: &mut Ctx) -> Vec<DropdownOption> {
 
 fn bitrate_slider(ctx: &mut Ctx, value: Signal<f32>, on_blur: VideoBitrateSaveAction, unit: &str) -> Element {
   let current = value.get().clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-  let fill_width = app_slider::travel_width(VIDEO_SLIDER_WIDTH) * (current - VIDEO_BITRATE_MIN)
-    / (VIDEO_BITRATE_MAX - VIDEO_BITRATE_MIN);
   let value_label = ctx.t_args(
     "settings.video.bitrate.value",
     [("value", format_bitrate_value(current)), ("unit", unit.to_owned())],
@@ -500,15 +498,7 @@ fn bitrate_slider(ctx: &mut Ctx, value: Signal<f32>, on_blur: VideoBitrateSaveAc
     .width(AUDIO_CONTROL_WIDTH)
     .align_items(Alignment::Center)
     .spacing(AUDIO_CONTROL_VALUE_SPACING)
-    .child(
-      Stack::new()
-        .stack_align(StackAlignment::CenterStart)
-        .width(VIDEO_SLIDER_WIDTH)
-        .height(app_slider::SLIDER_HEIGHT)
-        .child(app_slider::track(VIDEO_SLIDER_WIDTH))
-        .child(app_slider::fill(fill_width))
-        .child(slider),
-    )
+    .child(slider)
     .child(video_value_label(&value_label))
     .into()
 }

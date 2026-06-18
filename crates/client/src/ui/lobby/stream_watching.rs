@@ -1,12 +1,9 @@
-use std::{
-  sync::{Arc, Mutex},
-  time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use lurq::{
   app::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
-    ctx::{Ctx, Interval},
+    ctx::Ctx,
   },
   components::{Column, Row, Stack, Text, TextOverflow},
   core::Signal,
@@ -408,7 +405,6 @@ struct StreamVolumeControl {
   value: Signal<i32>,
   apply_session: Arc<Mutex<ServerSession>>,
   last_applied_volume: Arc<Mutex<i32>>,
-  apply_interval: Interval,
 }
 
 impl Component for StreamVolumeControl {
@@ -429,13 +425,12 @@ impl Component for StreamVolumeControl {
     let value = ctx.signal(initial);
     let apply_session = Arc::new(Mutex::new(props.session));
     let last_applied_volume = Arc::new(Mutex::new(initial));
-    let apply_interval = {
+    {
       let apply_session = apply_session.clone();
       let user_id = user_id.clone();
-      let value = value.clone();
       let last_applied_volume = last_applied_volume.clone();
-      let interval = ctx.create_interval(Duration::from_millis(16), move || {
-        let volume = value.get_untracked().clamp(0, 100);
+      ctx.watch(&value, move |volume| {
+        let volume = (*volume).clamp(0, 100);
         let mut last_applied_volume = last_applied_volume
           .lock()
           .expect("stream volume last-applied lock poisoned");
@@ -447,9 +442,7 @@ impl Component for StreamVolumeControl {
           *last_applied_volume = volume;
         }
       });
-      interval.start();
-      interval
-    };
+    }
 
     Self {
       user_id,
@@ -457,7 +450,6 @@ impl Component for StreamVolumeControl {
       value,
       apply_session,
       last_applied_volume,
-      apply_interval,
     }
   }
 
@@ -500,10 +492,6 @@ impl Component for StreamVolumeControl {
         }
       }),
     )
-  }
-
-  fn on_unmounted(&self) {
-    self.apply_interval.stop();
   }
 }
 

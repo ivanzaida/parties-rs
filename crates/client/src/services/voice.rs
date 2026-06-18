@@ -1103,7 +1103,7 @@ impl InputCaptureState {
 
     for input_frame in data.chunks(self.channels) {
       let mono = if can_transmit_voice {
-        input_frame.iter().map(|sample| sample.to_sample::<f32>()).sum::<f32>() / input_frame.len().max(1) as f32
+        input_frame_to_mono(input_frame)
       } else {
         0.0
       };
@@ -1828,6 +1828,24 @@ fn rms_to_perceptual(rms: f32) -> f32 {
   }
 
   ((20.0 * rms.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+fn input_frame_to_mono<T>(input_frame: &[T]) -> f32
+where
+  T: Sample,
+  f32: cpal::FromSample<T>,
+{
+  input_frame
+    .iter()
+    .map(|sample| sample.to_sample::<f32>())
+    .fold(None, |selected: Option<f32>, sample| {
+      Some(match selected {
+        Some(selected) if selected.abs() >= sample.abs() => selected,
+        _ => sample,
+      })
+    })
+    .unwrap_or(0.0)
+    .clamp(-1.0, 1.0)
 }
 
 fn activation_threshold(level: i32) -> f32 {

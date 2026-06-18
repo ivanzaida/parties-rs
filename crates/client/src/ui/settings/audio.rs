@@ -942,8 +942,6 @@ enum AudioSliderSetting {
 
 fn delay_slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> Element {
   let current = value.get().clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS);
-  let fill_width =
-    app_slider::travel_width(AUDIO_SLIDER_WIDTH) * current as f32 / PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS as f32;
   let label = format!("{:.1}s", current as f32 / 10.0);
   let mut slider = app_slider::slider(
     value.clone(),
@@ -960,15 +958,7 @@ fn delay_slider_control(value: Signal<i32>, on_blur: AudioSliderSaveAction) -> E
     .width(AUDIO_CONTROL_WIDTH)
     .align_items(Alignment::Center)
     .spacing(AUDIO_CONTROL_VALUE_SPACING)
-    .child(
-      Stack::new()
-        .stack_align(StackAlignment::CenterStart)
-        .width(AUDIO_SLIDER_WIDTH)
-        .height(app_slider::SLIDER_HEIGHT)
-        .child(app_slider::track(AUDIO_SLIDER_WIDTH))
-        .child(app_slider::fill(fill_width))
-        .child(slider),
-    )
+    .child(slider)
     .child(audio_value_label(&label))
     .into()
 }

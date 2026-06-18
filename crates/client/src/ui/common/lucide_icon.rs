@@ -122,6 +122,7 @@ fn name_to_char(name: &str) -> char {
     "video" => '\u{e1a5}',
     "volume-2" => '\u{e1ab}',
     "volume-x" => '\u{e1ae}',
+    "waves" | "waves-horizontal" => '\u{e283}',
     "wifi-off" => '\u{e1af}',
     "x" => '\u{e1b2}',
     "audio-lines" => '\u{e55a}',

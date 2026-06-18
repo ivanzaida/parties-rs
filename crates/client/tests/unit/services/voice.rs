@@ -35,6 +35,23 @@ fn nearest_resampler_keeps_nominal_rate() {
 }
 
 #[test]
+fn input_frame_to_mono_keeps_duplicated_mic_channels() {
+  assert_eq!(input_frame_to_mono(&[0.25_f32, 0.25]), 0.25);
+}
+
+#[test]
+fn input_frame_to_mono_does_not_cancel_opposite_polarity_channels() {
+  assert_eq!(input_frame_to_mono(&[0.25_f32, -0.25]), 0.25);
+  assert_eq!(input_frame_to_mono(&[-0.25_f32, 0.10]), -0.25);
+}
+
+#[test]
+fn input_frame_to_mono_clamps_selected_sample() {
+  assert_eq!(input_frame_to_mono(&[2.0_f32]), 1.0);
+  assert_eq!(input_frame_to_mono(&[-2.0_f32]), -1.0);
+}
+
+#[test]
 fn pcm_stream_waits_for_playout_cushion() {
   let mut stream = PcmStream::default();
   stream.frames.push_back(vec![0.5; OPUS_FRAME_SIZE]);

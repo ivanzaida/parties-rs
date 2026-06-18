@@ -3,9 +3,13 @@ use lurq::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
-  components::{Column, Rect, Row, Text},
+  components::{Column, Rect, Row, ScrollVertical, Text},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify},
+  layout::{
+    Alignment,
+    layout_kind::Justify,
+    scrollbar::{ScrollBarPlacement, ScrollBarStyle},
+  },
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
 
@@ -315,7 +319,6 @@ fn rail_channels(
   let metrics = lobby_layout_metrics(ctx);
   let mut channels = Column::new()
     .width(Dimension::Pct(100.0))
-    .flex(1.0)
     .spacing(18.0)
     .padding_vertical(metrics.rail_padding_y)
     .padding_horizontal(metrics.rail_padding_x)
@@ -344,7 +347,33 @@ fn rail_channels(
     }));
   }
 
-  channels.into()
+  ScrollVertical::new(channels)
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .flex(1.0)
+    .scrollbar(rail_scrollbar_style())
+    .scrollbar_hovered(|mut style| {
+      let palette = theme::palette();
+      style.thumb_color = palette.accent_hover;
+      style.track_color = palette.surface_input.with_opacity(0.7);
+      style
+    })
+    .into()
+}
+
+fn rail_scrollbar_style() -> ScrollBarStyle {
+  let palette = theme::palette();
+  ScrollBarStyle {
+    width: 6.0,
+    min_thumb_length: 28.0,
+    track_color: palette.surface_input.with_opacity(0.35),
+    thumb_color: palette.border_strong,
+    thumb_radius: 3.0,
+    track_radius: 3.0,
+    padding: 2.0,
+    placement: ScrollBarPlacement::Overlay,
+    ..ScrollBarStyle::default()
+  }
 }
 
 fn rail_bottom(

@@ -5,9 +5,9 @@ use lurq::{
     component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
   },
-  components::{Row, Stack, Text},
+  components::{Row, Text},
   core::Signal,
-  layout::{Alignment, StackAlignment},
+  layout::Alignment,
   node::{Element, dimension::Dimension},
 };
 
@@ -93,7 +93,6 @@ pub fn percent_slider_control(
   on_blur: PercentSliderSaveAction,
 ) -> Element {
   let current = value.get().clamp(0, 100);
-  let fill_width = app_slider::travel_width(track_width) * current as f32 / 100.0;
   let value_label = ctx.t_args("common.percent", [("value", current.to_string())]);
 
   let mut slider = app_slider::slider(value.clone(), track_width, 0, 100);
@@ -106,15 +105,7 @@ pub fn percent_slider_control(
     .width(control_width)
     .align_items(Alignment::Center)
     .spacing(value_spacing)
-    .child(
-      Stack::new()
-        .stack_align(StackAlignment::CenterStart)
-        .width(track_width)
-        .height(app_slider::SLIDER_HEIGHT)
-        .child(app_slider::track(track_width))
-        .child(app_slider::fill(fill_width))
-        .child(slider),
-    )
+    .child(slider)
     .child(
       Text::new(&value_label)
         .variant(theme::TypographyStyle::Mono)
