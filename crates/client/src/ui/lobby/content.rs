@@ -17,8 +17,8 @@ use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::{
-  ChatHistoryAction, SendChatAction, StopWatchingAction, WatchStreamAction,
-  chat::{ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
+  StopWatchingAction, WatchStreamAction,
+  chat::{ChatActions, ChatChannel, ChatCommandInvalidFeedback, text_channel_detail},
   layout::lobby_layout_metrics,
   model::{MainBodyModel, MainTopBarModel, main_body_model, main_top_bar_model},
   shared::error_notice,
@@ -48,8 +48,7 @@ pub(super) fn main(
   debug_mode_enabled: bool,
   storage: Option<Storage>,
   session: ServerSession,
-  chat_history: &ChatHistoryAction,
-  send_chat: &SendChatAction,
+  chat_actions: ChatActions,
   start_stream_modal_open: Signal<bool>,
   watch_stream: &WatchStreamAction,
   stop_watching: &StopWatchingAction,
@@ -82,8 +81,7 @@ pub(super) fn main(
       debug_mode_enabled,
       storage,
       session,
-      chat_history,
-      send_chat,
+      chat_actions,
       watch_stream,
     ))
     .into()
@@ -459,8 +457,7 @@ fn main_body(
   debug_mode_enabled: bool,
   storage: Option<Storage>,
   session: ServerSession,
-  chat_history: &ChatHistoryAction,
-  send_chat: &SendChatAction,
+  chat_actions: ChatActions,
   watch_stream: &WatchStreamAction,
 ) -> Element {
   ctx.mount::<MainBody>(MainBodyProps {
@@ -478,8 +475,7 @@ fn main_body(
     debug_mode_enabled,
     storage,
     session,
-    chat_history: chat_history.clone(),
-    send_chat: send_chat.clone(),
+    chat_actions,
     watch_stream: watch_stream.clone(),
   })
 }
@@ -500,8 +496,7 @@ struct MainBodyProps {
   debug_mode_enabled: bool,
   storage: Option<Storage>,
   session: ServerSession,
-  chat_history: ChatHistoryAction,
-  send_chat: SendChatAction,
+  chat_actions: ChatActions,
   watch_stream: WatchStreamAction,
 }
 
@@ -658,8 +653,7 @@ fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, prop
         props.chat_prepend_settle_anchor,
         props.debug_mode_enabled,
         props.session,
-        &props.chat_history,
-        &props.send_chat,
+        props.chat_actions.clone(),
       )
     }
     MainBodyModel::Text {
@@ -683,8 +677,7 @@ fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, prop
         props.chat_prepend_settle_anchor,
         props.debug_mode_enabled,
         props.session,
-        &props.chat_history,
-        &props.send_chat,
+        props.chat_actions.clone(),
       )
     }
     MainBodyModel::StreamChannel { channel } => stream_channel_detail(

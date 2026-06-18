@@ -419,6 +419,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - removed unused start-stream, stop-stream, and stop-watching props from stream browser/body components;
   - kept `watch_stream` as the only stream-browser/body action dependency;
   - left stop-stream in the rail controls and stop-watching/start-stream in the top bar where they are rendered.
+- Completed the chat action grouping slice:
+  - added `ChatActions` as the chat pane action contract;
+  - replaced separate `chat_history` and `send_chat` component props through content/chat boundaries;
+  - kept lower-level chat helpers receiving only the action they invoke.
 
 ## Non-Goals
 

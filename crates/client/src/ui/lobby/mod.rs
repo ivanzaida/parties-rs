@@ -49,7 +49,7 @@ use actions::{
   chat_history_action, receiver_action, reconnect_action, send_chat_action, start_stream_action, stop_stream_action,
   stop_watching_action, watch_stream_action,
 };
-use chat::ChatCommandInvalidFeedback;
+use chat::{ChatActions, ChatCommandInvalidFeedback};
 use content::main;
 use disconnected::disconnected_lobby;
 use model::{LobbyShellModel, lobby_shell_model};
@@ -200,6 +200,10 @@ impl Component for LobbyScreen {
       }
     }
     let send_chat = send_chat_action(ctx, session.clone());
+    let chat_actions = ChatActions {
+      history: chat_history.clone(),
+      send: send_chat.clone(),
+    };
     let start_stream = start_stream_action(ctx, storage.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
     let watch_stream = watch_stream_action(ctx, storage.clone(), session.clone());
@@ -264,8 +268,7 @@ impl Component for LobbyScreen {
         debug_mode_enabled,
         storage,
         session.clone(),
-        &chat_history,
-        &send_chat,
+        chat_actions,
         self.start_stream_modal_open.clone(),
         &watch_stream,
         &stop_watching,

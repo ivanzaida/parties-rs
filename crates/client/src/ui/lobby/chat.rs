@@ -48,6 +48,12 @@ use crate::{
   ui::loader::loader,
 };
 
+#[derive(Clone)]
+pub(super) struct ChatActions {
+  pub history: ChatHistoryAction,
+  pub send: SendChatAction,
+}
+
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
   channel: ChatChannel,
@@ -64,8 +70,7 @@ pub(super) fn text_channel_detail(
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_user_ids: bool,
   session: ServerSession,
-  chat_history: &ChatHistoryAction,
-  send_chat: &SendChatAction,
+  actions: ChatActions,
 ) -> Element {
   let key = format!("text-channel-detail-{}", channel.id());
   ctx.mount_keyed::<TextChannelDetail>(
@@ -85,8 +90,7 @@ pub(super) fn text_channel_detail(
       chat_prepend_settle_anchor,
       debug_user_ids,
       session,
-      chat_history: chat_history.clone(),
-      send_chat: send_chat.clone(),
+      actions,
     },
   )
 }
@@ -107,8 +111,7 @@ struct TextChannelDetailProps {
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_user_ids: bool,
   session: ServerSession,
-  chat_history: ChatHistoryAction,
-  send_chat: SendChatAction,
+  actions: ChatActions,
 }
 
 impl PartialEq for TextChannelDetailProps {
@@ -177,8 +180,8 @@ impl Component for TextChannelDetail {
       props.chat_prepend_settle_anchor,
       props.debug_user_ids,
       props.session,
-      &props.chat_history,
-      &props.send_chat,
+      &props.actions.history,
+      &props.actions.send,
     )
   }
 }
