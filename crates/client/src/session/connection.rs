@@ -309,7 +309,7 @@ pub(super) trait ConnectionSession:
   fn try_begin_lobby_receiver(&self) -> bool;
   fn set_video_receiver_stop(&self, stop: Option<Arc<AtomicBool>>);
   fn finish_lobby_receiver(&self);
-  fn bump_connection_revision(&self);
+  fn publish_lobby_update(&self);
   fn mark_connection_network_activity(&self);
   fn network_idle_for(&self, now: Instant) -> Duration;
   fn pending_keepalive_timed_out(&self, now: Instant, timeout: Duration) -> bool;
@@ -340,12 +340,16 @@ where
   }
 
   tracing::info!(target: "network", "[network] lobby receiver started");
-  session.bump_connection_revision();
+  session.publish_lobby_update();
 
   let ping_session = session.clone();
   let ping_server = server.clone();
   let ping_task = tokio::spawn(async move {
     run_keepalive_sender(ping_session, ping_server).await;
+  });
+  let datagram_server = server.clone();
+  let datagram_task = tokio::spawn(async move {
+    datagram_server.run_datagram_demuxer().await;
   });
   let voice_session = session.clone();
   let voice_server = server.clone();
@@ -393,11 +397,12 @@ where
   voice_task.abort();
   video_stop.store(true, Ordering::Relaxed);
   server.wake_video_datagram_reader();
+  datagram_task.abort();
   ping_task.abort();
   drop(video_thread);
   session.finish_lobby_receiver();
   tracing::info!(target: "network", "[network] lobby receiver stopped");
-  session.bump_connection_revision();
+  session.publish_lobby_update();
 }
 
 async fn run_keepalive_sender<S>(session: S, server: Arc<Server>)

@@ -130,7 +130,9 @@ impl FpsSampler {
     }
 
     let fps = (self.frames_since_sample as f32 / elapsed.as_secs_f32()).round() as u32;
-    self.signal.set(fps);
+    if self.signal.with_untracked(|current| *current) != fps {
+      self.signal.set(fps);
+    }
     self.frames_since_sample = 0;
     self.last_sample = now;
     Some(fps)

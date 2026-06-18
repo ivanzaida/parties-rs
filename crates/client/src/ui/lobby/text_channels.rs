@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Mutex};
 
 use lurq::{
   app::{
@@ -50,6 +50,7 @@ impl DevtoolsInspectable for TextChannelsProps {
 
 pub(super) struct TextChannels {
   expanded: Signal<bool>,
+  mounted_channel_ids: Mutex<HashSet<ChannelId>>,
 }
 
 impl Component for TextChannels {
@@ -58,12 +59,39 @@ impl Component for TextChannels {
   fn create(ctx: &mut Ctx) -> Self {
     Self {
       expanded: ctx.signal(true),
+      mounted_channel_ids: Mutex::new(HashSet::new()),
     }
+  }
+
+  fn on_mounted(&self) {
+    tracing::info!(target: "lobby::text_channels", "[lobby:text_channels] component mounted");
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let is_expanded = self.expanded.get();
+    tracing::debug!(
+      target: "lobby::text_channels",
+      "[lobby:text_channels] render channels={} selected={:?} unread={}",
+      props.channels.len(),
+      props.selected_channel_id,
+      props.unread_channel_ids.len()
+    );
+    if let Ok(mut mounted_channel_ids) = self.mounted_channel_ids.lock() {
+      for channel in &props.channels {
+        if mounted_channel_ids.insert(channel.id) {
+          tracing::info!(
+            target: "lobby::text_channels",
+            "[lobby:text_channels] channel mounted id={} name='{}' selected={:?} total_channels={}",
+            channel.id,
+            channel.name,
+            props.selected_channel_id,
+            props.channels.len()
+          );
+        }
+      }
+      mounted_channel_ids.retain(|id| props.channels.iter().any(|channel| channel.id == *id));
+    }
     let mut section = Column::new()
       .width(Dimension::Pct(100.0))
       .spacing(theme::SpacingSize::Xs)

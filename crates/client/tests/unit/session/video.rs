@@ -17,6 +17,10 @@ fn video_packet(sender_id: UserId, frame_number: u32) -> ForwardedVideoFrame {
   }
 }
 
+fn queued_video_packet(sender_id: UserId, frame_number: u32) -> QueuedVideoPacket {
+  QueuedVideoPacket::from_stream(video_packet(sender_id, frame_number))
+}
+
 #[test]
 fn video_packet_queue_drops_oldest_packets_when_full() {
   let queue = VideoPacketQueue::new();
@@ -25,7 +29,7 @@ fn video_packet_queue_drops_oldest_packets_when_full() {
   let mut dropped_senders = HashMap::new();
 
   for frame_number in 0..(MAX_QUEUED_VIDEO_PACKETS as u32 + 2) {
-    queue.push(video_packet(7, frame_number));
+    queue.push(queued_video_packet(7, frame_number));
   }
 
   let dropped = queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders);
@@ -48,7 +52,7 @@ fn video_packet_queue_ignores_push_after_close() {
   let mut dropped_senders = HashMap::new();
 
   queue.close();
-  queue.push(video_packet(7, 1));
+  queue.push(queued_video_packet(7, 1));
 
   assert_eq!(queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders), None);
   assert!(batch.is_empty());
@@ -70,10 +74,10 @@ fn video_packet_queue_returns_none_when_stopped_without_packets() {
 #[test]
 fn latest_watched_frame_number_uses_frame_order_not_queue_order() {
   let batch = vec![
-    video_packet(7, 12),
-    video_packet(7, 10),
-    video_packet(9, 99),
-    video_packet(7, 11),
+    queued_video_packet(7, 12),
+    queued_video_packet(7, 10),
+    queued_video_packet(9, 99),
+    queued_video_packet(7, 11),
   ];
 
   assert_eq!(latest_watched_frame_number(&batch, Some(7)), Some(12));
@@ -82,11 +86,11 @@ fn latest_watched_frame_number_uses_frame_order_not_queue_order() {
 #[test]
 fn watched_video_batch_orders_frames_from_expected_number() {
   let mut batch = vec![
-    video_packet(7, 13),
-    video_packet(7, 10),
-    video_packet(9, 1),
-    video_packet(7, 12),
-    video_packet(7, 11),
+    queued_video_packet(7, 13),
+    queued_video_packet(7, 10),
+    queued_video_packet(9, 1),
+    queued_video_packet(7, 12),
+    queued_video_packet(7, 11),
   ];
 
   order_watched_video_batch(&mut batch, 7, Some(11));

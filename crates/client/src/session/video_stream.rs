@@ -56,7 +56,7 @@ impl StreamRuntime {
   pub(super) fn push_loopback_frame(&self, sender_id: UserId, frame: VideoFrame) {
     self
       .current_packet_queue()
-      .push(ForwardedVideoFrame { sender_id, frame });
+      .push_frame(ForwardedVideoFrame { sender_id, frame });
   }
 
   pub(super) fn set_receiver_debug_snapshot(&self, snapshot: VideoReceiverDebugSnapshot) {

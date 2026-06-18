@@ -8,8 +8,9 @@ use std::{
   time::{Duration, Instant},
 };
 
-use lurq::{core::Signal, images::ImageData};
+use lurq::images::ImageData;
 use parking_lot::Mutex;
+use tokio::sync::watch;
 
 use crate::{
   network::{
@@ -64,13 +65,14 @@ pub struct ServerSession {
   streams: Arc<video_stream::StreamRuntime>,
   video_sink: Arc<video_sink::VideoFrameSink>,
   video_hardware_decoding: Arc<AtomicBool>,
-  revision: Signal<u64>,
+  lobby_updates: watch::Sender<LobbyState>,
 }
 
 impl Default for ServerSession {
   fn default() -> Self {
-    let lobby = Arc::new(Mutex::new(LobbyState::default()));
-    let revision = Signal::new(0);
+    let initial_lobby = LobbyState::default();
+    let lobby = Arc::new(Mutex::new(initial_lobby.clone()));
+    let (lobby_updates, _) = watch::channel(initial_lobby);
     Self {
       connection: Arc::new(connection::ConnectionRuntime::new()),
       lobby: lobby.clone(),
@@ -79,9 +81,9 @@ impl Default for ServerSession {
       voice_state: Arc::new(voice_state::VoiceState::new()),
       voice_settings: Arc::new(Mutex::new(AppSettings::default())),
       streams: Arc::new(video_stream::StreamRuntime::new()),
-      video_sink: Arc::new(video_sink::VideoFrameSink::new(lobby, revision.clone())),
+      video_sink: Arc::new(video_sink::VideoFrameSink::new(lobby, lobby_updates.clone())),
       video_hardware_decoding: Arc::new(AtomicBool::new(true)),
-      revision,
+      lobby_updates,
     }
   }
 }
@@ -95,7 +97,7 @@ impl ServerSession {
     let mut session = Self::default();
     session.video_sink = Arc::new(video_sink::VideoFrameSink::with_dx12_video_surface_allocator(
       session.lobby.clone(),
-      session.revision.clone(),
+      session.lobby_updates.clone(),
       dx12_video_surfaces,
     ));
     session
@@ -145,7 +147,7 @@ impl ServerSession {
     self.video_sink.clear_all();
     self.voice.clear_counts();
     self.voice.clear_volumes();
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn clear(&self) {
@@ -167,7 +169,7 @@ impl ServerSession {
     self.voice.clear_counts();
     self.voice.clear_volumes();
     self.streams.clear_pending_reconnect_watch();
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn disconnect(&self) {
@@ -251,7 +253,7 @@ impl ServerSession {
       }
     }
     if should_bump {
-      self.bump_revision();
+      self.publish_lobby_update();
     }
   }
 
@@ -277,7 +279,7 @@ impl ServerSession {
     self.voice.set_voice_state(muted, deafened);
 
     let Some(user_id) = self.info().map(|info| info.user_id) else {
-      self.bump_revision();
+      self.publish_lobby_update();
       return;
     };
 
@@ -303,7 +305,7 @@ impl ServerSession {
       }
     }
 
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn set_voice_activation_threshold(&self, value: i32) {
@@ -455,7 +457,7 @@ impl ServerSession {
       }
       lobby::sync_selected_users(&mut lobby);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn set_tofu_warning(&self, warning: TofuWarning) {
@@ -474,16 +476,16 @@ impl ServerSession {
     self.lobby.lock().clone()
   }
 
-  pub fn revision(&self) -> Signal<u64> {
-    self.revision.clone()
+  pub fn subscribe_lobby_updates(&self) -> watch::Receiver<LobbyState> {
+    self.lobby_updates.subscribe()
   }
 
   pub fn refresh_lobby(&self) {
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
-  fn bump_revision(&self) {
-    self.revision.update(|revision| *revision = revision.wrapping_add(1));
+  fn publish_lobby_update(&self) {
+    let _ = self.lobby_updates.send(self.lobby());
   }
 
   pub fn select_channel(&self, channel_id: ChannelId) {
@@ -494,7 +496,18 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::select_channel(&mut lobby, channel_id);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
+  }
+
+  pub fn clear_channel_selection_locally(&self) {
+    {
+      let mut lobby = self.lobby.lock();
+      lobby.selected_channel_id = None;
+      lobby.stream_browser_channel_id = None;
+      lobby.users.clear();
+      lobby::sync_selected_users(&mut lobby);
+    }
+    self.publish_lobby_update();
   }
 
   pub fn leave_channel_locally(&self) {
@@ -517,7 +530,7 @@ impl ServerSession {
       self.speaking.forget_user(user_id);
     }
 
-    self.bump_revision();
+    self.publish_lobby_update();
     if effects.left_voice {
       self.play_voice_leave_notification();
     }
@@ -528,7 +541,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::select_text_channel(&mut lobby, channel_id);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn select_debug_chat(&self) {
@@ -536,7 +549,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::select_debug_chat(&mut lobby);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn open_stream_browser(&self, channel_id: ChannelId) {
@@ -544,7 +557,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::open_stream_browser(&mut lobby, channel_id);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn close_stream_browser(&self) {
@@ -552,7 +565,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::close_stream_browser(&mut lobby);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn begin_chat_history_request(&self, channel_id: ChannelId, before_id: u64) -> bool {
@@ -562,7 +575,7 @@ impl ServerSession {
     };
 
     if should_begin {
-      self.bump_revision();
+      self.publish_lobby_update();
     }
 
     should_begin
@@ -573,7 +586,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::finish_chat_history_request(&mut lobby, channel_id, has_more);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn set_watching_user(&self, user_id: Option<UserId>) {
@@ -598,7 +611,7 @@ impl ServerSession {
     }
     self.retain_video_cache(user_id);
     if changed || view_changed {
-      self.bump_revision();
+      self.publish_lobby_update();
     }
   }
 
@@ -927,6 +940,13 @@ impl ServerSession {
     self.video_sink.has_frame(user_id, width, height)
   }
 
+  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
+    self
+      .video_sink
+      .image_data(user_id)
+      .map(|image| (image.id(), image.version()))
+  }
+
   pub fn mark_lobby_error(&self, message: String) {
     if self.connection.shutdown_requested() {
       tracing::warn!(target: "network", "[network] ignoring network error during shutdown: {message}");
@@ -941,7 +961,7 @@ impl ServerSession {
         tracing::warn!(target: "network", "[network] lobby already disconnected; ignoring additional network error: {message}");
         if lobby.last_error.is_none() {
           lobby.last_error = Some(message);
-          self.bump_revision();
+          self.publish_lobby_update();
         }
         return;
       }
@@ -969,7 +989,7 @@ impl ServerSession {
     if let Some(server) = self.server() {
       server.disconnect();
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn set_lobby_error_notice(&self, message: impl Into<String>) {
@@ -979,7 +999,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby.last_error = Some(message);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   pub fn push_debug_chat_message(&self, message: impl Into<String>) {
@@ -989,7 +1009,7 @@ impl ServerSession {
       let mut lobby = self.lobby.lock();
       lobby::push_debug_chat_message(&mut lobby, message);
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 
   fn apply_server_message(&self, message: S2C) {
@@ -1040,7 +1060,7 @@ impl ServerSession {
         self.speaking.forget_user(user_id);
       }
     }
-    self.bump_revision();
+    self.publish_lobby_update();
   }
 }
 
@@ -1078,8 +1098,8 @@ impl connection::ConnectionSession for ServerSession {
     self.lobby.lock().receiver_running = false;
   }
 
-  fn bump_connection_revision(&self) {
-    ServerSession::bump_revision(self);
+  fn publish_lobby_update(&self) {
+    ServerSession::publish_lobby_update(self);
   }
 
   fn mark_connection_network_activity(&self) {
@@ -1178,6 +1198,10 @@ impl video::VideoReceiverSession for ServerSession {
 
   fn has_video_frame(&self, user_id: UserId, width: u16, height: u16) -> bool {
     ServerSession::has_video_frame(self, user_id, width, height)
+  }
+
+  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
+    ServerSession::video_frame_image_state(self, user_id)
   }
 
   #[cfg(target_os = "windows")]

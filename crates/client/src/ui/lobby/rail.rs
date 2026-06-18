@@ -4,7 +4,7 @@ use lurq::{
     ctx::Ctx,
   },
   components::{Column, Rect, Row, ScrollVertical, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -27,13 +27,30 @@ use crate::{
       debug_channels::{DebugChannels, DebugChannelsProps},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
       text_channels::{TextChannels, TextChannelsProps},
-      voice_channels::{JoinChannelAction, VoiceChannels, VoiceChannelsProps},
+      voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannels, VoiceChannelsProps},
     },
     settings::SettingsPopupHandle,
   },
 };
 
-type VoiceControlFuture = lurq::app::ctx::FutureAction<VoiceControlAction, (), String>;
+type VoiceControlTask = lurq::app::ctx::FutureAction<VoiceControlAction, (), String>;
+
+#[derive(Clone)]
+struct VoiceControlFuture {
+  session: ServerSession,
+  lobby_store: Store<LobbyState>,
+  task: VoiceControlTask,
+}
+
+impl VoiceControlFuture {
+  fn run(&self, action: VoiceControlAction) {
+    if action == VoiceControlAction::LeaveChannel {
+      self.session.leave_channel_locally();
+      self.lobby_store.set(self.session.lobby());
+    }
+    self.task.run(action);
+  }
+}
 
 #[derive(Clone)]
 pub(super) struct LobbyRailProps {
@@ -93,11 +110,15 @@ impl Component for LobbyRail {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let session = ctx.use_context::<ServerSession>();
+    let lobby_store = ctx.use_context::<Store<LobbyState>>();
     let storage = ctx.use_context::<Storage>();
     let join_channel = session
       .clone()
-      .map(|session| join_channel_action(ctx, session, storage.clone()));
-    let voice_control = session.map(|session| voice_control_action(ctx, session));
+      .zip(lobby_store.clone())
+      .map(|(session, lobby_store)| join_channel_action(ctx, session, storage.clone(), lobby_store));
+    let voice_control = session
+      .zip(lobby_store)
+      .map(|(session, lobby_store)| voice_control_action(ctx, session, lobby_store));
 
     rail(
       ctx,
@@ -113,19 +134,26 @@ impl Component for LobbyRail {
   }
 }
 
-fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<Storage>) -> JoinChannelAction {
+fn join_channel_action(
+  ctx: &mut Ctx,
+  session: ServerSession,
+  storage: Option<Storage>,
+  lobby_store: Store<LobbyState>,
+) -> JoinChannelAction {
   let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
-  ctx.future_action(move |channel_id| {
-    let session = session.clone();
+  let task_session = session.clone();
+  let task = ctx.future_action(move |request: JoinChannelRequest| {
+    let session = task_session.clone();
     let storage = storage.clone();
     let no_connected_server = no_connected_server.clone();
     async move {
+      let channel_id = request.channel_id;
       let server = session.server().ok_or(no_connected_server.clone())?;
       let settings = storage
         .as_ref()
         .and_then(|storage| storage.load_settings().ok())
         .unwrap_or_else(AppSettings::default);
-      let already_in_voice = session.lobby().selected_channel_id.is_some();
+      let already_in_voice = request.previous_channel_id.is_some();
       let (mut muted, deafened) = session.local_voice_state().unwrap_or((false, false));
       if !already_in_voice {
         muted = settings.start_muted_when_joining || deafened;
@@ -133,12 +161,14 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
       tracing::info!(target: "lobby", 
         "[lobby] join channel requested: channel={channel_id} already_in_voice={already_in_voice} muted={muted} deafened={deafened}"
       );
-      server
-        .join_channel(channel_id)
-        .await
-        .map_err(|error| error.to_string())?;
+      if let Err(error) = server.join_channel(channel_id).await {
+        match request.previous_channel_id {
+          Some(previous_channel_id) => session.select_channel(previous_channel_id),
+          None => session.clear_channel_selection_locally(),
+        }
+        return Err(error.to_string());
+      }
       tracing::info!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
-      session.select_channel(channel_id);
       session.play_voice_join_notification();
       server
         .update_voice_state(muted, deafened)
@@ -157,16 +187,23 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
       }
       Ok(())
     }
-  })
+  });
+  JoinChannelAction::new(session, lobby_store, task)
 }
 
-fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFuture {
+fn voice_control_action(ctx: &mut Ctx, session: ServerSession, lobby_store: Store<LobbyState>) -> VoiceControlFuture {
   let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
-  ctx.future_action(move |control| {
-    let session = session.clone();
+  let task_session = session.clone();
+  let task = ctx.future_action(move |control| {
+    let session = task_session.clone();
     let no_connected_server = no_connected_server.clone();
     async move { apply_voice_control(session, control, no_connected_server).await }
-  })
+  });
+  VoiceControlFuture {
+    session,
+    lobby_store,
+    task,
+  }
 }
 
 fn rail(

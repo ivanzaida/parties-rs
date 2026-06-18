@@ -125,7 +125,6 @@ impl Component for ServerSettingsScreen {
     let Some(session) = ctx.use_context::<ServerSession>() else {
       return unavailable_screen(ctx);
     };
-    let _revision = session.revision().get();
     let Some(info) = session.info() else {
       if let Some(navigator) = ctx.navigator() {
         navigator.replace(ROUTE_CHOOSE_SERVER);

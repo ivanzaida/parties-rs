@@ -141,6 +141,8 @@ pub struct LobbyState {
   pub auto_reconnect_disabled: bool,
 }
 
+impl lurq::app::component::DevtoolsInspectable for LobbyState {}
+
 #[derive(Default)]
 pub(super) struct LeaveChannelEffects {
   pub(super) left_voice: bool,
@@ -381,10 +383,17 @@ pub(super) fn apply_server_message(
       }
     }
     S2C::ChatChannelList { channels } => {
-      tracing::debug!(target: "lobby",
-        "[lobby] received text channel list: channels={} selected={:?}",
+      let channel_summary = channels
+        .iter()
+        .map(|channel| format!("{}:'{}'", channel.id, channel.name))
+        .collect::<Vec<_>>()
+        .join(",");
+      tracing::info!(
+        target: "lobby::text_channels",
+        "[lobby:text_channels] received channel_list channels={} selected_before={:?} channels=[{}]",
         channels.len(),
-        lobby.selected_text_channel_id
+        lobby.selected_text_channel_id,
+        channel_summary
       );
       let selected = lobby.selected_text_channel_id;
       lobby.text_channels = channels.into_iter().map(LobbyTextChannel::from).collect();
@@ -410,6 +419,12 @@ pub(super) fn apply_server_message(
       } else {
         lobby.selected_text_channel_id = lobby.text_channels.first().map(|channel| channel.id);
       }
+      tracing::info!(
+        target: "lobby::text_channels",
+        "[lobby:text_channels] applied channel_list channels={} selected_after={:?}",
+        lobby.text_channels.len(),
+        lobby.selected_text_channel_id
+      );
     }
     S2C::ChatCommandList(list) => {
       tracing::debug!(target: "lobby", "[lobby] received chat command list: commands={}", list.commands.len());

@@ -14,11 +14,12 @@ pub async fn apply_voice_control(
 ) -> Result<(), String> {
   let server = session.server().ok_or_else(|| no_connected_server.clone())?;
   let (mut muted, mut deafened) = session.local_voice_state().unwrap_or((false, false));
+  let previous_voice_state = (muted, deafened);
 
   match action {
     VoiceControlAction::LeaveChannel => {
-      server.leave_channel().await.map_err(|error| error.to_string())?;
       session.leave_channel_locally();
+      server.leave_channel().await.map_err(|error| error.to_string())?;
       return Ok(());
     }
     VoiceControlAction::ToggleMute => {
@@ -39,11 +40,11 @@ pub async fn apply_voice_control(
     }
   }
 
-  server
-    .update_voice_state(muted, deafened)
-    .await
-    .map_err(|error| error.to_string())?;
   session.set_local_voice_state(muted, deafened);
+  if let Err(error) = server.update_voice_state(muted, deafened).await {
+    session.set_local_voice_state(previous_voice_state.0, previous_voice_state.1);
+    return Err(error.to_string());
+  }
   if !muted && !deafened {
     session.ensure_voice_capture_started(&no_connected_server)?;
   }

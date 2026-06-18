@@ -2,10 +2,10 @@ use std::{
   collections::{HashMap, HashSet, VecDeque},
   sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
   },
   thread,
-  time::{Duration, Instant},
+  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::{Condvar, Mutex};
@@ -17,7 +17,7 @@ use crate::{
       UserId, VideoCodecId,
       data::{ForwardedVideoFrame, VideoControl},
     },
-    server::{ReceivedVideoPacket, Server, ServerError},
+    server::{ReceivedVideoDatagram, ReceivedVideoPacket, Server, ServerError},
   },
   services::{
     profiler,
@@ -30,6 +30,9 @@ pub(super) const LARGE_VIDEO_BATCH_LOG_THRESHOLD: usize = 3;
 const KEYFRAME_REQUEST_RETRY_INTERVAL: Duration = Duration::from_millis(750);
 const SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_VIDEO_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
+const SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD: Duration = Duration::from_millis(30);
+const VIDEO_PRESENT_TIMELINE_SAMPLE_INTERVAL_MS: u64 = 1_000;
+static VIDEO_PRESENT_TIMELINE_LAST_INFO_MS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 pub(super) const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 8;
@@ -59,6 +62,40 @@ pub struct VideoReceiverDebugSnapshot {
   pub received_counts: Vec<(UserId, u64)>,
   pub decoded_counts: Vec<(UserId, u64)>,
   pub keyframe_request_ages_ms: Vec<(UserId, u128)>,
+}
+
+#[derive(Debug)]
+struct QueuedVideoPacket {
+  packet: ForwardedVideoFrame,
+  received_at: Instant,
+  queued_at: Instant,
+}
+
+impl QueuedVideoPacket {
+  fn from_stream(packet: ForwardedVideoFrame) -> Self {
+    let now = Instant::now();
+    Self {
+      packet,
+      received_at: now,
+      queued_at: now,
+    }
+  }
+
+  fn from_datagram(datagram: ReceivedVideoDatagram) -> Self {
+    Self {
+      packet: datagram.packet,
+      received_at: datagram.received_at,
+      queued_at: Instant::now(),
+    }
+  }
+}
+
+impl std::ops::Deref for QueuedVideoPacket {
+  type Target = ForwardedVideoFrame;
+
+  fn deref(&self) -> &Self::Target {
+    &self.packet
+  }
 }
 
 #[cfg(target_os = "windows")]
@@ -118,7 +155,7 @@ pub(super) struct VideoPacketQueue {
 }
 
 struct VideoPacketQueueState {
-  packets: VecDeque<ForwardedVideoFrame>,
+  packets: VecDeque<QueuedVideoPacket>,
   dropped_senders: HashMap<UserId, u64>,
 }
 
@@ -134,7 +171,7 @@ impl VideoPacketQueue {
     }
   }
 
-  pub(super) fn push(&self, packet: ForwardedVideoFrame) {
+  fn push(&self, packet: QueuedVideoPacket) {
     if self.closed.load(Ordering::Relaxed) {
       return;
     }
@@ -154,6 +191,10 @@ impl VideoPacketQueue {
     self.notify.notify_one();
   }
 
+  pub(super) fn push_frame(&self, packet: ForwardedVideoFrame) {
+    self.push(QueuedVideoPacket::from_stream(packet));
+  }
+
   pub(super) fn close(&self) {
     self.closed.store(true, Ordering::Relaxed);
     self.notify.notify_all();
@@ -162,7 +203,7 @@ impl VideoPacketQueue {
   pub(super) fn pop_batch_into(
     &self,
     stop: &AtomicBool,
-    batch: &mut Vec<ForwardedVideoFrame>,
+    batch: &mut Vec<QueuedVideoPacket>,
     dropped_senders: &mut HashMap<UserId, u64>,
   ) -> Option<u64> {
     let mut state = self.state.lock();
@@ -196,6 +237,7 @@ pub(super) trait VideoReceiverSession: Clone + Send + Sync + 'static {
   fn present_video_frame(&self, frame: DecodedVideoFrame);
   fn take_video_pixel_buffer(&self, user_id: UserId, width: u16, height: u16) -> Option<Vec<u8>>;
   fn has_video_frame(&self, user_id: UserId, width: u16, height: u16) -> bool;
+  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)>;
 
   #[cfg(target_os = "windows")]
   fn shared_nv12_planes_video_surface_for_decode(
@@ -251,7 +293,7 @@ pub(super) fn run_video_receiver<S>(
           match runtime.block_on(server.recv_video()) {
             Ok(ReceivedVideoPacket::Frame(packet)) => {
               session.mark_video_network_activity();
-              queue.push(packet);
+              queue.push(QueuedVideoPacket::from_stream(packet));
             }
             Ok(ReceivedVideoPacket::VideoControl(control)) => {
               session.mark_video_network_activity();
@@ -292,7 +334,7 @@ pub(super) fn run_video_receiver<S>(
           match runtime.block_on(server.recv_forwarded_video_datagram_until(stop.as_ref())) {
             Ok(Some(packet)) => {
               session.mark_video_network_activity();
-              queue.push(packet);
+              queue.push(QueuedVideoPacket::from_datagram(packet));
             }
             Ok(None) => break,
             Err(ServerError::Protocol(error)) => {
@@ -331,12 +373,14 @@ pub(super) fn run_video_receiver<S>(
   let mut dropped_senders = HashMap::<UserId, u64>::new();
   let mut last_keyframe_requests = HashMap::<UserId, Instant>::new();
   let mut last_watched_user = session.watching_user_id();
-  let mut batch = Vec::<ForwardedVideoFrame>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
+  let mut batch = Vec::<QueuedVideoPacket>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
 
   while !stop.load(Ordering::Relaxed) {
-    let Some(dropped_count) = ({
+    let Some((dropped_count, batch_popped_at)) = ({
       let _span = profiler::span("video.receive.pop_batch");
-      queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders)
+      queue
+        .pop_batch_into(&stop, &mut batch, &mut dropped_senders)
+        .map(|dropped_count| (dropped_count, Instant::now()))
     }) else {
       break;
     };
@@ -556,6 +600,11 @@ pub(super) fn run_video_receiver<S>(
       let output = latest_watched_frame_number == Some(packet.frame.frame_number)
         || awaiting_decoded_output.contains(&packet.sender_id);
       let had_known_decoder_failure = decode_pool.has_decoder_failure(packet.sender_id, &packet_config);
+      let receive_to_queue = packet.queued_at.duration_since(packet.received_at);
+      let queue_wait = batch_popped_at.duration_since(packet.queued_at);
+      let frame_received_at = packet.received_at;
+      let frame_number = packet.frame.frame_number;
+      let keyframe = packet.frame.keyframe;
       if should_log_video_count(received_count) {
         tracing::debug!(target: "video::decode",
           "[video:decode] received frame #{received_count} from user {}: frame={} codec={:?} size={}x{} keyframe={} output={} bytes={}",
@@ -572,6 +621,7 @@ pub(super) fn run_video_receiver<S>(
 
       #[cfg(target_os = "windows")]
       {
+        let native_decode_start = Instant::now();
         let native_decode = try_present_windows_native_video_frame(
           &session,
           &mut decode_pool,
@@ -579,11 +629,27 @@ pub(super) fn run_video_receiver<S>(
           &mut dx12_decode_surfaces,
           &mut decoded_counts,
           received_count,
-          &packet,
+          &packet.packet,
           &packet_config,
         );
+        let native_decode_present = native_decode_start.elapsed();
         match native_decode {
           WindowsNativeVideoDecode::Presented => {
+            let (image_id, image_version) = session.video_frame_image_state(packet.sender_id).unwrap_or((0, 0));
+            log_native_video_present_timeline(
+              packet.sender_id,
+              packet.frame.codec,
+              packet.frame.width,
+              packet.frame.height,
+              frame_number,
+              keyframe,
+              receive_to_queue,
+              queue_wait,
+              native_decode_present,
+              frame_received_at.elapsed(),
+              image_id,
+              image_version,
+            );
             awaiting_decoded_output.remove(&packet.sender_id);
             continue;
           }
@@ -607,9 +673,11 @@ pub(super) fn run_video_receiver<S>(
       let codec = packet.frame.codec;
       let decode_result = {
         let _span = profiler::span("video.decode.packet");
-        decode_pool.decode_cpu(packet, &packet_config, output, output_buffer)
+        let decode_start = Instant::now();
+        let result = decode_pool.decode_cpu(packet.packet, &packet_config, output, output_buffer);
+        (result, decode_start.elapsed())
       };
-      match decode_result {
+      match decode_result.0 {
         Ok(Some(frame)) => {
           awaiting_decoded_output.remove(&frame.sender_id);
           session.clear_video_error(frame.sender_id);
@@ -625,7 +693,24 @@ pub(super) fn run_video_receiver<S>(
               frame.pixels.len()
             );
           }
+          let present_start = Instant::now();
           session.present_video_frame(frame);
+          let (image_id, image_version) = session.video_frame_image_state(sender_id).unwrap_or((0, 0));
+          log_cpu_video_present_timeline(
+            sender_id,
+            codec,
+            packet_config.width,
+            packet_config.height,
+            frame_number,
+            keyframe,
+            receive_to_queue,
+            queue_wait,
+            decode_result.1,
+            present_start.elapsed(),
+            frame_received_at.elapsed(),
+            image_id,
+            image_version,
+          );
         }
         Ok(None) => {
           if output {
@@ -798,7 +883,7 @@ fn windows_dx12_surface_decode_allowed(codec: VideoCodecId) -> bool {
 }
 
 fn order_watched_video_batch(
-  batch: &mut [ForwardedVideoFrame],
+  batch: &mut [QueuedVideoPacket],
   watched_user_id: UserId,
   expected_frame_number: Option<u32>,
 ) {
@@ -820,7 +905,7 @@ fn order_watched_video_batch(
   });
 }
 
-fn latest_watched_frame_number(batch: &[ForwardedVideoFrame], watched_user_id: Option<UserId>) -> Option<u32> {
+fn latest_watched_frame_number(batch: &[QueuedVideoPacket], watched_user_id: Option<UserId>) -> Option<u32> {
   batch
     .iter()
     .filter(|packet| Some(packet.sender_id) == watched_user_id)
@@ -1285,6 +1370,174 @@ fn log_decode_timing(
     produced_frame,
     duration_ms(elapsed)
   );
+}
+
+fn log_cpu_video_present_timeline(
+  user_id: UserId,
+  codec: VideoCodecId,
+  width: u16,
+  height: u16,
+  frame_number: u32,
+  keyframe: bool,
+  receive_to_queue: Duration,
+  queue_wait: Duration,
+  decode: Duration,
+  present: Duration,
+  total: Duration,
+  image_id: u64,
+  image_version: u64,
+) {
+  let slow = total >= SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD;
+  if slow {
+    tracing::warn!(
+      target: "video::decode",
+      "[video:timeline] presented kind=cpu user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_ms={:.1} present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode),
+      duration_ms(present),
+      duration_ms(total),
+      slow
+    );
+  } else if should_log_video_present_timeline_sample() {
+    tracing::info!(
+      target: "video::timeline",
+      "[video:timeline] presented kind=cpu user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_ms={:.1} present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode),
+      duration_ms(present),
+      duration_ms(total),
+      slow
+    );
+  } else {
+    tracing::debug!(
+      target: "video::timeline",
+      "[video:timeline] presented kind=cpu user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_ms={:.1} present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode),
+      duration_ms(present),
+      duration_ms(total),
+      slow
+    );
+  }
+}
+
+fn log_native_video_present_timeline(
+  user_id: UserId,
+  codec: VideoCodecId,
+  width: u16,
+  height: u16,
+  frame_number: u32,
+  keyframe: bool,
+  receive_to_queue: Duration,
+  queue_wait: Duration,
+  decode_present: Duration,
+  total: Duration,
+  image_id: u64,
+  image_version: u64,
+) {
+  let slow = total >= SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD;
+  if slow {
+    tracing::warn!(
+      target: "video::decode",
+      "[video:timeline] presented kind=native user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode_present),
+      duration_ms(total),
+      slow
+    );
+  } else if should_log_video_present_timeline_sample() {
+    tracing::info!(
+      target: "video::timeline",
+      "[video:timeline] presented kind=native user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode_present),
+      duration_ms(total),
+      slow
+    );
+  } else {
+    tracing::debug!(
+      target: "video::timeline",
+      "[video:timeline] presented kind=native user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_present_ms={:.1} total_ms={:.1} slow={}",
+      user_id,
+      codec,
+      width,
+      height,
+      frame_number,
+      keyframe,
+      image_id,
+      image_version,
+      duration_ms(receive_to_queue),
+      duration_ms(queue_wait),
+      duration_ms(decode_present),
+      duration_ms(total),
+      slow
+    );
+  }
+}
+
+fn should_log_video_present_timeline_sample() -> bool {
+  should_log_timeline_sample(
+    &VIDEO_PRESENT_TIMELINE_LAST_INFO_MS,
+    VIDEO_PRESENT_TIMELINE_SAMPLE_INTERVAL_MS,
+  )
+}
+
+fn should_log_timeline_sample(last_log_ms: &AtomicU64, interval_ms: u64) -> bool {
+  let now_ms = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis()
+    .min(u128::from(u64::MAX)) as u64;
+  let previous_ms = last_log_ms.load(Ordering::Relaxed);
+  now_ms.saturating_sub(previous_ms) >= interval_ms
+    && last_log_ms
+      .compare_exchange(previous_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+      .is_ok()
 }
 
 fn duration_ms(duration: Duration) -> f64 {

@@ -7,7 +7,7 @@ use lurq::{
     events::{MouseButton, MouseEvent},
   },
   components::{Column, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
-  session::{LobbyChannel, LobbyUser, ServerSession},
+  session::{LobbyChannel, LobbyState, LobbyUser, ServerSession},
   theme,
   ui::lobby::{
     channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
@@ -33,7 +33,40 @@ use crate::{
   },
 };
 
-pub(super) type JoinChannelAction = lurq::app::ctx::FutureAction<ChannelId, (), String>;
+pub(super) type JoinChannelTask = lurq::app::ctx::FutureAction<JoinChannelRequest, (), String>;
+
+#[derive(Clone, Copy)]
+pub(super) struct JoinChannelRequest {
+  pub channel_id: ChannelId,
+  pub previous_channel_id: Option<ChannelId>,
+}
+
+#[derive(Clone)]
+pub(super) struct JoinChannelAction {
+  session: ServerSession,
+  lobby_store: Store<LobbyState>,
+  task: JoinChannelTask,
+}
+
+impl JoinChannelAction {
+  pub(super) fn new(session: ServerSession, lobby_store: Store<LobbyState>, task: JoinChannelTask) -> Self {
+    Self {
+      session,
+      lobby_store,
+      task,
+    }
+  }
+
+  pub(super) fn run(&self, channel_id: ChannelId) {
+    let previous_channel_id = self.session.lobby().selected_channel_id;
+    self.session.select_channel(channel_id);
+    self.lobby_store.set(self.session.lobby());
+    self.task.run(JoinChannelRequest {
+      channel_id,
+      previous_channel_id,
+    });
+  }
+}
 
 #[derive(Clone)]
 pub(super) struct VoiceChannelsProps {

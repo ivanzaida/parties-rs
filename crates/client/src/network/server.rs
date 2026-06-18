@@ -6,7 +6,7 @@ use std::{
     Arc,
     atomic::{AtomicBool, Ordering},
   },
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -52,12 +52,20 @@ pub enum ReceivedVideoPacket {
   VideoControl(VideoControl),
 }
 
+#[derive(Debug)]
+pub struct ReceivedVideoDatagram {
+  pub packet: ForwardedVideoFrame,
+  pub received_at: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoFrameSend {
   Datagram,
   StreamFallback,
   Dropped,
 }
+
+const MAX_PENDING_VIDEO_DATAGRAMS: usize = 24;
 
 impl fmt::Display for ServerError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -158,7 +166,9 @@ pub struct Server {
   control_recv: Mutex<quinn::RecvStream>,
   video_send: Mutex<quinn::SendStream>,
   video_recv: Mutex<quinn::RecvStream>,
-  pending_video_datagrams: Mutex<VecDeque<ForwardedVideoFrame>>,
+  pending_audio_datagrams: Mutex<VecDeque<ReceivedAudioPacket>>,
+  pending_audio_notify: Notify,
+  pending_video_datagrams: Mutex<VecDeque<ReceivedVideoDatagram>>,
   pending_video_notify: Notify,
 }
 
@@ -200,6 +210,8 @@ impl Server {
       control_recv: Mutex::new(control_recv),
       video_send: Mutex::new(video_send),
       video_recv: Mutex::new(video_recv),
+      pending_audio_datagrams: Mutex::new(VecDeque::new()),
+      pending_audio_notify: Notify::new(),
       pending_video_datagrams: Mutex::new(VecDeque::new()),
       pending_video_notify: Notify::new(),
     })
@@ -212,6 +224,7 @@ impl Server {
 
   pub fn disconnect(&self) {
     self.connection.close(VarInt::from_u32(0), b"client disconnect");
+    self.pending_audio_notify.notify_waiters();
     self.pending_video_notify.notify_waiters();
   }
 
@@ -352,16 +365,14 @@ impl Server {
 
   pub async fn recv_audio(&self) -> Result<ReceivedAudioPacket, ServerError> {
     loop {
-      let data = self.connection.read_datagram().await?;
-      match decode_datagram(data)? {
-        DecodedDatagram::Voice(packet) => return Ok(ReceivedAudioPacket::Voice(packet)),
-        DecodedDatagram::StreamAudio(packet) => return Ok(ReceivedAudioPacket::Stream(packet)),
-        DecodedDatagram::VideoControl(control) => return Ok(ReceivedAudioPacket::VideoControl(control)),
-        DecodedDatagram::Video(packet) => {
-          self.pending_video_datagrams.lock().await.push_back(packet);
-          self.pending_video_notify.notify_one();
-        }
+      let notified = self.pending_audio_notify.notified();
+      if let Some(packet) = self.pending_audio_datagrams.lock().await.pop_front() {
+        return Ok(packet);
       }
+      if let Some(error) = self.connection.close_reason() {
+        return Err(ServerError::Connection(error));
+      }
+      notified.await;
     }
   }
 
@@ -483,18 +494,85 @@ impl Server {
   pub async fn recv_forwarded_video_datagram_until(
     &self,
     stop: &AtomicBool,
-  ) -> Result<Option<ForwardedVideoFrame>, ServerError> {
+  ) -> Result<Option<ReceivedVideoDatagram>, ServerError> {
     loop {
       if stop.load(Ordering::Relaxed) {
         return Ok(None);
       }
+      let notified = self.pending_video_notify.notified();
       if let Some(packet) = self.pending_video_datagrams.lock().await.pop_front() {
         return Ok(Some(packet));
       }
       if let Some(error) = self.connection.close_reason() {
         return Err(ServerError::Connection(error));
       }
-      self.pending_video_notify.notified().await;
+      if stop.load(Ordering::Relaxed) {
+        return Ok(None);
+      }
+      notified.await;
+    }
+  }
+
+  pub async fn run_datagram_demuxer(&self) {
+    tracing::info!(target: "network", "[network] datagram demuxer started");
+    loop {
+      match self.connection.read_datagram().await {
+        Ok(data) => {
+          let received_at = Instant::now();
+          match decode_datagram(data) {
+            Ok(datagram) => self.dispatch_datagram(datagram, received_at).await,
+            Err(error) => tracing::warn!(target: "network", "[network] ignored malformed datagram: {error}"),
+          }
+        }
+        Err(error) => {
+          tracing::warn!(target: "network", "[network] datagram demuxer stopped: {error}");
+          self.connection.close(VarInt::from_u32(0), b"datagram demuxer stopped");
+          self.pending_audio_notify.notify_waiters();
+          self.pending_video_notify.notify_waiters();
+          break;
+        }
+      }
+    }
+  }
+
+  async fn dispatch_datagram(&self, datagram: DecodedDatagram, received_at: Instant) {
+    match datagram {
+      DecodedDatagram::Voice(packet) => {
+        self
+          .pending_audio_datagrams
+          .lock()
+          .await
+          .push_back(ReceivedAudioPacket::Voice(packet));
+        self.pending_audio_notify.notify_one();
+      }
+      DecodedDatagram::StreamAudio(packet) => {
+        self
+          .pending_audio_datagrams
+          .lock()
+          .await
+          .push_back(ReceivedAudioPacket::Stream(packet));
+        self.pending_audio_notify.notify_one();
+      }
+      DecodedDatagram::VideoControl(control) => {
+        self
+          .pending_audio_datagrams
+          .lock()
+          .await
+          .push_back(ReceivedAudioPacket::VideoControl(control));
+        self.pending_audio_notify.notify_one();
+      }
+      DecodedDatagram::Video(packet) => {
+        let mut pending = self.pending_video_datagrams.lock().await;
+        if pending.len() >= MAX_PENDING_VIDEO_DATAGRAMS {
+          pending.pop_front();
+          tracing::debug!(
+            target: "video",
+            "[video] dropped pending stale video datagram to preserve latency: max_queue={MAX_PENDING_VIDEO_DATAGRAMS}"
+          );
+        }
+        pending.push_back(ReceivedVideoDatagram { packet, received_at });
+        self.pending_video_notify.notify_one();
+      }
     }
   }
 

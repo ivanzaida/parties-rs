@@ -2,11 +2,9 @@
 use std::collections::VecDeque;
 use std::{collections::HashMap, sync::Arc};
 
-use lurq::{
-  core::Signal,
-  images::{ImageData, StreamingImage},
-};
+use lurq::images::{ImageData, StreamingImage};
 use parking_lot::Mutex;
+use tokio::sync::watch;
 
 use super::{LobbyState, VideoStreamError, video};
 use crate::{
@@ -20,7 +18,11 @@ enum VideoFrameImage {
   #[cfg(target_os = "macos")]
   MacosNative(ImageData),
   #[cfg(target_os = "windows")]
-  Dx12Surface(Arc<lurq::app::dx12_render::Dx12Nv12Surface>),
+  Dx12Surface {
+    image: ImageData,
+    native: lurq::images::NativeImageData,
+    slot: lurq::images::Dx12Nv12ImageSlot,
+  },
 }
 
 impl VideoFrameImage {
@@ -34,7 +36,7 @@ impl VideoFrameImage {
       #[cfg(target_os = "macos")]
       Self::MacosNative(image) => image.clone(),
       #[cfg(target_os = "windows")]
-      Self::Dx12Surface(surface) => surface.image_data(),
+      Self::Dx12Surface { image, .. } => image.clone(),
     }
   }
 
@@ -50,7 +52,7 @@ impl VideoFrameImage {
       #[cfg(target_os = "macos")]
       Self::MacosNative(_) => false,
       #[cfg(target_os = "windows")]
-      Self::Dx12Surface(_) => false,
+      Self::Dx12Surface { .. } => false,
     }
   }
 
@@ -63,7 +65,7 @@ impl VideoFrameImage {
       #[cfg(target_os = "macos")]
       Self::MacosNative(_) => None,
       #[cfg(target_os = "windows")]
-      Self::Dx12Surface(_) => None,
+      Self::Dx12Surface { .. } => None,
     }
   }
 }
@@ -73,19 +75,19 @@ pub(super) struct VideoFrameSink {
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
   lobby: Arc<Mutex<LobbyState>>,
-  revision: Signal<u64>,
+  lobby_updates: watch::Sender<LobbyState>,
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
 }
 
 impl VideoFrameSink {
-  pub(super) fn new(lobby: Arc<Mutex<LobbyState>>, revision: Signal<u64>) -> Self {
+  pub(super) fn new(lobby: Arc<Mutex<LobbyState>>, lobby_updates: watch::Sender<LobbyState>) -> Self {
     Self {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
       lobby,
-      revision,
+      lobby_updates,
       #[cfg(target_os = "windows")]
       dx12_video_surfaces: None,
     }
@@ -94,7 +96,7 @@ impl VideoFrameSink {
   #[cfg(target_os = "windows")]
   pub(super) fn with_dx12_video_surface_allocator(
     lobby: Arc<Mutex<LobbyState>>,
-    revision: Signal<u64>,
+    lobby_updates: watch::Sender<LobbyState>,
     dx12_video_surfaces: lurq::app::dx12_render::Dx12VideoSurfaceAllocator,
   ) -> Self {
     Self {
@@ -102,7 +104,7 @@ impl VideoFrameSink {
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
       lobby,
-      revision,
+      lobby_updates,
       dx12_video_surfaces: Some(dx12_video_surfaces),
     }
   }
@@ -155,14 +157,14 @@ impl VideoFrameSink {
       changed
     };
     if changed {
-      self.bump_revision();
+      self.publish_lobby_update();
     }
   }
 
   pub(super) fn clear_error(&self, user_id: UserId) {
     let cleared = self.errors.lock().remove(&user_id).is_some();
     if cleared {
-      self.bump_revision();
+      self.publish_lobby_update();
     }
   }
 
@@ -196,7 +198,7 @@ impl VideoFrameSink {
     }
     self.clear_error(frame.sender_id);
 
-    let mut force_revision = false;
+    let mut should_publish_update = false;
     #[cfg(target_os = "macos")]
     if !prefer_cpu_frame && let Some(native_image) = frame.native_image.clone() {
       {
@@ -212,7 +214,7 @@ impl VideoFrameSink {
           height: frame.height,
         },
       );
-      self.bump_revision();
+      self.publish_lobby_update();
       return;
     }
 
@@ -237,7 +239,7 @@ impl VideoFrameSink {
             frame.height,
             frame.format
           );
-          force_revision = true;
+          should_publish_update = true;
           let image = {
             let _span = crate::services::profiler::span("video.render.cpu_image_create");
             match frame.format {
@@ -254,7 +256,7 @@ impl VideoFrameSink {
       }
     }
 
-    force_revision |= self.update_share_metadata(
+    should_publish_update |= self.update_share_metadata(
       frame.sender_id,
       ScreenShareMetadata {
         codec: frame.codec,
@@ -263,8 +265,8 @@ impl VideoFrameSink {
       },
     );
 
-    if force_revision {
-      self.bump_revision();
+    if should_publish_update {
+      self.publish_lobby_update();
     }
   }
 
@@ -298,14 +300,11 @@ impl VideoFrameSink {
 
     {
       let frames = self.frames.lock();
-      if let Some(VideoFrameImage::Dx12Surface(surface)) = frames.get(&user_id) {
-        let image = surface.image_data();
+      if let Some(VideoFrameImage::Dx12Surface { image, .. }) = frames.get(&user_id) {
         if image.width() == u32::from(width)
           && image.height() == u32::from(height)
           && image.format() == lurq::images::ImagePixelFormat::Nv12
-          && !surface.is_packed_nv12()
-          && surface.y_shared_handle_raw() as usize == y_shared_handle
-          && surface.uv_shared_handle_raw() as usize == uv_shared_handle
+          && let Some(surface) = surface_cache.get(&(user_id, y_shared_handle, uv_shared_handle))
         {
           return Some(surface.clone());
         }
@@ -393,29 +392,41 @@ impl VideoFrameSink {
     height: u16,
     surface: Arc<lurq::app::dx12_render::Dx12Nv12Surface>,
   ) {
-    let mut force_revision = false;
-    let native = surface.native_image_data();
-    let previous_version = native.version();
-    native.bump_version();
-    let bumped_version = native.version();
+    let mut should_publish_update = false;
+    let dx12_image = surface.dx12_nv12_image();
     let shared_handle = surface.y_shared_handle_raw();
     let packed_nv12 = surface.is_packed_nv12();
-    {
+    let (previous_version, bumped_version, replace) = {
       let mut frames = self.frames.lock();
-      let replace = !matches!(
-        frames.get(&sender_id),
-        Some(VideoFrameImage::Dx12Surface(existing))
-          if Arc::ptr_eq(existing, &surface)
-            && existing.image_data().width() == u32::from(width)
-            && existing.image_data().height() == u32::from(height)
-      );
-      if replace {
-        if bumped_version == 1 || bumped_version % 120 == 0 {
-          tracing::info!(target: "video::decode",
-            "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
-          );
+      match frames.get_mut(&sender_id) {
+        Some(VideoFrameImage::Dx12Surface { image, native, slot })
+          if image.width() == u32::from(width)
+            && image.height() == u32::from(height)
+            && image.format() == lurq::images::ImagePixelFormat::Nv12 =>
+        {
+          let previous_version = native.version();
+          slot.set_image(dx12_image);
+          native.bump_version();
+          (previous_version, native.version(), false)
         }
-        frames.insert(sender_id, VideoFrameImage::Dx12Surface(surface));
+        _ => {
+          let slot = lurq::images::Dx12Nv12ImageSlot::new(dx12_image);
+          let native =
+            lurq::images::NativeImageData::from_dx12_nv12_slot(u32::from(width), u32::from(height), slot.clone());
+          let image = native.image_data();
+          let previous_version = native.version();
+          native.bump_version();
+          let bumped_version = native.version();
+          frames.insert(sender_id, VideoFrameImage::Dx12Surface { image, native, slot });
+          (previous_version, bumped_version, true)
+        }
+      }
+    };
+    {
+      if replace {
+        tracing::info!(target: "video::decode",
+          "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
+        );
       } else if bumped_version == 1 || bumped_version % 120 == 0 {
         tracing::info!(target: "video::decode",
           "[video:decode] updating DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=false"
@@ -423,15 +434,15 @@ impl VideoFrameSink {
       }
     }
 
-    force_revision |= self.update_share_metadata(sender_id, ScreenShareMetadata { codec, width, height });
+    should_publish_update |= self.update_share_metadata(sender_id, ScreenShareMetadata { codec, width, height });
 
-    if force_revision && (bumped_version == 1 || bumped_version % 120 == 0) {
+    if should_publish_update && (bumped_version == 1 || bumped_version % 120 == 0) {
       tracing::info!(target: "video::decode",
-        "[video:decode] bumping video revision for DX12 frame: user={sender_id} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} forced={force_revision}"
+        "[video:decode] publishing lobby update for DX12 frame metadata: user={sender_id} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} forced={should_publish_update}"
       );
     }
-    if force_revision {
-      self.bump_revision();
+    if should_publish_update {
+      self.publish_lobby_update();
     }
   }
 
@@ -468,8 +479,8 @@ impl VideoFrameSink {
     changed
   }
 
-  fn bump_revision(&self) {
-    self.revision.update(|revision| *revision = revision.wrapping_add(1));
+  fn publish_lobby_update(&self) {
+    let _ = self.lobby_updates.send(self.lobby.lock().clone());
   }
 }
 
