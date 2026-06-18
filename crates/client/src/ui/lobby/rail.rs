@@ -102,7 +102,8 @@ impl Component for LobbyRail {
       .map(|session| join_channel_action(ctx, session, storage.clone()));
     let voice_control = session.clone().map(|session| voice_control_action(ctx, session));
     let select_text_channel = session.clone().map(SelectTextChannelAction::new);
-    let select_debug_chat = session.map(SelectDebugChatAction::new);
+    let select_debug_chat = session.clone().map(SelectDebugChatAction::new);
+    let local_voice_state = session.as_ref().and_then(ServerSession::local_voice_state);
     ctx.provide(self.model_store.clone());
     let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
       info: props.info.clone(),
@@ -119,6 +120,8 @@ impl Component for LobbyRail {
       props.start_stream_modal_open.clone(),
       &props.stop_stream,
       &props.watch_stream,
+      session,
+      local_voice_state,
       select_text_channel,
       select_debug_chat,
       join_channel.as_ref(),
@@ -280,6 +283,8 @@ fn rail(
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
+  leave_session: Option<ServerSession>,
+  local_voice_state: Option<(bool, bool)>,
   select_text_channel: Option<SelectTextChannelAction>,
   select_debug_chat: Option<SelectDebugChatAction>,
   join_channel: Option<&JoinChannelAction>,
@@ -297,7 +302,7 @@ fn rail(
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-        .child(rail_header(ctx, model, debug_mode_enabled))
+        .child(rail_header(ctx, model, debug_mode_enabled, leave_session))
         .child(rail_channels(
           ctx,
           model,
@@ -313,6 +318,7 @@ fn rail(
           debug_mode_enabled,
           start_stream_modal_open,
           stop_stream,
+          local_voice_state,
           voice_control,
         )),
     )
@@ -339,7 +345,12 @@ fn empty_subscriber_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
-fn rail_header(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> Element {
+fn rail_header(
+  ctx: &mut Ctx,
+  model: &LobbyRailModel,
+  debug_user_ids: bool,
+  leave_session: Option<ServerSession>,
+) -> Element {
   let unknown_server = ctx.t("lobby.server.unknown");
   let server_name = server_name(&model.server_name, unknown_server.as_ref());
   let user_label = local_user_label(ctx, model, debug_user_ids);
@@ -374,7 +385,7 @@ fn rail_header(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> E
     row = row.child(server_settings_button(ctx));
   }
 
-  row.child(leave_button(ctx)).into()
+  row.child(leave_button(ctx, leave_session)).into()
 }
 
 fn server_settings_button(ctx: &mut Ctx) -> Element {
@@ -400,9 +411,8 @@ fn server_settings_button(ctx: &mut Ctx) -> Element {
     .into()
 }
 
-fn leave_button(ctx: &mut Ctx) -> Element {
+fn leave_button(ctx: &mut Ctx, session: Option<ServerSession>) -> Element {
   let navigator = ctx.navigator();
-  let session = ctx.use_context::<ServerSession>();
   let mut button = Row::new()
     .width(30.0)
     .height(30.0)
@@ -501,6 +511,7 @@ fn rail_bottom(
   debug_user_ids: bool,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
+  local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
   let metrics = lobby_layout_metrics(ctx);
@@ -516,6 +527,7 @@ fn rail_bottom(
       model,
       start_stream_modal_open,
       stop_stream,
+      local_voice_state,
       voice_control,
     ))
     .into()
@@ -693,12 +705,10 @@ fn control_row(
   model: &LobbyRailModel,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
+  local_voice_state: Option<(bool, bool)>,
   voice_control: Option<&VoiceControlFuture>,
 ) -> Element {
-  let (muted, deafened) = ctx
-    .use_context::<ServerSession>()
-    .and_then(|session| session.local_voice_state())
-    .unwrap_or(model.local_voice_state);
+  let (muted, deafened) = local_voice_state.unwrap_or(model.local_voice_state);
   let mic_icon = if muted { "mic-off" } else { "mic" };
   let headphones_icon = if deafened { "headphone-off" } else { "headphones" };
   let mute_locked = muted && deafened;

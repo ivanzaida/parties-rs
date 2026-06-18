@@ -376,6 +376,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed those actions from `LobbyRail` into text/debug channel props;
   - removed hidden `ServerSession` context reads from `TextChannels` and `DebugChannels`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the second rail action cleanup slice:
+  - passed the leave-session handle from `LobbyRail` into the rail header leave button;
+  - passed the current local voice state from `LobbyRail` into the voice control row;
+  - removed hidden `ServerSession` context reads from those rail leaf controls.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
