@@ -7,11 +7,13 @@ use lurq::{
 use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+use super::session_identity::session_address;
 use crate::session::{LobbySnapshot, LobbyState, ServerSession};
 
 pub(super) struct LobbyModelSubscription {
   generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
+  session_key: Mutex<Option<Option<String>>>,
   receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
 }
 
@@ -20,6 +22,7 @@ impl LobbyModelSubscription {
     Self {
       generation: ctx.signal(0),
       applied_generation: ctx.signal(None),
+      session_key: Mutex::new(None),
       receiver: Mutex::new(None),
     }
   }
@@ -29,8 +32,16 @@ impl LobbyModelSubscription {
     M: DevtoolsInspectable + Clone + PartialEq + Send + Sync + 'static,
     F: Fn(&LobbySnapshot) -> M + Clone + Send + Sync + 'static,
   {
+    let session_key = session_address(&session);
     let receiver = {
+      let mut stored_session_key = self.session_key.lock();
       let mut receiver = self.receiver.lock();
+      if stored_session_key.as_ref() != Some(&session_key) {
+        *stored_session_key = Some(session_key);
+        *receiver = None;
+        self.applied_generation.set(None);
+        self.generation.set(self.generation.get_untracked().wrapping_add(1));
+      }
       receiver
         .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
         .clone()

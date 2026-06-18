@@ -461,6 +461,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Completed explicit model-store subscriber props:
   - passed local model stores directly into shell, rail, chat, content, stream browser, watched stream, and floating-preview subscribers;
   - removed remaining local model-store context reads from lobby subscribers.
+- Tightened shared subscriber session binding:
+  - keyed `LobbyModelSubscription` receivers by connected server identity;
+  - reset receiver state and applied generation when a reused subscriber receives a different `ServerSession`.
 
 ## Non-Goals
 
