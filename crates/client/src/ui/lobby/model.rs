@@ -34,13 +34,16 @@ pub(super) struct StreamWatchingModel<'a> {
   pub(super) error: Option<&'a str>,
 }
 
-pub(super) struct ChatPaneModel<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ChatPaneModel {
   pub(super) local_user_id: UserId,
-  pub(super) messages: &'a [ProtocolChatMessage],
+  pub(super) messages: Vec<ProtocolChatMessage>,
   pub(super) initial_history_loading: bool,
   pub(super) can_page: bool,
-  pub(super) error: Option<&'a str>,
+  pub(super) error: Option<String>,
 }
+
+impl DevtoolsInspectable for ChatPaneModel {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TextChannelRowModel {
@@ -185,12 +188,12 @@ pub(super) fn floating_stream_preview_model(lobby: &LobbyState) -> Option<Watche
   (!main_pane_shows_watched_stream(lobby, watched.channel.id)).then_some(watched)
 }
 
-pub(super) fn chat_pane_model<'a>(
+pub(super) fn chat_pane_model(
   info: &ConnectedServerInfo,
-  lobby: &'a LobbyState,
+  lobby: &LobbyState,
   channel_id: ChannelId,
   server_backed: bool,
-) -> ChatPaneModel<'a> {
+) -> ChatPaneModel {
   let messages = if server_backed {
     lobby
       .chat_messages_by_channel
@@ -204,7 +207,7 @@ pub(super) fn chat_pane_model<'a>(
 
   ChatPaneModel {
     local_user_id: info.user_id,
-    messages,
+    messages: messages.to_vec(),
     initial_history_loading: messages.is_empty()
       && lobby.chat_history_loading.contains(&channel_id)
       && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true),
@@ -212,7 +215,7 @@ pub(super) fn chat_pane_model<'a>(
       && oldest_message_id != 0
       && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true)
       && !lobby.chat_history_loading.contains(&channel_id),
-    error: lobby.last_error.as_deref(),
+    error: lobby.last_error.clone(),
   }
 }
 

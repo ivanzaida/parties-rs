@@ -41,7 +41,7 @@ use crate::{
 pub(super) fn text_channel_detail(
   ctx: &mut Ctx,
   channel: ChatChannel,
-  model: ChatPaneModel<'_>,
+  model: ChatPaneModel,
   message_input: Signal<String>,
   command_selected_index: Signal<usize>,
   command_scroll_state: ScrollState,
@@ -61,7 +61,7 @@ pub(super) fn text_channel_detail(
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
-  let messages = model.messages;
+  let messages = model.messages.as_slice();
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
   let newest_message_from_local = messages
@@ -130,7 +130,7 @@ pub(super) fn text_channel_detail(
       );
     }
 
-    if let Some(error) = model.error {
+    if let Some(error) = model.error.as_deref() {
       messages_column = messages_column.child(error_notice(ctx, error));
     }
     chat_messages_scroll(
@@ -146,7 +146,13 @@ pub(super) fn text_channel_detail(
       can_page,
     )
   } else {
-    let messages_content = chat_messages_content(ctx, &messages, model.error, model.local_user_id, debug_user_ids);
+    let messages_content = chat_messages_content(
+      ctx,
+      messages,
+      model.error.as_deref(),
+      model.local_user_id,
+      debug_user_ids,
+    );
     chat_messages_scroll(
       ScrollVertical::new(messages_content),
       chat_scroll_state,

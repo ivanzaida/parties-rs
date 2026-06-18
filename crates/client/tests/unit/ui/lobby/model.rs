@@ -198,7 +198,7 @@ fn chat_pane_model_collects_messages_and_paging_state() {
   assert_eq!(model.messages[0].id, 5);
   assert!(!model.initial_history_loading);
   assert!(model.can_page);
-  assert_eq!(model.error, Some("chat warning"));
+  assert_eq!(model.error.as_deref(), Some("chat warning"));
 }
 
 #[test]
