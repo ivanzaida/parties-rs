@@ -452,6 +452,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Removed field-only lobby snapshot reads:
   - added `ServerSession::selected_channel_id()`;
   - changed join-channel and reconnect actions to read only the selected voice channel id instead of cloning the full lobby state.
+- Split debug report generation out of lobby actions:
+  - moved debug user/voice/stream/channel/audio/video report builders into `ui/lobby/debug_reports.rs`;
+  - kept command dispatch in `actions.rs` focused on parsing/running actions instead of owning full lobby-state inspection helpers.
 
 ## Non-Goals
 

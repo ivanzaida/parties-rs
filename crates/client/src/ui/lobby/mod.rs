@@ -27,6 +27,7 @@ mod channel_section;
 mod chat;
 mod content;
 mod debug_channels;
+mod debug_reports;
 mod disconnected;
 mod layout;
 mod model;
