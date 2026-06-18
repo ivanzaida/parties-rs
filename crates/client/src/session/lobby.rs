@@ -486,9 +486,12 @@ pub(super) fn apply_server_message(
       }
     }
     S2C::ChannelUserList(list) => {
+      let list_channel_id = list.channel_id;
+      let list_contains_local =
+        local_user_id.is_some_and(|user_id| list.users.iter().any(|user| user.user_id == user_id));
       tracing::debug!(target: "lobby",
         "[lobby] received channel user list: channel={} users={} selected={:?}",
-        list.channel_id,
+        list_channel_id,
         list.users.len(),
         lobby.selected_channel_id
       );
@@ -504,6 +507,13 @@ pub(super) fn apply_server_message(
       lobby.users_by_channel.insert(list.channel_id, users);
       sync_selected_users(lobby);
       sync_cached_channel_counts(lobby);
+      if lobby.selected_channel_id == Some(list_channel_id) {
+        tracing::info!(target: "lobby::voice",
+          "[lobby:voice] selected channel user list applied: channel={list_channel_id} list_contains_local={list_contains_local} local_user={local_user_id:?} selected_users={} cached_users={}",
+          lobby.users.len(),
+          lobby.users_by_channel.get(&list_channel_id).map(Vec::len).unwrap_or(0)
+        );
+      }
     }
     S2C::UserJoinedChannel(joined) => {
       let joined_user_id = joined.user_id;
@@ -534,18 +544,21 @@ pub(super) fn apply_server_message(
         });
         true
       };
+      let users_in_joined_channel = users.len();
       if lobby.selected_channel_id == Some(joined_channel_id) || was_in_selected_channel {
         sync_selected_users(lobby);
       }
-      tracing::debug!(target: "lobby",
-        "[lobby] user joined voice channel: user={} name='{}' channel={} role={:?} local={} inserted={} selected={:?}",
+      tracing::info!(target: "lobby::voice",
+        "[lobby:voice] user joined voice channel applied: user={} name='{}' channel={} role={:?} local={} inserted={} selected={:?} users_in_channel={} selected_users={}",
         joined_user_id,
         joined_username,
         joined_channel_id,
         joined_role,
         local_user_id == Some(joined_user_id),
         inserted,
-        selected_channel_id
+        selected_channel_id,
+        users_in_joined_channel,
+        lobby.users.len()
       );
       if inserted {
         sync_cached_channel_counts(lobby);

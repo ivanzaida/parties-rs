@@ -1,29 +1,19 @@
-use std::sync::Arc;
-
 use lurq::{
   app::{component::DevtoolsInspectable, ctx::Ctx},
   core::{Signal, Store},
 };
-use parking_lot::Mutex;
-use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use super::session_identity::session_address;
 use crate::session::{LobbySnapshot, LobbyState, ServerSession};
 
 pub(super) struct LobbyModelSubscription {
-  generation: Signal<u64>,
   applied_generation: Signal<Option<u64>>,
-  session_key: Mutex<Option<Option<String>>>,
-  receiver: Mutex<Option<Arc<AsyncMutex<watch::Receiver<LobbySnapshot>>>>>,
 }
 
 impl LobbyModelSubscription {
   pub(super) fn new(ctx: &mut Ctx) -> Self {
     Self {
-      generation: ctx.signal(0),
       applied_generation: ctx.signal(None),
-      session_key: Mutex::new(None),
-      receiver: Mutex::new(None),
     }
   }
 
@@ -33,44 +23,58 @@ impl LobbyModelSubscription {
     F: Fn(&LobbySnapshot) -> M + Clone + Send + Sync + 'static,
   {
     let session_key = session_address(&session);
-    let receiver = {
-      let mut stored_session_key = self.session_key.lock();
-      let mut receiver = self.receiver.lock();
-      if stored_session_key.as_ref() != Some(&session_key) {
-        *stored_session_key = Some(session_key);
-        *receiver = None;
-        self.applied_generation.set(None);
-        self.generation.set(self.generation.get_untracked().wrapping_add(1));
-      }
-      receiver
-        .get_or_insert_with(|| Arc::new(AsyncMutex::new(session.subscribe_lobby_updates())))
-        .clone()
-    };
-    let wait_generation = self.generation.get();
-    let session = session.clone();
-    let update = ctx.future(wait_generation, move |wait_generation| {
-      let receiver = receiver.clone();
-      let session = session.clone();
-      let select = select.clone();
-      async move {
-        let mut receiver = receiver.lock().await;
-        let snapshot = match receiver.changed().await {
-          Ok(()) => receiver.borrow().clone(),
-          Err(_) => LobbySnapshot {
-            generation: wait_generation,
-            lobby: session.lobby(),
-          },
-        };
-        Ok::<_, String>((snapshot.generation, select(&snapshot)))
-      }
-    });
+    let stream_session = session.clone();
+    let stream_select = select.clone();
+    let update = ctx.stream(
+      session_key.clone(),
+      move |_session_key, emitter: lurq::app::ctx::StreamEmitter<(u64, M), String>| {
+        let session = stream_session.clone();
+        let select = stream_select.clone();
+        async move {
+          let mut receiver = session.subscribe_lobby_updates();
+          loop {
+            let (snapshot, closed) = match receiver.changed().await {
+              Ok(()) => (receiver.borrow().clone(), false),
+              Err(_) => (
+                LobbySnapshot {
+                  generation: 0,
+                  lobby: session.lobby(),
+                },
+                true,
+              ),
+            };
+            tracing::info!(
+              target: "lobby::voice",
+              "[lobby:voice] lobby subscription stream item: model={} snapshot_generation={} selected={:?} selected_users={}",
+              std::any::type_name::<M>(),
+              snapshot.generation,
+              snapshot.lobby.selected_channel_id,
+              snapshot.lobby.users.len()
+            );
+            if !emitter.emit((snapshot.generation, select(&snapshot))) {
+              break;
+            }
+            if closed {
+              break;
+            }
+          }
+        }
+      },
+    );
     let state = update.state().get();
     if state.is_fulfilled()
       && let Some((snapshot_generation, model)) = state.data
-      && self.applied_generation.get_untracked() != Some(snapshot_generation)
     {
+      if self.applied_generation.get_untracked() == Some(snapshot_generation) {
+        return None;
+      }
+      tracing::info!(
+        target: "lobby::voice",
+        "[lobby:voice] lobby subscription model applied: model={} snapshot_generation={}",
+        std::any::type_name::<M>(),
+        snapshot_generation
+      );
       self.applied_generation.set(Some(snapshot_generation));
-      self.generation.set(wait_generation.wrapping_add(1));
       return Some((snapshot_generation, model));
     }
 

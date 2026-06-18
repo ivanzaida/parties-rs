@@ -58,6 +58,7 @@ impl JoinChannelAction {
   pub(super) fn run(&self, channel_id: ChannelId) {
     let previous_channel_id = self.session.selected_channel_id();
     self.session.select_channel(channel_id);
+    self.session.open_stream_browser(channel_id);
     self.task.run(JoinChannelRequest {
       channel_id,
       previous_channel_id,
@@ -401,16 +402,17 @@ fn channel_group(
     users,
     |row| row.user.user_id,
     move |ctx, row| {
-      channel_user_row(
-        ctx,
-        &row,
-        watch_stream,
-        context_user_id.clone(),
-        context_menu_open.clone(),
-        context_menu_anchor.clone(),
-        role_menu_user_id.clone(),
+      ctx.mount::<ChannelUserRow>(ChannelUserRowProps {
+        channel_id: channel.channel.id,
+        channel_user_count: channel.users.len(),
+        model: row,
+        watch_stream: watch_stream.cloned(),
+        context_user_id: context_user_id.clone(),
+        context_menu_open: context_menu_open.clone(),
+        context_menu_anchor: context_menu_anchor.clone(),
+        role_menu_user_id: role_menu_user_id.clone(),
         debug_user_ids,
-      )
+      })
     },
   );
 
@@ -493,8 +495,72 @@ fn channel_row(
   row.into()
 }
 
-fn channel_user_row(
+#[derive(Clone)]
+struct ChannelUserRowProps {
+  channel_id: ChannelId,
+  channel_user_count: usize,
+  model: VoiceUserRowModel,
+  watch_stream: Option<WatchStreamAction>,
+  context_user_id: Signal<Option<UserId>>,
+  context_menu_open: Signal<bool>,
+  context_menu_anchor: Signal<Option<(f32, f32)>>,
+  role_menu_user_id: Signal<Option<UserId>>,
+  debug_user_ids: bool,
+}
+
+impl PartialEq for ChannelUserRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.channel_id == other.channel_id
+      && self.channel_user_count == other.channel_user_count
+      && self.model == other.model
+      && self.watch_stream.is_some() == other.watch_stream.is_some()
+      && self.debug_user_ids == other.debug_user_ids
+  }
+}
+
+impl DevtoolsInspectable for ChannelUserRowProps {}
+
+struct ChannelUserRow;
+
+impl Component for ChannelUserRow {
+  type Props = ChannelUserRowProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>();
+    let user = &props.model.user;
+    tracing::info!(target: "lobby::voice",
+      "[lobby:voice] channel user row mounted: channel={} user={} local={} channel_users={} muted={} deafened={} speaking={} streaming={}",
+      props.channel_id,
+      user.user_id,
+      props.model.local,
+      props.channel_user_count,
+      user.muted,
+      user.deafened,
+      user.speaking,
+      props.model.streaming
+    );
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    channel_user_row_view(
+      ctx,
+      props.channel_id,
+      &props.model,
+      props.watch_stream.as_ref(),
+      props.context_user_id,
+      props.context_menu_open,
+      props.context_menu_anchor,
+      props.role_menu_user_id,
+      props.debug_user_ids,
+    )
+  }
+}
+
+fn channel_user_row_view(
   ctx: &mut Ctx,
+  channel_id: ChannelId,
   model: &VoiceUserRowModel,
   watch_stream: Option<&WatchStreamAction>,
   context_user_id: Signal<Option<UserId>>,
@@ -524,6 +590,12 @@ fn channel_user_row(
   let menu_open = context_user_id.get() == Some(user.user_id);
   let scale = ctx.window().scale_factor.max(f32::EPSILON);
   let username = user_display_name(user.user_id, &user.username, debug_user_ids);
+  tracing::info!(target: "lobby::voice",
+    "[lobby:voice] channel user row rendered: channel={channel_id} user={user_id} local={local} muted={} deafened={} speaking={} streaming={streaming}",
+    user.muted,
+    user.deafened,
+    user.speaking
+  );
 
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))

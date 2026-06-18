@@ -98,6 +98,7 @@ impl DevtoolsInspectable for LobbyRailProps {
 
 pub(super) struct LobbyRail {
   model_store: Store<Option<LobbyRailModel>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for LobbyRail {
@@ -106,6 +107,7 @@ impl Component for LobbyRail {
   fn create(ctx: &mut Ctx) -> Self {
     Self {
       model_store: ctx.store(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -116,11 +118,37 @@ impl Component for LobbyRail {
     let select_text_channel = SelectTextChannelAction::new(props.session.clone());
     let select_debug_chat = SelectDebugChatAction::new(props.session.clone());
     let local_voice_state = props.session.local_voice_state();
-    let subscriber = ctx.mount::<LobbyRailModelSubscriber>(LobbyRailModelSubscriberProps {
-      info: props.info.clone(),
-      session: props.session.clone(),
-      model_store: self.model_store.clone(),
+    apply_current_model(&self.model_store, &props.session, |lobby| {
+      lobby_rail_model(&props.info, lobby)
     });
+    let info = props.info.clone();
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          lobby_rail_model(&info, &snapshot.lobby)
+        })
+    {
+      let selected_channel_id = model.selected_voice_channel.as_ref().map(|channel| channel.id);
+      let selected_channel_users = selected_channel_id
+        .and_then(|channel_id| {
+          model
+            .voice_channels
+            .iter()
+            .find(|channel| channel.channel.id == channel_id)
+            .map(|channel| channel.users.len())
+        })
+        .unwrap_or(0);
+      tracing::info!(
+        target: "lobby::voice",
+        "[lobby:voice] lobby rail model applied: generation={_snapshot_generation} selected={selected_channel_id:?} local_user_in_voice={} selected_channel_users={} voice_channels={}",
+        model.local_user_in_voice,
+        selected_channel_users,
+        model.voice_channels.len()
+      );
+      apply_model(&self.model_store, model);
+    }
+    let subscriber = empty_subscriber_node();
     let Some(model) = self.model_store.get() else {
       return empty_rail(ctx, subscriber);
     };
@@ -140,57 +168,6 @@ impl Component for LobbyRail {
       Some(&join_channel),
       Some(&voice_control),
     )
-  }
-}
-
-#[derive(Clone)]
-struct LobbyRailModelSubscriberProps {
-  info: ConnectedServerInfo,
-  session: ServerSession,
-  model_store: Store<Option<LobbyRailModel>>,
-}
-
-impl PartialEq for LobbyRailModelSubscriberProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.info == other.info && same_session(&self.session, &other.session)
-  }
-}
-
-impl DevtoolsInspectable for LobbyRailModelSubscriberProps {}
-
-struct LobbyRailModelSubscriber {
-  subscription: LobbyModelSubscription,
-}
-
-impl Component for LobbyRailModelSubscriber {
-  type Props = LobbyRailModelSubscriberProps;
-
-  fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      subscription: LobbyModelSubscription::new(ctx),
-    }
-  }
-
-  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let props = ctx.props::<Self::Props>().clone();
-
-    let info = props.info.clone();
-    apply_current_model(&props.model_store, &props.session, |lobby| {
-      lobby_rail_model(&info, lobby)
-    });
-
-    let info = props.info.clone();
-    if let Some((_snapshot_generation, model)) =
-      self
-        .subscription
-        .next_model(ctx, props.session.clone(), move |snapshot| {
-          lobby_rail_model(&info, &snapshot.lobby)
-        })
-    {
-      apply_model(&props.model_store, model);
-    }
-
-    empty_subscriber_node()
   }
 }
 
@@ -224,6 +201,20 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         return Err(error.to_string());
       }
       tracing::info!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
+      let local_user_id = session.info().map(|info| info.user_id);
+      let lobby = session.lobby();
+      let local_visible = local_user_id.is_some_and(|user_id| {
+        lobby
+          .users_by_channel
+          .get(&channel_id)
+          .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
+      });
+      tracing::info!(target: "lobby::voice",
+        "[lobby:voice] after join command send: channel={channel_id} selected={:?} local_user={local_user_id:?} local_visible={local_visible} cached_users={} selected_users={}",
+        lobby.selected_channel_id,
+        lobby.users_by_channel.get(&channel_id).map(Vec::len).unwrap_or(0),
+        lobby.users.len()
+      );
       session.play_voice_join_notification();
       server
         .update_voice_state(muted, deafened)

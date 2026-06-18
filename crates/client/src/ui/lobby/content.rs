@@ -118,6 +118,7 @@ impl DevtoolsInspectable for MainTopBarProps {}
 
 struct MainTopBar {
   model_store: Store<Option<MainTopBarModel>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for MainTopBar {
@@ -126,6 +127,7 @@ impl Component for MainTopBar {
   fn create(ctx: &mut Ctx) -> Self {
     Self {
       model_store: ctx.store(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -134,11 +136,17 @@ impl Component for MainTopBar {
     apply_current_model(&self.model_store, &props.session, |lobby| {
       main_top_bar_model(lobby, props.debug_mode_enabled)
     });
-    let subscriber = ctx.mount::<MainTopBarModelSubscriber>(MainTopBarModelSubscriberProps {
-      model_store: self.model_store.clone(),
-      session: props.session.clone(),
-      debug_mode_enabled: props.debug_mode_enabled,
-    });
+    let debug_mode_enabled = props.debug_mode_enabled;
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          main_top_bar_model(&snapshot.lobby, debug_mode_enabled)
+        })
+    {
+      apply_model(&self.model_store, model);
+    }
+    let subscriber = empty_subscriber_node();
     let model = self.model_store.get().unwrap_or(MainTopBarModel::VoiceDefault);
     main_top_bar_view(
       ctx,
@@ -148,56 +156,6 @@ impl Component for MainTopBar {
       props.start_stream_modal_open,
       &props.stop_watching,
     )
-  }
-}
-
-#[derive(Clone)]
-struct MainTopBarModelSubscriberProps {
-  model_store: Store<Option<MainTopBarModel>>,
-  session: ServerSession,
-  debug_mode_enabled: bool,
-}
-
-impl PartialEq for MainTopBarModelSubscriberProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.debug_mode_enabled == other.debug_mode_enabled && same_session(&self.session, &other.session)
-  }
-}
-
-impl DevtoolsInspectable for MainTopBarModelSubscriberProps {}
-
-struct MainTopBarModelSubscriber {
-  subscription: LobbyModelSubscription,
-}
-
-impl Component for MainTopBarModelSubscriber {
-  type Props = MainTopBarModelSubscriberProps;
-
-  fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      subscription: LobbyModelSubscription::new(ctx),
-    }
-  }
-
-  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let props = ctx.props::<Self::Props>().clone();
-
-    apply_current_model(&props.model_store, &props.session, |lobby| {
-      main_top_bar_model(lobby, props.debug_mode_enabled)
-    });
-
-    let debug_mode_enabled = props.debug_mode_enabled;
-    if let Some((_snapshot_generation, model)) =
-      self
-        .subscription
-        .next_model(ctx, props.session.clone(), move |snapshot| {
-          main_top_bar_model(&snapshot.lobby, debug_mode_enabled)
-        })
-    {
-      apply_model(&props.model_store, model);
-    }
-
-    empty_subscriber_node()
   }
 }
 
@@ -469,6 +427,7 @@ impl DevtoolsInspectable for MainBodyProps {}
 
 struct MainBody {
   model_store: Store<Option<MainBodyModel>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for MainBody {
@@ -477,6 +436,7 @@ impl Component for MainBody {
   fn create(ctx: &mut Ctx) -> Self {
     Self {
       model_store: ctx.store(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
@@ -485,54 +445,6 @@ impl Component for MainBody {
     apply_current_model(&self.model_store, &props.session, |lobby| {
       main_body_model(lobby, props.debug_mode_enabled)
     });
-    let subscriber = ctx.mount::<MainBodyModelSubscriber>(MainBodyModelSubscriberProps {
-      model_store: self.model_store.clone(),
-      session: props.session.clone(),
-      debug_mode_enabled: props.debug_mode_enabled,
-    });
-    let model = self
-      .model_store
-      .get()
-      .unwrap_or(MainBodyModel::SelectChannel { error: None });
-    main_body_view(ctx, subscriber, model, props)
-  }
-}
-
-#[derive(Clone)]
-struct MainBodyModelSubscriberProps {
-  model_store: Store<Option<MainBodyModel>>,
-  session: ServerSession,
-  debug_mode_enabled: bool,
-}
-
-impl PartialEq for MainBodyModelSubscriberProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.debug_mode_enabled == other.debug_mode_enabled && same_session(&self.session, &other.session)
-  }
-}
-
-impl DevtoolsInspectable for MainBodyModelSubscriberProps {}
-
-struct MainBodyModelSubscriber {
-  subscription: LobbyModelSubscription,
-}
-
-impl Component for MainBodyModelSubscriber {
-  type Props = MainBodyModelSubscriberProps;
-
-  fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      subscription: LobbyModelSubscription::new(ctx),
-    }
-  }
-
-  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let props = ctx.props::<Self::Props>().clone();
-
-    apply_current_model(&props.model_store, &props.session, |lobby| {
-      main_body_model(lobby, props.debug_mode_enabled)
-    });
-
     let debug_mode_enabled = props.debug_mode_enabled;
     if let Some((_snapshot_generation, model)) =
       self
@@ -541,10 +453,14 @@ impl Component for MainBodyModelSubscriber {
           main_body_model(&snapshot.lobby, debug_mode_enabled)
         })
     {
-      apply_model(&props.model_store, model);
+      apply_model(&self.model_store, model);
     }
-
-    empty_subscriber_node()
+    let subscriber = empty_subscriber_node();
+    let model = self
+      .model_store
+      .get()
+      .unwrap_or(MainBodyModel::SelectChannel { error: None });
+    main_body_view(ctx, subscriber, model, props)
   }
 }
 

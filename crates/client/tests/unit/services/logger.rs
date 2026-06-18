@@ -115,7 +115,7 @@ fn normalize_log_filter_aliases_supports_media_categories() {
 fn suppress_noisy_log_targets_adds_default_wgpu_suppression() {
   assert_eq!(
     suppress_noisy_log_targets("debug"),
-    "debug,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,profile=warn"
+    "debug,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn,profile=warn,lurq::reactivity=warn,video::timeline=error"
   );
 }
 
@@ -123,7 +123,7 @@ fn suppress_noisy_log_targets_adds_default_wgpu_suppression() {
 fn suppress_noisy_log_targets_keeps_explicit_wgpu_directive() {
   assert_eq!(
     suppress_noisy_log_targets("debug,wgpu=debug,wgpu_core::device=trace,profile=info"),
-    "debug,wgpu=debug,wgpu_core::device=trace,profile=info,wgpu_hal=warn,naga=warn"
+    "debug,wgpu=debug,wgpu_core::device=trace,profile=info,wgpu_hal=warn,naga=warn,lurq::reactivity=warn,video::timeline=error"
   );
 }
 

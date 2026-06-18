@@ -734,12 +734,14 @@ fn normalize_log_filter_directive_alias(directive: &str) -> String {
 }
 
 fn suppress_noisy_log_targets(filter: &str) -> String {
-  const NOISY_TARGETS: [(&str, &str); 5] = [
+  const NOISY_TARGETS: [(&str, &str); 7] = [
     ("wgpu", "warn"),
     ("wgpu_core", "warn"),
     ("wgpu_hal", "warn"),
     ("naga", "warn"),
     ("profile", "warn"),
+    ("lurq::reactivity", "warn"),
+    ("video::timeline", "error"),
   ];
 
   let mut directives = filter.to_owned();

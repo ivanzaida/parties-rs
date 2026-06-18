@@ -79,6 +79,7 @@ impl DevtoolsInspectable for StreamBrowserPaneProps {}
 
 struct StreamBrowserPane {
   model_store: Store<Option<StreamBrowserModel>>,
+  subscription: LobbyModelSubscription,
 }
 
 impl Component for StreamBrowserPane {
@@ -87,22 +88,29 @@ impl Component for StreamBrowserPane {
   fn create(ctx: &mut Ctx) -> Self {
     Self {
       model_store: ctx.store(None),
+      subscription: LobbyModelSubscription::new(ctx),
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    if self.model_store.with(Option::is_none) {
-      let channel = props.channel.clone();
-      apply_current_model(&self.model_store, &props.session, |lobby| {
-        stream_browser_model(lobby, &channel)
-      });
-    }
-    let subscriber = ctx.mount::<StreamBrowserModelSubscriber>(StreamBrowserModelSubscriberProps {
-      model_store: self.model_store.clone(),
-      session: props.session.clone(),
-      channel: props.channel.clone(),
+    let channel = props.channel.clone();
+    apply_current_model(&self.model_store, &props.session, |lobby| {
+      stream_browser_model(lobby, &channel)
     });
+
+    let channel = props.channel.clone();
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          stream_browser_model(&snapshot.lobby, &channel)
+        })
+    {
+      apply_model(&self.model_store, model);
+    }
+
+    let subscriber = empty_subscriber_node();
     let Some(model) = self.model_store.get() else {
       return Column::new()
         .width(Dimension::Pct(100.0))
@@ -162,57 +170,6 @@ fn stream_browser_view(
       style
     })
     .into()
-}
-
-#[derive(Clone)]
-struct StreamBrowserModelSubscriberProps {
-  model_store: Store<Option<StreamBrowserModel>>,
-  session: ServerSession,
-  channel: LobbyChannel,
-}
-
-impl PartialEq for StreamBrowserModelSubscriberProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.channel == other.channel && same_session(&self.session, &other.session)
-  }
-}
-
-impl DevtoolsInspectable for StreamBrowserModelSubscriberProps {}
-
-struct StreamBrowserModelSubscriber {
-  subscription: LobbyModelSubscription,
-}
-
-impl Component for StreamBrowserModelSubscriber {
-  type Props = StreamBrowserModelSubscriberProps;
-
-  fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      subscription: LobbyModelSubscription::new(ctx),
-    }
-  }
-
-  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let props = ctx.props::<Self::Props>().clone();
-
-    let channel = props.channel.clone();
-    apply_current_model(&props.model_store, &props.session, |lobby| {
-      stream_browser_model(lobby, &channel)
-    });
-
-    let channel = props.channel.clone();
-    if let Some((_snapshot_generation, model)) =
-      self
-        .subscription
-        .next_model(ctx, props.session.clone(), move |snapshot| {
-          stream_browser_model(&snapshot.lobby, &channel)
-        })
-    {
-      apply_model(&props.model_store, model);
-    }
-
-    empty_subscriber_node()
-  }
 }
 
 fn empty_subscriber_node() -> Element {
