@@ -114,11 +114,86 @@ fn stage(
   storage: Option<Storage>,
   session: &ServerSession,
 ) -> Element {
-  let name = stream_name(ctx, stream, debug_user_ids);
-  let avatar_name = stream_name(ctx, stream, false);
-  let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-  let meta = stream_footer_meta(ctx, &name, stream.share);
-  let speaking = stream_speaking(stream);
+  let key = format!("watched-stage-{}", stream.share.sharer_user_id);
+  ctx.mount_keyed::<WatchedStreamStage>(
+    &key,
+    WatchedStreamStageProps {
+      share: stream.share.clone(),
+      user: stream.user.cloned(),
+      debug_user_ids,
+      storage,
+      session: session.clone(),
+    },
+  )
+}
+
+#[derive(Clone)]
+struct WatchedStreamStageProps {
+  share: LobbyScreenShare,
+  user: Option<crate::session::LobbyUser>,
+  debug_user_ids: bool,
+  storage: Option<Storage>,
+  session: ServerSession,
+}
+
+impl PartialEq for WatchedStreamStageProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.share == other.share
+      && self.user == other.user
+      && self.debug_user_ids == other.debug_user_ids
+      && self.storage.is_some() == other.storage.is_some()
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
+  }
+}
+
+impl DevtoolsInspectable for WatchedStreamStageProps {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
+      "sharer_user_id",
+      std::any::type_name::<UserId>(),
+      self.share.sharer_user_id.to_string(),
+    ));
+  }
+}
+
+struct WatchedStreamStage {
+  hovered: Signal<bool>,
+}
+
+impl Component for WatchedStreamStage {
+  type Props = WatchedStreamStageProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      hovered: ctx.signal(false),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let stream = ChannelScreenShare {
+      share: &props.share,
+      user: props.user.as_ref(),
+    };
+    watched_stream_stage(
+      ctx,
+      &stream,
+      props.debug_user_ids,
+      props.storage,
+      &props.session,
+      self.hovered.clone(),
+    )
+  }
+}
+
+fn watched_stream_stage(
+  ctx: &mut Ctx,
+  stream: &ChannelScreenShare<'_>,
+  debug_user_ids: bool,
+  storage: Option<Storage>,
+  session: &ServerSession,
+  hovered: Signal<bool>,
+) -> Element {
   let image = session.video_frame(stream.share.sharer_user_id);
   let video_error = session.video_error(stream.share.sharer_user_id);
 
@@ -129,7 +204,15 @@ fn stage(
     .rounded(10.0)
     .clip()
     .background(BackgroundColor::Color(Color::from_hex("#0F1013")))
-    .border_inside(1.0, theme::PaletteColor::Border);
+    .border_inside(1.0, theme::PaletteColor::Border)
+    .on_mouse_enter({
+      let hovered = hovered.clone();
+      move || hovered.set(true)
+    })
+    .on_mouse_leave({
+      let hovered = hovered.clone();
+      move || hovered.set(false)
+    });
 
   if let Some(image) = image {
     stage = stage.background_image(image).background_contain();
@@ -144,8 +227,14 @@ fn stage(
     }));
   }
 
-  stage
-    .child(
+  if hovered.get() {
+    let name = stream_name(ctx, stream, debug_user_ids);
+    let avatar_name = stream_name(ctx, stream, false);
+    let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
+    let meta = stream_footer_meta(ctx, &name, stream.share);
+    let speaking = stream_speaking(stream);
+
+    stage = stage.child(
       Column::new()
         .width(Dimension::Pct(100.0))
         .height(Dimension::Pct(100.0))
@@ -167,8 +256,10 @@ fn stage(
             .child(streamer_label(&avatar_name, &title, &meta, speaking))
             .child(stage_controls(ctx, session, storage, stream.share.sharer_user_id)),
         ),
-    )
-    .into()
+    );
+  }
+
+  stage.into()
 }
 
 fn stream_error_text(ctx: &mut Ctx, error: &crate::session::VideoStreamError) -> (String, String) {
