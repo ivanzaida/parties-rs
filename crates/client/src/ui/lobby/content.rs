@@ -15,8 +15,7 @@ use super::{
   layout::lobby_layout_metrics,
   model::{selected_text_channel, stream_browser_channel, stream_watching_model, unique_lobby_member_count},
   shared::error_notice,
-  stream_browser::stream_browser,
-  stream_watching::{stream_watching, stream_watching_top_bar},
+  stream_watching::{stream_channel_detail, stream_watching_top_bar},
 };
 use crate::{
   network::protocol::{ChannelId, UserId},
@@ -347,15 +346,13 @@ fn main_body(
   }
 
   if let Some(channel) = stream_browser_channel(lobby) {
-    if let Some(model) = stream_watching_model(lobby, channel.id) {
-      return stream_watching(ctx, model, debug_mode_enabled, storage, session, watch_stream);
-    }
-
-    return stream_browser(
+    return stream_channel_detail(
       ctx,
       channel.clone(),
       info.user_id,
       debug_mode_enabled,
+      storage,
+      session,
       start_stream_modal_open,
       stop_stream,
       watch_stream,

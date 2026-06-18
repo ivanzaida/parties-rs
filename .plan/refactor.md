@@ -346,6 +346,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - added a zero-size `StreamBrowserModelSubscriber` that updates only the selected channel stream browser model;
   - stopped deriving and passing `StreamBrowserModel` from `content.rs`.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the watched stream fine-grained subscription slice:
+  - wrapped stream channel content in a `StreamWatchingPane` component with a local `Store<Option<StreamWatchingModel>>`;
+  - added a zero-size `StreamWatchingModelSubscriber` that updates only the selected channel watched-stream model;
+  - stopped deriving and passing `StreamWatchingModel` from the main body, letting the stream channel wrapper switch between browser and watched-stream views.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 
