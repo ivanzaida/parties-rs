@@ -391,6 +391,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - passed storage into user volume and normalization controls through props;
   - removed hidden `Storage` context reads from user context overlay controls.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the stream pane session cleanup slice:
+  - passed `ServerSession` explicitly into the stream browser pane;
+  - initialized stream browser, watched stream, and floating preview stores from props instead of hidden context reads;
+  - kept stream model subscribers as the only stream components reading `ServerSession` context for lobby-watch updates.
 
 ## Non-Goals
 

@@ -142,12 +142,10 @@ impl Component for StreamWatchingPane {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    if let Some(session) = ctx.use_context::<ServerSession>()
-      && self.model_store.with(Option::is_none)
-    {
+    if self.model_store.with(Option::is_none) {
       apply_stream_watching_model(
         &self.model_store,
-        stream_watching_model(&session.lobby(), props.channel.id),
+        stream_watching_model(&props.session.lobby(), props.channel.id),
       );
     }
     let subscriber = ctx.mount::<StreamWatchingModelSubscriber>(StreamWatchingModelSubscriberProps {
@@ -164,6 +162,7 @@ impl Component for StreamWatchingPane {
           props.channel,
           props.local_user_id,
           props.debug_user_ids,
+          props.session.clone(),
           props.start_stream_modal_open,
           &props.stop_stream,
           &props.watch_stream,

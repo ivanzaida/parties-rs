@@ -76,9 +76,7 @@ impl Component for FloatingStreamPreviewPane {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    if let Some(session) = ctx.use_context::<ServerSession>() {
-      apply_floating_preview_model(&self.model_store, floating_stream_preview_model(&session.lobby()));
-    }
+    apply_floating_preview_model(&self.model_store, floating_stream_preview_model(&props.session.lobby()));
 
     let subscriber = ctx.mount::<FloatingStreamPreviewModelSubscriber>(());
     let Some(watched) = self.model_store.get() else {

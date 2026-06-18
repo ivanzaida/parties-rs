@@ -43,6 +43,7 @@ pub(super) fn stream_browser(
   channel: LobbyChannel,
   local_user_id: UserId,
   debug_user_ids: bool,
+  session: ServerSession,
   start_stream_modal_open: Signal<bool>,
   stop_stream: &StopStreamAction,
   watch_stream: &WatchStreamAction,
@@ -55,6 +56,7 @@ pub(super) fn stream_browser(
       channel,
       local_user_id,
       debug_user_ids,
+      session,
       start_stream_modal_open,
       stop_stream: stop_stream.clone(),
       watch_stream: watch_stream.clone(),
@@ -68,6 +70,7 @@ struct StreamBrowserPaneProps {
   channel: LobbyChannel,
   local_user_id: UserId,
   debug_user_ids: bool,
+  session: ServerSession,
   start_stream_modal_open: Signal<bool>,
   stop_stream: StopStreamAction,
   watch_stream: WatchStreamAction,
@@ -79,6 +82,7 @@ impl PartialEq for StreamBrowserPaneProps {
     self.channel == other.channel
       && self.local_user_id == other.local_user_id
       && self.debug_user_ids == other.debug_user_ids
+      && self.session.info().map(|info| info.address) == other.session.info().map(|info| info.address)
   }
 }
 
@@ -100,12 +104,10 @@ impl Component for StreamBrowserPane {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     ctx.provide(self.model_store.clone());
-    if let Some(session) = ctx.use_context::<ServerSession>()
-      && self.model_store.with(Option::is_none)
-    {
+    if self.model_store.with(Option::is_none) {
       apply_stream_browser_model(
         &self.model_store,
-        stream_browser_model(&session.lobby(), &props.channel),
+        stream_browser_model(&props.session.lobby(), &props.channel),
       );
     }
     let subscriber = ctx.mount::<StreamBrowserModelSubscriber>(StreamBrowserModelSubscriberProps {
