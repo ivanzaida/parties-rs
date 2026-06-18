@@ -33,6 +33,7 @@ Optimistic UI mutations are split between session methods and the UI store:
 3. Clear component contracts: components should receive explicit view models and action handles, not arbitrary full-state access plus hidden contexts.
 4. Stable optimistic updates: local channel selection, leave, watch, and chat-history loading should flow through one command path and one published revision.
 5. Testability: selectors and reducers should be pure enough to test without mounting `lurq` components.
+6. Fine-grained subscriptions: components should subscribe only to the state they render. Passing smaller props is not enough if a parent still rerenders every child from a full-lobby snapshot.
 
 ## Target Shape
 
@@ -48,6 +49,16 @@ network/server tasks
 ```
 
 State should have one authoritative writer: `ServerSession`. `lurq::Store` may still be used inside the UI, but only as a local subscription cache owned by a small wrapper, not as a second writer that actions update directly.
+
+The UI-facing store should support selector/domain subscriptions. A component should depend on a narrow model revision such as rail, chat pane, stream browser, or local controls, instead of indirectly depending on the entire lobby revision. The expected shape is:
+
+```text
+LobbySnapshot revision
+  -> selector cache / domain revisions
+  -> component subscribes to one selected model
+```
+
+This means a chat-message update should not rerender voice channel rows, and a speaking/stream badge update should not rerender the chat timeline unless the selected model actually changes.
 
 ## Proposed Modules
 
@@ -121,7 +132,24 @@ Goal: `LobbyScreen` should subscribe once and render from one current snapshot.
 
 Acceptance: `LobbyScreen::render` reads one UI snapshot and no longer performs full snapshot equality checks on every render.
 
-### Phase 3: Split Reducer State From View Models
+### Phase 3: Add Selector/Domain Subscriptions
+
+Goal: components subscribe only to the model they render.
+
+- Introduce a UI store handle that can expose narrow subscriptions, for example:
+  - `subscribe_rail_model()`;
+  - `subscribe_chat_pane_model(channel_id/debug)`;
+  - `subscribe_stream_browser_model(channel_id)`;
+  - `subscribe_watched_stream_model()`;
+  - `subscribe_local_controls_model()`.
+- Track a revision per selected model or compare selected model values before notifying subscribers.
+- Keep `LobbyScreen` responsible for layout and action construction, not for cloning one full `LobbyState` into all children.
+- Move current `lobby_rail_model`, `chat_pane_model`, and stream selectors behind this subscription boundary after their behavior is covered by tests.
+- Components should mount their own subscriber wrapper for their model or receive a small subscribed store/signal handle, not a full-lobby prop.
+
+Acceptance: changing chat messages does not notify rail/voice/stream components unless their selected model changes; voice speaking or stream state updates do not notify chat timeline components unless their selected model changes.
+
+### Phase 4: Split Reducer State From View Models
 
 Goal: keep reducer state authoritative, but stop exposing the entire reducer shape to every component.
 
@@ -140,9 +168,9 @@ Goal: keep reducer state authoritative, but stop exposing the entire reducer sha
   - local user label/voice state lookup.
 - Test selectors directly under `crates/client/tests/unit/ui/lobby/model.rs`.
 
-Acceptance: major render functions no longer scan `LobbyState` directly except at selector boundaries.
+Acceptance: major render functions no longer scan `LobbyState` directly except at selector/subscription boundaries.
 
-### Phase 4: Slim Component Props
+### Phase 5: Slim Component Props
 
 Goal: component props should be stable, small, and explicit.
 
@@ -155,7 +183,7 @@ Goal: component props should be stable, small, and explicit.
 
 Acceptance: `PartialEq` impls no longer need to ignore action fields to avoid rerenders, and row components compare small models rather than full maps/vectors.
 
-### Phase 5: Normalize Commands And Effects
+### Phase 6: Normalize Commands And Effects
 
 Goal: one command path for local and async session mutations.
 
@@ -177,7 +205,7 @@ Goal: one command path for local and async session mutations.
 
 Acceptance: render functions construct actions once per render boundary and row components only invoke action methods.
 
-### Phase 6: State Domain Split
+### Phase 7: State Domain Split
 
 Goal: reduce cross-domain invalidation and make future features less risky.
 
@@ -261,10 +289,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 2. Remove direct UI writes to `Store<LobbyState>`.
 3. Introduce generated lobby snapshots and replace `LobbyStateSpy`.
 4. Add `ui/lobby/model.rs` selectors and migrate `content.rs`, `stream_shared.rs`, and `rail.rs` derivations into it.
-5. Slim `LobbyRail`, `TextChannels`, and `VoiceChannels` props.
-6. Slim chat and stream props.
-7. Group action handles and remove leaf-context lookups.
-8. Split `LobbyState` into domains only after behavior-preserving work is stable.
+5. Add selector/domain subscriptions so components can subscribe only to the selected model they render.
+6. Slim `LobbyRail`, `TextChannels`, and `VoiceChannels` props behind those subscriptions.
+7. Slim chat and stream props behind those subscriptions.
+8. Group action handles and remove leaf-context lookups.
+9. Split `LobbyState` into domains only after behavior-preserving work is stable.
 
 ## Progress
 
