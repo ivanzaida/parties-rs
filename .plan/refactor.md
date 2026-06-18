@@ -386,6 +386,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - kept user-menu action construction local to `VoiceChannels`, but removed its hidden `ServerSession` context read;
   - voice channel rows now receive their stream-browser/session dependency through props.
 - Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
+- Completed the user context overlay storage cleanup slice:
+  - passed `Storage` explicitly from `LobbyRail` through `VoiceChannels` into `UserContextOverlay`;
+  - passed storage into user volume and normalization controls through props;
+  - removed hidden `Storage` context reads from user context overlay controls.
+- Re-verified the same formatter, client check, client library tests, and isolated chat integration test.
 
 ## Non-Goals
 

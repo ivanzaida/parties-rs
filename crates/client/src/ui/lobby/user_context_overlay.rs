@@ -52,6 +52,7 @@ pub(super) struct UserContextOverlayProps {
   pub context_menu_anchor: Signal<Option<(f32, f32)>>,
   pub role_menu_user_id: Signal<Option<UserId>>,
   pub session: Option<ServerSession>,
+  pub storage: Option<Storage>,
   pub set_role: Option<SetRoleAction>,
   pub set_user_voice_state: Option<SetUserVoiceStateAction>,
   pub disconnect_user: Option<DisconnectUserAction>,
@@ -66,6 +67,7 @@ impl PartialEq for UserContextOverlayProps {
       && self.local_user_id == other.local_user_id
       && self.local_role == other.local_role
       && self.session.is_some() == other.session.is_some()
+      && self.storage.is_some() == other.storage.is_some()
       && self.set_role.is_some() == other.set_role.is_some()
       && self.set_user_voice_state.is_some() == other.set_user_voice_state.is_some()
       && self.disconnect_user.is_some() == other.disconnect_user.is_some()
@@ -190,6 +192,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
   let volume_control_key = format!("user-volume-{target_user_id}");
   let normalization_control_key = format!("user-normalization-{target_user_id}");
   let session_for_volume = props.session.clone();
+  let storage_for_volume = props.storage.clone();
   let mut menu = Column::new()
     .width(USER_CONTEXT_MENU_WIDTH)
     .spacing(0.0)
@@ -209,6 +212,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
       UserVolumeControlProps {
         user_id: target_user_id,
         session: session_for_volume,
+        storage: storage_for_volume,
       },
     ))
     .child(ctx.mount_keyed::<UserNormalizationToggle>(
@@ -216,6 +220,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
       UserNormalizationToggleProps {
         user_id: target_user_id,
         session: props.session.clone(),
+        storage: props.storage.clone(),
       },
     ));
 
@@ -441,11 +446,14 @@ fn user_context_header(ctx: &mut Ctx, user: &LobbyUser, channel_name: &str, debu
 struct UserVolumeControlProps {
   user_id: UserId,
   session: Option<ServerSession>,
+  storage: Option<Storage>,
 }
 
 impl PartialEq for UserVolumeControlProps {
   fn eq(&self, other: &Self) -> bool {
-    self.user_id == other.user_id && self.session.is_some() == other.session.is_some()
+    self.user_id == other.user_id
+      && self.session.is_some() == other.session.is_some()
+      && self.storage.is_some() == other.storage.is_some()
   }
 }
 
@@ -471,11 +479,14 @@ struct UserVolumeControl {
 struct UserNormalizationToggleProps {
   user_id: UserId,
   session: Option<ServerSession>,
+  storage: Option<Storage>,
 }
 
 impl PartialEq for UserNormalizationToggleProps {
   fn eq(&self, other: &Self) -> bool {
-    self.user_id == other.user_id && self.session.is_some() == other.session.is_some()
+    self.user_id == other.user_id
+      && self.session.is_some() == other.session.is_some()
+      && self.storage.is_some() == other.storage.is_some()
   }
 }
 
@@ -500,13 +511,12 @@ impl Component for UserNormalizationToggle {
 
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
-    let storage = ctx.use_context::<Storage>();
     let server_id = props
       .session
       .as_ref()
       .and_then(|session| session.info().map(|info| info.address));
     let initial = load_user_normalization(
-      storage.as_ref(),
+      props.storage.as_ref(),
       props.session.as_ref(),
       server_id.as_deref(),
       props.user_id,
@@ -524,7 +534,6 @@ impl Component for UserNormalizationToggle {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let storage = ctx.use_context::<Storage>();
     let server_id = props
       .session
       .as_ref()
@@ -532,7 +541,7 @@ impl Component for UserNormalizationToggle {
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let enabled = load_user_normalization(
-        storage.as_ref(),
+        props.storage.as_ref(),
         props.session.as_ref(),
         server_id.as_deref(),
         props.user_id,
@@ -549,7 +558,7 @@ impl Component for UserNormalizationToggle {
       ctx,
       self.enabled.clone(),
       props.session.clone(),
-      storage,
+      props.storage,
       server_id,
       props.user_id,
     )
@@ -561,13 +570,12 @@ impl Component for UserVolumeControl {
 
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
-    let storage = ctx.use_context::<Storage>();
     let initial_server_id = props
       .session
       .as_ref()
       .and_then(|session| session.info().map(|info| info.address));
     let initial = load_user_volume(
-      storage.as_ref(),
+      props.storage.as_ref(),
       props.session.as_ref(),
       initial_server_id.as_deref(),
       props.user_id,
@@ -613,7 +621,6 @@ impl Component for UserVolumeControl {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let storage = ctx.use_context::<Storage>();
     let server_id = props
       .session
       .as_ref()
@@ -623,7 +630,7 @@ impl Component for UserVolumeControl {
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let value = load_user_volume(
-        storage.as_ref(),
+        props.storage.as_ref(),
         props.session.as_ref(),
         server_id.as_deref(),
         props.user_id,
@@ -640,7 +647,7 @@ impl Component for UserVolumeControl {
         .expect("user volume last-applied lock poisoned") = value;
     }
 
-    let save_storage = storage.clone();
+    let save_storage = props.storage.clone();
     let save_session = props.session.clone();
     let save_server_id = server_id.clone();
     let save_user_id = props.user_id;

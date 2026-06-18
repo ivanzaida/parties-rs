@@ -26,6 +26,7 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
   session::{LobbyUser, ServerSession},
+  storage::Storage,
   theme,
   ui::lobby::{
     channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
@@ -71,6 +72,7 @@ pub(super) struct VoiceChannelsProps {
   pub local_role: Role,
   pub debug_user_ids: bool,
   pub session: Option<ServerSession>,
+  pub storage: Option<Storage>,
   pub join_channel: Option<JoinChannelAction>,
   pub watch_stream: Option<WatchStreamAction>,
 }
@@ -83,6 +85,7 @@ impl PartialEq for VoiceChannelsProps {
       && self.local_role == other.local_role
       && self.debug_user_ids == other.debug_user_ids
       && self.session.is_some() == other.session.is_some()
+      && self.storage.is_some() == other.storage.is_some()
       && self.join_channel.is_some() == other.join_channel.is_some()
       && self.watch_stream.is_some() == other.watch_stream.is_some()
   }
@@ -264,6 +267,7 @@ impl Component for VoiceChannels {
           context_menu_anchor: modal_anchor,
           role_menu_user_id: modal_role_menu_user_id,
           session: modal_session,
+          storage: props.storage.clone(),
           set_role: modal_set_role,
           set_user_voice_state: modal_set_user_voice_state,
           disconnect_user: modal_disconnect_user,
