@@ -148,6 +148,7 @@ impl Component for LobbyScreen {
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
 
     let Some(info) = session.info() else {
@@ -162,11 +163,9 @@ impl Component for LobbyScreen {
       }
       return empty_lobby(ctx);
     }
-    let debug_mode_enabled = storage
+    let debug_mode_enabled = settings_store
       .as_ref()
-      .and_then(|storage| storage.load_settings().ok())
-      .unwrap_or_else(AppSettings::default)
-      .debug_mode_enabled;
+      .is_some_and(|settings| settings.with(|settings| settings.debug_mode_enabled));
 
     if self.shell_model_store.with(Option::is_none) {
       apply_current_model(&self.shell_model_store, &session, lobby_shell_model);
@@ -204,16 +203,16 @@ impl Component for LobbyScreen {
       history: chat_history.clone(),
       send: send_chat.clone(),
     };
-    let start_stream = start_stream_action(ctx, storage.clone(), session.clone());
+    let start_stream = start_stream_action(ctx, settings_store.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
-    let watch_stream = watch_stream_action(ctx, storage.clone(), session.clone());
+    let watch_stream = watch_stream_action(ctx, settings_store.clone(), session.clone());
     let rail_stream_actions = RailStreamActions {
       start_stream_modal_open: self.start_stream_modal_open.clone(),
       stop_stream: stop_stream.clone(),
       watch_stream: watch_stream.clone(),
     };
     let stop_watching = stop_watching_action(ctx, session.clone());
-    let reconnect = reconnect_action(ctx, storage.clone(), session.clone());
+    let reconnect = reconnect_action(ctx, storage.clone(), settings_store.clone(), session.clone());
 
     if shell_model.disconnected {
       return disconnected_lobby(
@@ -238,7 +237,10 @@ impl Component for LobbyScreen {
     let modal_source_kind = self.stream_source_kind.clone();
     let modal_source_index = self.stream_source_index.clone();
     let modal_audio_enabled = self.stream_audio_enabled.clone();
-    let modal_stream_codec = stream_modal_codec_label(storage.as_ref());
+    let modal_stream_codec = settings_store
+      .as_ref()
+      .map(|settings| settings.with(stream_modal_codec_label))
+      .unwrap_or_else(|| stream_modal_codec_label(&AppSettings::default()));
     let mut body = Row::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
@@ -359,12 +361,8 @@ fn empty_spy_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
-fn stream_modal_codec_label(storage: Option<&Storage>) -> String {
-  let codec = storage
-    .and_then(|storage| storage.load_settings().ok())
-    .unwrap_or_else(AppSettings::default)
-    .video_codec;
-
+fn stream_modal_codec_label(settings: &AppSettings) -> String {
+  let codec = settings.video_codec.clone();
   match codec.trim() {
     "H.265" | "H.264" => codec.trim().to_owned(),
     #[cfg(target_os = "macos")]

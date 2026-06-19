@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use lurq::app::ctx::Ctx;
+use lurq::{app::ctx::Ctx, core::Store};
 
 use super::{
   ChatHistoryAction, ChatHistoryRequest, ReceiverAction, ReconnectAction, ReconnectRequest, SendChatAction,
@@ -320,21 +320,17 @@ fn local_user_id(session: &ServerSession) -> Result<UserId, String> {
 
 pub(super) fn start_stream_action(
   ctx: &mut Ctx,
-  storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
 ) -> StartStreamAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |input: StartStreamInput| {
-    let storage = storage.clone();
+    let settings_store = settings_store.clone();
     let session = session.clone();
     let copy = copy.clone();
     async move {
       let server = session.server().ok_or(copy.no_connected_server.clone())?;
-      let settings = storage
-        .as_ref()
-        .map(|storage| storage.load_settings().map_err(|error| error.to_string()))
-        .transpose()?
-        .unwrap_or_default();
+      let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
       let codec = stream_codec_id(&settings.video_codec, &copy.video_codec_invalid)?;
       if input.width == 0 || input.height == 0 {
         return Err(copy.stream_no_dimensions.clone());
@@ -447,12 +443,12 @@ pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopS
 
 pub(super) fn watch_stream_action(
   ctx: &mut Ctx,
-  storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
 ) -> WatchStreamAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |user_id| {
-    let storage = storage.clone();
+    let settings_store = settings_store.clone();
     let session = session.clone();
     let copy = copy.clone();
     async move {
@@ -477,10 +473,7 @@ pub(super) fn watch_stream_action(
         }
       }
       tracing::debug!(target: "video", "[video] stream view active for user {user_id}");
-      let settings = storage
-        .as_ref()
-        .and_then(|storage| storage.load_settings().ok())
-        .unwrap_or_else(AppSettings::default);
+      let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
       if let Err(error) = session.ensure_stream_audio_playback(settings) {
         tracing::debug!(target: "audio::decode", "[audio:decode] stream playback unavailable: {error}");
       }
@@ -507,10 +500,16 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
   })
 }
 
-pub(super) fn reconnect_action(ctx: &mut Ctx, storage: Option<Storage>, session: ServerSession) -> ReconnectAction {
+pub(super) fn reconnect_action(
+  ctx: &mut Ctx,
+  storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
+  session: ServerSession,
+) -> ReconnectAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |request: ReconnectRequest| {
     let storage = storage.clone();
+    let settings_store = settings_store.clone();
     let session = session.clone();
     let copy = copy.clone();
     async move {
@@ -523,7 +522,7 @@ pub(super) fn reconnect_action(ctx: &mut Ctx, storage: Option<Storage>, session:
         .load_server(&request.address)
         .map_err(|error| error.to_string())?
         .ok_or(copy.saved_credentials_missing.clone())?;
-      reconnect_saved_server(server, storage, session, copy.connect_errors).await
+      reconnect_saved_server(server, storage, settings_store, session, copy.connect_errors).await
     }
   })
 }
@@ -531,13 +530,15 @@ pub(super) fn reconnect_action(ctx: &mut Ctx, storage: Option<Storage>, session:
 async fn reconnect_saved_server(
   server: StoredServer,
   storage: Storage,
+  settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
   errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
   let reconnect_channel_id = session.selected_channel_id();
   let reconnect_voice_state = reconnect_channel_id.and_then(|_| session.local_voice_state());
+  let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
   let display_name = if server.display_name.trim().is_empty() {
-    storage.load_settings().map_err(|error| error.to_string())?.display_name
+    settings.display_name.clone()
   } else {
     server.display_name.clone()
   };
@@ -562,11 +563,10 @@ async fn reconnect_saved_server(
   }
 
   if let Some(channel_id) = reconnect_channel_id {
-    rejoin_previous_voice_channel(&session, &storage, channel_id, reconnect_voice_state).await;
+    rejoin_previous_voice_channel(&session, channel_id, reconnect_voice_state, &settings).await;
   }
   if session.has_pending_reconnect_watch() {
     let restore_session = session.clone();
-    let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
     tokio::spawn(async move {
       restore_session
         .restore_pending_reconnect_watch(settings, RECONNECT_STREAM_RESTORE_TIMEOUT)
@@ -579,15 +579,14 @@ async fn reconnect_saved_server(
 
 async fn rejoin_previous_voice_channel(
   session: &ServerSession,
-  storage: &Storage,
   channel_id: ChannelId,
   voice_state: Option<(bool, bool)>,
+  settings: &AppSettings,
 ) {
   let Some(server) = session.server() else {
     tracing::debug!(target: "lobby", "[lobby] skipped voice rejoin after reconnect: channel={channel_id} reason=no connected server");
     return;
   };
-  let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
   let (mut muted, deafened) = voice_state.unwrap_or((settings.start_muted_when_joining, false));
   if deafened {
     muted = true;
@@ -608,7 +607,7 @@ async fn rejoin_previous_voice_channel(
   }
 
   session.set_local_voice_state(muted, deafened);
-  match session.start_voice(settings, "") {
+  match session.start_voice(settings.clone(), "") {
     Ok(()) => tracing::debug!(target: "voice", "[voice] local voice engine restarted after reconnect rejoin"),
     Err(error) => tracing::debug!(target: "voice", "[voice] local voice engine failed after reconnect rejoin: {error}"),
   }

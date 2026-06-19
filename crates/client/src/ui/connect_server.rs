@@ -7,7 +7,7 @@ use std::{
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Button, Column, Form, FormProps, Row, Text, TextInput},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
@@ -85,15 +85,15 @@ impl Component for ConnectServerScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let settings = ctx
-      .use_context::<Storage>()
-      .and_then(|storage| storage.load_settings().ok())
-      .unwrap_or_else(AppSettings::default);
+    let display_name = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.with(|settings| settings.display_name.clone()))
+      .unwrap_or_default();
 
     Self {
       address: ctx.signal(String::new()),
       seed: ctx.signal(String::new()),
-      display_name: ctx.signal(settings.display_name),
+      display_name: ctx.signal(display_name),
       navigated: ctx.signal(false),
     }
   }

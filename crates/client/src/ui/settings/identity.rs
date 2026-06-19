@@ -7,7 +7,7 @@ use lurq::{
   },
   clipboard,
   components::{Column, Row, Text, TextInput},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -20,7 +20,7 @@ use crate::{
   identity::{public_key_fingerprint, secret_key_to_hex},
   routes::ROUTE_IDENTITY_SETUP,
   session::ServerSession,
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -47,10 +47,9 @@ impl Component for SettingsIdentityScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let storage = ctx.use_context::<Storage>();
-    let settings = storage
-      .as_ref()
-      .and_then(|storage| storage.load_settings().ok())
+    let settings = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.get())
       .unwrap_or_else(AppSettings::default);
     let display_name = settings.display_name;
 
@@ -300,6 +299,7 @@ impl Component for DisplayNameSetting {
         self.value.clone(),
         &ctx.t("settings.identity.display_name.placeholder"),
         ctx.use_context::<Storage>(),
+        ctx.use_context::<Store<AppSettings>>(),
       )
       .into(),
       false,
@@ -398,7 +398,12 @@ fn copy_button(ctx: &mut Ctx, copied: bool) -> Row {
     }))
 }
 
-fn display_name_input(value: Signal<String>, placeholder: &str, storage: Option<Storage>) -> Row {
+fn display_name_input(
+  value: Signal<String>,
+  placeholder: &str,
+  storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
+) -> Row {
   let mut placeholder_style = row_subtitle_style();
   placeholder_style.color = theme::palette().text_muted.with_opacity(0.55);
   let mut input = TextInput::styled(value.clone(), row_subtitle_style())
@@ -409,12 +414,13 @@ fn display_name_input(value: Signal<String>, placeholder: &str, storage: Option<
     .background(BackgroundColor::Color(Color::from_hex("#00000000")))
     .caret_color(theme::PaletteColor::Accent);
 
-  if let Some(storage) = storage {
+  if let Some(settings_store) = settings_store {
     let value = value.clone();
     input = input.on_blur(move || {
-      let mut settings = storage.load_settings().unwrap_or_default();
-      settings.display_name = value.get_untracked();
-      let _ = storage.save_settings(&settings);
+      let display_name = value.get_untracked();
+      update_app_settings(&settings_store, storage.as_ref(), |settings| {
+        settings.display_name = display_name;
+      });
     });
   }
 

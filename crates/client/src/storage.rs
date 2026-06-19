@@ -8,7 +8,10 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-use lurq::app::component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable};
+use lurq::{
+  app::component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
+  core::Store,
+};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::{
@@ -120,6 +123,29 @@ impl Default for AppSettings {
       locale: "en".to_owned(),
     }
   }
+}
+
+impl DevtoolsInspectable for AppSettings {}
+
+pub fn update_app_settings(
+  settings_store: &Store<AppSettings>,
+  storage: Option<&Storage>,
+  f: impl FnOnce(&mut AppSettings),
+) -> AppSettings {
+  let mut settings = settings_store.get();
+  let previous = settings.clone();
+  f(&mut settings);
+
+  if settings != previous {
+    if let Some(storage) = storage
+      && let Err(error) = storage.save_settings(&settings)
+    {
+      tracing::debug!(target: "settings", "failed to save app settings: {error}");
+    }
+    settings_store.set(settings.clone());
+  }
+
+  settings
 }
 
 pub fn default_display_name() -> String {

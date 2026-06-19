@@ -1,7 +1,7 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, dimension::Dimension},
 };
@@ -10,7 +10,7 @@ use crate::{
   routes::{ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS},
   services::logger,
   session::ServerSession,
-  storage::Storage,
+  storage::{AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -38,10 +38,9 @@ impl Component for SettingsOverviewScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let storage = ctx.use_context::<Storage>();
-    let settings = storage
-      .as_ref()
-      .and_then(|storage| storage.load_settings().ok())
+    let settings = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.get())
       .unwrap_or_default();
     let start_muted_when_joining = settings.start_muted_when_joining;
     let sentry_reports_enabled = settings.sentry_reports_enabled.unwrap_or(false);
@@ -58,11 +57,14 @@ impl Component for SettingsOverviewScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let settings = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.get())
+      .unwrap_or_default();
     let identity = storage
       .as_ref()
       .and_then(|storage| storage.load_identity().ok())
       .flatten();
-    let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
     let servers = storage
       .as_ref()
       .and_then(|storage| storage.load_servers().ok())
@@ -73,8 +75,7 @@ impl Component for SettingsOverviewScreen {
       .as_ref()
       .map(|identity| format_public_id(&identity.public_key))
       .unwrap_or_else(|| ctx.t("settings.identity.missing").to_string());
-    let identity_name = settings
-      .map(|settings| settings.display_name.trim().to_owned())
+    let identity_name = Some(settings.display_name.trim().to_owned())
       .filter(|name| !name.is_empty())
       .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
     let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));
@@ -221,15 +222,14 @@ impl Component for OverviewToggleSetting {
     let props = ctx.props::<Self::Props>().clone();
     let enabled = ctx.signal(props.initial_enabled);
     let session = ctx.use_context::<ServerSession>();
-    if let Some(storage) = ctx.use_context::<Storage>() {
+    let storage = ctx.use_context::<Storage>();
+    if let Some(settings_store) = ctx.use_context::<Store<AppSettings>>() {
       ctx.watch(&enabled, move |enabled| {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        match props.setting {
+        update_app_settings(&settings_store, storage.as_ref(), |settings| match props.setting {
           OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
           OverviewBoolSetting::SentryReportsEnabled => settings.sentry_reports_enabled = Some(*enabled),
           OverviewBoolSetting::DebugModeEnabled => settings.debug_mode_enabled = *enabled,
-        }
-        let _ = storage.save_settings(&settings);
+        });
         if props.setting == OverviewBoolSetting::SentryReportsEnabled {
           logger::apply_sentry_reports_enabled(Some(*enabled));
         }
@@ -282,13 +282,14 @@ impl Component for OverviewLanguageSetting {
     let props = ctx.props::<Self::Props>().clone();
     let locale = ctx.signal(props.initial_locale);
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let i18n = ctx.i18n().clone();
     ctx.watch(&locale, move |locale| {
       i18n.set_locale(locale.clone());
-      if let Some(storage) = storage.as_ref() {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.locale = locale.clone();
-        let _ = storage.save_settings(&settings);
+      if let Some(settings_store) = settings_store.as_ref() {
+        update_app_settings(settings_store, storage.as_ref(), |settings| {
+          settings.locale = locale.clone();
+        });
       }
     });
     Self { locale }

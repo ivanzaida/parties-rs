@@ -13,7 +13,7 @@ use lurq::{
     events::KeyboardEvent,
   },
   components::{Column, Row, Stack, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
   router::{RouterHandle, Routes},
@@ -34,7 +34,7 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::Storage,
+  storage::{AppSettings, Storage},
   theme,
   ui::{
     app_chrome::{FrameRateSignal, modal_layer, wrap_window_chrome},
@@ -67,6 +67,7 @@ pub struct App {
   router: RouterHandle,
   session: ServerSession,
   storage: Signal<Option<Storage>>,
+  settings: Store<AppSettings>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
   active_toggle_hotkeys: Signal<Vec<String>>,
@@ -110,10 +111,18 @@ impl Component for App {
     let props = ctx.props::<Self::Props>().clone();
     let tokio = props.tokio.clone();
     let storage = ctx.signal(props.startup_storage.clone());
+    let startup_settings = load_settings_from_storage(props.startup_storage.as_ref());
+    let settings = ctx.store(startup_settings);
     let i18n = ctx.i18n().clone();
-    apply_storage_locale(&storage.get_untracked(), &i18n);
-    ctx.watch(&storage, move |storage| {
-      apply_storage_locale(storage, &i18n);
+    apply_settings_locale(&settings.get(), &i18n);
+    ctx.watch(&storage, {
+      let settings = settings.clone();
+      let i18n = i18n.clone();
+      move |storage| {
+        let next_settings = load_settings_from_storage(storage.as_ref());
+        settings.set(next_settings.clone());
+        apply_settings_locale(&next_settings, &i18n);
+      }
     });
     let update_status = ctx.signal(StartupUpdateStatus::Idle);
     let loading_storage = storage.clone();
@@ -208,6 +217,7 @@ impl Component for App {
       router,
       session,
       storage,
+      settings,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
       active_toggle_hotkeys: ctx.signal(Vec::new()),
@@ -223,6 +233,7 @@ impl Component for App {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     ctx.provide(self.session.clone());
     ctx.provide(self.global_hotkeys.clone());
+    ctx.provide(self.settings.clone());
     let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
     ctx.provide(settings_popup.clone());
     let storage = self.storage.get();
@@ -251,27 +262,17 @@ impl Component for App {
     } else {
       self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
-    let settings = storage.as_ref().and_then(|storage| storage.load_settings().ok());
-    if let Some(settings) = settings.as_ref() {
-      logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
-      self.session.set_notification_audio_settings(settings);
-      self
-        .session
-        .set_video_hardware_decoding(settings.video_hardware_decoding);
-    }
-    let mute_hotkey = settings
-      .as_ref()
-      .map(|settings| settings.hotkey_toggle_mute.clone())
-      .unwrap_or_default();
-    let deafen_hotkey = settings
-      .as_ref()
-      .map(|settings| settings.hotkey_toggle_deafen.clone())
-      .unwrap_or_default();
-    let push_to_talk_enabled = settings.as_ref().is_some_and(|settings| settings.push_to_talk);
-    let push_to_talk_hotkey = settings
-      .as_ref()
-      .map(|settings| settings.hotkey_push_to_talk.clone())
-      .unwrap_or_default();
+    let settings = self.settings.get();
+    apply_settings_locale(&settings, ctx.i18n());
+    logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
+    self.session.set_notification_audio_settings(&settings);
+    self
+      .session
+      .set_video_hardware_decoding(settings.video_hardware_decoding);
+    let mute_hotkey = settings.hotkey_toggle_mute.clone();
+    let deafen_hotkey = settings.hotkey_toggle_deafen.clone();
+    let push_to_talk_enabled = settings.push_to_talk;
+    let push_to_talk_hotkey = settings.hotkey_push_to_talk.clone();
     let app_focused = ctx.window().is_focused;
     let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
     let local_hotkeys_enabled = app_focused && !settings_active;
@@ -279,7 +280,7 @@ impl Component for App {
     let global_mouse_hotkeys_enabled = !settings_active;
     self
       .global_hotkeys
-      .update_settings(settings.as_ref(), global_hotkeys_enabled, global_mouse_hotkeys_enabled);
+      .update_settings(Some(&settings), global_hotkeys_enabled, global_mouse_hotkeys_enabled);
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
       let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
@@ -453,12 +454,14 @@ impl App {
   }
 }
 
-fn apply_storage_locale(storage: &Option<Storage>, i18n: &lurq::app::i18n::I18n) {
-  if let Some(storage) = storage
-    && let Ok(settings) = storage.load_settings()
-  {
-    i18n.set_locale(settings.locale.clone());
-  }
+fn load_settings_from_storage(storage: Option<&Storage>) -> AppSettings {
+  storage
+    .and_then(|storage| storage.load_settings().ok())
+    .unwrap_or_default()
+}
+
+fn apply_settings_locale(settings: &AppSettings, i18n: &lurq::app::i18n::I18n) {
+  i18n.set_locale(settings.locale.clone());
 }
 
 fn update_status_blocks_poll(status: &StartupUpdateStatus) -> bool {

@@ -11,7 +11,7 @@ use lurq::{
     events::{KeyboardEvent, MouseButton, MouseEvent},
   },
   components::{Button, Column, Rect, Row, ScrollVertical, Slider, Stack, Text, TextOverflow},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment, StackAlignment,
     scrollbar::ScrollBarStyle,
@@ -30,7 +30,7 @@ use crate::{
     hotkeys,
   },
   session::ServerSession,
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -87,10 +87,9 @@ impl Component for SettingsAudioScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let storage = ctx.use_context::<Storage>();
-    let settings = storage
-      .as_ref()
-      .and_then(|storage| storage.load_settings().ok())
+    let settings = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.get())
       .unwrap_or_else(AppSettings::default);
     let input_device = ctx.signal(settings.audio_input_device);
     let output_device = ctx.signal(settings.audio_output_device);
@@ -157,6 +156,7 @@ impl Component for SettingsAudioScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let session = ctx.use_context::<ServerSession>();
     let (padding_x, padding_y) = settings_content_padding(ctx);
     let section_spacing = settings_section_spacing(ctx);
@@ -221,6 +221,7 @@ impl Component for SettingsAudioScreen {
                   initial_value: self.voice_normalization_target_level,
                   on_blur: audio_slider_save_action(
                     storage.clone(),
+                    settings_store.clone(),
                     session.clone(),
                     AudioSliderSetting::VoiceNormalizationTargetLevel,
                   ),
@@ -243,6 +244,7 @@ impl Component for SettingsAudioScreen {
                   input_level_active: self.input_level_meter_active.clone(),
                   on_blur: audio_slider_save_action(
                     storage.clone(),
+                    settings_store.clone(),
                     session.clone(),
                     AudioSliderSetting::VoiceActivationThreshold,
                   ),
@@ -259,6 +261,7 @@ impl Component for SettingsAudioScreen {
                   initial_value: delay_ms_to_tenths(self.push_to_talk_release_delay_ms),
                   on_blur: audio_slider_save_action(
                     storage.clone(),
+                    settings_store.clone(),
                     session.clone(),
                     AudioSliderSetting::PushToTalkReleaseDelay,
                   ),
@@ -375,6 +378,7 @@ impl Component for AudioDeviceSetting {
     let props = ctx.props::<Self::Props>().clone();
     let value = ctx.signal(props.selected.get_untracked());
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let session = ctx.use_context::<ServerSession>();
     let setting = match props.kind {
       AudioDeviceKind::Input => AudioStringSetting::AudioInputDevice,
@@ -382,14 +386,14 @@ impl Component for AudioDeviceSetting {
     };
     ctx.watch(&value, move |value| {
       props.selected.set(value.clone());
-      if let Some(storage) = storage.as_ref() {
-        let settings = save_audio_string_setting(&storage, setting, value.clone());
+      if let Some(settings_store) = settings_store.as_ref() {
+        let settings = save_audio_string_setting(settings_store, storage.as_ref(), setting, value.clone());
         if matches!(setting, AudioStringSetting::AudioOutputDevice)
           && let Some(session) = session.as_ref()
         {
           session.set_notification_audio_settings(&settings);
         }
-        restart_voice_for_audio_setting(&storage, session.as_ref());
+        restart_voice_for_audio_setting(settings_store, session.as_ref());
       }
     });
     Self { value }
@@ -505,16 +509,17 @@ impl Component for AudioToggleSetting {
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
     let enabled = ctx.signal(props.initial_enabled);
-    if let Some(storage) = ctx.use_context::<Storage>() {
+    let storage = ctx.use_context::<Storage>();
+    if let Some(settings_store) = ctx.use_context::<Store<AppSettings>>() {
       let session = ctx.use_context::<ServerSession>();
       ctx.watch(&enabled, move |enabled| {
-        save_audio_bool_setting(&storage, props.setting, *enabled);
+        save_audio_bool_setting(&settings_store, storage.as_ref(), props.setting, *enabled);
         if matches!(props.setting, AudioBoolSetting::VoiceNormalization) {
           if let Some(session) = session.as_ref() {
             session.set_voice_normalization(*enabled);
           }
         } else {
-          restart_voice_for_audio_setting(&storage, session.as_ref());
+          restart_voice_for_audio_setting(&settings_store, session.as_ref());
         }
       });
     }
@@ -700,10 +705,16 @@ impl Component for AudioThresholdSetting {
     let props = ctx.props::<Self::Props>().clone();
     let value = ctx.signal(props.initial_value);
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let session = ctx.use_context::<ServerSession>();
-    if let Some(storage) = storage {
+    if let Some(settings_store) = settings_store {
       ctx.watch(&value, move |value| {
-        let _ = save_slider_setting(&storage, AudioSliderSetting::VoiceActivationThreshold, *value);
+        let _ = save_slider_setting(
+          &settings_store,
+          storage.as_ref(),
+          AudioSliderSetting::VoiceActivationThreshold,
+          *value,
+        );
         if let Some(session) = session.as_ref() {
           session.set_voice_activation_threshold(*value);
         }
@@ -775,9 +786,10 @@ impl Component for AudioHotkeySetting {
     let suppress_next_click = ctx.signal(false);
     let mouse_capture = Arc::new(Mutex::new(None));
     let global_hotkeys = ctx.use_context::<GlobalVoiceHotkeys>();
-    if let Some(storage) = ctx.use_context::<Storage>() {
+    let storage = ctx.use_context::<Storage>();
+    if let Some(settings_store) = ctx.use_context::<Store<AppSettings>>() {
       ctx.watch(&value, move |value| {
-        save_audio_string_setting(&storage, props.setting, value.clone());
+        save_audio_string_setting(&settings_store, storage.as_ref(), props.setting, value.clone());
       });
     }
 
@@ -1087,12 +1099,13 @@ fn threshold_status(label: &str, active: bool) -> Element {
 
 fn audio_slider_save_action(
   storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
   session: Option<ServerSession>,
   setting: AudioSliderSetting,
 ) -> AudioSliderSaveAction {
   Arc::new(move |value| {
-    if let Some(storage) = storage.as_ref() {
-      let _ = save_slider_setting(storage, setting, value);
+    if let Some(settings_store) = settings_store.as_ref() {
+      let _ = save_slider_setting(settings_store, storage.as_ref(), setting, value);
       if matches!(setting, AudioSliderSetting::VoiceNormalizationTargetLevel) {
         if let Some(session) = session.as_ref() {
           session.set_voice_normalization_target_level(value);
@@ -1106,14 +1119,14 @@ fn audio_slider_save_action(
   })
 }
 
-fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSession>) {
+fn restart_voice_for_audio_setting(settings_store: &Store<AppSettings>, session: Option<&ServerSession>) {
   let Some(session) = session else {
     return;
   };
   if !session.voice_active() {
     return;
   }
-  let settings = storage.load_settings().unwrap_or_default();
+  let settings = settings_store.get();
   let session = session.clone();
   if let Err(error) = thread::Builder::new()
     .name("parties-voice-device-restart".to_owned())
@@ -1130,11 +1143,14 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
   }
 }
 
-fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i32) -> AppSettings {
-  let mut settings = storage.load_settings().unwrap_or_default();
+fn save_slider_setting(
+  settings_store: &Store<AppSettings>,
+  storage: Option<&Storage>,
+  setting: AudioSliderSetting,
+  value: i32,
+) -> AppSettings {
   let value = value.clamp(0, 100);
-
-  match setting {
+  update_app_settings(settings_store, storage, |settings| match setting {
     AudioSliderSetting::VoiceNormalizationTargetLevel => settings.voice_normalization_target_level = value,
     AudioSliderSetting::VoiceActivationThreshold => {
       settings.voice_activation_threshold = value;
@@ -1143,10 +1159,7 @@ fn save_slider_setting(storage: &Storage, setting: AudioSliderSetting, value: i3
     AudioSliderSetting::PushToTalkReleaseDelay => {
       settings.push_to_talk_release_delay_ms = tenths_to_delay_ms(value);
     }
-  }
-
-  let _ = storage.save_settings(&settings);
-  settings
+  })
 }
 
 fn delay_ms_to_tenths(value: i32) -> i32 {
@@ -1157,10 +1170,13 @@ fn tenths_to_delay_ms(value: i32) -> i32 {
   value.clamp(0, PUSH_TO_TALK_RELEASE_DELAY_MAX_TENTHS) * PUSH_TO_TALK_RELEASE_DELAY_STEP_MS
 }
 
-fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: bool) {
-  let mut settings = storage.load_settings().unwrap_or_default();
-
-  match setting {
+fn save_audio_bool_setting(
+  settings_store: &Store<AppSettings>,
+  storage: Option<&Storage>,
+  setting: AudioBoolSetting,
+  value: bool,
+) {
+  update_app_settings(settings_store, storage, |settings| match setting {
     AudioBoolSetting::NoiseCancellation => settings.noise_cancellation = value,
     AudioBoolSetting::VoiceNormalization => settings.voice_normalization = value,
     AudioBoolSetting::EchoCancellation => settings.echo_cancellation = value,
@@ -1168,24 +1184,22 @@ fn save_audio_bool_setting(storage: &Storage, setting: AudioBoolSetting, value: 
       settings.push_to_talk = value;
       settings.voice_activation = true;
     }
-  }
-
-  let _ = storage.save_settings(&settings);
+  });
 }
 
-fn save_audio_string_setting(storage: &Storage, setting: AudioStringSetting, value: String) -> AppSettings {
-  let mut settings = storage.load_settings().unwrap_or_default();
-
-  match setting {
+fn save_audio_string_setting(
+  settings_store: &Store<AppSettings>,
+  storage: Option<&Storage>,
+  setting: AudioStringSetting,
+  value: String,
+) -> AppSettings {
+  update_app_settings(settings_store, storage, |settings| match setting {
     AudioStringSetting::AudioInputDevice => settings.audio_input_device = value,
     AudioStringSetting::AudioOutputDevice => settings.audio_output_device = value,
     AudioStringSetting::HotkeyPushToTalk => settings.hotkey_push_to_talk = value,
     AudioStringSetting::HotkeyToggleMute => settings.hotkey_toggle_mute = value,
     AudioStringSetting::HotkeyToggleDeafen => settings.hotkey_toggle_deafen = value,
-  }
-
-  let _ = storage.save_settings(&settings);
-  settings
+  })
 }
 
 fn hotkey_button(

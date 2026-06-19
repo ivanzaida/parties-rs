@@ -6,7 +6,7 @@ use lurq::{
     ctx::Ctx,
   },
   components::{Column, Row, ScrollVertical, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, text_style::TextStyle},
   node::{Element, dimension::Dimension},
 };
@@ -14,7 +14,7 @@ use lurq::{
 use crate::{
   services::webcam_devices::{self, WebcamDevice},
   session::ServerSession,
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -53,10 +53,9 @@ impl Component for SettingsStreamScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let storage = ctx.use_context::<Storage>();
-    let settings = storage
-      .as_ref()
-      .and_then(|storage| storage.load_settings().ok())
+    let settings = ctx
+      .use_context::<Store<AppSettings>>()
+      .map(|settings| settings.get())
       .unwrap_or_else(AppSettings::default);
 
     let webcam_device = ctx.signal(settings.video_webcam_device);
@@ -82,6 +81,7 @@ impl Component for SettingsStreamScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let (padding_x, padding_y) = settings_content_padding(ctx);
     let section_spacing = settings_section_spacing(ctx);
     let content = ScrollVertical::new(
@@ -130,7 +130,7 @@ impl Component for SettingsStreamScreen {
                 }))
                 .child(ctx.mount::<VideoBitrateSetting>(VideoBitrateSettingProps {
                   initial_value: self.bitrate_mbps,
-                  on_blur: video_bitrate_save_action(storage.clone()),
+                  on_blur: video_bitrate_save_action(storage.clone(), settings_store.clone()),
                 })),
             ),
         ),
@@ -172,13 +172,14 @@ impl Component for WebcamSetting {
     let props = ctx.props::<Self::Props>().clone();
     let value = ctx.signal(props.selected.get_untracked());
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
 
     ctx.watch(&value, move |value| {
       props.selected.set(value.clone());
-      if let Some(storage) = storage.as_ref() {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.video_webcam_device = value.clone();
-        let _ = storage.save_settings(&settings);
+      if let Some(settings_store) = settings_store.as_ref() {
+        update_app_settings(settings_store, storage.as_ref(), |settings| {
+          settings.video_webcam_device = value.clone();
+        });
       }
     });
 
@@ -232,12 +233,13 @@ impl Component for VideoHardwareDecodingSetting {
     let props = ctx.props::<Self::Props>().clone();
     let enabled = ctx.signal(props.initial_enabled);
     let storage = ctx.use_context::<Storage>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let session = ctx.use_context::<ServerSession>();
     ctx.watch(&enabled, move |enabled| {
-      if let Some(storage) = storage.as_ref() {
-        let mut settings = storage.load_settings().unwrap_or_default();
-        settings.video_hardware_decoding = *enabled;
-        let _ = storage.save_settings(&settings);
+      if let Some(settings_store) = settings_store.as_ref() {
+        update_app_settings(settings_store, storage.as_ref(), |settings| {
+          settings.video_hardware_decoding = *enabled;
+        });
       }
       if let Some(session) = session.as_ref() {
         session.set_video_hardware_decoding(*enabled);
@@ -289,9 +291,10 @@ impl Component for VideoDropdownSetting {
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
     let value = ctx.signal(props.initial_value.clone());
-    if let Some(storage) = ctx.use_context::<Storage>() {
+    let storage = ctx.use_context::<Storage>();
+    if let Some(settings_store) = ctx.use_context::<Store<AppSettings>>() {
       ctx.watch(&value, move |value| {
-        save_video_dropdown_setting(&storage, props.kind, value);
+        save_video_dropdown_setting(&settings_store, storage.as_ref(), props.kind, value);
       });
     }
     Self { value }
@@ -503,26 +506,30 @@ fn bitrate_slider(ctx: &mut Ctx, value: Signal<f32>, on_blur: VideoBitrateSaveAc
     .into()
 }
 
-fn video_bitrate_save_action(storage: Option<Storage>) -> VideoBitrateSaveAction {
+fn video_bitrate_save_action(
+  storage: Option<Storage>,
+  settings_store: Option<Store<AppSettings>>,
+) -> VideoBitrateSaveAction {
   Arc::new(move |value| {
-    if let Some(storage) = storage.as_ref() {
-      let mut settings = storage.load_settings().unwrap_or_default();
-      settings.video_bitrate_mbps = value.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
-      let _ = storage.save_settings(&settings);
+    if let Some(settings_store) = settings_store.as_ref() {
+      update_app_settings(settings_store, storage.as_ref(), |settings| {
+        settings.video_bitrate_mbps = value.clamp(VIDEO_BITRATE_MIN, VIDEO_BITRATE_MAX);
+      });
     }
   })
 }
 
-fn save_video_dropdown_setting(storage: &Storage, setting: VideoDropdownKind, value: &str) {
-  let mut settings = storage.load_settings().unwrap_or_default();
-
-  match setting {
+fn save_video_dropdown_setting(
+  settings_store: &Store<AppSettings>,
+  storage: Option<&Storage>,
+  setting: VideoDropdownKind,
+  value: &str,
+) {
+  update_app_settings(settings_store, storage, |settings| match setting {
     VideoDropdownKind::Codec => settings.video_codec = video_codec_value(value),
     VideoDropdownKind::Scale => settings.video_scale_percent = parse_i32(value, 100).clamp(25, 100),
     VideoDropdownKind::Fps => settings.video_fps = parse_i32(value, 60).clamp(15, 120),
-  }
-
-  let _ = storage.save_settings(&settings);
+  });
 }
 
 fn format_bitrate_value(value: f32) -> String {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use lurq::{
   app::{component::Component, ctx::Ctx, theme::Breakpoint},
   components::{Column, Row, ScrollVertical, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -19,7 +19,7 @@ use crate::{
   network::server_query::{ServerQueryInfo, query_server},
   routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_TOFU_WARNING},
   session::{ConnectedServerInfo, ServerSession},
-  storage::{Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -91,6 +91,7 @@ impl Component for SavedServersScreen {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let servers = ctx
       .use_context::<Storage>()
       .and_then(|storage| storage.load_servers().ok())
@@ -100,12 +101,12 @@ impl Component for SavedServersScreen {
       let storage = storage.clone();
       let session = session.clone();
       let connect_errors = connect_errors.clone();
+      let settings_store = settings_store.clone();
       async move {
         let display_name = if server.display_name.trim().is_empty() {
-          storage
+          settings_store
             .as_ref()
-            .and_then(|storage| storage.load_settings().ok())
-            .map(|settings| settings.display_name)
+            .map(|settings| settings.with(|settings| settings.display_name.clone()))
             .unwrap_or_default()
         } else {
           server.display_name.clone()
@@ -456,9 +457,8 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
   let metrics = servers_layout_metrics(ctx);
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let identity_name = ctx
-    .use_context::<Storage>()
-    .and_then(|storage| storage.load_settings().ok())
-    .map(|settings| settings.display_name.trim().to_owned())
+    .use_context::<Store<AppSettings>>()
+    .map(|settings| settings.with(|settings| settings.display_name.trim().to_owned()))
     .filter(|name| !name.is_empty())
     .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
   let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));

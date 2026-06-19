@@ -7,7 +7,7 @@ use lurq::{
     theme::{PaletteColor, Theme},
   },
   components::{Column, Rect, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{
     BackgroundColor, CursorIcon, Element, Style,
@@ -150,12 +150,14 @@ impl Component for LoadingIdentityScreen {
       )
     };
     let session = ctx.use_context::<ServerSession>();
+    let settings_store = ctx.use_context::<Store<AppSettings>>();
     let resume_errors = ConnectErrorCopy::from_ctx(ctx);
     let route_session = session.clone();
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
+      let settings_store = settings_store.clone();
       let errors = resume_errors.clone();
-      async move { restore_update_resume_after_restart(storage, session, errors).await }
+      async move { restore_update_resume_after_restart(storage, settings_store, session, errors).await }
     });
     let restore_update_resume_state = restore_update_resume.state().get();
     let startup_error = startup.as_ref().and_then(|startup| startup.error.clone());
@@ -247,6 +249,7 @@ impl Component for LoadingIdentityScreen {
 
 async fn restore_update_resume_after_restart(
   storage: Storage,
+  settings_store: Option<Store<AppSettings>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
 ) -> Result<bool, String> {
@@ -277,9 +280,12 @@ async fn restore_update_resume_after_restart(
       return Ok(false);
     }
   };
-  let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
+  let fallback_display_name = settings_store
+    .as_ref()
+    .map(|settings| settings.with(|settings| settings.display_name.clone()))
+    .unwrap_or_default();
   let display_name = if server.display_name.trim().is_empty() {
-    settings.display_name.clone()
+    fallback_display_name
   } else {
     server.display_name.clone()
   };
@@ -344,6 +350,7 @@ async fn restore_update_resume_after_restart(
     return Ok(true);
   }
   session.set_local_voice_state(muted, deafened);
+  let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
   match session.start_voice(settings, "") {
     Ok(()) => tracing::debug!(
       target: "updater",

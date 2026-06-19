@@ -1,6 +1,7 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text},
+  core::Store,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, dimension::Dimension},
 };
@@ -8,7 +9,7 @@ use lurq::{
 use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
   services::logger,
-  storage::Storage,
+  storage::{AppSettings, Storage, update_app_settings},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -158,6 +159,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
     ),
   };
   let storage = ctx.use_context::<Storage>();
+  let settings_store = ctx.use_context::<Store<AppSettings>>();
   let navigator = ctx.navigator();
 
   let mut button = Row::new()
@@ -174,7 +176,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
     .hovered_style(Style::new().background(hover_background.clone()))
     .active_style(Style::new().background(hover_background))
     .on_click(move |_| {
-      save_sentry_reports_choice(storage.as_ref(), enabled);
+      save_sentry_reports_choice(settings_store.as_ref(), storage.as_ref(), enabled);
       if let Some(navigator) = navigator.as_ref() {
         navigator.replace(route_after_consent(storage.as_ref()));
       }
@@ -196,12 +198,11 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
   )
 }
 
-fn save_sentry_reports_choice(storage: Option<&Storage>, enabled: bool) {
-  if let Some(storage) = storage
-    && let Ok(mut settings) = storage.load_settings()
-  {
-    settings.sentry_reports_enabled = Some(enabled);
-    let _ = storage.save_settings(&settings);
+fn save_sentry_reports_choice(settings_store: Option<&Store<AppSettings>>, storage: Option<&Storage>, enabled: bool) {
+  if let Some(settings_store) = settings_store {
+    update_app_settings(settings_store, storage, |settings| {
+      settings.sentry_reports_enabled = Some(enabled);
+    });
   }
 
   if enabled {
