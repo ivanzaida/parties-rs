@@ -530,6 +530,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Keyed server settings voice channel rows:
   - mounted voice channel settings rows by channel id;
   - left text settings rows unchanged because they are plain elements rather than mounted components.
+- Split server settings member rows:
+  - mounted member rows by user id and moved role-picker signal reads into row/modal components;
+  - prevented member role-picker changes from dirtying the full server settings screen render.
 
 ## Current Residual Reads
 

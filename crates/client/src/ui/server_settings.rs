@@ -1587,55 +1587,38 @@ fn members_card(
     )
     .child(divider());
   let members = active_members(lobby);
-  let selected_member = role_picker_user_id
-    .get()
-    .and_then(|user_id| members.iter().find(|member| member.user.user_id == user_id).cloned());
-
-  if role_picker_open.get_untracked() && selected_member.is_none() {
-    close_member_role_picker(
-      role_picker_user_id.clone(),
-      role_picker_open.clone(),
-      role_picker_anchor.clone(),
-    );
-  }
-
-  if let Some(member) = selected_member {
-    let modal_role_picker_user_id = role_picker_user_id.clone();
-    let modal_role_picker_open = role_picker_open.clone();
-    let modal_role_picker_anchor = role_picker_anchor.clone();
-    let modal_action = admin_action.clone();
-    card = card.child(
-      Modal::new(member_role_picker_overlay(
-        ctx,
-        member.user.user_id,
-        member.user.role,
-        info.role,
-        &modal_action,
-        modal_role_picker_user_id.clone(),
-        modal_role_picker_open.clone(),
-        modal_role_picker_anchor.clone(),
-        admin_pending,
-      ))
-      .open(role_picker_open.clone())
-      .target(Root),
-    );
-  }
+  card = card.child(
+    Modal::new(ctx.mount::<MemberRolePickerModal>(MemberRolePickerModalProps {
+      members: members.clone(),
+      local_role: info.role,
+      admin_action: admin_action.clone(),
+      admin_pending,
+      role_picker_user_id: role_picker_user_id.clone(),
+      role_picker_open: role_picker_open.clone(),
+      role_picker_anchor: role_picker_anchor.clone(),
+    }))
+    .open(role_picker_open.clone())
+    .target(Root),
+  );
 
   if members.is_empty() {
     card = card.child(empty_row(&ctx.t("server_settings.members.empty")));
   } else {
     let mut list = Column::new().width(Dimension::Pct(100.0)).spacing(8.0);
     for member in members {
-      list = list.child(member_row(
-        ctx,
-        member,
-        info.user_id,
-        info.role,
-        admin_action,
-        admin_pending,
-        role_picker_user_id,
-        role_picker_open,
-        role_picker_anchor,
+      let key = format!("settings-member-{}", member.user.user_id);
+      list = list.child(ctx.mount_keyed::<MemberRow>(
+        &key,
+        MemberRowProps {
+          member,
+          local_user_id: info.user_id,
+          local_role: info.role,
+          admin_action: admin_action.clone(),
+          admin_pending,
+          role_picker_user_id: role_picker_user_id.clone(),
+          role_picker_open: role_picker_open.clone(),
+          role_picker_anchor: role_picker_anchor.clone(),
+        },
       ));
     }
     card = card.child(list);
@@ -1644,7 +1627,7 @@ fn members_card(
   card.into()
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct ActiveMember {
   user: LobbyUser,
   channels: Vec<String>,
@@ -1680,6 +1663,118 @@ fn active_members(lobby: &LobbyState) -> Vec<ActiveMember> {
   }
 
   members.into_values().collect()
+}
+
+#[derive(Clone)]
+struct MemberRolePickerModalProps {
+  members: Vec<ActiveMember>,
+  local_role: Role,
+  admin_action: ServerAdminAction,
+  admin_pending: bool,
+  role_picker_user_id: Signal<Option<UserId>>,
+  role_picker_open: Signal<bool>,
+  role_picker_anchor: Signal<Option<(f32, f32)>>,
+}
+
+impl PartialEq for MemberRolePickerModalProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.members == other.members && self.local_role == other.local_role && self.admin_pending == other.admin_pending
+  }
+}
+
+impl DevtoolsInspectable for MemberRolePickerModalProps {}
+
+struct MemberRolePickerModal;
+
+impl Component for MemberRolePickerModal {
+  type Props = MemberRolePickerModalProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let selected_member = props.role_picker_user_id.get().and_then(|user_id| {
+      props
+        .members
+        .iter()
+        .find(|member| member.user.user_id == user_id)
+        .cloned()
+    });
+
+    if props.role_picker_open.get_untracked() && selected_member.is_none() {
+      close_member_role_picker(
+        props.role_picker_user_id.clone(),
+        props.role_picker_open.clone(),
+        props.role_picker_anchor.clone(),
+      );
+    }
+
+    let Some(member) = selected_member else {
+      return Column::new().into();
+    };
+
+    member_role_picker_overlay(
+      ctx,
+      member.user.user_id,
+      member.user.role,
+      props.local_role,
+      &props.admin_action,
+      props.role_picker_user_id,
+      props.role_picker_open,
+      props.role_picker_anchor,
+      props.admin_pending,
+    )
+  }
+}
+
+#[derive(Clone)]
+struct MemberRowProps {
+  member: ActiveMember,
+  local_user_id: UserId,
+  local_role: Role,
+  admin_action: ServerAdminAction,
+  admin_pending: bool,
+  role_picker_user_id: Signal<Option<UserId>>,
+  role_picker_open: Signal<bool>,
+  role_picker_anchor: Signal<Option<(f32, f32)>>,
+}
+
+impl PartialEq for MemberRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.member == other.member
+      && self.local_user_id == other.local_user_id
+      && self.local_role == other.local_role
+      && self.admin_pending == other.admin_pending
+  }
+}
+
+impl DevtoolsInspectable for MemberRowProps {}
+
+struct MemberRow;
+
+impl Component for MemberRow {
+  type Props = MemberRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    member_row(
+      ctx,
+      props.member,
+      props.local_user_id,
+      props.local_role,
+      &props.admin_action,
+      props.admin_pending,
+      &props.role_picker_user_id,
+      &props.role_picker_open,
+      &props.role_picker_anchor,
+    )
+  }
 }
 
 fn member_row(
