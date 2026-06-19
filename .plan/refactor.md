@@ -515,6 +515,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved stream watch pending reads into cards:
   - removed watch-action pending reads from stream browser grid and watched-stream switcher parents;
   - scoped those reads to the mounted stream card components that render the clickable watch target.
+- Moved voice watch pending reads into user rows:
+  - removed the channel-group watch-action pending subscription;
+  - scoped pending reads to mounted streaming user rows that can render the watch action.
 
 ## Non-Goals
 

@@ -421,9 +421,6 @@ fn channel_group(ctx: &mut Ctx, props: ChannelGroupProps) -> Element {
     selected: channel.selected,
   };
   let watch_stream = props.watch_stream.clone();
-  let watch_stream_available = watch_stream
-    .as_ref()
-    .is_some_and(|action| !action.state().get().is_pending());
   let context_user_id = props.context_user_id.clone();
   let context_menu_open = props.context_menu_open.clone();
   let context_menu_anchor = props.context_menu_anchor.clone();
@@ -445,7 +442,6 @@ fn channel_group(ctx: &mut Ctx, props: ChannelGroupProps) -> Element {
     |row| row.user.user_id,
     move |ctx, row| {
       ctx.mount::<ChannelUserRow>(ChannelUserRowProps {
-        watch_stream_available: row.streaming && watch_stream_available,
         model: row,
         watch_stream: watch_stream.clone(),
         context_user_id: context_user_id.clone(),
@@ -582,7 +578,6 @@ fn channel_row(
 struct ChannelUserRowProps {
   model: VoiceUserRowModel,
   watch_stream: Option<WatchStreamAction>,
-  watch_stream_available: bool,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
@@ -594,7 +589,6 @@ impl PartialEq for ChannelUserRowProps {
   fn eq(&self, other: &Self) -> bool {
     self.model == other.model
       && self.watch_stream.is_some() == other.watch_stream.is_some()
-      && self.watch_stream_available == other.watch_stream_available
       && self.debug_user_ids == other.debug_user_ids
   }
 }
@@ -617,7 +611,6 @@ impl Component for ChannelUserRow {
       ctx,
       &props.model,
       props.watch_stream.as_ref(),
-      props.watch_stream_available,
       props.context_user_id,
       props.context_menu_open,
       props.context_menu_anchor,
@@ -631,7 +624,6 @@ fn channel_user_row_view(
   ctx: &mut Ctx,
   model: &VoiceUserRowModel,
   watch_stream: Option<&WatchStreamAction>,
-  watch_stream_available: bool,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
@@ -647,7 +639,11 @@ fn channel_user_row_view(
   let open_menu = context_menu_open.clone();
   let open_anchor = context_menu_anchor.clone();
   let open_role_menu = role_menu_user_id.clone();
-  let watch_action = watch_stream_available.then_some(watch_stream).flatten().cloned();
+  let watch_action = streaming
+    .then_some(watch_stream)
+    .flatten()
+    .filter(|action| !action.state().get().is_pending())
+    .cloned();
   let close_context = context_user_id.clone();
   let close_menu = context_menu_open.clone();
   let close_anchor = context_menu_anchor.clone();
