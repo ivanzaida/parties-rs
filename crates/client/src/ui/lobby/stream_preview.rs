@@ -277,6 +277,40 @@ fn preview_image(
 }
 
 fn close_preview_button(ctx: &mut Ctx, stop_watching: &StopWatchingAction) -> Element {
+  ctx.mount::<ClosePreviewButton>(ClosePreviewButtonProps {
+    stop_watching: stop_watching.clone(),
+  })
+}
+
+#[derive(Clone)]
+struct ClosePreviewButtonProps {
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for ClosePreviewButtonProps {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
+}
+
+impl DevtoolsInspectable for ClosePreviewButtonProps {}
+
+struct ClosePreviewButton;
+
+impl Component for ClosePreviewButton {
+  type Props = ClosePreviewButtonProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    close_preview_button_content(ctx, props.stop_watching)
+  }
+}
+
+fn close_preview_button_content(ctx: &mut Ctx, stop_watching: StopWatchingAction) -> Element {
   let pending = stop_watching.state().get().is_pending();
   let action = stop_watching.clone();
   let mut button = Row::new()

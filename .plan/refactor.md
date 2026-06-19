@@ -497,6 +497,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed watched-stream switcher rendering:
   - mounted each stream switcher card as a keyed component with stream, selection, and click-enabled props;
   - read watch-action pending state once at the switcher boundary instead of inside every card.
+- Narrowed floating preview close control:
+  - mounted the close button as its own component;
+  - scoped stop-watching pending-state reads to the button instead of the full floating preview render.
 
 ## Non-Goals
 
