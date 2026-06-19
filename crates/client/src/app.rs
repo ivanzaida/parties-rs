@@ -37,8 +37,8 @@ use crate::{
   session::ServerSession,
   storage::{
     AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppFocusedSettingsSync, AppHotkeySettings, AppLocale,
-    AppSentryReportsEnabled, AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings, AppVideoSettings,
-    Storage, StoredServer, UserAudioPreferences,
+    AppRuntimeSettings, AppSentryReportsEnabled, AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings,
+    AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -81,6 +81,7 @@ pub struct App {
   audio_settings: Store<AppAudioSettings>,
   stream_settings: Store<AppStreamSettings>,
   video_settings: Store<AppVideoSettings>,
+  runtime_settings: Store<AppRuntimeSettings>,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
   user_audio_preferences: Store<UserAudioPreferences>,
@@ -141,6 +142,7 @@ impl Component for App {
     let audio_settings = ctx.store(audio_settings(&settings.get()));
     let stream_settings = ctx.store(stream_settings(&settings.get()));
     let video_settings = ctx.store(video_settings(&settings.get()));
+    let runtime_settings = ctx.store(AppRuntimeSettings::from(&settings.get()));
     let servers = ctx.store(startup_servers);
     let identity = ctx.store(startup_identity);
     let user_audio_preferences = ctx.store(startup_user_audio_preferences);
@@ -155,6 +157,7 @@ impl Component for App {
       audio_settings.clone(),
       stream_settings.clone(),
       video_settings.clone(),
+      runtime_settings.clone(),
     );
     ctx.watch(&storage, {
       let settings = settings.clone();
@@ -275,6 +278,7 @@ impl Component for App {
       audio_settings,
       stream_settings,
       video_settings,
+      runtime_settings,
       servers,
       identity,
       user_audio_preferences,
@@ -341,18 +345,25 @@ impl Component for App {
     } else {
       self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
-    let locale = self.locale.with(|settings| settings.value.clone());
-    ctx.i18n().set_locale(locale);
-    logger::apply_sentry_reports_enabled(self.sentry_reports_enabled.with(|settings| settings.value));
-    let audio_settings = self.audio_settings.get();
-    self.session.set_notification_audio_settings(&audio_settings);
+    let runtime_settings = self.runtime_settings.get();
+    ctx.i18n().set_locale(runtime_settings.locale.clone());
+    logger::apply_sentry_reports_enabled(runtime_settings.sentry_reports_enabled);
+    let notification_audio_settings = AppAudioSettings {
+      audio_output_device: runtime_settings.notification_audio_output_device.clone(),
+      notification_volume: runtime_settings.notification_volume,
+      notification_sound_overrides: runtime_settings.notification_sound_overrides.clone(),
+      ..AppAudioSettings::default()
+    };
     self
       .session
-      .set_video_hardware_decoding(self.video_settings.with(|settings| settings.video_hardware_decoding));
-    let voice_hotkeys = self.hotkey_settings.get();
+      .set_notification_audio_settings(&notification_audio_settings);
+    self
+      .session
+      .set_video_hardware_decoding(runtime_settings.video_hardware_decoding);
+    let voice_hotkeys = runtime_settings.hotkey_settings.clone();
     let mute_hotkey = voice_hotkeys.toggle_mute.clone();
     let deafen_hotkey = voice_hotkeys.toggle_deafen.clone();
-    let push_to_talk_enabled = self.audio_settings.with(|settings| settings.push_to_talk);
+    let push_to_talk_enabled = runtime_settings.push_to_talk;
     let push_to_talk_hotkey = voice_hotkeys.push_to_talk.clone();
     let app_focused = ctx.window().is_focused;
     let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
@@ -463,6 +474,7 @@ impl App {
       self.audio_settings.clone(),
       self.stream_settings.clone(),
       self.video_settings.clone(),
+      self.runtime_settings.clone(),
     )
   }
 

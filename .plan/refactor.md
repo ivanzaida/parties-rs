@@ -614,13 +614,14 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - stopped providing `Store<AppSettings>` directly to route components.
 - Moved app-root full settings side effects to focused stores:
   - settings writes and legacy import sync now refresh focused settings stores directly;
-  - root render reads focused locale, sentry, audio, video, and hotkey stores instead of the full persisted settings record.
+  - added an app-root runtime settings store for locale, sentry consent, notification playback, video decoding, and hotkey/PTT fields;
+  - root render reads the runtime settings store instead of the full persisted settings record or broader audio/video stores.
 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
-- Full `Store<AppSettings>` is now app-root/internal plumbing only; route components use focused stores, `AppSettingsUpdater`, or `AppStoreSync`, and app-root render reads only focused settings values.
+- Full `Store<AppSettings>` is now app-root/internal plumbing only; route components use focused stores, `AppSettingsUpdater`, or `AppStoreSync`, and app-root render reads only the root runtime settings store.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
 - Saved-server storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.
 - Identity storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.

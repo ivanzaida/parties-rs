@@ -154,6 +154,18 @@ pub struct AppAudioSettings {
   pub push_to_talk_release_delay_ms: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
+pub struct AppRuntimeSettings {
+  pub locale: String,
+  pub sentry_reports_enabled: Option<bool>,
+  pub notification_audio_output_device: String,
+  pub notification_volume: i32,
+  pub notification_sound_overrides: String,
+  pub video_hardware_decoding: bool,
+  pub push_to_talk: bool,
+  pub hotkey_settings: AppHotkeySettings,
+}
+
 impl Default for AppStreamSettings {
   fn default() -> Self {
     let settings = AppSettings::default();
@@ -207,6 +219,31 @@ impl From<&AppSettings> for AppAudioSettings {
       voice_activation_threshold: settings.voice_activation_threshold,
       push_to_talk: settings.push_to_talk,
       push_to_talk_release_delay_ms: settings.push_to_talk_release_delay_ms,
+    }
+  }
+}
+
+impl Default for AppRuntimeSettings {
+  fn default() -> Self {
+    Self::from(&AppSettings::default())
+  }
+}
+
+impl From<&AppSettings> for AppRuntimeSettings {
+  fn from(settings: &AppSettings) -> Self {
+    Self {
+      locale: settings.locale.clone(),
+      sentry_reports_enabled: settings.sentry_reports_enabled,
+      notification_audio_output_device: settings.audio_output_device.clone(),
+      notification_volume: settings.notification_volume,
+      notification_sound_overrides: settings.notification_sound_overrides.clone(),
+      video_hardware_decoding: settings.video_hardware_decoding,
+      push_to_talk: settings.push_to_talk,
+      hotkey_settings: AppHotkeySettings {
+        push_to_talk: settings.hotkey_push_to_talk.clone(),
+        toggle_mute: settings.hotkey_toggle_mute.clone(),
+        toggle_deafen: settings.hotkey_toggle_deafen.clone(),
+      },
     }
   }
 }
@@ -291,6 +328,7 @@ pub struct AppFocusedSettingsSync {
   audio_settings: Store<AppAudioSettings>,
   stream_settings: Store<AppStreamSettings>,
   video_settings: Store<AppVideoSettings>,
+  runtime_settings: Store<AppRuntimeSettings>,
 }
 
 impl AppFocusedSettingsSync {
@@ -303,6 +341,7 @@ impl AppFocusedSettingsSync {
     audio_settings: Store<AppAudioSettings>,
     stream_settings: Store<AppStreamSettings>,
     video_settings: Store<AppVideoSettings>,
+    runtime_settings: Store<AppRuntimeSettings>,
   ) -> Self {
     Self {
       display_name,
@@ -313,6 +352,7 @@ impl AppFocusedSettingsSync {
       audio_settings,
       stream_settings,
       video_settings,
+      runtime_settings,
     }
   }
 
@@ -375,6 +415,11 @@ impl AppFocusedSettingsSync {
     let next_video_settings = AppVideoSettings::from(settings);
     if self.video_settings.with(|current| current != &next_video_settings) {
       self.video_settings.set(next_video_settings);
+    }
+
+    let next_runtime_settings = AppRuntimeSettings::from(settings);
+    if self.runtime_settings.with(|current| current != &next_runtime_settings) {
+      self.runtime_settings.set(next_runtime_settings);
     }
   }
 }
