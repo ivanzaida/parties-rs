@@ -136,7 +136,7 @@ impl StreamRuntime {
       return;
     };
 
-    tracing::info!(target: "video", "[video] waiting to restore watched stream after reconnect: user={user_id}");
+    tracing::debug!(target: "video", "[video] waiting to restore watched stream after reconnect: user={user_id}");
     let started_at = Instant::now();
     loop {
       if !self.pending_reconnect_watch_matches(user_id) {
@@ -148,24 +148,24 @@ impl StreamRuntime {
           return;
         }
         if let Err(error) = request_reconnect_stream_view(session.server(), user_id).await {
-          tracing::warn!(target: "video", "[video] failed to restore watched stream after reconnect: user={user_id} error={error}");
+          tracing::debug!(target: "video", "[video] failed to restore watched stream after reconnect: user={user_id} error={error}");
           return;
         }
 
         session.set_watching_user(Some(user_id));
         if let Err(error) = request_reconnect_stream_keyframe(session.server(), user_id).await {
-          tracing::warn!(target: "video", "[video] restored stream keyframe request failed after reconnect: user={user_id} error={error}");
+          tracing::debug!(target: "video", "[video] restored stream keyframe request failed after reconnect: user={user_id} error={error}");
         }
         if let Err(error) = session.ensure_stream_audio_playback(settings) {
-          tracing::warn!(target: "audio::decode", "[audio:decode] stream playback unavailable after reconnect restore: {error}");
+          tracing::debug!(target: "audio::decode", "[audio:decode] stream playback unavailable after reconnect restore: {error}");
         }
-        tracing::info!(target: "video", "[video] restored watched stream after reconnect: user={user_id}");
+        tracing::debug!(target: "video", "[video] restored watched stream after reconnect: user={user_id}");
         return;
       }
 
       if started_at.elapsed() >= timeout {
         if self.take_pending_reconnect_watch_if_matches(user_id) {
-          tracing::info!(target: "video",
+          tracing::debug!(target: "video",
             "[video] skipped watched stream restore after reconnect: user={user_id} reason=stream not advertised"
           );
         }
@@ -181,7 +181,7 @@ async fn request_reconnect_stream_view(server: Option<Arc<Server>>, user_id: Use
   let Some(server) = server else {
     return Err("no connected server".to_owned());
   };
-  tracing::info!(target: "video", "[video] requesting reconnect stream restore for user {user_id}");
+  tracing::debug!(target: "video", "[video] requesting reconnect stream restore for user {user_id}");
   server
     .view_screen_share(user_id)
     .await
@@ -198,7 +198,7 @@ async fn request_reconnect_stream_keyframe(server: Option<Arc<Server>>, user_id:
       tracing::debug!(target: "video", "[video] keyframe requested on restored stream for user {user_id}");
     }
     Err(stream_error) => {
-      tracing::warn!(target: "video",
+      tracing::debug!(target: "video",
         "[video] restored stream keyframe request failed for user {user_id}: {stream_error}; trying datagram"
       );
       if let Err(datagram_error) = server.request_keyframe(user_id) {

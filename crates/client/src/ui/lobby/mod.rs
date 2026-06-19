@@ -341,7 +341,7 @@ impl Component for LobbyShellModelSubscriber {
     if let Some((snapshot_generation, model)) = self.subscription.next_model(ctx, props.session.clone(), |snapshot| {
       lobby_shell_model(&snapshot.lobby)
     }) {
-      tracing::info!(
+      tracing::debug!(
         target: "lobby::state",
         "[lobby:state] shell subscriber applied lobby update generation={} empty_text_channels={} disconnected={}",
         snapshot_generation,

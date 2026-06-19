@@ -529,7 +529,7 @@ fn save_update_resume_state(storage: Option<&Storage>, session: Option<&ServerSe
 
   match storage.save_update_resume_state(&state) {
     Ok(()) => {
-      tracing::info!(
+      tracing::debug!(
         target: "updater",
         "[updater] saved restart resume target: server={} voice_channel={:?} muted={} deafened={}",
         state.server_address,
@@ -539,7 +539,7 @@ fn save_update_resume_state(storage: Option<&Storage>, session: Option<&ServerSe
       );
     }
     Err(error) => {
-      tracing::warn!(target: "updater", "[updater] failed to save restart resume target: {error}");
+      tracing::debug!(target: "updater", "[updater] failed to save restart resume target: {error}");
     }
   }
 }

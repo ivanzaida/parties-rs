@@ -244,7 +244,7 @@ impl Server {
     let bytes = frame.encode()?;
     let log_control = should_log_control_frame(frame.ty);
     if log_control {
-      tracing::info!(
+      tracing::debug!(
         target: "network::control",
         "[network/control] sending control frame: type={:?} payload_bytes={}",
         frame.ty,
@@ -253,7 +253,7 @@ impl Server {
     }
     if let Err(error) = self.control_send.lock().await.write_all(&bytes).await {
       if log_control {
-        tracing::warn!(
+        tracing::debug!(
           target: "network::control",
           "[network/control] failed to send control frame: type={:?} error={error}",
           frame.ty
@@ -262,7 +262,7 @@ impl Server {
       return Err(error.into());
     }
     if log_control {
-      tracing::info!(target: "network::control", "[network/control] sent control frame: type={:?}", frame.ty);
+      tracing::debug!(target: "network::control", "[network/control] sent control frame: type={:?}", frame.ty);
     }
     Ok(())
   }
@@ -290,7 +290,7 @@ impl Server {
 
       let raw_ty = u16::from_le_bytes([msg_buf[0], msg_buf[1]]);
       let Some(ty) = ControlMessageType::from_u16(raw_ty) else {
-        tracing::warn!(target: "network", "[network] ignoring unknown control message type 0x{raw_ty:04x}: payload_bytes={}", msg_len - 2);
+        tracing::debug!(target: "network", "[network] ignoring unknown control message type 0x{raw_ty:04x}: payload_bytes={}", msg_len - 2);
         continue;
       };
 
@@ -302,7 +302,7 @@ impl Server {
       match S2C::decode(&frame) {
         Ok(message) => {
           if should_log_control_frame(frame.ty) {
-            tracing::info!(
+            tracing::debug!(
               target: "network::control",
               "[network/control] received control frame: type={:?} payload_bytes={}",
               frame.ty,
@@ -312,7 +312,7 @@ impl Server {
           return Ok(message);
         }
         Err(DecodeError::InvalidMessageType(value)) => {
-          tracing::warn!(target: "network", "[network] ignoring unsupported server control message type 0x{value:04x}: payload_bytes={}", msg_len - 2);
+          tracing::debug!(target: "network", "[network] ignoring unsupported server control message type 0x{value:04x}: payload_bytes={}", msg_len - 2);
         }
         Err(error) => return Err(error.into()),
       }
@@ -514,18 +514,18 @@ impl Server {
   }
 
   pub async fn run_datagram_demuxer(&self) {
-    tracing::info!(target: "network", "[network] datagram demuxer started");
+    tracing::debug!(target: "network", "[network] datagram demuxer started");
     loop {
       match self.connection.read_datagram().await {
         Ok(data) => {
           let received_at = Instant::now();
           match decode_datagram(data) {
             Ok(datagram) => self.dispatch_datagram(datagram, received_at).await,
-            Err(error) => tracing::warn!(target: "network", "[network] ignored malformed datagram: {error}"),
+            Err(error) => tracing::debug!(target: "network", "[network] ignored malformed datagram: {error}"),
           }
         }
         Err(error) => {
-          tracing::warn!(target: "network", "[network] datagram demuxer stopped: {error}");
+          tracing::debug!(target: "network", "[network] datagram demuxer stopped: {error}");
           self.connection.close(VarInt::from_u32(0), b"datagram demuxer stopped");
           self.pending_audio_notify.notify_waiters();
           self.pending_video_notify.notify_waiters();

@@ -43,14 +43,6 @@ impl LobbyModelSubscription {
                 true,
               ),
             };
-            tracing::info!(
-              target: "lobby::voice",
-              "[lobby:voice] lobby subscription stream item: model={} snapshot_generation={} selected={:?} selected_users={}",
-              std::any::type_name::<M>(),
-              snapshot.generation,
-              snapshot.lobby.selected_channel_id,
-              snapshot.lobby.users.len()
-            );
             if !emitter.emit((snapshot.generation, select(&snapshot))) {
               break;
             }
@@ -68,12 +60,6 @@ impl LobbyModelSubscription {
       if self.applied_generation.get_untracked() == Some(snapshot_generation) {
         return None;
       }
-      tracing::info!(
-        target: "lobby::voice",
-        "[lobby:voice] lobby subscription model applied: model={} snapshot_generation={}",
-        std::any::type_name::<M>(),
-        snapshot_generation
-      );
       self.applied_generation.set(Some(snapshot_generation));
       return Some((snapshot_generation, model));
     }

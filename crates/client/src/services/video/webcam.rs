@@ -55,7 +55,7 @@ mod windows_impl {
       };
 
       let selected = configure_reader_output(&reader, u32::from(width), u32::from(height), fps)?;
-      tracing::info!(target: "video",
+      tracing::debug!(target: "video",
         "[video] webcam capture ready: source={} format={} size={}x{} fps={} requested={}x{}@{} backend=MediaFoundation",
         source_id,
         selected.format.label(),
@@ -66,7 +66,7 @@ mod windows_impl {
         height,
         fps
       );
-      tracing::info!(target: "video", "[video] webcam source link selected: {value}");
+      tracing::debug!(target: "video", "[video] webcam source link selected: {value}");
 
       Ok(Self {
         _mf,

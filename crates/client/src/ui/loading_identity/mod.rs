@@ -254,18 +254,18 @@ async fn restore_update_resume_after_restart(
     Ok(Some(resume)) => resume,
     Ok(None) => return Ok(false),
     Err(error) => {
-      tracing::warn!(target: "updater", "[updater] failed to load restart resume target: {error}");
+      tracing::debug!(target: "updater", "[updater] failed to load restart resume target: {error}");
       return Ok(false);
     }
   };
   let Some(session) = session else {
-    tracing::warn!(target: "updater", "[updater] skipped restart resume: no session context");
+    tracing::debug!(target: "updater", "[updater] skipped restart resume: no session context");
     return Ok(false);
   };
   let server = match storage.load_server(&resume.server_address) {
     Ok(Some(server)) => server,
     Ok(None) => {
-      tracing::warn!(
+      tracing::debug!(
         target: "updater",
         "[updater] skipped restart resume: saved server missing address={}",
         resume.server_address
@@ -273,7 +273,7 @@ async fn restore_update_resume_after_restart(
       return Ok(false);
     }
     Err(error) => {
-      tracing::warn!(target: "updater", "[updater] failed to load restart resume server: {error}");
+      tracing::debug!(target: "updater", "[updater] failed to load restart resume server: {error}");
       return Ok(false);
     }
   };
@@ -284,7 +284,7 @@ async fn restore_update_resume_after_restart(
     server.display_name.clone()
   };
 
-  tracing::info!(
+  tracing::debug!(
     target: "updater",
     "[updater] restoring server after update restart: address={} voice_channel={:?}",
     server.address,
@@ -300,11 +300,11 @@ async fn restore_update_resume_after_restart(
   )
   .await
   {
-    tracing::warn!(target: "updater", "[updater] failed to restore server after update restart: {error}");
+    tracing::debug!(target: "updater", "[updater] failed to restore server after update restart: {error}");
     return Ok(false);
   }
   if session.tofu_warning().is_some() {
-    tracing::warn!(
+    tracing::debug!(
       target: "updater",
       "[updater] paused restore after update restart: server fingerprint changed address={}",
       server.address
@@ -316,11 +316,11 @@ async fn restore_update_resume_after_restart(
     return Ok(true);
   };
   let Some(connected_server) = session.server() else {
-    tracing::warn!(target: "updater", "[updater] skipped voice channel restore after update restart: no connected server");
+    tracing::debug!(target: "updater", "[updater] skipped voice channel restore after update restart: no connected server");
     return Ok(true);
   };
   if let Err(error) = connected_server.join_channel(channel_id).await {
-    tracing::warn!(
+    tracing::debug!(
       target: "updater",
       "[updater] failed to rejoin voice channel after update restart: channel={} error={}",
       channel_id,
@@ -335,7 +335,7 @@ async fn restore_update_resume_after_restart(
   }
   session.select_channel(channel_id);
   if let Err(error) = connected_server.update_voice_state(muted, deafened).await {
-    tracing::warn!(
+    tracing::debug!(
       target: "updater",
       "[updater] failed to restore voice state after update restart: channel={} error={}",
       channel_id,
@@ -345,14 +345,14 @@ async fn restore_update_resume_after_restart(
   }
   session.set_local_voice_state(muted, deafened);
   match session.start_voice(settings, "") {
-    Ok(()) => tracing::info!(
+    Ok(()) => tracing::debug!(
       target: "updater",
       "[updater] restored voice channel after update restart: channel={} muted={} deafened={}",
       channel_id,
       muted,
       deafened
     ),
-    Err(error) => tracing::warn!(
+    Err(error) => tracing::debug!(
       target: "updater",
       "[updater] failed to restart voice capture after update restart: channel={} error={}",
       channel_id,

@@ -320,7 +320,7 @@ impl VideoFrameSink {
       Ok(Some(surface)) => {
         let surface = Arc::new(surface);
         let native = surface.native_image_data();
-        tracing::info!(target: "video::decode",
+        tracing::debug!(target: "video::decode",
           "[video:decode] opened shared NV12 planes DX12 surface: user={user_id} image={} y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x} size={}x{} cache_entries={}",
           native.id(),
           width,
@@ -336,11 +336,11 @@ impl VideoFrameSink {
         Some(surface)
       }
       Ok(None) => {
-        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: DX12 video surface allocator is not ready");
+        tracing::debug!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: DX12 video surface allocator is not ready");
         None
       }
       Err(error) => {
-        tracing::warn!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x} size={}x{} error={error}", width, height);
+        tracing::debug!(target: "video::decode", "[video:decode] failed to open shared NV12 planes surface: y_handle=0x{y_shared_handle:x} uv_handle=0x{uv_shared_handle:x} size={}x{} error={error}", width, height);
         None
       }
     }
@@ -376,7 +376,7 @@ impl VideoFrameSink {
       }
       Ok(None) => None,
       Err(error) => {
-        tracing::warn!(target: "video::decode", "[video:decode] failed to allocate DX12 video surface: {error}");
+        tracing::debug!(target: "video::decode", "[video:decode] failed to allocate DX12 video surface: {error}");
         None
       }
     }
@@ -423,11 +423,11 @@ impl VideoFrameSink {
     };
     {
       if replace {
-        tracing::info!(target: "video::decode",
+        tracing::debug!(target: "video::decode",
           "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
         );
       } else if bumped_version == 1 || bumped_version % 120 == 0 {
-        tracing::info!(target: "video::decode",
+        tracing::debug!(target: "video::decode",
           "[video:decode] updating DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=false"
         );
       }
@@ -436,7 +436,7 @@ impl VideoFrameSink {
     should_publish_update |= self.update_share_metadata(sender_id, ScreenShareMetadata { codec, width, height });
 
     if should_publish_update && (bumped_version == 1 || bumped_version % 120 == 0) {
-      tracing::info!(target: "video::decode",
+      tracing::debug!(target: "video::decode",
         "[video:decode] publishing lobby update for DX12 frame metadata: user={sender_id} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} forced={should_publish_update}"
       );
     }

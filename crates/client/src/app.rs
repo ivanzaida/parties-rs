@@ -448,7 +448,7 @@ impl App {
     }
     self.last_full_screen.set(full_screen);
     if let Err(error) = ctx.set_persistent_value("window.full_screen", full_screen) {
-      tracing::warn!(target: "window::state", "failed to save full screen state: {error}");
+      tracing::debug!(target: "window::state", "failed to save full screen state: {error}");
     }
   }
 }

@@ -106,21 +106,21 @@ pub(super) static DX12_NATIVE_STREAM_DECODE_SUPPORTED: std::sync::LazyLock<bool>
 
   match *WINDOWS_DEFAULT_DXGI_ADAPTER_VENDOR_ID {
     Some(WINDOWS_NVIDIA_VENDOR_ID) => {
-      tracing::info!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is NVIDIA, NVDEC interop is allowed");
+      tracing::debug!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is NVIDIA, NVDEC interop is allowed");
       true
     }
     Some(WINDOWS_AMD_VENDOR_ID) => {
-      tracing::info!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is AMD, AMF shared NV12 planes interop is allowed");
+      tracing::debug!(target: "video::decode", "[video:decode] DX12 native stream decode enabled: default DXGI adapter is AMD, AMF shared NV12 planes interop is allowed");
       true
     }
     Some(vendor_id) => {
-      tracing::warn!(target: "video::decode",
+      tracing::debug!(target: "video::decode",
         "[video:decode] DX12 native stream decode disabled: default DXGI adapter vendor_id=0x{vendor_id:04x} is not NVIDIA or AMD"
       );
       false
     }
     None => {
-      tracing::warn!(target: "video::decode", "[video:decode] DX12 native stream decode disabled: failed to resolve default DXGI adapter");
+      tracing::debug!(target: "video::decode", "[video:decode] DX12 native stream decode disabled: failed to resolve default DXGI adapter");
       false
     }
   }
@@ -278,7 +278,7 @@ pub(super) fn run_video_receiver<S>(
 ) where
   S: VideoReceiverSession,
 {
-  tracing::info!(target: "video", "[video] receiver thread started");
+  tracing::debug!(target: "video", "[video] receiver thread started");
   let queue = session.reset_video_packet_queue();
   let reader_thread = {
     let server = server.clone();
@@ -300,12 +300,12 @@ pub(super) fn run_video_receiver<S>(
               session.handle_video_control_packet(control);
             }
             Err(ServerError::Protocol(error)) => {
-              tracing::warn!(target: "video", "[video] ignored malformed video packet: {error}");
+              tracing::debug!(target: "video", "[video] ignored malformed video packet: {error}");
               continue;
             }
             Err(error) => {
               let error = error.to_string();
-              tracing::warn!(
+              tracing::debug!(
                 target: "video",
                 "[video] video stream reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
               );
@@ -338,12 +338,12 @@ pub(super) fn run_video_receiver<S>(
             }
             Ok(None) => break,
             Err(ServerError::Protocol(error)) => {
-              tracing::warn!(target: "video", "[video] ignored malformed video datagram: {error}");
+              tracing::debug!(target: "video", "[video] ignored malformed video datagram: {error}");
               continue;
             }
             Err(error) => {
               let error = error.to_string();
-              tracing::warn!(
+              tracing::debug!(
                 target: "video",
                 "[video] video datagram reader transport error; waiting for keepalive/control to confirm disconnect: {error}"
               );
@@ -409,7 +409,7 @@ pub(super) fn run_video_receiver<S>(
         if let Some(config) = session.video_decode_config_for_share(user_id) {
           if let Err(error) = decode_pool.prewarm(user_id, config) {
             let error = error.to_string();
-            tracing::warn!(target: "video::decode", "[video:decode] failed to prewarm decoder for user {user_id}: {error}");
+            tracing::debug!(target: "video::decode", "[video:decode] failed to prewarm decoder for user {user_id}: {error}");
             if native_decoder_unavailable_error(&error) {
               session.set_video_error(user_id, native_decoder_unavailable_stream_error(error));
             }
@@ -438,7 +438,7 @@ pub(super) fn run_video_receiver<S>(
           .find(|packet| packet.sender_id == user_id)
           .map(|packet| &packet.frame);
         if sample_frame.is_none() {
-          tracing::warn!(target: "video",
+          tracing::debug!(target: "video",
             "[video] watched stream packet dropped but no replacement packet was queued: user={user_id} dropped={}",
             dropped_senders.get(&user_id).copied().unwrap_or_default()
           );
@@ -476,7 +476,7 @@ pub(super) fn run_video_receiver<S>(
           );
         }
       }
-      tracing::warn!(target: "video",
+      tracing::debug!(target: "video",
         "[video] dropping stale video backlog: queued={} dropped={} users={}",
         batch.len(),
         dropped_count,
@@ -546,7 +546,7 @@ pub(super) fn run_video_receiver<S>(
         }
         awaiting_keyframes.remove(&packet.sender_id);
         decode_pool.clear_user_failures(packet.sender_id);
-        tracing::info!(target: "video::decode",
+        tracing::debug!(target: "video::decode",
           "[video:decode] catch-up keyframe received for user {}: frame={}",
           packet.sender_id,
           packet.frame.frame_number
@@ -717,7 +717,7 @@ pub(super) fn run_video_receiver<S>(
             awaiting_decoded_output.insert(sender_id);
           }
           if !had_known_decoder_failure && should_log_video_count(received_count) {
-            tracing::info!(target: "video::decode",
+            tracing::debug!(target: "video::decode",
               "[video:decode] received frame produced no decoded output: output_requested={output}"
             );
           }
@@ -761,7 +761,7 @@ pub(super) fn run_video_receiver<S>(
   queue.close();
   drop(reader_thread);
   drop(datagram_reader_thread);
-  tracing::info!(target: "video", "[video] receiver thread stopping");
+  tracing::debug!(target: "video", "[video] receiver thread stopping");
 }
 
 #[cfg(target_os = "windows")]
@@ -821,7 +821,7 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
       }
       Ok(None) => {
         if should_log_video_count(received_count) {
-          tracing::info!(target: "video::decode", "[video:decode] received frame produced no shared NV12 planes decoded output yet");
+          tracing::debug!(target: "video::decode", "[video:decode] received frame produced no shared NV12 planes decoded output yet");
         }
         return WindowsNativeVideoDecode::Pending;
       }
@@ -864,7 +864,7 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
       WindowsNativeVideoDecode::Presented
     } else {
       if should_log_video_count(received_count) {
-        tracing::info!(target: "video::decode", "[video:decode] received frame produced no DX12 decoded output yet");
+        tracing::debug!(target: "video::decode", "[video:decode] received frame produced no DX12 decoded output yet");
       }
       WindowsNativeVideoDecode::Pending
     }
@@ -1013,13 +1013,13 @@ fn request_keyframe_for(
   }
   match runtime.block_on(server.request_keyframe_stream(user_id)) {
     Ok(()) => {
-      tracing::info!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
+      tracing::debug!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
     }
     Err(stream_error) => {
-      tracing::warn!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
+      tracing::debug!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
       match server.request_keyframe(user_id) {
         Ok(()) => {
-          tracing::info!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
+          tracing::debug!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
         }
         Err(datagram_error) => {
           tracing::warn!(target: "video", "[video] datagram keyframe request failed for user {user_id}: reason={reason} error={datagram_error}");
@@ -1127,7 +1127,7 @@ impl VideoDecodePool {
     let decoder = VideoDecoder::start(config.clone())?;
     let start_elapsed = start.elapsed();
     let backend = decoder.backend();
-    tracing::info!(target: "video::decode",
+    tracing::debug!(target: "video::decode",
       "[video:decode] decoder backend prewarmed for user {user_id}: backend={} codec={:?} size={}x{} init_ms={:.1}",
       native_video_backend_label(backend),
       config.codec,
@@ -1167,7 +1167,7 @@ impl VideoDecodePool {
         Ok(decoder) => {
           let start_elapsed = start.elapsed();
           let backend = decoder.backend();
-          tracing::info!(target: "video::decode",
+          tracing::debug!(target: "video::decode",
             "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
@@ -1179,7 +1179,7 @@ impl VideoDecodePool {
           self.decoders.insert(packet.sender_id, decoder);
         }
         Err(error) => {
-          tracing::warn!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
+          tracing::debug!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
           self.decoder_failures.insert(failure_key);
           return Err(error.to_string());
         }
@@ -1198,7 +1198,7 @@ impl VideoDecodePool {
       }
       Err(error) => {
         log_decode_timing(&packet, backend, output, false, decode_start.elapsed());
-        tracing::warn!(target: "video::decode", "[video:decode] failed to decode frame from user {}: {error}", packet.sender_id);
+        tracing::debug!(target: "video::decode", "[video:decode] failed to decode frame from user {}: {error}", packet.sender_id);
         self.decoders.remove(&packet.sender_id);
         self.decoder_failures.insert(failure_key);
         Err(error.to_string())
@@ -1233,7 +1233,7 @@ impl VideoDecodePool {
         Ok(decoder) => {
           let start_elapsed = start.elapsed();
           let backend = decoder.backend();
-          tracing::info!(target: "video::decode",
+          tracing::debug!(target: "video::decode",
             "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} dx12_prepath=true init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
@@ -1245,7 +1245,7 @@ impl VideoDecodePool {
           self.decoders.insert(packet.sender_id, decoder);
         }
         Err(error) => {
-          tracing::warn!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
+          tracing::debug!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
           self.decoder_failures.insert(failure_key);
           return Some(false);
         }
@@ -1262,7 +1262,7 @@ impl VideoDecodePool {
     match decoder.decode_to_dx12_surface(packet, surface) {
       Ok(decoded) => Some(decoded),
       Err(error) => {
-        tracing::warn!(target: "video::decode",
+        tracing::debug!(target: "video::decode",
           "[video:decode] failed to decode frame from user {} into DX12 surface: {error}",
           packet.sender_id
         );
@@ -1302,7 +1302,7 @@ impl VideoDecodePool {
         Ok(decoder) => {
           let start_elapsed = start.elapsed();
           let backend = decoder.backend();
-          tracing::info!(target: "video::decode",
+          tracing::debug!(target: "video::decode",
             "[video:decode] decoder backend selected for user {}: backend={} codec={:?} size={}x{} shared_nv12_planes_prepath={} init_ms={:.1}",
             packet.sender_id,
             native_video_backend_label(backend),
@@ -1315,7 +1315,7 @@ impl VideoDecodePool {
           self.decoders.insert(packet.sender_id, decoder);
         }
         Err(error) => {
-          tracing::warn!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
+          tracing::debug!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
           self.decoder_failures.insert(failure_key);
           return None;
         }
@@ -1328,7 +1328,7 @@ impl VideoDecodePool {
     }
 
     Some(decoder.decode_to_shared_nv12_planes(packet).map_err(|error| {
-      tracing::warn!(
+      tracing::debug!(
         target: "video::decode",
         "[video:decode] failed to decode frame from user {} into shared NV12 plane textures: {error}",
         packet.sender_id
@@ -1357,7 +1357,7 @@ fn log_decode_timing(
     return;
   }
 
-  tracing::warn!(target: "video::decode",
+  tracing::debug!(target: "video::decode",
     "[video:decode] slow frame decode: user={} backend={} codec={:?} size={}x{} frame={} keyframe={} output={} produced_frame={} decode_ms={:.1}",
     packet.sender_id,
     native_video_backend_label(backend),
@@ -1389,7 +1389,7 @@ fn log_cpu_video_present_timeline(
 ) {
   let slow = total >= SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD;
   if slow {
-    tracing::warn!(
+    tracing::debug!(
       target: "video::decode",
       "[video:timeline] presented kind=cpu user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_ms={:.1} present_ms={:.1} total_ms={:.1} slow={}",
       user_id,
@@ -1408,7 +1408,7 @@ fn log_cpu_video_present_timeline(
       slow
     );
   } else if should_log_video_present_timeline_sample() {
-    tracing::info!(
+    tracing::debug!(
       target: "video::timeline",
       "[video:timeline] presented kind=cpu user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_ms={:.1} present_ms={:.1} total_ms={:.1} slow={}",
       user_id,
@@ -1464,7 +1464,7 @@ fn log_native_video_present_timeline(
 ) {
   let slow = total >= SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD;
   if slow {
-    tracing::warn!(
+    tracing::debug!(
       target: "video::decode",
       "[video:timeline] presented kind=native user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_present_ms={:.1} total_ms={:.1} slow={}",
       user_id,
@@ -1482,7 +1482,7 @@ fn log_native_video_present_timeline(
       slow
     );
   } else if should_log_video_present_timeline_sample() {
-    tracing::info!(
+    tracing::debug!(
       target: "video::timeline",
       "[video:timeline] presented kind=native user={} codec={:?} size={}x{} frame={} keyframe={} image_id={} image_version={} recv_to_queue_ms={:.1} queue_wait_ms={:.1} decode_present_ms={:.1} total_ms={:.1} slow={}",
       user_id,

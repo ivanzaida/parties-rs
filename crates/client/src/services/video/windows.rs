@@ -239,10 +239,10 @@ extern "C" fn native_log_callback(level: u8, message: *const c_char) {
   let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
   match level {
     0 => tracing::debug!(target: "native::windows", "[native/windows/debug] {message}"),
-    1 => tracing::info!(target: "native::windows", "[native/windows/info] {message}"),
-    2 => tracing::warn!(target: "native::windows", "[native/windows/warn] {message}"),
+    1 => tracing::debug!(target: "native::windows", "[native/windows/info] {message}"),
+    2 => tracing::debug!(target: "native::windows", "[native/windows/warn] {message}"),
     3 => tracing::error!(target: "native::windows", "[native/windows/error] {message}"),
-    _ => tracing::warn!(target: "native::windows", "[native/windows/unknown] {message}"),
+    _ => tracing::debug!(target: "native::windows", "[native/windows/unknown] {message}"),
   }
 }
 
@@ -364,16 +364,16 @@ fn run_broadcast_loop(
   loopback: Option<VideoFrameLoopback>,
   ready: Option<mpsc::SyncSender<Result<NativeVideoBackend, String>>>,
 ) -> Result<(), VideoError> {
-  tracing::info!(target: "video::encode::windows", "[video:encode/windows] creating native encoder");
+  tracing::debug!(target: "video::encode::windows", "[video:encode/windows] creating native encoder");
   let mut config = config;
   let mut failed_encoder_labels = Vec::new();
   let setup = (|| -> Result<(BroadcastEncoder, Option<CaptureSource>), VideoError> {
     if matches!(config.source_kind, ScreenShareSourceKind::Webcam) {
-      tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
+      tracing::debug!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
       let source = CaptureSource::open(&config)?;
       if let Some(capture_fps) = source.capture_fps() {
         if capture_fps != config.fps {
-          tracing::info!(target: "video::encode::windows",
+          tracing::debug!(target: "video::encode::windows",
             "[video:encode/windows] webcam fps adjusted to selected capture mode: requested={} selected={}",
             config.fps,
             capture_fps
@@ -391,7 +391,7 @@ fn run_broadcast_loop(
     let source = if encoder.owns_capture() {
       None
     } else {
-      tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
+      tracing::debug!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
       Some(CaptureSource::open(&config)?)
     };
     Ok((encoder, source))
@@ -452,7 +452,7 @@ fn run_broadcast_loop(
         encoder = BroadcastEncoder::new_excluding(&config, &failed_encoder_labels)?;
         log_encoder_ready(&encoder, &config);
         if !encoder.owns_capture() && source.is_none() {
-          tracing::info!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
+          tracing::debug!(target: "video::encode::windows", "[video:encode/windows] opening CPU capture source");
           source = Some(CaptureSource::open(&config)?);
         }
         frame_number = 0;
@@ -499,7 +499,7 @@ fn run_broadcast_loop(
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
-          tracing::info!(target: "video::encode::windows",
+          tracing::debug!(target: "video::encode::windows",
             "[video:encode/windows] dropped live video frame before network queue: frame={} total_dropped={}",
             frame_number,
             dropped_live_frames
@@ -511,11 +511,11 @@ fn run_broadcast_loop(
         loopback(frame);
       }
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] live video datagrams unavailable or too large; using reliable stream fallback");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] live video datagrams unavailable or too large; using reliable stream fallback");
         logged_stream_fallback = true;
       }
       if !logged_first_frame {
-        tracing::info!(target: "video::encode::windows",
+        tracing::debug!(target: "video::encode::windows",
           "[video:encode/windows] first encoded frame sent: frame={} bytes={} keyframe={} transport={:?} bitstream={}",
           frame_number,
           sample_len,
@@ -546,12 +546,12 @@ fn run_broadcast_loop(
     }
   }
 
-  tracing::info!(target: "video::encode::windows", "[video:encode/windows] broadcast loop stopped by request");
+  tracing::debug!(target: "video::encode::windows", "[video:encode/windows] broadcast loop stopped by request");
   Ok(())
 }
 
 fn log_encoder_ready(encoder: &BroadcastEncoder, config: &VideoBroadcastConfig) {
-  tracing::info!(target: "video::encode::windows",
+  tracing::debug!(target: "video::encode::windows",
     "[video:encode/windows] encoder ready: backend={} codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
     encoder.backend_label(),
     config.codec,
@@ -608,13 +608,13 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
       Ok(process_id) => {
         let current_process_id = unsafe { GetCurrentProcessId() };
         if process_id == current_process_id {
-          tracing::warn!(target: "audio::encode::windows",
+          tracing::debug!(target: "audio::encode::windows",
             "[audio:encode/windows] selected window belongs to current process; capturing Parties process audio: window={} pid={process_id}",
             config.source_id
           );
           return StreamAudioCaptureTarget::IncludeProcess(current_process_id);
         }
-        tracing::info!(target: "audio::encode::windows",
+        tracing::debug!(target: "audio::encode::windows",
           "[audio:encode/windows] selected window audio target: window={} pid={process_id}",
           config.source_id
         );
@@ -622,7 +622,7 @@ fn stream_audio_capture_target(config: &VideoBroadcastConfig) -> StreamAudioCapt
       }
       Err(error) => {
         let process_id = unsafe { GetCurrentProcessId() };
-        tracing::warn!(target: "audio::encode::windows",
+        tracing::debug!(target: "audio::encode::windows",
           "[audio:encode/windows] could not resolve selected window pid; using output loopback excluding current process: window={} exclude_pid={process_id} error={error}",
           config.source_id,
         );
@@ -680,7 +680,7 @@ fn run_stream_audio_loop(
   target: StreamAudioCaptureTarget,
   ready_tx: mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), VideoError> {
-  tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] opening {}", target.label());
+  tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] opening {}", target.label());
   let _com = match ComSession::start("stream audio") {
     Ok(com) => com,
     Err(error) => {
@@ -930,7 +930,7 @@ fn activate_loopback_client(target: StreamAudioCaptureTarget) -> Result<IAudioCl
 
   match activate_process_loopback_client(process_id, mode) {
     Ok(audio_client) => {
-      tracing::info!(target: "audio::encode::windows", "[audio:encode/windows] process loopback capture activated: mode={mode_label} pid={process_id}");
+      tracing::debug!(target: "audio::encode::windows", "[audio:encode/windows] process loopback capture activated: mode={mode_label} pid={process_id}");
       Ok(audio_client)
     }
     Err(error) => {
@@ -1204,27 +1204,27 @@ impl BroadcastEncoder {
       match GpuNvencStreamEncoder::new(config) {
         Ok(encoder) => return Ok(Self::GpuNvenc(encoder)),
         Err(error) => {
-          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] GPU capture + NVENC unavailable: {error}")
+          tracing::debug!(target: "video::encode::windows", "[video:encode/windows] GPU capture + NVENC unavailable: {error}")
         }
       }
     } else if !nvidia_output_adapter && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
-      tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping GPU capture + NVENC");
+      tracing::debug!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping GPU capture + NVENC");
     } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "GPU capture + NVENC") {
-      tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping GPU capture + NVENC");
+      tracing::debug!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping GPU capture + NVENC");
     }
 
     if nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
       match NvencVideoEncoder::new(config) {
         Ok(encoder) => return Ok(Self::Nvenc(encoder)),
         Err(error) => {
-          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVENC unavailable: {error}")
+          tracing::debug!(target: "video::encode::windows", "[video:encode/windows] NVENC unavailable: {error}")
         }
       }
     } else if !nvidia_available && !excluded_labels.iter().any(|label| label == "NVENC") {
       if nvidia_output_adapter {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping NVENC");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] NVIDIA adapter not detected; skipping NVENC");
       } else {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping NVENC");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not NVIDIA; skipping NVENC");
       }
     }
 
@@ -1243,9 +1243,9 @@ impl BroadcastEncoder {
     } else if !amd_available && gpu_capture_source && !excluded_labels.iter().any(|label| label == "GPU capture + AMF")
     {
       if amd_output_adapter {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping GPU capture + AMF");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping GPU capture + AMF");
       } else {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping GPU capture + AMF");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping GPU capture + AMF");
       }
     }
 
@@ -1253,14 +1253,14 @@ impl BroadcastEncoder {
       match AmdAmfVideoEncoder::new(config) {
         Ok(encoder) => return Ok(Self::AmdAmf(encoder)),
         Err(error) => {
-          tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMF unavailable: {error}")
+          tracing::debug!(target: "video::encode::windows", "[video:encode/windows] AMF unavailable: {error}")
         }
       }
     } else if !amd_available && !excluded_labels.iter().any(|label| label == "AMF") {
       if amd_output_adapter {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping AMF");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] AMD adapter not detected; skipping AMF");
       } else {
-        tracing::warn!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping AMF");
+        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] selected/output adapter is not AMD; skipping AMF");
       }
     }
 

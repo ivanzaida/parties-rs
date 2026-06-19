@@ -128,7 +128,7 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
         let server = server.clone();
         let session = session.clone();
         tasks.push(tokio::spawn(async move {
-          tracing::info!(
+          tracing::debug!(
             target: "chat::history",
             "[chat/history] request send: channel={} before={} limit=50",
             request.channel_id,
@@ -138,7 +138,7 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
             .request_chat_history(request.channel_id, request.before_id, 50)
             .await
           {
-            tracing::warn!(
+            tracing::debug!(
               target: "chat::history",
               "[chat/history] request failed: channel={} before={} error={error}",
               request.channel_id,
@@ -147,7 +147,7 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
             session.finish_chat_history_request(request.channel_id, true);
             return Err(error.to_string());
           }
-          tracing::info!(
+          tracing::debug!(
             target: "chat::history",
             "[chat/history] request sent: channel={} before={} limit=50",
             request.channel_id,
@@ -247,7 +247,7 @@ fn execute_chat_command(
       let user_id = command_user_id(&invocation, copy, "/restart-audio-receiver {userId:Number}")?;
       let restarted = session.restart_audio_receiver(user_id);
       if !restarted {
-        tracing::warn!(
+        tracing::debug!(
           target: "audio::decode",
           "[audio:decode] restart audio receiver command found no active receiver state for user {user_id}"
         );
@@ -353,7 +353,7 @@ pub(super) fn start_stream_action(
         bitrate_kbps: (settings.video_bitrate_mbps.max(0.1) * 1000.0).round() as u32,
         audio_enabled: input.audio_enabled,
       };
-      tracing::info!(target: "video::encode",
+      tracing::debug!(target: "video::encode",
         "[video:encode] starting broadcast: source={:?}/{} source_size={}x{} output={}x{} codec={:?} fps={} bitrate={}kbps audio={}",
         config.source_kind,
         config.source_id,
@@ -373,11 +373,11 @@ pub(super) fn start_stream_action(
       }
       if let Err(error) = server.start_screen_share(codec, width, height).await {
         let error = error.to_string();
-        tracing::warn!(target: "video", "[video] server rejected screen-share start: {error}");
+        tracing::debug!(target: "video", "[video] server rejected screen-share start: {error}");
         session.stop_video_broadcast();
         return Err(error);
       }
-      tracing::info!(target: "video",
+      tracing::debug!(target: "video",
         "[video] screen-share start announced: codec={codec:?} size={width}x{height}"
       );
       Ok(())
@@ -431,15 +431,15 @@ pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopS
     let session = session.clone();
     let copy = copy.clone();
     async move {
-      tracing::info!(target: "video", "[video] stopping broadcast");
+      tracing::debug!(target: "video", "[video] stopping broadcast");
       session.stop_video_broadcast();
       let server = session.server().ok_or(copy.no_connected_server)?;
       if let Err(error) = server.stop_screen_share().await {
         let error = error.to_string();
-        tracing::warn!(target: "video", "[video] failed to announce screen-share stop: {error}");
+        tracing::debug!(target: "video", "[video] failed to announce screen-share stop: {error}");
         return Err(error);
       }
-      tracing::info!(target: "video", "[video] screen-share stop announced");
+      tracing::debug!(target: "video", "[video] screen-share stop announced");
       Ok(())
     }
   })
@@ -457,7 +457,7 @@ pub(super) fn watch_stream_action(
     let copy = copy.clone();
     async move {
       let server = session.server().ok_or(copy.no_connected_server)?;
-      tracing::info!(target: "video", "[video] requesting stream view for user {user_id}");
+      tracing::debug!(target: "video", "[video] requesting stream view for user {user_id}");
       server
         .view_screen_share(user_id)
         .await
@@ -468,21 +468,21 @@ pub(super) fn watch_stream_action(
           tracing::debug!(target: "video", "[video] keyframe requested on video stream for user {user_id}");
         }
         Err(stream_error) => {
-          tracing::warn!(target: "video", "[video] stream keyframe request failed for user {user_id}: {stream_error}; trying datagram");
+          tracing::debug!(target: "video", "[video] stream keyframe request failed for user {user_id}: {stream_error}; trying datagram");
           if let Err(datagram_error) = server.request_keyframe(user_id) {
-            tracing::warn!(target: "video", "[video] datagram keyframe request failed for user {user_id}: {datagram_error}");
+            tracing::debug!(target: "video", "[video] datagram keyframe request failed for user {user_id}: {datagram_error}");
             return Err(datagram_error.to_string());
           }
           tracing::debug!(target: "video", "[video] keyframe requested by datagram for user {user_id}");
         }
       }
-      tracing::info!(target: "video", "[video] stream view active for user {user_id}");
+      tracing::debug!(target: "video", "[video] stream view active for user {user_id}");
       let settings = storage
         .as_ref()
         .and_then(|storage| storage.load_settings().ok())
         .unwrap_or_else(AppSettings::default);
       if let Err(error) = session.ensure_stream_audio_playback(settings) {
-        tracing::warn!(target: "audio::decode", "[audio:decode] stream playback unavailable: {error}");
+        tracing::debug!(target: "audio::decode", "[audio:decode] stream playback unavailable: {error}");
       }
       Ok(())
     }
@@ -496,7 +496,7 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
     let copy = copy.clone();
     async move {
       let server = session.server().ok_or(copy.no_connected_server)?;
-      tracing::info!(target: "video", "[video] unsubscribing from watched stream");
+      tracing::debug!(target: "video", "[video] unsubscribing from watched stream");
       server
         .unsubscribe_screen_share()
         .await
@@ -584,7 +584,7 @@ async fn rejoin_previous_voice_channel(
   voice_state: Option<(bool, bool)>,
 ) {
   let Some(server) = session.server() else {
-    tracing::warn!(target: "lobby", "[lobby] skipped voice rejoin after reconnect: channel={channel_id} reason=no connected server");
+    tracing::debug!(target: "lobby", "[lobby] skipped voice rejoin after reconnect: channel={channel_id} reason=no connected server");
     return;
   };
   let settings = storage.load_settings().unwrap_or_else(|_| AppSettings::default());
@@ -593,23 +593,23 @@ async fn rejoin_previous_voice_channel(
     muted = true;
   }
 
-  tracing::info!(target: "lobby",
+  tracing::debug!(target: "lobby",
     "[lobby] rejoining previous voice channel after reconnect: channel={channel_id} muted={muted} deafened={deafened}"
   );
   if let Err(error) = server.join_channel(channel_id).await {
-    tracing::warn!(target: "lobby", "[lobby] previous voice channel rejoin failed: channel={channel_id} error={error}");
+    tracing::debug!(target: "lobby", "[lobby] previous voice channel rejoin failed: channel={channel_id} error={error}");
     return;
   }
 
   session.select_channel(channel_id);
   if let Err(error) = server.update_voice_state(muted, deafened).await {
-    tracing::warn!(target: "voice", "[voice] failed to announce local state after reconnect rejoin: channel={channel_id} error={error}");
+    tracing::debug!(target: "voice", "[voice] failed to announce local state after reconnect rejoin: channel={channel_id} error={error}");
     return;
   }
 
   session.set_local_voice_state(muted, deafened);
   match session.start_voice(settings, "") {
-    Ok(()) => tracing::info!(target: "voice", "[voice] local voice engine restarted after reconnect rejoin"),
-    Err(error) => tracing::warn!(target: "voice", "[voice] local voice engine failed after reconnect rejoin: {error}"),
+    Ok(()) => tracing::debug!(target: "voice", "[voice] local voice engine restarted after reconnect rejoin"),
+    Err(error) => tracing::debug!(target: "voice", "[voice] local voice engine failed after reconnect rejoin: {error}"),
   }
 }

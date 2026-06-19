@@ -353,7 +353,7 @@ pub async fn connect_and_store(
 ) -> Result<ConnectedServerInfo, String> {
   let address = with_default_port(&address);
   let display_name = display_name.trim().to_owned();
-  tracing::info!(target: "network::connect",
+  tracing::debug!(target: "network::connect",
     "[network/connect] connecting to server: address={} display='{}'",
     address,
     display_name
@@ -368,16 +368,16 @@ pub async fn connect_and_store(
 
   let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
-    tracing::info!(target: "network::connect", "[network/connect] resolved server address: address={address} socket={socket}");
+    tracing::debug!(target: "network::connect", "[network/connect] resolved server address: address={address} socket={socket}");
     let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
-    tracing::info!(target: "network::connect",
+    tracing::debug!(target: "network::connect",
       "[network/connect] query result: address={} responded={}",
       address,
       query.is_some()
     );
     let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
     let fingerprint = server.certificate_fingerprint().unwrap_or_default();
-    tracing::info!(target: "network::connect",
+    tracing::debug!(target: "network::connect",
       "[network/connect] transport connected: address={} certificate_fingerprint={}",
       address,
       fingerprint
@@ -389,7 +389,7 @@ pub async fn connect_and_store(
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
     let response = authenticate_with_query(&server, auth, &errors).await?;
-    tracing::info!(target: "network::connect",
+    tracing::debug!(target: "network::connect",
       "[network/connect] authenticated: server='{}' user={} role={:?}",
       response.server_name,
       response.user_id,
@@ -402,11 +402,11 @@ pub async fn connect_and_store(
   let (server, fingerprint, response) = match connect_result {
     Ok(Ok(result)) => result,
     Ok(Err(error)) => {
-      tracing::warn!(target: "network::connect", "[network/connect] connection attempt failed: address={address} error={error}");
+      tracing::debug!(target: "network::connect", "[network/connect] connection attempt failed: address={address} error={error}");
       return Err(error);
     }
     Err(_) => {
-      tracing::warn!(
+      tracing::debug!(
         target: "network::connect",
         "[network/connect] connection attempt timed out: address={} timeout_seconds={}",
         address,
@@ -463,7 +463,7 @@ pub async fn connect_and_store(
         display_name,
       })
       .map_err(|error| error.to_string())?;
-    tracing::info!(target: "network::connect",
+    tracing::debug!(target: "network::connect",
       "[network/connect] saved server credentials metadata: address={} server='{}' user={}",
       info.address,
       info.server_name,
@@ -497,7 +497,7 @@ pub async fn connect_and_store(
     }
   }
 
-  tracing::info!(target: "network::connect",
+  tracing::debug!(target: "network::connect",
     "[network/connect] server ready: address={} server='{}' local_user={}",
     info.address,
     info.server_name,

@@ -1122,11 +1122,11 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
         return;
       }
       if let Err(error) = session.start_voice(settings, "") {
-        tracing::warn!(target: "voice", "[voice] failed to restart local voice engine after audio setting change: {error}");
+        tracing::debug!(target: "voice", "[voice] failed to restart local voice engine after audio setting change: {error}");
       }
     })
   {
-    tracing::warn!(target: "voice", "[voice] failed to spawn audio setting restart thread: {error}");
+    tracing::debug!(target: "voice", "[voice] failed to spawn audio setting restart thread: {error}");
   }
 }
 

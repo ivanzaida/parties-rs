@@ -526,19 +526,7 @@ impl Component for ChannelUserRow {
   type Props = ChannelUserRowProps;
 
   fn create(ctx: &mut Ctx) -> Self {
-    let props = ctx.props::<Self::Props>();
-    let user = &props.model.user;
-    tracing::info!(target: "lobby::voice",
-      "[lobby:voice] channel user row mounted: channel={} user={} local={} channel_users={} muted={} deafened={} speaking={} streaming={}",
-      props.channel_id,
-      user.user_id,
-      props.model.local,
-      props.channel_user_count,
-      user.muted,
-      user.deafened,
-      user.speaking,
-      props.model.streaming
-    );
+    let _ = ctx;
     Self
   }
 
@@ -560,7 +548,7 @@ impl Component for ChannelUserRow {
 
 fn channel_user_row_view(
   ctx: &mut Ctx,
-  channel_id: ChannelId,
+  _channel_id: ChannelId,
   model: &VoiceUserRowModel,
   watch_stream: Option<&WatchStreamAction>,
   context_user_id: Signal<Option<UserId>>,
@@ -590,13 +578,6 @@ fn channel_user_row_view(
   let menu_open = context_user_id.get() == Some(user.user_id);
   let scale = ctx.window().scale_factor.max(f32::EPSILON);
   let username = user_display_name(user.user_id, &user.username, debug_user_ids);
-  tracing::info!(target: "lobby::voice",
-    "[lobby:voice] channel user row rendered: channel={channel_id} user={user_id} local={local} muted={} deafened={} speaking={} streaming={streaming}",
-    user.muted,
-    user.deafened,
-    user.speaking
-  );
-
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)

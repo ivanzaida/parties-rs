@@ -145,7 +145,7 @@ impl VoiceEngine {
       Ok(stream) => Some(stream),
       Err(error) => {
         if settings.echo_cancellation {
-          tracing::warn!(target: "audio::decode", "[audio:decode] echo cancellation enabled, but render reference output stream failed: {error}");
+          tracing::debug!(target: "audio::decode", "[audio:decode] echo cancellation enabled, but render reference output stream failed: {error}");
         }
         None
       }
@@ -627,7 +627,7 @@ fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProce
   if settings.echo_cancellation {
     let delay_ms = aec_delay_ms();
     let _ = audio_processing.set_stream_delay_ms(delay_ms);
-    tracing::info!(target: "audio::encode",
+    tracing::debug!(target: "audio::encode",
       "[audio:encode] echo cancellation enabled: stream_delay_ms={}",
       audio_processing.stream_delay_ms()
     );
@@ -804,7 +804,7 @@ where
     .build_input_stream::<T, _, _>(
       config,
       move |data, _| state.push_catching(data),
-      move |error| tracing::warn!(target: "audio::encode", "[audio:encode] input stream error: {error}"),
+      move |error| tracing::debug!(target: "audio::encode", "[audio:encode] input stream error: {error}"),
       None,
     )
     .map_err(|error| VoiceError::new(format!("Failed to build input stream: {error}")))
@@ -827,7 +827,7 @@ fn spawn_encoder_thread(
   thread::Builder::new()
     .name("parties-voice-encoder".to_owned())
     .spawn(move || {
-      tracing::info!(target: "audio::encode", "[audio:encode] voice encoder thread started");
+      tracing::debug!(target: "audio::encode", "[audio:encode] voice encoder thread started");
       let started_at = Instant::now();
       let mut sequence = 0u16;
       let mut opus = vec![0u8; MAX_OPUS_PACKET];
@@ -891,7 +891,7 @@ fn spawn_encoder_thread(
           Ok(len) => len,
           Err(error) => {
             encode_errors = encode_errors.saturating_add(1);
-            tracing::warn!(
+            tracing::debug!(
               target: "audio::encode",
               "[audio:encode] voice opus encode failed #{}: {error}",
               encode_errors
@@ -923,7 +923,7 @@ fn spawn_encoder_thread(
           }
           Err(error) => {
             send_errors = send_errors.saturating_add(1);
-            tracing::warn!(
+            tracing::debug!(
               target: "audio::encode",
               "[audio:encode] voice datagram send failed #{}: sequence={sequence} bytes={len} encoded_packets={encoded_packets} sent_packets={sent_packets} error={error}",
               send_errors
@@ -934,7 +934,7 @@ fn spawn_encoder_thread(
         frame.samples.clear();
         let _ = free_frame_tx.try_send(frame.samples);
       }
-      tracing::info!(
+      tracing::debug!(
         target: "audio::encode",
         "[audio:encode] voice encoder thread stopped: uptime_ms={} encoded_packets={encoded_packets} sent_packets={sent_packets} send_errors={send_errors} encode_errors={encode_errors} suppressed_frames={suppressed_frames} next_sequence={sequence}",
         started_at.elapsed().as_millis()
@@ -963,7 +963,7 @@ fn warn_local_voice_input_idle(
     return;
   }
   *last_warn_at = Some(now);
-  tracing::warn!(
+  tracing::debug!(
     target: "audio::encode",
     "[audio:encode] no local voice input frames reached encoder for {}ms while transmit is allowed: input_frames={} sent_packets={} suppressed_frames={} muted={} deafened={} push_to_talk={} push_to_talk_active={} threshold={:.3}",
     idle.as_millis(),
@@ -998,7 +998,7 @@ fn warn_local_voice_send_idle(
     return;
   }
   *last_warn_at = Some(now);
-  tracing::warn!(
+  tracing::debug!(
     target: "audio::encode",
     "[audio:encode] no local voice packets sent for {}ms while input frames are arriving: input_frames={} encoded_packets={} sent_packets={} suppressed_frames={} muted={} deafened={} push_to_talk={} push_to_talk_active={} threshold={:.3} vad_hold_frames={} note=\"frames are being suppressed before Opus encode, usually by voice activation\"",
     idle.as_millis(),
@@ -1336,7 +1336,7 @@ where
     .build_output_stream::<T, _, _>(
       config,
       move |data, _| state.render(data),
-      move |error| tracing::warn!(target: "audio::decode", "[audio:decode] output stream error: {error}"),
+      move |error| tracing::debug!(target: "audio::decode", "[audio:decode] output stream error: {error}"),
       None,
     )
     .map_err(|error| VoiceError::new(format!("Failed to build output stream: {error}")))

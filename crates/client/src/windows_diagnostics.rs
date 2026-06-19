@@ -378,7 +378,7 @@ fn ntstatus_code(code: NTSTATUS) -> u32 {
 }
 
 fn log_seh_info(message: &str) {
-  tracing::info!(target: "native::windows::seh", "[native/windows/info] {message}");
+  tracing::debug!(target: "native::windows::seh", "[native/windows/info] {message}");
 }
 
 fn log_seh_warn(message: &str) {

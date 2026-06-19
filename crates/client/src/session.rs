@@ -168,7 +168,7 @@ impl ServerSession {
   }
 
   pub fn set_connected(&self, connected: ConnectedServer) {
-    tracing::info!(target: "session",
+    tracing::debug!(target: "session",
       "[session] connected: server='{}' address={} local_user={} display='{}' role={:?}",
       connected.info.server_name,
       connected.info.address,
@@ -190,7 +190,7 @@ impl ServerSession {
 
   pub fn clear(&self) {
     if let Some(info) = self.info() {
-      tracing::info!(target: "session",
+      tracing::debug!(target: "session",
         "[session] clearing connected session: server='{}' address={} local_user={}",
         info.server_name,
         info.address,
@@ -211,7 +211,7 @@ impl ServerSession {
   }
 
   pub fn disconnect(&self) {
-    tracing::info!(target: "session", "[session] disconnect requested by client");
+    tracing::debug!(target: "session", "[session] disconnect requested by client");
     let was_in_voice = self.lobby.lock().selected_channel_id.is_some();
     if let Some(server) = self.server() {
       server.disconnect();
@@ -223,7 +223,7 @@ impl ServerSession {
   }
 
   pub fn disconnect_for_shutdown(&self) {
-    tracing::info!(target: "session", "[session] disconnect requested for shutdown");
+    tracing::debug!(target: "session", "[session] disconnect requested for shutdown");
     self.connection.request_shutdown();
     self.stop_voice();
     self.stop_video_broadcast();
@@ -393,13 +393,13 @@ impl ServerSession {
       self.local_intro_speaking_callback(),
     ) {
       Ok(true) => {
-        tracing::info!(target: "voice", "[voice] queued outgoing voice join sound");
+        tracing::debug!(target: "voice", "[voice] queued outgoing voice join sound");
       }
       Ok(false) => tracing::debug!(
         target: "voice",
         "[voice] skipped outgoing voice join sound: no selected sound or no active voice capture"
       ),
-      Err(error) => tracing::warn!(target: "voice", "[voice] failed to queue outgoing voice join sound: {error}"),
+      Err(error) => tracing::debug!(target: "voice", "[voice] failed to queue outgoing voice join sound: {error}"),
     }
   }
 
@@ -443,7 +443,7 @@ impl ServerSession {
 
   pub fn restart_audio_receiver(&self, user_id: UserId) -> bool {
     let restarted = self.voice.restart_audio_receiver(user_id);
-    tracing::info!(
+    tracing::debug!(
       target: "audio::decode",
       "[audio:decode] restart audio receiver requested: user={} restarted={} {}",
       user_id,
@@ -648,7 +648,7 @@ impl ServerSession {
       )
     };
     if changed {
-      tracing::info!(target: "video", "[video] watched stream changed: previous={previous_user_id:?} current={user_id:?}");
+      tracing::debug!(target: "video", "[video] watched stream changed: previous={previous_user_id:?} current={user_id:?}");
       self.clear_stream_audio(previous_user_id);
     }
     self.retain_video_cache(user_id);
@@ -721,7 +721,7 @@ impl ServerSession {
     *self.voice_settings.lock() = settings.clone();
     let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
-    tracing::info!(
+    tracing::debug!(
       target: "voice",
       "[voice] starting local voice engine: muted={muted} deafened={deafened} {}",
       self.connection_debug_context()
@@ -735,7 +735,7 @@ impl ServerSession {
         .voice
         .start_capture(server, settings, muted, deafened, on_local_voice)?
     };
-    tracing::info!(
+    tracing::debug!(
       target: "voice",
       "[voice] local voice engine started: captures_voice={} {}",
       captures_voice,
@@ -756,7 +756,7 @@ impl ServerSession {
       return Ok(());
     }
 
-    tracing::info!(
+    tracing::debug!(
       target: "voice",
       "[voice] starting deferred local voice capture after unmute: {}",
       self.connection_debug_context()
@@ -764,7 +764,7 @@ impl ServerSession {
     let captures_voice = self
       .voice
       .start_capture(server, settings, muted, deafened, self.local_voice_callback())?;
-    tracing::info!(
+    tracing::debug!(
       target: "voice",
       "[voice] deferred local voice capture started: captures_voice={} {}",
       captures_voice,
@@ -780,13 +780,13 @@ impl ServerSession {
     }
 
     let (_, deafened) = self.local_voice_state().unwrap_or((false, false));
-    tracing::info!(
+    tracing::debug!(
       target: "voice",
       "[voice] starting stream audio playback engine: deafened={deafened} {}",
       self.connection_debug_context()
     );
     if self.voice.ensure_stream_playback(settings, deafened)? {
-      tracing::info!(
+      tracing::debug!(
         target: "voice",
         "[voice] stream audio playback engine started: {}",
         self.connection_debug_context()
@@ -816,7 +816,7 @@ impl ServerSession {
   pub fn stop_voice(&self) {
     let stopped = self.voice.stop();
     if stopped {
-      tracing::info!(
+      tracing::debug!(
         target: "voice",
         "[voice] local voice engine stopped: {}",
         self.connection_debug_context()
@@ -835,18 +835,18 @@ impl ServerSession {
         tracing::error!(target: "video::encode", "[video:encode] VideoBroadcast::start failed: {error}");
         error
       })?;
-    tracing::info!(target: "video::encode",
+    tracing::debug!(target: "video::encode",
       "[video:encode] local broadcast backend selected: backend={}",
       video::native_video_backend_label(backend)
     );
-    tracing::info!(target: "video::encode", "[video:encode] local broadcaster stored in session");
+    tracing::debug!(target: "video::encode", "[video:encode] local broadcaster stored in session");
     Ok(())
   }
 
   pub fn stop_video_broadcast(&self) {
     let stopped = self.streams.stop_broadcast();
     if stopped {
-      tracing::info!(target: "video::encode", "[video:encode] local broadcaster stopped");
+      tracing::debug!(target: "video::encode", "[video:encode] local broadcaster stopped");
     }
   }
 
@@ -991,7 +991,7 @@ impl ServerSession {
 
   pub fn mark_lobby_error(&self, message: String) {
     if self.connection.shutdown_requested() {
-      tracing::warn!(target: "network", "[network] ignoring network error during shutdown: {message}");
+      tracing::debug!(target: "network", "[network] ignoring network error during shutdown: {message}");
       return;
     }
 
@@ -1000,14 +1000,14 @@ impl ServerSession {
     {
       let mut lobby = self.lobby.lock();
       if lobby.disconnected {
-        tracing::warn!(target: "network", "[network] lobby already disconnected; ignoring additional network error: {message}");
+        tracing::debug!(target: "network", "[network] lobby already disconnected; ignoring additional network error: {message}");
         if lobby.last_error.is_none() {
           lobby.last_error = Some(message);
           self.publish_lobby_update();
         }
         return;
       }
-      tracing::warn!(target: "network", "[network] marking lobby disconnected and closing transport: {message}");
+      tracing::debug!(target: "network", "[network] marking lobby disconnected and closing transport: {message}");
       reconnect_watch_user_id = lobby.watching_user_id;
       lobby.receiver_running = false;
       lobby.disconnected = true;
@@ -1023,7 +1023,7 @@ impl ServerSession {
     self.stop_video_broadcast();
     self.streams.set_pending_reconnect_watch(reconnect_watch_user_id);
     if let Some(user_id) = reconnect_watch_user_id {
-      tracing::info!(target: "video", "[video] saved watched stream target for reconnect: user={user_id}");
+      tracing::debug!(target: "video", "[video] saved watched stream target for reconnect: user={user_id}");
     }
     if let Some(previous_user_id) = watching_change {
       self.finish_watching_user_change(previous_user_id, None);
@@ -1036,7 +1036,7 @@ impl ServerSession {
 
   pub fn set_lobby_error_notice(&self, message: impl Into<String>) {
     let message = message.into();
-    tracing::warn!(target: "lobby", "[lobby] notice: {message}");
+    tracing::debug!(target: "lobby", "[lobby] notice: {message}");
     {
       let mut lobby = self.lobby.lock();
       lobby.last_error = Some(message);
@@ -1046,7 +1046,7 @@ impl ServerSession {
 
   pub fn push_debug_chat_message(&self, message: impl Into<String>) {
     let message = message.into();
-    tracing::warn!(target: "debug", "[debug-chat] {message}");
+    tracing::debug!(target: "debug", "[debug-chat] {message}");
     {
       let mut lobby = self.lobby.lock();
       lobby::push_debug_chat_message(&mut lobby, message);

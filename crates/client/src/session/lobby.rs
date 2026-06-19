@@ -166,7 +166,7 @@ pub(super) fn leave_channel_locally(lobby: &mut LobbyState, local_user_id: Optio
   let mut effects = LeaveChannelEffects::default();
   if let Some(channel_id) = lobby.selected_channel_id.take() {
     effects.left_voice = true;
-    tracing::info!(target: "lobby", "[lobby] leaving voice channel locally: channel={channel_id} local_user={local_user_id:?}");
+    tracing::debug!(target: "lobby", "[lobby] leaving voice channel locally: channel={channel_id} local_user={local_user_id:?}");
     if let Some(user_id) = local_user_id
       && let Some(users) = lobby.users_by_channel.get_mut(&channel_id)
     {
@@ -231,13 +231,13 @@ pub(super) fn open_stream_browser(lobby: &mut LobbyState, channel_id: ChannelId)
     lobby.selected_text_channel_id = None;
     lobby.debug_chat_selected = false;
     lobby.stream_browser_channel_id = Some(channel_id);
-    tracing::info!(target: "video", "[video] stream browser opened: channel={channel_id}");
+    tracing::debug!(target: "video", "[video] stream browser opened: channel={channel_id}");
   }
 }
 
 pub(super) fn close_stream_browser(lobby: &mut LobbyState) {
   if lobby.stream_browser_channel_id.is_some() {
-    tracing::info!(target: "video",
+    tracing::debug!(target: "video",
       "[video] stream browser closed: previous={:?}",
       lobby.stream_browser_channel_id
     );
@@ -388,7 +388,7 @@ pub(super) fn apply_server_message(
         .map(|channel| format!("{}:'{}'", channel.id, channel.name))
         .collect::<Vec<_>>()
         .join(",");
-      tracing::info!(
+      tracing::debug!(
         target: "lobby::text_channels",
         "[lobby:text_channels] received channel_list channels={} selected_before={:?} channels=[{}]",
         channels.len(),
@@ -419,7 +419,7 @@ pub(super) fn apply_server_message(
       } else {
         lobby.selected_text_channel_id = lobby.text_channels.first().map(|channel| channel.id);
       }
-      tracing::info!(
+      tracing::debug!(
         target: "lobby::text_channels",
         "[lobby:text_channels] applied channel_list channels={} selected_after={:?}",
         lobby.text_channels.len(),
@@ -464,7 +464,7 @@ pub(super) fn apply_server_message(
     }
     S2C::ChatHistoryResp(response) => {
       let message_count = response.messages.len();
-      tracing::info!(target: "chat::history",
+      tracing::debug!(target: "chat::history",
         "[chat/history] response received: channel={} messages={} has_more={}",
         response.channel_id,
         message_count,
@@ -480,7 +480,7 @@ pub(super) fn apply_server_message(
       );
     }
     S2C::ChatMessageDeleted { message_id, channel_id } => {
-      tracing::info!(target: "chat", "[chat] message deleted: id={message_id} channel={channel_id}");
+      tracing::debug!(target: "chat", "[chat] message deleted: id={message_id} channel={channel_id}");
       if let Some(messages) = lobby.chat_messages_by_channel.get_mut(&channel_id) {
         messages.retain(|message| message.id != message_id);
       }
@@ -508,7 +508,7 @@ pub(super) fn apply_server_message(
       sync_selected_users(lobby);
       sync_cached_channel_counts(lobby);
       if lobby.selected_channel_id == Some(list_channel_id) {
-        tracing::info!(target: "lobby::voice",
+        tracing::debug!(target: "lobby::voice",
           "[lobby:voice] selected channel user list applied: channel={list_channel_id} list_contains_local={list_contains_local} local_user={local_user_id:?} selected_users={} cached_users={}",
           lobby.users.len(),
           lobby.users_by_channel.get(&list_channel_id).map(Vec::len).unwrap_or(0)
@@ -548,7 +548,7 @@ pub(super) fn apply_server_message(
       if lobby.selected_channel_id == Some(joined_channel_id) || was_in_selected_channel {
         sync_selected_users(lobby);
       }
-      tracing::info!(target: "lobby::voice",
+      tracing::debug!(target: "lobby::voice",
         "[lobby:voice] user joined voice channel applied: user={} name='{}' channel={} role={:?} local={} inserted={} selected={:?} users_in_channel={} selected_users={}",
         joined_user_id,
         joined_username,
@@ -670,7 +670,7 @@ pub(super) fn apply_server_message(
     S2C::ScreenShareStarted(started) => {
       let should_notify_stream_started =
         local_user_id != Some(started.sharer_user_id) && user_in_selected_voice_channel(lobby, started.sharer_user_id);
-      tracing::info!(target: "video",
+      tracing::debug!(target: "video",
         "[video] screen share started: user={} codec={:?} size={}x{} local={}",
         started.sharer_user_id,
         started.metadata.codec,
@@ -696,7 +696,7 @@ pub(super) fn apply_server_message(
     }
     S2C::ScreenShareStopped { sharer_user_id } => {
       let was_watching_stopped_stream = lobby.watching_user_id == Some(sharer_user_id);
-      tracing::warn!(target: "video",
+      tracing::debug!(target: "video",
         "[video] screen share stopped: user={} local={} watched={}",
         sharer_user_id,
         local_user_id == Some(sharer_user_id),
@@ -717,7 +717,7 @@ pub(super) fn apply_server_message(
       }
     }
     S2C::ScreenShareDenied { reason } => {
-      tracing::warn!(target: "video", "[video] screen share denied: {reason}");
+      tracing::debug!(target: "video", "[video] screen share denied: {reason}");
       lobby.last_error = Some(reason);
       effects.notification_sound = Some(NotificationSound::ModerationAction);
     }
@@ -745,7 +745,7 @@ pub(super) fn apply_server_message(
       lobby.last_error = Some(reason);
     }
     S2C::AdminResult(result) => {
-      tracing::info!(target: "admin",
+      tracing::debug!(target: "admin",
         "[admin] result: success={} message='{}'",
         result.success,
         result.message

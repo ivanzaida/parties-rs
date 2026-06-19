@@ -45,7 +45,7 @@ pub(super) async fn run_voice_activity_receiver<S>(session: S, server: Arc<Serve
 where
   S: VoiceReceiverSession,
 {
-  tracing::info!(
+  tracing::debug!(
     target: "voice",
     "[voice] voice receiver started: {}",
     session.connection_debug_context()
@@ -87,7 +87,7 @@ where
           let sequence_delta = packet.sequence.wrapping_sub(previous.sequence);
           let gap = now.duration_since(previous.last_at);
           if sequence_delta != 1 {
-            tracing::warn!(
+            tracing::debug!(
               target: "voice",
               "[voice] voice packet sequence gap from user {}: previous_sequence={} current_sequence={} delta={} gap_ms={} total_voice_packets={} {}",
               packet.sender_id,
@@ -99,7 +99,7 @@ where
               session.connection_debug_context()
             );
           } else if gap >= VOICE_RECEIVE_GAP_WARN_AFTER {
-            tracing::warn!(
+            tracing::debug!(
               target: "voice",
               "[voice] voice packets resumed from user {} after long silence: gap_ms={} previous_sequence={} current_sequence={} delta={} total_voice_packets={} note=\"delta=1 means no packets appear lost; sender likely stopped transmitting or server stopped forwarding\" {}",
               packet.sender_id,
@@ -111,7 +111,7 @@ where
               session.connection_debug_context()
             );
           } else if gap >= VOICE_RECEIVE_GAP_LOG_AFTER {
-            tracing::info!(
+            tracing::debug!(
               target: "voice",
               "[voice] voice packets resumed from user {} after {}ms: sequence={} total_voice_packets={} note=\"delta=1; no packets appear lost\" {}",
               packet.sender_id,
@@ -123,7 +123,7 @@ where
           }
         }
         if voice_packets == 1 {
-          tracing::info!(
+          tracing::debug!(
             target: "voice",
             "[voice] first voice packet received: sender={} sequence={} bytes={} {}",
             packet.sender_id,
@@ -143,7 +143,7 @@ where
         stream_packets = stream_packets.saturating_add(1);
         last_packet = "stream_audio";
         if stream_packets == 1 {
-          tracing::info!(
+          tracing::debug!(
             target: "voice",
             "[voice] first stream audio packet received: sender={} bytes={} {}",
             packet.sender_id,
@@ -162,7 +162,7 @@ where
       }
       Err(ServerError::Protocol(error)) => {
         malformed_packets = malformed_packets.saturating_add(1);
-        tracing::warn!(
+        tracing::debug!(
           target: "voice",
           "[voice] ignored malformed audio packet #{}: {error}; {}",
           malformed_packets,
@@ -173,7 +173,7 @@ where
       Err(error) => {
         let error = error.to_string();
         let stop_reason = format!("transport error: {error}");
-        tracing::warn!(
+        tracing::debug!(
           target: "voice",
           "[voice] voice receiver transport error; waiting for keepalive/control to confirm disconnect: {error}; {}",
           session.connection_debug_context()
@@ -187,7 +187,7 @@ where
     }
   };
 
-  tracing::warn!(
+  tracing::debug!(
     target: "voice",
     "[voice] voice receiver stopped: reason='{stop_reason}' uptime_ms={} voice_packets={} stream_packets={} video_controls={} malformed_packets={} last_packet={} last_voice_sender={last_voice_sender:?} last_voice_sequence={last_voice_sequence:?} {}",
     started_at.elapsed().as_millis(),
@@ -224,7 +224,7 @@ fn warn_stale_voice_senders<S>(
       continue;
     }
     state.last_silence_warn_at = Some(now);
-    tracing::warn!(
+    tracing::debug!(
       target: "voice",
       "[voice] no voice packets from user {} for {}ms while audio receiver is still active: last_sequence={} total_voice_packets={} note=\"could be silence/VAD, sender-side capture suppression, or server forwarding gap; wait for resume/sequence-gap log to distinguish packet loss\" {}",
       sender_id,

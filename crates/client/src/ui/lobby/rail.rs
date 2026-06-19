@@ -189,7 +189,7 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
       if !already_in_voice {
         muted = settings.start_muted_when_joining || deafened;
       }
-      tracing::info!(target: "lobby", 
+      tracing::debug!(target: "lobby",
         "[lobby] join channel requested: channel={channel_id} already_in_voice={already_in_voice} muted={muted} deafened={deafened}"
       );
       if let Err(error) = server.join_channel(channel_id).await {
@@ -199,7 +199,7 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         }
         return Err(error.to_string());
       }
-      tracing::info!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
+      tracing::debug!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
       let local_user_id = session.info().map(|info| info.user_id);
       let lobby = session.lobby();
       let local_visible = local_user_id.is_some_and(|user_id| {
@@ -208,7 +208,7 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
           .get(&channel_id)
           .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
       });
-      tracing::info!(target: "lobby::voice",
+      tracing::debug!(target: "lobby::voice",
         "[lobby:voice] after join command send: channel={channel_id} selected={:?} local_user={local_user_id:?} local_visible={local_visible} cached_users={} selected_users={}",
         lobby.selected_channel_id,
         lobby.users_by_channel.get(&channel_id).map(Vec::len).unwrap_or(0),
@@ -219,16 +219,16 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         .update_voice_state(muted, deafened)
         .await
         .map_err(|error| error.to_string())?;
-      tracing::info!(target: "voice", 
+      tracing::debug!(target: "voice",
         "[voice] local voice state announced after join: channel={channel_id} muted={muted} deafened={deafened}"
       );
       session.set_local_voice_state(muted, deafened);
       match session.start_voice(settings.clone(), &no_connected_server) {
         Ok(()) => {
-          tracing::info!(target: "voice", "[voice] local voice engine started after join");
+          tracing::debug!(target: "voice", "[voice] local voice engine started after join");
           session.queue_voice_join_sound_to_channel(&settings);
         }
-        Err(error) => tracing::warn!(target: "voice", "[voice] local voice engine failed after join: {error}"),
+        Err(error) => tracing::debug!(target: "voice", "[voice] local voice engine failed after join: {error}"),
       }
       Ok(())
     }
@@ -437,7 +437,7 @@ fn log_rail_channels_model(snapshot_generation: u64, model: &RailChannelsModel) 
         .map(|channel| channel.users.len())
     })
     .unwrap_or(0);
-  tracing::info!(
+  tracing::debug!(
     target: "lobby::voice",
     "[lobby:voice] rail channels model applied: generation={snapshot_generation} selected={selected_channel_id:?} selected_channel_users={} voice_channels={}",
     selected_channel_users,

@@ -323,23 +323,23 @@ where
   S: ConnectionSession,
 {
   let Some(server) = session.connected_server() else {
-    tracing::warn!(target: "network", "[network] lobby receiver not started: no connected server");
+    tracing::debug!(target: "network", "[network] lobby receiver not started: no connected server");
     return;
   };
   if session.is_shutdown_requested() {
-    tracing::warn!(target: "network", "[network] lobby receiver not started: shutdown is in progress");
+    tracing::debug!(target: "network", "[network] lobby receiver not started: shutdown is in progress");
     return;
   }
   if session.lobby_disconnected() {
-    tracing::warn!(target: "network", "[network] lobby receiver not started: lobby is disconnected");
+    tracing::debug!(target: "network", "[network] lobby receiver not started: lobby is disconnected");
     return;
   }
   if !session.try_begin_lobby_receiver() {
-    tracing::warn!(target: "network", "[network] lobby receiver already running");
+    tracing::debug!(target: "network", "[network] lobby receiver already running");
     return;
   }
 
-  tracing::info!(target: "network", "[network] lobby receiver started");
+  tracing::debug!(target: "network", "[network] lobby receiver started");
   session.publish_lobby_update();
 
   let ping_session = session.clone();
@@ -382,14 +382,14 @@ where
         if let Some(close_reason) = server.connection().close_reason() {
           error = format!("{error}; close_reason={close_reason}");
         }
-        tracing::warn!(target: "network", "[network] lobby receiver error: {error}");
+        tracing::debug!(target: "network", "[network] lobby receiver error: {error}");
         session.mark_lobby_error(error);
         break;
       }
     };
   }
 
-  tracing::info!(
+  tracing::debug!(
     target: "voice",
     "[voice] aborting voice receiver because lobby receiver stopped: {}",
     voice_runtime::VoiceReceiverSession::connection_debug_context(&session)
@@ -401,7 +401,7 @@ where
   ping_task.abort();
   drop(video_thread);
   session.finish_lobby_receiver();
-  tracing::info!(target: "network", "[network] lobby receiver stopped");
+  tracing::debug!(target: "network", "[network] lobby receiver stopped");
   session.publish_lobby_update();
 }
 
@@ -411,7 +411,7 @@ where
 {
   loop {
     if let Some(error) = server.connection().close_reason() {
-      tracing::warn!(target: "network", "[network] connection closed; forcing reconnect: {error}");
+      tracing::debug!(target: "network", "[network] connection closed; forcing reconnect: {error}");
       session.mark_lobby_error(format!("connection closed: {error}"));
       break;
     }
@@ -437,7 +437,7 @@ where
         tokio::time::sleep(KEEPALIVE_INTERVAL).await;
         continue;
       }
-      tracing::warn!(
+      tracing::debug!(
         target: "network",
         "[network] keepalive timed out: no pong or inbound traffic received within {}s; forcing reconnect",
         KEEPALIVE_TIMEOUT.as_secs()
@@ -449,7 +449,7 @@ where
       break;
     }
     if let Err(error) = server.ping().await {
-      tracing::warn!(target: "network", "[network] keepalive send failed; forcing reconnect: {error}");
+      tracing::debug!(target: "network", "[network] keepalive send failed; forcing reconnect: {error}");
       session.mark_lobby_error(format!("keepalive send failed: {error}"));
       break;
     }

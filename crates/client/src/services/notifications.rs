@@ -351,7 +351,7 @@ pub fn play(sound: NotificationSound, settings: NotificationAudioSettings) {
     .name("parties-notification-sound".to_owned())
     .spawn(move || {
       if let Err(error) = play_blocking(sound, settings) {
-        tracing::warn!(target: "notifications", "[notifications] notification sound unavailable: {error}");
+        tracing::debug!(target: "notifications", "[notifications] notification sound unavailable: {error}");
       }
     });
 }
@@ -365,7 +365,7 @@ pub fn play_outgoing_voice_join(settings: NotificationAudioSettings) {
     .name("parties-outgoing-join-sound-preview".to_owned())
     .spawn(move || {
       if let Err(error) = play_outgoing_voice_join_blocking(settings) {
-        tracing::warn!(target: "notifications", "[notifications] outgoing voice join preview unavailable: {error}");
+        tracing::debug!(target: "notifications", "[notifications] outgoing voice join preview unavailable: {error}");
       }
     });
 }
@@ -430,7 +430,7 @@ where
     .build_output_stream::<T, _, _>(
       config,
       move |data, _| state.render(data),
-      move |error| tracing::warn!(target: "notifications", "[notifications] notification output error: {error}"),
+      move |error| tracing::debug!(target: "notifications", "[notifications] notification output error: {error}"),
       None,
     )
     .map_err(|error| format!("Failed to build output stream: {error}"))
@@ -459,12 +459,12 @@ fn decode_notification_sound(sound: NotificationSound, overrides: &str) -> Resul
     match fs::read(&path) {
       Ok(bytes) => match decode_mp3(&bytes) {
         Ok(decoded) => return Ok(decoded),
-        Err(error) => tracing::warn!(target: "notifications",
+        Err(error) => tracing::debug!(target: "notifications",
           "[notifications] custom notification sound invalid: path={} error={error}",
           path.display()
         ),
       },
-      Err(error) => tracing::warn!(target: "notifications",
+      Err(error) => tracing::debug!(target: "notifications",
         "[notifications] custom notification sound unavailable: path={} error={error}",
         path.display()
       ),
@@ -494,7 +494,7 @@ fn decode_outgoing_voice_join_sound(overrides: &str) -> Result<Option<DecodedNot
     Ok(bytes) => match decode_mp3(&bytes) {
       Ok(decoded) => Ok(Some(decoded)),
       Err(error) => {
-        tracing::warn!(
+        tracing::debug!(
           target: "notifications",
           "[notifications] outgoing voice join sound invalid: path={} error={error}",
           path.display()
@@ -503,7 +503,7 @@ fn decode_outgoing_voice_join_sound(overrides: &str) -> Result<Option<DecodedNot
       }
     },
     Err(error) => {
-      tracing::warn!(
+      tracing::debug!(
         target: "notifications",
         "[notifications] outgoing voice join sound unavailable: path={} error={error}",
         path.display()

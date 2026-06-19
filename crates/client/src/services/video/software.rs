@@ -96,7 +96,7 @@ impl Av1SoftwareDecoder {
     };
     let decoder = dav1d_native::Decoder::new(decoder_config)
       .map_err(|error| VideoError::new(format!("Failed to start native software AV1 decoder: {error}")))?;
-    tracing::info!(target: "video::decode::software",
+    tracing::debug!(target: "video::decode::software",
       "[video:decode/software] native software AV1 decoder started: size={}x{} threads={} max_frame_delay={} film_grain=false dav1d_version={}",
       config.width,
       config.height,
@@ -254,7 +254,7 @@ impl H265SoftwareDecoder {
     {
       let threads = h265_decoder_threads(config);
       let decoder = NativeLibhevcDecoder::new(config.width, config.height, threads)?;
-      tracing::info!(target: "video::decode::software",
+      tracing::debug!(target: "video::decode::software",
         "[video:decode/software] native software H.265 decoder started: size={}x{} threads={} backend={} sao=codec-default deblocking=codec-default",
         config.width,
         config.height,
@@ -898,7 +898,7 @@ impl H264SoftwareDecoder {
     let decoder = OpenH264RawDecoder::new()
       .map_err(|error| VideoError::new(format!("Failed to start native software H.264 decoder: {error}")))?;
     let threads = decoder.threads;
-    tracing::info!(target: "video::decode::software",
+    tracing::debug!(target: "video::decode::software",
       "[video:decode/software] native software H.264 decoder started: size={}x{} backend=OpenH264 raw_api=true threads={}",
       config.width,
       config.height,
@@ -987,7 +987,7 @@ impl H264SoftwareDecoder {
       return;
     }
     self.last_nonfatal_decode_log = Some(now);
-    tracing::warn!(target: "video::decode::software",
+    tracing::debug!(target: "video::decode::software",
       "[video:decode/software] OpenH264 skipped recoverable frame: frame={} keyframe={} state={} state_label={} bytes={} nals={} sps={} pps={} idr={} sps_profile={} sps_level={} sps_level_clamped_from={} length_prefixed={}",
       frame.frame_number,
       frame.keyframe,
@@ -1028,7 +1028,7 @@ fn log_slow_software_decode(timing: SoftwareDecodeTiming<'_>) {
     return;
   }
 
-  tracing::warn!(target: "video::decode::software",
+  tracing::debug!(target: "video::decode::software",
     "[video:decode/software] slow software decode detail: codec={:?} size={}x{} frame={} keyframe={} output={} produced_frame={} bytes={} {}={} av1_threads={} av1_max_frame_delay={} input_copy_ms={:.1} parse_ms={:.1} submit_ms={:.1} codec_ms={:.1} convert_ms={:.1} total_ms={:.1}",
     timing.codec,
     timing.frame.width,

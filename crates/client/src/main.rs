@@ -162,7 +162,7 @@ fn main() {
   let mut lurq_app = lurq::app::App::new();
   lurq_app.set_tokio_handle(tokio_runtime.handle().clone());
   if let Err(error) = lurq_app.set_persistent_storage_path(persistent_storage_path()) {
-    tracing::warn!(target: "window::state", "failed to open persistent storage: {error}");
+    tracing::debug!(target: "window::state", "failed to open persistent storage: {error}");
   }
   let persistent_storage = lurq_app.persistent_storage().clone();
   let window_state =
@@ -291,7 +291,7 @@ fn log_startup_gpu_info() {
       Ok(adapter) => adapter,
       Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
       Err(error) => {
-        tracing::warn!(target: "startup::gpu", "[startup/gpu] failed to enumerate DXGI adapter #{adapter_index}: {error}");
+        tracing::debug!(target: "startup::gpu", "[startup/gpu] failed to enumerate DXGI adapter #{adapter_index}: {error}");
         break;
       }
     };
@@ -301,7 +301,7 @@ fn log_startup_gpu_info() {
   }
 
   if !logged_any {
-    tracing::warn!(target: "startup::gpu", "[startup/gpu] no DXGI adapters found");
+    tracing::debug!(target: "startup::gpu", "[startup/gpu] no DXGI adapters found");
   }
 
   log_dxgi_gpu_preference_adapters(&factory);
@@ -313,7 +313,7 @@ fn log_dxgi_adapter(index: u32, adapter: &windows::Win32::Graphics::Dxgi::IDXGIA
   let desc = match unsafe { adapter.GetDesc1() } {
     Ok(desc) => desc,
     Err(error) => {
-      tracing::warn!(target: "startup::gpu", "[startup/gpu] adapter #{index}: failed to read desc: {error}");
+      tracing::debug!(target: "startup::gpu", "[startup/gpu] adapter #{index}: failed to read desc: {error}");
       return;
     }
   };
@@ -323,7 +323,7 @@ fn log_dxgi_adapter(index: u32, adapter: &windows::Win32::Graphics::Dxgi::IDXGIA
   let shared_memory_mb = desc.SharedSystemMemory / (1024 * 1024);
   let output_count = dxgi_output_count(adapter);
   let default_marker = if index == 0 { " default=true" } else { "" };
-  tracing::info!(target: "startup::gpu",
+  tracing::debug!(target: "startup::gpu",
     "[startup/gpu] adapter #{index}:{default_marker} vendor={vendor} vendor_id=0x{:04x} device_id=0x{:04x} name='{}' dedicated_vram={}MB shared_memory={}MB outputs={} flags=0x{:x}",
     desc.VendorId,
     desc.DeviceId,
@@ -344,7 +344,7 @@ fn log_dxgi_gpu_preference_adapters(factory: &windows::Win32::Graphics::Dxgi::ID
   use windows_core::Interface;
 
   let Ok(factory) = factory.cast::<IDXGIFactory6>() else {
-    tracing::warn!(target: "startup::gpu", "[startup/gpu] DXGI factory does not support GPU preference enumeration");
+    tracing::debug!(target: "startup::gpu", "[startup/gpu] DXGI factory does not support GPU preference enumeration");
     return;
   };
 
@@ -355,7 +355,7 @@ fn log_dxgi_gpu_preference_adapters(factory: &windows::Win32::Graphics::Dxgi::ID
   ] {
     match unsafe { factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, preference) } {
       Ok(adapter) => log_selected_dxgi_adapter(format_args!("dxgi-preference-{label}"), &adapter),
-      Err(error) => tracing::warn!(
+      Err(error) => tracing::debug!(
         target: "startup::gpu",
         "[startup/gpu] dxgi-preference-{label}: failed to resolve adapter: {error}"
       ),
@@ -380,11 +380,11 @@ fn log_dx12_renderer_adapter(factory: &windows::Win32::Graphics::Dxgi::IDXGIFact
     let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
       Ok(adapter) => adapter,
       Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => {
-        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: no DX12-capable hardware adapter found");
+        tracing::debug!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: no DX12-capable hardware adapter found");
         return;
       }
       Err(error) => {
-        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to enumerate adapter #{adapter_index}: {error}");
+        tracing::debug!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to enumerate adapter #{adapter_index}: {error}");
         return;
       }
     };
@@ -392,7 +392,7 @@ fn log_dx12_renderer_adapter(factory: &windows::Win32::Graphics::Dxgi::IDXGIFact
     let desc = match unsafe { adapter.GetDesc1() } {
       Ok(desc) => desc,
       Err(error) => {
-        tracing::warn!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to read adapter #{adapter_index}: {error}");
+        tracing::debug!(target: "startup::gpu", "[startup/gpu] dx12-renderer-selected: failed to read adapter #{adapter_index}: {error}");
         return;
       }
     };
@@ -445,7 +445,7 @@ fn log_selected_dxgi_adapter(label: std::fmt::Arguments<'_>, adapter: &windows::
   let desc = match unsafe { adapter.GetDesc1() } {
     Ok(desc) => desc,
     Err(error) => {
-      tracing::warn!(target: "startup::gpu", "[startup/gpu] {label}: failed to read desc: {error}");
+      tracing::debug!(target: "startup::gpu", "[startup/gpu] {label}: failed to read desc: {error}");
       return;
     }
   };
@@ -454,7 +454,7 @@ fn log_selected_dxgi_adapter(label: std::fmt::Arguments<'_>, adapter: &windows::
   let vendor = gpu_vendor_label(desc.VendorId);
   let dedicated_vram_mb = desc.DedicatedVideoMemory / (1024 * 1024);
   let output_count = dxgi_output_count(adapter);
-  tracing::info!(
+  tracing::debug!(
     target: "startup::gpu",
     "[startup/gpu] {label}: vendor={vendor} vendor_id=0x{:04x} device_id=0x{:04x} luid={:08x}:{:08x} name='{}' dedicated_vram={}MB outputs={} flags=0x{:x}",
     desc.VendorId,
@@ -550,10 +550,10 @@ extern "C" fn windows_native_log_callback(level: u8, message: *const c_char) {
   let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
   match level {
     0 => tracing::debug!(target: "native::windows", "[native/windows/debug] {message}"),
-    1 => tracing::info!(target: "native::windows", "[native/windows/info] {message}"),
-    2 => tracing::warn!(target: "native::windows", "[native/windows/warn] {message}"),
+    1 => tracing::debug!(target: "native::windows", "[native/windows/info] {message}"),
+    2 => tracing::debug!(target: "native::windows", "[native/windows/warn] {message}"),
     3 => tracing::error!(target: "native::windows", "[native/windows/error] {message}"),
-    _ => tracing::warn!(target: "native::windows", "[native/windows/unknown] {message}"),
+    _ => tracing::debug!(target: "native::windows", "[native/windows/unknown] {message}"),
   }
 }
 
@@ -624,7 +624,7 @@ fn save_window_bounds_to_persistent(storage: &PersistentStorage, state: WindowSt
   ]) {
     Ok(()) => true,
     Err(error) => {
-      tracing::warn!(target: "window::state", "failed to save window bounds: {error}");
+      tracing::debug!(target: "window::state", "failed to save window bounds: {error}");
       false
     }
   }
@@ -640,7 +640,7 @@ fn save_window_state_to_persistent(storage: &PersistentStorage, state: WindowSta
   ]) {
     Ok(()) => true,
     Err(error) => {
-      tracing::warn!(target: "window::state", "failed to save window state: {error}");
+      tracing::debug!(target: "window::state", "failed to save window state: {error}");
       false
     }
   }

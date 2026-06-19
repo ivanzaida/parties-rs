@@ -70,7 +70,7 @@ pub(super) fn chat_messages_scroll(
     })
     .on_scroll_reach_top(move |event: ScrollEvent| {
       if can_page && session.begin_chat_history_request(channel_id, before_id) {
-        tracing::info!(
+        tracing::debug!(
           target: "chat::history",
           "[chat/history] pagination requested: trigger=reach_top channel={} before={} event_y={:.1} scroll_y={:.1} viewport_h={:.1} content_h={:.1} delta_y={:.1}",
           channel_id,
@@ -149,7 +149,7 @@ pub(super) fn preserve_chat_scroll_on_prepend(
     let is_dragging = scroll_state.is_dragging();
     scroll_state.preserve_prepend_anchor_pending();
     prepend_settle_anchor.set(Some((channel_id, oldest_message_id, previous_content_height)));
-    tracing::info!(
+    tracing::debug!(
       target: "chat::history",
       "[chat/history] pagination follow-up suppressed: reason=preserve_prepend channel={} previous_oldest={} current_oldest={} previous_scroll_y={:.1} dragging={} previous_content_h={:.1}",
       channel_id,

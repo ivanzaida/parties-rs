@@ -150,7 +150,7 @@ impl WindowsDecoderProvider for SoftwareDecoderProvider {
 fn log_windows_decoder_ready(config: &VideoDecodeConfig, build: &WindowsDecoderBuild) {
   match build.ready_path {
     WindowsDecoderReadyPath::Named(path) => {
-      tracing::info!(target: "video::decode::windows",
+      tracing::debug!(target: "video::decode::windows",
         "[video:decode/windows] decoder ready through {path}: codec={:?} size={}x{}",
         config.codec,
         config.width,
@@ -158,7 +158,7 @@ fn log_windows_decoder_ready(config: &VideoDecodeConfig, build: &WindowsDecoderB
       );
     }
     WindowsDecoderReadyPath::Software => {
-      tracing::info!(target: "video::decode::windows",
+      tracing::debug!(target: "video::decode::windows",
         "[video:decode/windows] decoder ready through software: backend={:?} codec={:?} size={}x{}",
         build.backend,
         config.codec,
