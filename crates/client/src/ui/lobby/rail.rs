@@ -200,19 +200,14 @@ fn join_channel_action(ctx: &mut Ctx, session: ServerSession, storage: Option<St
         return Err(error.to_string());
       }
       tracing::debug!(target: "lobby", "[lobby] join channel accepted: channel={channel_id}");
-      let local_user_id = session.info().map(|info| info.user_id);
-      let lobby = session.lobby();
-      let local_visible = local_user_id.is_some_and(|user_id| {
-        lobby
-          .users_by_channel
-          .get(&channel_id)
-          .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
-      });
+      let summary = session.voice_channel_debug_summary(channel_id);
       tracing::debug!(target: "lobby::voice",
         "[lobby:voice] after join command send: channel={channel_id} selected={:?} local_user={local_user_id:?} local_visible={local_visible} cached_users={} selected_users={}",
-        lobby.selected_channel_id,
-        lobby.users_by_channel.get(&channel_id).map(Vec::len).unwrap_or(0),
-        lobby.users.len()
+        summary.selected_channel_id,
+        summary.cached_users,
+        summary.selected_users,
+        local_user_id = summary.local_user_id,
+        local_visible = summary.local_visible,
       );
       session.play_voice_join_notification();
       server

@@ -470,6 +470,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Split rail section subscriptions:
   - added header, channel-list, and bottom/status rail models with dedicated selectors;
   - replaced the combined rail model subscription with separate local stores and subscribers for each rail section.
+- Removed rail join debug snapshot reads:
+  - added a field-specific `ServerSession` debug summary for voice-channel join diagnostics;
+  - replaced the remaining rail action `session.lobby()` clone with the narrower summary method.
 
 ## Non-Goals
 

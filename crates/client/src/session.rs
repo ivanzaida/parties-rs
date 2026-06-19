@@ -53,6 +53,15 @@ pub struct LobbySnapshot {
   pub lobby: LobbyState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceChannelDebugSummary {
+  pub selected_channel_id: Option<ChannelId>,
+  pub local_user_id: Option<UserId>,
+  pub local_visible: bool,
+  pub cached_users: usize,
+  pub selected_users: usize,
+}
+
 #[derive(Clone)]
 struct LobbyUpdatePublisher {
   lobby: Arc<Mutex<LobbyState>>,
@@ -516,6 +525,26 @@ impl ServerSession {
 
   pub fn selected_channel_id(&self) -> Option<ChannelId> {
     self.lobby.lock().selected_channel_id
+  }
+
+  pub fn voice_channel_debug_summary(&self, channel_id: ChannelId) -> VoiceChannelDebugSummary {
+    let local_user_id = self.info().map(|info| info.user_id);
+    let lobby = self.lobby.lock();
+    let cached_users = lobby.users_by_channel.get(&channel_id).map(Vec::len).unwrap_or(0);
+    let local_visible = local_user_id.is_some_and(|user_id| {
+      lobby
+        .users_by_channel
+        .get(&channel_id)
+        .is_some_and(|users| users.iter().any(|user| user.user_id == user_id))
+    });
+
+    VoiceChannelDebugSummary {
+      selected_channel_id: lobby.selected_channel_id,
+      local_user_id,
+      local_visible,
+      cached_users,
+      selected_users: lobby.users.len(),
+    }
   }
 
   pub fn subscribe_lobby_updates(&self) -> watch::Receiver<LobbySnapshot> {
