@@ -500,6 +500,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed floating preview close control:
   - mounted the close button as its own component;
   - scoped stop-watching pending-state reads to the button instead of the full floating preview render.
+- Narrowed watched-stream back control:
+  - mounted the top-bar back button as its own component;
+  - scoped stop-watching pending-state reads to the button instead of the watched-stream top bar.
 
 ## Non-Goals
 

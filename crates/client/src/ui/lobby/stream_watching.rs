@@ -827,6 +827,40 @@ fn stage_control_icon(ctx: &mut Ctx, icon: &'static str) -> Element {
 }
 
 fn back_button(ctx: &mut Ctx, stop_watching: &StopWatchingAction) -> Element {
+  ctx.mount::<BackButton>(BackButtonProps {
+    stop_watching: stop_watching.clone(),
+  })
+}
+
+#[derive(Clone)]
+struct BackButtonProps {
+  stop_watching: StopWatchingAction,
+}
+
+impl PartialEq for BackButtonProps {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
+}
+
+impl DevtoolsInspectable for BackButtonProps {}
+
+struct BackButton;
+
+impl Component for BackButton {
+  type Props = BackButtonProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    back_button_content(ctx, props.stop_watching)
+  }
+}
+
+fn back_button_content(ctx: &mut Ctx, stop_watching: StopWatchingAction) -> Element {
   let pending = stop_watching.state().get().is_pending();
   let action = stop_watching.clone();
   let mut button = Row::new()
