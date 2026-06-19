@@ -540,11 +540,14 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - loaded `AppSettings` into `Store<AppSettings>` during app startup and provided it through context;
   - changed settings screens, connect screens, lobby actions, restart resume, and sentry consent to read the store instead of loading settings from storage;
   - centralized settings updates through `update_app_settings`, which writes to storage only when the in-memory settings value changes.
+- Split server settings lobby data into store-backed models:
+  - derived server glance counts, channel lists, and active members from lobby updates;
+  - stored those page models in `Store<Option<_>>` fields instead of cloning `LobbyState` in render;
+  - changed the updater resume save path to read only the selected channel id.
 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
-- `server_settings.rs` still snapshots `session.lobby()` in render for settings pages; split this into page-specific subscribed settings models before treating it as part of the hot connected-lobby path.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:

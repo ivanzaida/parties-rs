@@ -517,8 +517,7 @@ fn save_update_resume_state(storage: Option<&Storage>, session: Option<&ServerSe
     return;
   };
 
-  let lobby = session.lobby();
-  let voice_channel_id = lobby.selected_channel_id;
+  let voice_channel_id = session.selected_channel_id();
   let (muted, deafened) = session.local_voice_state().unwrap_or((false, false));
   let state = StoredUpdateResumeState {
     server_address: info.address,

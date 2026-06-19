@@ -8,7 +8,7 @@ use lurq::{
     theme::Breakpoint,
   },
   components::{Column, Row, ScrollVertical, Stack, Text, TextInput},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -31,7 +31,7 @@ use crate::{
     ROUTE_SERVER_SETTINGS_MEMBERS, ROUTE_SERVER_SETTINGS_ROLES,
   },
   services::hotkeys,
-  session::{ConnectedServerInfo, LobbyChannel, LobbyState, LobbyTextChannel, LobbyUser, ServerSession},
+  session::{ConnectedServerInfo, LobbyChannel, LobbySnapshot, LobbyState, LobbyTextChannel, LobbyUser, ServerSession},
   theme,
   ui::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
@@ -50,6 +50,122 @@ type ChannelInputBlurAction = Arc<dyn Fn() + Send + Sync>;
 
 const SERVER_SETTINGS_QUERY_TIMEOUT: Duration = Duration::from_millis(800);
 const MEMBER_ROLES: [Role; 4] = [Role::Owner, Role::Admin, Role::Moderator, Role::User];
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct ServerSettingsLobbyModels {
+  server: ServerSettingsServerModel,
+  channels: ServerSettingsChannelsModel,
+  members: ServerSettingsMembersModel,
+}
+
+impl DevtoolsInspectable for ServerSettingsLobbyModels {}
+
+#[derive(Clone, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+struct ServerSettingsServerModel {
+  voice_channel_count: usize,
+  text_channel_count: usize,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct ServerSettingsChannelsModel {
+  voice_channels: Vec<LobbyChannel>,
+  text_channels: Vec<LobbyTextChannel>,
+}
+
+impl DevtoolsInspectable for ServerSettingsChannelsModel {}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct ServerSettingsMembersModel {
+  members: Vec<ActiveMember>,
+}
+
+impl DevtoolsInspectable for ServerSettingsMembersModel {}
+
+struct ServerSettingsLobbySubscription {
+  applied_generation: Signal<Option<u64>>,
+}
+
+impl ServerSettingsLobbySubscription {
+  fn new(ctx: &mut Ctx) -> Self {
+    Self {
+      applied_generation: ctx.signal(None),
+    }
+  }
+
+  fn next_models(&self, ctx: &mut Ctx, session: ServerSession) -> Option<(u64, ServerSettingsLobbyModels)> {
+    let session_key = session.info().map(|info| info.address).unwrap_or_default();
+    let stream_session = session.clone();
+    let update = ctx.stream(
+      session_key,
+      move |_session_key, emitter: lurq::app::ctx::StreamEmitter<(u64, ServerSettingsLobbyModels), String>| {
+        let session = stream_session.clone();
+        async move {
+          let mut receiver = session.subscribe_lobby_updates();
+          loop {
+            let (snapshot, closed) = match receiver.changed().await {
+              Ok(()) => (receiver.borrow().clone(), false),
+              Err(_) => (
+                LobbySnapshot {
+                  generation: 0,
+                  lobby: session.lobby(),
+                },
+                true,
+              ),
+            };
+            if !emitter.emit((snapshot.generation, server_settings_lobby_models(&snapshot.lobby))) {
+              break;
+            }
+            if closed {
+              break;
+            }
+          }
+        }
+      },
+    );
+    let state = update.state().get();
+    if state.is_fulfilled()
+      && let Some((snapshot_generation, models)) = state.data
+    {
+      if self.applied_generation.get_untracked() == Some(snapshot_generation) {
+        return None;
+      }
+      self.applied_generation.set(Some(snapshot_generation));
+      return Some((snapshot_generation, models));
+    }
+
+    None
+  }
+}
+
+fn apply_server_settings_model<M>(model_store: &Store<Option<M>>, model: M)
+where
+  M: DevtoolsInspectable + Clone + PartialEq + Send + Sync + 'static,
+{
+  if model_store.with(|current| current.as_ref() != Some(&model)) {
+    model_store.set(Some(model));
+  }
+}
+
+fn current_server_settings_lobby_models(session: &ServerSession) -> ServerSettingsLobbyModels {
+  let lobby = session.lobby();
+  server_settings_lobby_models(&lobby)
+}
+
+fn server_settings_lobby_models(lobby: &LobbyState) -> ServerSettingsLobbyModels {
+  ServerSettingsLobbyModels {
+    server: ServerSettingsServerModel {
+      voice_channel_count: lobby.channels.len(),
+      text_channel_count: lobby.text_channels.len(),
+    },
+    channels: ServerSettingsChannelsModel {
+      voice_channels: lobby.channels.clone(),
+      text_channels: lobby.text_channels.clone(),
+    },
+    members: ServerSettingsMembersModel {
+      members: active_members(lobby),
+    },
+  }
+}
 
 struct ServerSettingsMetrics {
   nav_width: f32,
@@ -94,6 +210,10 @@ pub struct ServerSettingsScreen {
   role_picker_user_id: Signal<Option<UserId>>,
   role_picker_open: Signal<bool>,
   role_picker_anchor: Signal<Option<(f32, f32)>>,
+  lobby_subscription: ServerSettingsLobbySubscription,
+  server_model_store: Store<Option<ServerSettingsServerModel>>,
+  channels_model_store: Store<Option<ServerSettingsChannelsModel>>,
+  members_model_store: Store<Option<ServerSettingsMembersModel>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, lurq::DevtoolsInspectable)]
@@ -117,6 +237,10 @@ impl Component for ServerSettingsScreen {
       role_picker_user_id: ctx.signal(None),
       role_picker_open: ctx.signal(false),
       role_picker_anchor: ctx.signal(None),
+      lobby_subscription: ServerSettingsLobbySubscription::new(ctx),
+      server_model_store: ctx.store(None),
+      channels_model_store: ctx.store(None),
+      members_model_store: ctx.store(None),
     }
   }
 
@@ -154,12 +278,17 @@ impl Component for ServerSettingsScreen {
     }
 
     let server_query_info = query_state.data.flatten();
-    let lobby = session.lobby();
+    self.sync_lobby_models(ctx, session.clone());
+    let lobby_models = ServerSettingsLobbyModels {
+      server: self.server_model_store.get().unwrap_or_default(),
+      channels: self.channels_model_store.get().unwrap_or_default(),
+      members: self.members_model_store.get().unwrap_or_default(),
+    };
     server_settings_screen(
       ctx,
       page,
       &info,
-      &lobby,
+      &lobby_models,
       server_query_info.as_ref(),
       &admin_action,
       admin_state.error.as_deref(),
@@ -175,6 +304,26 @@ impl Component for ServerSettingsScreen {
         role_picker_anchor: self.role_picker_anchor.clone(),
       },
     )
+  }
+}
+
+impl ServerSettingsScreen {
+  fn sync_lobby_models(&self, ctx: &mut Ctx, session: ServerSession) {
+    if let Some((_generation, models)) = self.lobby_subscription.next_models(ctx, session.clone()) {
+      apply_server_settings_model(&self.server_model_store, models.server);
+      apply_server_settings_model(&self.channels_model_store, models.channels);
+      apply_server_settings_model(&self.members_model_store, models.members);
+    }
+
+    if self.server_model_store.with(Option::is_none)
+      || self.channels_model_store.with(Option::is_none)
+      || self.members_model_store.with(Option::is_none)
+    {
+      let models = current_server_settings_lobby_models(&session);
+      apply_server_settings_model(&self.server_model_store, models.server);
+      apply_server_settings_model(&self.channels_model_store, models.channels);
+      apply_server_settings_model(&self.members_model_store, models.members);
+    }
   }
 }
 
@@ -356,7 +505,7 @@ fn server_settings_screen(
   ctx: &mut Ctx,
   page: ServerSettingsPage,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  lobby_models: &ServerSettingsLobbyModels,
   server_query: Option<&ServerQueryInfo>,
   admin_action: &ServerAdminAction,
   admin_error: Option<&str>,
@@ -375,7 +524,7 @@ fn server_settings_screen(
       ctx,
       page,
       info,
-      lobby,
+      lobby_models,
       server_query,
       admin_action,
       admin_error,
@@ -571,7 +720,7 @@ fn server_settings_main(
   ctx: &mut Ctx,
   page: ServerSettingsPage,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  lobby_models: &ServerSettingsLobbyModels,
   server_query: Option<&ServerQueryInfo>,
   admin_action: &ServerAdminAction,
   admin_error: Option<&str>,
@@ -580,10 +729,10 @@ fn server_settings_main(
 ) -> Element {
   let metrics = server_settings_metrics(ctx);
   let content = match page {
-    ServerSettingsPage::Server => server_page(ctx, info, lobby, server_query, &metrics),
+    ServerSettingsPage::Server => server_page(ctx, info, &lobby_models.server, server_query, &metrics),
     ServerSettingsPage::Channels => channels_page(
       ctx,
-      lobby,
+      &lobby_models.channels,
       &metrics,
       admin_action,
       admin_error,
@@ -593,7 +742,7 @@ fn server_settings_main(
     ServerSettingsPage::Members => members_page(
       ctx,
       info,
-      lobby,
+      &lobby_models.members,
       &metrics,
       admin_action,
       admin_error,
@@ -628,7 +777,7 @@ fn server_settings_main(
 fn server_page(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &ServerSettingsServerModel,
   server_query: Option<&ServerQueryInfo>,
   metrics: &ServerSettingsMetrics,
 ) -> Element {
@@ -641,7 +790,7 @@ fn server_page(
     .child(server_info_card(ctx, info, metrics.card_padding))
     .child(glance_card(
       ctx,
-      lobby,
+      model,
       server_query,
       metrics.card_padding,
       metrics.stat_gap,
@@ -651,7 +800,7 @@ fn server_page(
 
 fn channels_page(
   ctx: &mut Ctx,
-  lobby: &LobbyState,
+  model: &ServerSettingsChannelsModel,
   metrics: &ServerSettingsMetrics,
   admin_action: &ServerAdminAction,
   admin_error: Option<&str>,
@@ -674,7 +823,7 @@ fn channels_page(
   page
     .child(voice_channels_card(
       ctx,
-      lobby,
+      model,
       metrics.card_padding,
       admin_action,
       admin_pending,
@@ -682,7 +831,7 @@ fn channels_page(
     ))
     .child(text_channels_card(
       ctx,
-      lobby,
+      model,
       metrics.card_padding,
       admin_action,
       admin_pending,
@@ -694,7 +843,7 @@ fn channels_page(
 fn members_page(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &ServerSettingsMembersModel,
   metrics: &ServerSettingsMetrics,
   admin_action: &ServerAdminAction,
   admin_error: Option<&str>,
@@ -717,7 +866,7 @@ fn members_page(
     .child(members_card(
       ctx,
       info,
-      lobby,
+      model,
       metrics.card_padding,
       admin_action,
       admin_pending,
@@ -770,7 +919,7 @@ fn server_info_card(ctx: &mut Ctx, info: &ConnectedServerInfo, padding: f32) -> 
 
 fn glance_card(
   ctx: &mut Ctx,
-  lobby: &LobbyState,
+  model: &ServerSettingsServerModel,
   server_query: Option<&ServerQueryInfo>,
   padding: f32,
   gap: f32,
@@ -779,8 +928,8 @@ fn glance_card(
   let voice_label = ctx.t("server_settings.glance.voice_channels").to_string();
   let text_label = ctx.t("server_settings.glance.text_channels").to_string();
   let users_label = ctx.t("server_settings.glance.users").to_string();
-  let voice_count = lobby.channels.len().to_string();
-  let text_count = lobby.text_channels.len().to_string();
+  let voice_count = model.voice_channel_count.to_string();
+  let text_count = model.text_channel_count.to_string();
   let total_users = total_users_value(server_query);
 
   settings_card(ctx, "activity", &title, padding)
@@ -806,7 +955,7 @@ fn total_users_value(server_query: Option<&ServerQueryInfo>) -> String {
 
 fn voice_channels_card(
   ctx: &mut Ctx,
-  lobby: &LobbyState,
+  model: &ServerSettingsChannelsModel,
   padding: f32,
   admin_action: &ServerAdminAction,
   admin_pending: bool,
@@ -826,13 +975,13 @@ fn voice_channels_card(
   );
   let delete_open = channel_state.delete_open.clone();
   let pending_delete = channel_state.pending_delete.clone();
-  let rows = if lobby.channels.is_empty() {
+  let rows = if model.voice_channels.is_empty() {
     vec![empty_row(&ctx.t("server_settings.channels.empty_voice"))]
   } else {
     let action = admin_action.clone();
     let pending = admin_pending;
     ctx.for_each(
-      lobby.channels.clone(),
+      model.voice_channels.clone(),
       |channel| channel.id,
       move |ctx, channel| {
         let key = format!("settings-voice-channel-{}", channel.id);
@@ -855,7 +1004,7 @@ fn voice_channels_card(
     "volume-2",
     &voice_title,
     &ctx.t("server_settings.channels.voice_protocol"),
-    lobby.channels.len(),
+    model.voice_channels.len(),
     padding,
   )
   .child(create_row)
@@ -866,7 +1015,7 @@ fn voice_channels_card(
 
 fn text_channels_card(
   ctx: &mut Ctx,
-  lobby: &LobbyState,
+  model: &ServerSettingsChannelsModel,
   padding: f32,
   admin_action: &ServerAdminAction,
   admin_pending: bool,
@@ -875,10 +1024,10 @@ fn text_channels_card(
   let text_title = ctx.t("server_settings.channels.text_title").to_string();
   let can_create = !channel_state.text_name.get().trim().is_empty() && !admin_pending;
   let create_row = text_create_row(ctx, channel_state.text_name.clone(), admin_action, can_create);
-  let rows = if lobby.text_channels.is_empty() {
+  let rows = if model.text_channels.is_empty() {
     vec![empty_row(&ctx.t("server_settings.channels.empty_text"))]
   } else {
-    lobby
+    model
       .text_channels
       .iter()
       .map(|channel| {
@@ -898,7 +1047,7 @@ fn text_channels_card(
     "hash",
     &text_title,
     &ctx.t("server_settings.channels.text_protocol"),
-    lobby.text_channels.len(),
+    model.text_channels.len(),
     padding,
   )
   .child(create_row)
@@ -1555,7 +1704,7 @@ fn admin_error_banner(ctx: &mut Ctx, error: &str) -> Element {
 fn members_card(
   ctx: &mut Ctx,
   info: &ConnectedServerInfo,
-  lobby: &LobbyState,
+  model: &ServerSettingsMembersModel,
   padding: f32,
   admin_action: &ServerAdminAction,
   admin_pending: bool,
@@ -1586,7 +1735,7 @@ fn members_card(
         ),
     )
     .child(divider());
-  let members = active_members(lobby);
+  let members = model.members.clone();
   card = card.child(
     Modal::new(ctx.mount::<MemberRolePickerModal>(MemberRolePickerModalProps {
       members: members.clone(),
@@ -1632,6 +1781,8 @@ struct ActiveMember {
   user: LobbyUser,
   channels: Vec<String>,
 }
+
+impl DevtoolsInspectable for ActiveMember {}
 
 fn active_members(lobby: &LobbyState) -> Vec<ActiveMember> {
   let mut members = BTreeMap::<UserId, ActiveMember>::new();
