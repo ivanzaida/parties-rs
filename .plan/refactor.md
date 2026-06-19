@@ -494,6 +494,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed stream browser card rendering:
   - mounted stream and voice-user cards as keyed components with card-specific props;
   - removed the unused local-user id prop from stream browser and watching-pane comparisons.
+- Narrowed watched-stream switcher rendering:
+  - mounted each stream switcher card as a keyed component with stream, selection, and click-enabled props;
+  - read watch-action pending state once at the switcher boundary instead of inside every card.
 
 ## Non-Goals
 

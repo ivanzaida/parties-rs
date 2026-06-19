@@ -464,6 +464,7 @@ fn stream_switcher(
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
+  let watch_pending = watch_stream.state().get().is_pending();
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .height(126.0)
@@ -477,6 +478,7 @@ fn stream_switcher(
       watched_user_id,
       debug_user_ids,
       watch_stream,
+      watch_pending,
     ));
   }
 
@@ -489,14 +491,64 @@ fn switcher_card(
   watched_user_id: UserId,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
+  watch_pending: bool,
 ) -> Element {
-  let sharer_id = stream.share.sharer_user_id;
-  let watching = sharer_id == watched_user_id;
-  let name = stream_name(ctx, &stream, debug_user_ids);
-  let avatar_name = stream_name(ctx, &stream, false);
+  let sharer_user_id = stream.share.sharer_user_id;
+  let key = format!("stream-switcher-{}", stream.share.sharer_user_id);
+  ctx.mount_keyed::<StreamSwitcherCard>(
+    &key,
+    StreamSwitcherCardProps {
+      can_watch: sharer_user_id != watched_user_id && !watch_pending,
+      stream,
+      watching: sharer_user_id == watched_user_id,
+      debug_user_ids,
+      watch_stream: watch_stream.clone(),
+    },
+  )
+}
+
+#[derive(Clone)]
+struct StreamSwitcherCardProps {
+  stream: ChannelScreenShare,
+  watching: bool,
+  debug_user_ids: bool,
+  watch_stream: WatchStreamAction,
+  can_watch: bool,
+}
+
+impl PartialEq for StreamSwitcherCardProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.stream == other.stream
+      && self.watching == other.watching
+      && self.debug_user_ids == other.debug_user_ids
+      && self.can_watch == other.can_watch
+  }
+}
+
+impl DevtoolsInspectable for StreamSwitcherCardProps {}
+
+struct StreamSwitcherCard;
+
+impl Component for StreamSwitcherCard {
+  type Props = StreamSwitcherCardProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    stream_switcher_card(ctx, props)
+  }
+}
+
+fn stream_switcher_card(ctx: &mut Ctx, props: StreamSwitcherCardProps) -> Element {
+  let sharer_id = props.stream.share.sharer_user_id;
+  let name = stream_name(ctx, &props.stream, props.debug_user_ids);
+  let avatar_name = stream_name(ctx, &props.stream, false);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-  let speaking = stream_speaking(&stream);
-  let action = watch_stream.clone();
+  let speaking = stream_speaking(&props.stream);
+  let action = props.watch_stream.clone();
   let mut card = Column::new()
     .width(168.0)
     .height(126.0)
@@ -507,7 +559,7 @@ fn switcher_card(
       1.0,
       if speaking {
         theme::PaletteColor::Success
-      } else if watching {
+      } else if props.watching {
         theme::PaletteColor::Accent
       } else {
         theme::PaletteColor::Border
@@ -515,7 +567,7 @@ fn switcher_card(
     )
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .child(mini_thumb(ctx, &stream.share))
+    .child(mini_thumb(ctx, &props.stream.share))
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))
@@ -536,7 +588,7 @@ fn switcher_card(
         ),
     );
 
-  if !watching && !watch_stream.state().get().is_pending() {
+  if props.can_watch {
     card = card.on_click(move |_| action.run(sharer_id));
   }
 
