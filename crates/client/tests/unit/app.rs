@@ -1,4 +1,7 @@
-use lurq::{app::events::KeyboardEvent, core::NodeId};
+use lurq::{
+  app::events::KeyboardEvent,
+  core::{NodeId, Store},
+};
 
 use super::*;
 
@@ -8,7 +11,7 @@ fn key_event(key: &str, code: &str, ctrl: bool) -> KeyboardEvent {
 
 #[test]
 fn toggle_hotkey_activation_is_released_by_key_up() {
-  let active = Signal::new(Vec::new());
+  let active = Store::new(Vec::new());
 
   assert!(activate_toggle_hotkey(&active, "Ctrl+M"));
   assert!(!activate_toggle_hotkey(&active, "Ctrl+M"));

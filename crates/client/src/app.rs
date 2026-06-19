@@ -70,7 +70,7 @@ pub struct App {
   settings: Store<AppSettings>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
-  active_toggle_hotkeys: Signal<Vec<String>>,
+  active_toggle_hotkeys: Store<Vec<String>>,
   update_status: Signal<StartupUpdateStatus>,
   frame_rate: FrameRateSignal,
   startup_full_screen: bool,
@@ -220,7 +220,7 @@ impl Component for App {
       settings,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
-      active_toggle_hotkeys: ctx.signal(Vec::new()),
+      active_toggle_hotkeys: ctx.store(Vec::new()),
       update_status,
       frame_rate: props.frame_rate.clone(),
       startup_full_screen: props.startup_full_screen,
@@ -548,13 +548,13 @@ fn update_pill_text_color(status: &StartupUpdateStatus) -> theme::PaletteColor {
   }
 }
 
-fn activate_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str) -> bool {
+fn activate_toggle_hotkey(active_hotkeys: &Store<Vec<String>>, hotkey: &str) -> bool {
   let key = hotkey_key(hotkey);
   if key.is_empty() {
     return false;
   }
 
-  let mut active = active_hotkeys.get_untracked();
+  let mut active = active_hotkeys.get();
   if active.iter().any(|existing| existing == &key) {
     return false;
   }
@@ -564,7 +564,7 @@ fn activate_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str) ->
   true
 }
 
-fn release_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str, event: &lurq::app::events::KeyboardEvent) {
+fn release_toggle_hotkey(active_hotkeys: &Store<Vec<String>>, hotkey: &str, event: &lurq::app::events::KeyboardEvent) {
   if !hotkeys::event_releases_hotkey(hotkey, event) {
     return;
   }
@@ -572,7 +572,7 @@ fn release_toggle_hotkey(active_hotkeys: &Signal<Vec<String>>, hotkey: &str, eve
   let key = hotkey_key(hotkey);
   active_hotkeys.set(
     active_hotkeys
-      .get_untracked()
+      .get()
       .into_iter()
       .filter(|existing| existing != &key)
       .collect(),

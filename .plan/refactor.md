@@ -550,6 +550,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved settings device lists into stores:
   - kept audio input/output device lists in `Store<Vec<String>>`;
   - kept webcam device options in `Store<Vec<WebcamDevice>>` while selected device values remain focused signals.
+- Moved active toggle-hotkey tracking into a store:
+  - kept the active mute/deafen hotkey latch collection in `Store<Vec<String>>`.
 
 ## Current Residual Reads
 
