@@ -20,7 +20,7 @@ use crate::{
   identity::{LocalIdentity, public_key_fingerprint, secret_key_to_hex},
   routes::ROUTE_IDENTITY_SETUP,
   session::ServerSession,
-  storage::{AppDisplayName, AppSettings, Storage, delete_local_identity, update_app_settings},
+  storage::{AppDisplayName, AppSettingsUpdater, Storage, delete_local_identity},
   theme,
   ui::{
     common::{
@@ -294,8 +294,7 @@ impl Component for DisplayNameSetting {
       display_name_input(
         self.value.clone(),
         &ctx.t("settings.identity.display_name.placeholder"),
-        ctx.use_context::<Storage>(),
-        ctx.use_context::<Store<AppSettings>>(),
+        ctx.use_context::<AppSettingsUpdater>(),
       )
       .into(),
       false,
@@ -394,12 +393,7 @@ fn copy_button(ctx: &mut Ctx, copied: bool) -> Row {
     }))
 }
 
-fn display_name_input(
-  value: Signal<String>,
-  placeholder: &str,
-  storage: Option<Storage>,
-  settings_store: Option<Store<AppSettings>>,
-) -> Row {
+fn display_name_input(value: Signal<String>, placeholder: &str, settings_updater: Option<AppSettingsUpdater>) -> Row {
   let mut placeholder_style = row_subtitle_style();
   placeholder_style.color = theme::palette().text_muted.with_opacity(0.55);
   let mut input = TextInput::styled(value.clone(), row_subtitle_style())
@@ -410,11 +404,11 @@ fn display_name_input(
     .background(BackgroundColor::Color(Color::from_hex("#00000000")))
     .caret_color(theme::PaletteColor::Accent);
 
-  if let Some(settings_store) = settings_store {
+  if let Some(settings_updater) = settings_updater {
     let value = value.clone();
     input = input.on_blur(move || {
       let display_name = value.get_untracked();
-      update_app_settings(&settings_store, storage.as_ref(), |settings| {
+      settings_updater.update(|settings| {
         settings.display_name = display_name;
       });
     });

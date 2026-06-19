@@ -12,8 +12,8 @@ use crate::{
   services::logger,
   session::ServerSession,
   storage::{
-    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppLocale, AppSentryReportsEnabled, AppSettings, Storage,
-    update_app_settings,
+    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppLocale, AppSentryReportsEnabled, AppSettings,
+    AppSettingsUpdater,
   },
   theme,
   ui::{
@@ -230,10 +230,9 @@ impl Component for OverviewToggleSetting {
     let props = ctx.props::<Self::Props>().clone();
     let enabled = ctx.signal(props.initial_enabled);
     let session = ctx.use_context::<ServerSession>();
-    let storage = ctx.use_context::<Storage>();
-    if let Some(settings_store) = ctx.use_context::<Store<AppSettings>>() {
+    if let Some(settings_updater) = ctx.use_context::<AppSettingsUpdater>() {
       ctx.watch(&enabled, move |enabled| {
-        update_app_settings(&settings_store, storage.as_ref(), |settings| match props.setting {
+        settings_updater.update(|settings| match props.setting {
           OverviewBoolSetting::StartMutedWhenJoining => settings.start_muted_when_joining = *enabled,
           OverviewBoolSetting::SentryReportsEnabled => settings.sentry_reports_enabled = Some(*enabled),
           OverviewBoolSetting::DebugModeEnabled => settings.debug_mode_enabled = *enabled,
@@ -289,13 +288,12 @@ impl Component for OverviewLanguageSetting {
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
     let locale = ctx.signal(props.initial_locale);
-    let storage = ctx.use_context::<Storage>();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let settings_updater = ctx.use_context::<AppSettingsUpdater>();
     let i18n = ctx.i18n().clone();
     ctx.watch(&locale, move |locale| {
       i18n.set_locale(locale.clone());
-      if let Some(settings_store) = settings_store.as_ref() {
-        update_app_settings(settings_store, storage.as_ref(), |settings| {
+      if let Some(settings_updater) = settings_updater.as_ref() {
+        settings_updater.update(|settings| {
           settings.locale = locale.clone();
         });
       }

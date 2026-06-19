@@ -247,6 +247,25 @@ impl Default for AppSettings {
 impl DevtoolsInspectable for AppSettings {}
 impl DevtoolsInspectable for LocalIdentity {}
 
+#[derive(Clone)]
+pub struct AppSettingsUpdater {
+  settings_store: Store<AppSettings>,
+  storage: Option<Storage>,
+}
+
+impl AppSettingsUpdater {
+  pub fn new(settings_store: Store<AppSettings>, storage: Option<Storage>) -> Self {
+    Self {
+      settings_store,
+      storage,
+    }
+  }
+
+  pub fn update(&self, f: impl FnOnce(&mut AppSettings)) -> AppSettings {
+    update_app_settings(&self.settings_store, self.storage.as_ref(), f)
+  }
+}
+
 pub fn update_app_settings(
   settings_store: &Store<AppSettings>,
   storage: Option<&Storage>,

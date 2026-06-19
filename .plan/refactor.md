@@ -596,6 +596,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - moved stream/video settings page initialization off full `AppSettings` while keeping `Store<AppStreamSettings>` narrow for lobby broadcast reads.
 - Tightened global hotkey settings usage:
   - changed `GlobalVoiceHotkeys::update_settings` to accept `AppHotkeySettings` plus the push-to-talk enabled flag instead of full `AppSettings`.
+- Added a write-only settings updater context:
+  - provided `AppSettingsUpdater` from the app root to wrap `Store<AppSettings>` plus optional storage;
+  - moved overview and identity settings writes off direct `Store<AppSettings>` contexts.
 
 ## Current Residual Reads
 

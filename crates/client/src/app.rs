@@ -37,7 +37,7 @@ use crate::{
   session::ServerSession,
   storage::{
     AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppHotkeySettings, AppLocale, AppSentryReportsEnabled,
-    AppSettings, AppStreamSettings, AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
+    AppSettings, AppSettingsUpdater, AppStreamSettings, AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -296,9 +296,11 @@ impl Component for App {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let storage = self.storage.get();
     ctx.provide(self.session.clone());
     ctx.provide(self.global_hotkeys.clone());
     ctx.provide(self.settings.clone());
+    ctx.provide(AppSettingsUpdater::new(self.settings.clone(), storage.clone()));
     ctx.provide(self.display_name.clone());
     ctx.provide(self.debug_mode_enabled.clone());
     ctx.provide(self.sentry_reports_enabled.clone());
@@ -312,7 +314,6 @@ impl Component for App {
     ctx.provide(self.user_audio_preferences.clone());
     let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
     ctx.provide(settings_popup.clone());
-    let storage = self.storage.get();
     if let Some(storage) = storage.clone() {
       ctx.provide(storage);
     }
