@@ -599,6 +599,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added a write-only settings updater context:
   - provided `AppSettingsUpdater` from the app root to wrap `Store<AppSettings>` plus optional storage;
   - moved overview and identity settings writes off direct `Store<AppSettings>` contexts.
+- Moved audio settings writes to `AppSettingsUpdater`:
+  - removed direct `Store<AppSettings>` write handles from audio controls;
+  - reused the updater-returned settings snapshot for voice restart instead of reading the full settings store again.
 
 ## Current Residual Reads
 
