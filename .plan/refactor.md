@@ -491,6 +491,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed chat command suggestion rows:
   - mounted command suggestion rows as keyed components with derived fill text, description, and usage parts;
   - kept input, registry, and invalid-feedback animation details out of row props unless they affect the rendered row.
+- Narrowed stream browser card rendering:
+  - mounted stream and voice-user cards as keyed components with card-specific props;
+  - removed the unused local-user id prop from stream browser and watching-pane comparisons.
 
 ## Non-Goals
 

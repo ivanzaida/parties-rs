@@ -39,7 +39,6 @@ const LOBBY_STREAM_FOOTER_HEIGHT: f32 = 58.0;
 pub(super) fn stream_browser(
   ctx: &mut Ctx,
   channel: LobbyChannel,
-  local_user_id: UserId,
   debug_user_ids: bool,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
@@ -49,7 +48,6 @@ pub(super) fn stream_browser(
     &key,
     StreamBrowserPaneProps {
       channel,
-      local_user_id,
       debug_user_ids,
       session,
       watch_stream: watch_stream.clone(),
@@ -60,7 +58,6 @@ pub(super) fn stream_browser(
 #[derive(Clone)]
 struct StreamBrowserPaneProps {
   channel: LobbyChannel,
-  local_user_id: UserId,
   debug_user_ids: bool,
   session: ServerSession,
   watch_stream: WatchStreamAction,
@@ -69,7 +66,6 @@ struct StreamBrowserPaneProps {
 impl PartialEq for StreamBrowserPaneProps {
   fn eq(&self, other: &Self) -> bool {
     self.channel == other.channel
-      && self.local_user_id == other.local_user_id
       && self.debug_user_ids == other.debug_user_ids
       && same_session(&self.session, &other.session)
   }
@@ -119,14 +115,7 @@ impl Component for StreamBrowserPane {
         .into();
     };
 
-    stream_browser_view(
-      ctx,
-      subscriber,
-      model,
-      props.local_user_id,
-      props.debug_user_ids,
-      &props.watch_stream,
-    )
+    stream_browser_view(ctx, subscriber, model, props.debug_user_ids, &props.watch_stream)
   }
 }
 
@@ -134,7 +123,6 @@ fn stream_browser_view(
   ctx: &mut Ctx,
   subscriber: Element,
   model: StreamBrowserModel,
-  local_user_id: UserId,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -148,7 +136,6 @@ fn stream_browser_view(
       &model.channel,
       &model.users,
       model.streams,
-      local_user_id,
       model.watching_user_id,
       debug_user_ids,
       watch_stream,
@@ -196,7 +183,6 @@ fn merged_lobby_grid(
   channel: &LobbyChannel,
   users: &[LobbyUser],
   streams: Vec<ChannelScreenShare>,
-  local_user_id: UserId,
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
@@ -207,6 +193,7 @@ fn merged_lobby_grid(
     .into_iter()
     .map(|stream| (stream.share.sharer_user_id, stream))
     .collect::<std::collections::HashMap<_, _>>();
+  let watch_pending = watch_stream.state().get().is_pending();
   let mut cards = Vec::new();
 
   for user in users {
@@ -218,16 +205,11 @@ fn merged_lobby_grid(
         watching_user_id,
         debug_user_ids,
         watch_stream,
+        watch_pending,
         card_width,
       ));
     } else {
-      cards.push(merged_user_card(
-        ctx,
-        user,
-        user.user_id == local_user_id,
-        debug_user_ids,
-        card_width,
-      ));
+      cards.push(merged_user_card(ctx, user, debug_user_ids, card_width));
     }
   }
 
@@ -239,6 +221,7 @@ fn merged_lobby_grid(
       watching_user_id,
       debug_user_ids,
       watch_stream,
+      watch_pending,
       card_width,
     ));
   }
@@ -299,23 +282,76 @@ fn merged_stream_card(
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
+  watch_pending: bool,
   card_width: f32,
 ) -> Element {
-  let sharer_id = stream.share.sharer_user_id;
-  let name = stream_name(ctx, &stream, debug_user_ids);
-  let avatar_name = stream_name(ctx, &stream, false);
-  let watching = watching_user_id == Some(sharer_id);
-  let speaking = stream_speaking(&stream);
+  let sharer_user_id = stream.share.sharer_user_id;
+  let key = format!("stream-browser-stream-{}", stream.share.sharer_user_id);
+  ctx.mount_keyed::<StreamBrowserStreamCard>(
+    &key,
+    StreamBrowserStreamCardProps {
+      can_watch: watching_user_id != Some(sharer_user_id) && !watch_pending,
+      watching: watching_user_id == Some(sharer_user_id),
+      stream,
+      debug_user_ids,
+      watch_stream: watch_stream.clone(),
+      card_width,
+    },
+  )
+}
+
+#[derive(Clone)]
+struct StreamBrowserStreamCardProps {
+  stream: ChannelScreenShare,
+  watching: bool,
+  debug_user_ids: bool,
+  watch_stream: WatchStreamAction,
+  can_watch: bool,
+  card_width: f32,
+}
+
+impl PartialEq for StreamBrowserStreamCardProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.stream == other.stream
+      && self.watching == other.watching
+      && self.debug_user_ids == other.debug_user_ids
+      && self.can_watch == other.can_watch
+      && self.card_width == other.card_width
+  }
+}
+
+impl DevtoolsInspectable for StreamBrowserStreamCardProps {}
+
+struct StreamBrowserStreamCard;
+
+impl Component for StreamBrowserStreamCard {
+  type Props = StreamBrowserStreamCardProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    stream_browser_stream_card(ctx, props)
+  }
+}
+
+fn stream_browser_stream_card(ctx: &mut Ctx, props: StreamBrowserStreamCardProps) -> Element {
+  let sharer_id = props.stream.share.sharer_user_id;
+  let name = stream_name(ctx, &props.stream, props.debug_user_ids);
+  let avatar_name = stream_name(ctx, &props.stream, false);
+  let speaking = stream_speaking(&props.stream);
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
-  let footer_meta = stream_footer_meta(ctx, &name, &stream.share);
-  let action = watch_stream.clone();
+  let footer_meta = stream_footer_meta(ctx, &name, &props.stream.share);
+  let action = props.watch_stream.clone();
 
   let mut card = Column::new()
-    .width(card_width)
+    .width(props.card_width)
     .height(LOBBY_STREAM_CARD_HEIGHT)
     .rounded(8.0)
     .clip()
-    .background(BackgroundColor::Color(if watching {
+    .background(BackgroundColor::Color(if props.watching {
       Color::from_hex("#121A23")
     } else {
       Color::from_hex("#15171A")
@@ -324,7 +360,7 @@ fn merged_stream_card(
       1.0,
       if speaking {
         theme::PaletteColor::Success
-      } else if watching {
+      } else if props.watching {
         theme::PaletteColor::Accent
       } else {
         theme::PaletteColor::Border
@@ -332,7 +368,7 @@ fn merged_stream_card(
     )
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
-    .child(stream_thumbnail(ctx, &stream.share))
+    .child(stream_thumbnail(ctx, &props.stream.share))
     .child(
       Row::new()
         .width(Dimension::Pct(100.0))
@@ -360,7 +396,7 @@ fn merged_stream_card(
         ),
     );
 
-  if !watching && !watch_stream.state().get().is_pending() {
+  if props.can_watch {
     card = card.on_click(move |_| action.run(sharer_id));
   }
 
@@ -403,13 +439,49 @@ fn stream_thumbnail(ctx: &mut Ctx, stream: &LobbyScreenShare) -> Element {
     .into()
 }
 
-fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, debug_user_ids: bool, card_width: f32) -> Element {
-  let active = user.speaking && !user.muted && !user.deafened;
-  let name_max_width = (card_width - 74.0).max(60.0);
-  let username = super::shared::user_display_name(user.user_id, &user.username, debug_user_ids);
+fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, debug_user_ids: bool, card_width: f32) -> Element {
+  let key = format!("stream-browser-user-{}", user.user_id);
+  ctx.mount_keyed::<StreamBrowserUserCard>(
+    &key,
+    StreamBrowserUserCardProps {
+      user: user.clone(),
+      debug_user_ids,
+      card_width,
+    },
+  )
+}
+
+#[derive(Clone, PartialEq)]
+struct StreamBrowserUserCardProps {
+  user: LobbyUser,
+  debug_user_ids: bool,
+  card_width: f32,
+}
+
+impl DevtoolsInspectable for StreamBrowserUserCardProps {}
+
+struct StreamBrowserUserCard;
+
+impl Component for StreamBrowserUserCard {
+  type Props = StreamBrowserUserCardProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    stream_browser_user_card(ctx, props)
+  }
+}
+
+fn stream_browser_user_card(ctx: &mut Ctx, props: StreamBrowserUserCardProps) -> Element {
+  let active = props.user.speaking && !props.user.muted && !props.user.deafened;
+  let name_max_width = (props.card_width - 74.0).max(60.0);
+  let username = super::shared::user_display_name(props.user.user_id, &props.user.username, props.debug_user_ids);
 
   Column::new()
-    .width(card_width)
+    .width(props.card_width)
     .height(LOBBY_STREAM_CARD_HEIGHT)
     .padding(12.0)
     .rounded(8.0)
@@ -429,7 +501,7 @@ fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, debug_user_id
         .flex(1.0)
         .align_items(Alignment::Center)
         .justify(Justify::Center)
-        .child(stream_user_avatar(&user.username, active, 56.0)),
+        .child(stream_user_avatar(&props.user.username, active, 56.0)),
     )
     .child(
       Column::new()
@@ -452,7 +524,7 @@ fn merged_user_card(ctx: &mut Ctx, user: &LobbyUser, _local: bool, debug_user_id
                 .nowrap()
                 .text_overflow(TextOverflow::Elipsis),
             )
-            .child(merged_voice_icons(ctx, user)),
+            .child(merged_voice_icons(ctx, &props.user)),
         ),
     )
     .into()

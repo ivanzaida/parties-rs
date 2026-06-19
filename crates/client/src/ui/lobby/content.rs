@@ -514,7 +514,6 @@ fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, prop
     MainBodyModel::StreamChannel { channel } => stream_channel_detail(
       ctx,
       channel,
-      props.info.user_id,
       props.debug_mode_enabled,
       props.storage,
       props.session,

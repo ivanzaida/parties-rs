@@ -75,7 +75,6 @@ pub(super) fn stream_watching_top_bar(
 pub(super) fn stream_channel_detail(
   ctx: &mut Ctx,
   channel: LobbyChannel,
-  local_user_id: UserId,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
@@ -86,7 +85,6 @@ pub(super) fn stream_channel_detail(
     &key,
     StreamWatchingPaneProps {
       channel,
-      local_user_id,
       debug_user_ids,
       storage,
       session,
@@ -98,7 +96,6 @@ pub(super) fn stream_channel_detail(
 #[derive(Clone)]
 struct StreamWatchingPaneProps {
   channel: LobbyChannel,
-  local_user_id: UserId,
   debug_user_ids: bool,
   storage: Option<Storage>,
   session: ServerSession,
@@ -108,7 +105,6 @@ struct StreamWatchingPaneProps {
 impl PartialEq for StreamWatchingPaneProps {
   fn eq(&self, other: &Self) -> bool {
     self.channel == other.channel
-      && self.local_user_id == other.local_user_id
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
       && same_session(&self.session, &other.session)
@@ -152,7 +148,6 @@ impl Component for StreamWatchingPane {
         .child(stream_browser(
           ctx,
           props.channel,
-          props.local_user_id,
           props.debug_user_ids,
           props.session.clone(),
           &props.watch_stream,
