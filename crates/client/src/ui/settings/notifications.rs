@@ -15,7 +15,7 @@ use lurq::{
 use crate::{
   services::notifications::{self, NotificationSound},
   session::ServerSession,
-  storage::{AppAudioSettings, AppSettings, AppSettingsUpdater},
+  storage::{AppAudioSettings, AppNotificationSettings, AppSettings, AppSettingsUpdater},
   theme,
   ui::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
@@ -48,9 +48,9 @@ impl Component for SettingsNotificationsScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     let settings = ctx
-      .use_context::<Store<AppAudioSettings>>()
+      .use_context::<Store<AppNotificationSettings>>()
       .map(|settings| settings.get())
-      .unwrap_or_else(AppAudioSettings::default);
+      .unwrap_or_else(AppNotificationSettings::default);
 
     Self {
       notification_volume: settings.notification_volume.clamp(0, 100),
@@ -278,7 +278,7 @@ impl Component for NotificationSoundSetting {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let settings_updater = ctx.use_context::<AppSettingsUpdater>();
-    let audio_settings_store = ctx.use_context::<Store<AppAudioSettings>>();
+    let notification_settings_store = ctx.use_context::<Store<AppNotificationSettings>>();
     let session = ctx.use_context::<ServerSession>();
     let custom = self.value.get() == notifications::SOUND_CHOICE_CUSTOM;
     let custom_exists = custom && notifications::custom_sound_exists(props.sound);
@@ -310,7 +310,7 @@ impl Component for NotificationSoundSetting {
           self.menu_anchor.clone(),
           self.menu_anchor.get(),
           settings_updater.clone(),
-          audio_settings_store.clone(),
+          notification_settings_store.clone(),
           session.clone(),
           settings_updater.as_ref().is_none_or(|settings| !settings.has_storage()),
         ))
@@ -400,7 +400,7 @@ impl Component for OutgoingVoiceJoinSoundSetting {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let settings_updater = ctx.use_context::<AppSettingsUpdater>();
-    let audio_settings_store = ctx.use_context::<Store<AppAudioSettings>>();
+    let notification_settings_store = ctx.use_context::<Store<AppNotificationSettings>>();
     let session = ctx.use_context::<ServerSession>();
     let custom = self.value.get() == notifications::SOUND_CHOICE_CUSTOM;
     let custom_exists = custom && notifications::outgoing_voice_join_sound_exists();
@@ -431,7 +431,7 @@ impl Component for OutgoingVoiceJoinSoundSetting {
           self.menu_anchor.clone(),
           self.menu_anchor.get(),
           settings_updater.clone(),
-          audio_settings_store.clone(),
+          notification_settings_store.clone(),
           session.clone(),
           custom_exists,
           settings_updater.as_ref().is_none_or(|settings| !settings.has_storage()),
@@ -505,7 +505,7 @@ fn notification_sound_action_overlay(
   menu_anchor: Signal<Option<(f32, f32)>>,
   anchor: Option<(f32, f32)>,
   settings_updater: Option<AppSettingsUpdater>,
-  audio_settings_store: Option<Store<AppAudioSettings>>,
+  notification_settings_store: Option<Store<AppNotificationSettings>>,
   session: Option<ServerSession>,
   disabled: bool,
 ) -> Element {
@@ -545,7 +545,7 @@ fn notification_sound_action_overlay(
         menu_open,
         menu_anchor,
         settings_updater,
-        audio_settings_store,
+        notification_settings_store,
         session,
         disabled,
       )
@@ -562,7 +562,7 @@ fn outgoing_voice_join_sound_action_overlay(
   menu_anchor: Signal<Option<(f32, f32)>>,
   anchor: Option<(f32, f32)>,
   settings_updater: Option<AppSettingsUpdater>,
-  audio_settings_store: Option<Store<AppAudioSettings>>,
+  notification_settings_store: Option<Store<AppNotificationSettings>>,
   session: Option<ServerSession>,
   custom_exists: bool,
   disabled: bool,
@@ -602,7 +602,7 @@ fn outgoing_voice_join_sound_action_overlay(
         menu_open,
         menu_anchor,
         settings_updater,
-        audio_settings_store,
+        notification_settings_store,
         session,
         custom_exists,
         disabled,
@@ -650,7 +650,7 @@ fn notification_sound_action_menu(
   menu_open: Signal<bool>,
   menu_anchor: Signal<Option<(f32, f32)>>,
   settings_updater: Option<AppSettingsUpdater>,
-  audio_settings_store: Option<Store<AppAudioSettings>>,
+  notification_settings_store: Option<Store<AppNotificationSettings>>,
   session: Option<ServerSession>,
   disabled: bool,
 ) -> Column {
@@ -658,18 +658,18 @@ fn notification_sound_action_menu(
   let choose_label = ctx.t("settings.notifications.action.choose_mp3").to_string();
   let reset_label = ctx.t("settings.notifications.action.reset").to_string();
 
-  let play_audio_settings_store = audio_settings_store;
+  let play_notification_settings_store = notification_settings_store;
   let close_play = menu_open.clone();
   let close_play_anchor = menu_anchor.clone();
   let play = notification_menu_item(ctx, "play", &play_label, false, true).on_click(move |_| {
     close_notification_menu(close_play.clone(), close_play_anchor.clone());
-    let settings = play_audio_settings_store
+    let settings = play_notification_settings_store
       .as_ref()
       .map(|settings| settings.get())
-      .unwrap_or_else(AppAudioSettings::default);
+      .unwrap_or_else(AppNotificationSettings::default);
     notifications::play(
       sound,
-      notifications::NotificationAudioSettings::from_audio_settings(&settings),
+      notifications::NotificationAudioSettings::from_notification_settings(&settings),
     );
   });
 
@@ -746,7 +746,7 @@ fn outgoing_voice_join_sound_action_menu(
   menu_open: Signal<bool>,
   menu_anchor: Signal<Option<(f32, f32)>>,
   settings_updater: Option<AppSettingsUpdater>,
-  audio_settings_store: Option<Store<AppAudioSettings>>,
+  notification_settings_store: Option<Store<AppNotificationSettings>>,
   session: Option<ServerSession>,
   custom_exists: bool,
   disabled: bool,
@@ -755,18 +755,20 @@ fn outgoing_voice_join_sound_action_menu(
   let choose_label = ctx.t("settings.notifications.action.choose_mp3").to_string();
   let reset_label = ctx.t("settings.notifications.action.reset").to_string();
 
-  let play_audio_settings_store = audio_settings_store;
+  let play_notification_settings_store = notification_settings_store;
   let close_play = menu_open.clone();
   let close_play_anchor = menu_anchor.clone();
   let mut play = notification_menu_item(ctx, "play", &play_label, false, custom_exists);
   if custom_exists {
     play = play.on_click(move |_| {
       close_notification_menu(close_play.clone(), close_play_anchor.clone());
-      let settings = play_audio_settings_store
+      let settings = play_notification_settings_store
         .as_ref()
         .map(|settings| settings.get())
-        .unwrap_or_else(AppAudioSettings::default);
-      notifications::play_outgoing_voice_join(notifications::NotificationAudioSettings::from_audio_settings(&settings));
+        .unwrap_or_else(AppNotificationSettings::default);
+      notifications::play_outgoing_voice_join(notifications::NotificationAudioSettings::from_notification_settings(
+        &settings,
+      ));
     });
   }
 

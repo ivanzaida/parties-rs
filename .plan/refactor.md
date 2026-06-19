@@ -616,6 +616,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - settings writes and legacy import sync now refresh focused settings stores directly;
   - added an app-root runtime settings store for locale, sentry consent, notification playback, video decoding, and hotkey/PTT fields;
   - root render reads the runtime settings store instead of the full persisted settings record or broader audio/video stores.
+- Added a notification-only settings store:
+  - notification settings screen and preview playback now read `Store<AppNotificationSettings>` instead of the broader audio settings store.
 
 ## Current Residual Reads
 

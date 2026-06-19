@@ -14,7 +14,7 @@ use minimp3::{Decoder, Error as Mp3Error, Frame};
 
 use crate::{
   services::audio_devices,
-  storage::{AppAudioSettings, AppSettings},
+  storage::{AppAudioSettings, AppNotificationSettings, AppSettings},
 };
 
 const JOIN_CHANNEL_MP3: &[u8] = include_bytes!("../../assets/audio/join_channel.mp3");
@@ -345,6 +345,14 @@ impl NotificationAudioSettings {
   }
 
   pub fn from_audio_settings(settings: &AppAudioSettings) -> Self {
+    Self {
+      output_device: settings.audio_output_device.clone(),
+      volume: settings.notification_volume,
+      sound_overrides: settings.notification_sound_overrides.clone(),
+    }
+  }
+
+  pub fn from_notification_settings(settings: &AppNotificationSettings) -> Self {
     Self {
       output_device: settings.audio_output_device.clone(),
       volume: settings.notification_volume,

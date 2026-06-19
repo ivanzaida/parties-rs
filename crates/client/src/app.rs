@@ -37,8 +37,8 @@ use crate::{
   session::ServerSession,
   storage::{
     AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppFocusedSettingsSync, AppHotkeySettings, AppLocale,
-    AppRuntimeSettings, AppSentryReportsEnabled, AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings,
-    AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
+    AppNotificationSettings, AppRuntimeSettings, AppSentryReportsEnabled, AppSettings, AppSettingsUpdater,
+    AppStoreSync, AppStreamSettings, AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -79,6 +79,7 @@ pub struct App {
   locale: Store<AppLocale>,
   hotkey_settings: Store<AppHotkeySettings>,
   audio_settings: Store<AppAudioSettings>,
+  notification_settings: Store<AppNotificationSettings>,
   stream_settings: Store<AppStreamSettings>,
   video_settings: Store<AppVideoSettings>,
   runtime_settings: Store<AppRuntimeSettings>,
@@ -140,6 +141,7 @@ impl Component for App {
     let locale = ctx.store(locale_setting(&settings.get()));
     let hotkey_settings = ctx.store(hotkey_settings(&settings.get()));
     let audio_settings = ctx.store(audio_settings(&settings.get()));
+    let notification_settings = ctx.store(AppNotificationSettings::from(&settings.get()));
     let stream_settings = ctx.store(stream_settings(&settings.get()));
     let video_settings = ctx.store(video_settings(&settings.get()));
     let runtime_settings = ctx.store(AppRuntimeSettings::from(&settings.get()));
@@ -155,6 +157,7 @@ impl Component for App {
       locale.clone(),
       hotkey_settings.clone(),
       audio_settings.clone(),
+      notification_settings.clone(),
       stream_settings.clone(),
       video_settings.clone(),
       runtime_settings.clone(),
@@ -276,6 +279,7 @@ impl Component for App {
       locale,
       hotkey_settings,
       audio_settings,
+      notification_settings,
       stream_settings,
       video_settings,
       runtime_settings,
@@ -316,6 +320,7 @@ impl Component for App {
     ctx.provide(self.locale.clone());
     ctx.provide(self.hotkey_settings.clone());
     ctx.provide(self.audio_settings.clone());
+    ctx.provide(self.notification_settings.clone());
     ctx.provide(self.stream_settings.clone());
     ctx.provide(self.video_settings.clone());
     ctx.provide(self.servers.clone());
@@ -472,6 +477,7 @@ impl App {
       self.locale.clone(),
       self.hotkey_settings.clone(),
       self.audio_settings.clone(),
+      self.notification_settings.clone(),
       self.stream_settings.clone(),
       self.video_settings.clone(),
       self.runtime_settings.clone(),
