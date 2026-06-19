@@ -37,7 +37,8 @@ use crate::{
   session::ServerSession,
   storage::{
     AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppHotkeySettings, AppLocale, AppSentryReportsEnabled,
-    AppSettings, AppSettingsUpdater, AppStreamSettings, AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
+    AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings, AppVideoSettings, Storage, StoredServer,
+    UserAudioPreferences,
   },
   theme,
   ui::{
@@ -299,8 +300,13 @@ impl Component for App {
     let storage = self.storage.get();
     ctx.provide(self.session.clone());
     ctx.provide(self.global_hotkeys.clone());
-    ctx.provide(self.settings.clone());
     ctx.provide(AppSettingsUpdater::new(self.settings.clone(), storage.clone()));
+    ctx.provide(AppStoreSync::new(
+      self.settings.clone(),
+      self.servers.clone(),
+      self.identity.clone(),
+      self.user_audio_preferences.clone(),
+    ));
     ctx.provide(self.display_name.clone());
     ctx.provide(self.debug_mode_enabled.clone());
     ctx.provide(self.sentry_reports_enabled.clone());

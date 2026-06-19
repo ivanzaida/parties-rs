@@ -1,16 +1,15 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text},
-  core::{Signal, Store},
+  core::Signal,
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 use rfd::AsyncFileDialog;
 
 use crate::{
-  identity::LocalIdentity,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
-  storage::{AppSettings, LegacyPartiesImportSummary, Storage, StoredServer, UserAudioPreferences},
+  storage::{AppStoreSync, LegacyPartiesImportSummary, Storage},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -82,10 +81,7 @@ impl ImportLegacyConfigScreen {
     let back_navigator = navigator.clone();
     let import_navigator = navigator;
     let storage = ctx.use_context::<Storage>();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
-    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
-    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
-    let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
+    let store_sync = ctx.use_context::<AppStoreSync>();
     let status = self.status.clone();
     let import_synced = self.import_synced.clone();
     let import = ctx.future_action(|storage: Storage| async move {
@@ -111,14 +107,7 @@ impl ImportLegacyConfigScreen {
       && let Some(Some(summary)) = import_state.data
     {
       if !import_synced.get_untracked() {
-        sync_imported_legacy_stores(
-          ctx,
-          storage.as_ref(),
-          settings_store.as_ref(),
-          servers_store.as_ref(),
-          identity_store.as_ref(),
-          user_audio_preferences.as_ref(),
-        );
+        sync_imported_legacy_stores(ctx, storage.as_ref(), store_sync.as_ref());
         import_synced.set(true);
       }
       if summary.imported_identity {
@@ -188,38 +177,13 @@ impl ImportLegacyConfigScreen {
   }
 }
 
-fn sync_imported_legacy_stores(
-  ctx: &mut Ctx,
-  storage: Option<&Storage>,
-  settings_store: Option<&Store<AppSettings>>,
-  servers_store: Option<&Store<Vec<StoredServer>>>,
-  identity_store: Option<&Store<Option<LocalIdentity>>>,
-  user_audio_preferences: Option<&Store<UserAudioPreferences>>,
-) {
-  let Some(storage) = storage else {
+fn sync_imported_legacy_stores(ctx: &mut Ctx, storage: Option<&Storage>, store_sync: Option<&AppStoreSync>) {
+  let (Some(storage), Some(store_sync)) = (storage, store_sync) else {
     return;
   };
 
-  if let Some(settings_store) = settings_store
-    && let Ok(settings) = storage.load_settings()
-  {
+  if let Some(settings) = store_sync.sync_imported_storage(storage) {
     ctx.i18n().set_locale(settings.locale.clone());
-    settings_store.set(settings);
-  }
-  if let Some(servers_store) = servers_store
-    && let Ok(servers) = storage.load_servers()
-  {
-    servers_store.set(servers);
-  }
-  if let Some(identity_store) = identity_store
-    && let Ok(identity) = storage.load_identity()
-  {
-    identity_store.set(identity);
-  }
-  if let Some(user_audio_preferences) = user_audio_preferences
-    && let Ok(preferences) = storage.load_user_audio_preferences()
-  {
-    user_audio_preferences.set(preferences);
   }
 }
 

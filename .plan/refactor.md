@@ -609,12 +609,15 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - kept focused `Store<AppAudioSettings>` only for preview playback.
 - Moved sentry consent writes to `AppSettingsUpdater`:
   - removed the direct full settings store and storage context from the consent buttons.
+- Removed raw full settings store from UI context:
+  - added an `AppStoreSync` context for legacy import to refresh in-memory settings, servers, identity, and user audio preferences after DB import;
+  - stopped providing `Store<AppSettings>` directly to route components.
 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
-- Full `Store<AppSettings>` UI contexts remain only for legacy import sync; render-time settings values and normal settings writes use focused stores or `AppSettingsUpdater`.
+- Full `Store<AppSettings>` is now app-root/internal plumbing only; route components use focused stores, `AppSettingsUpdater`, or `AppStoreSync`.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
 - Saved-server storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.
 - Identity storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.

@@ -270,6 +270,47 @@ impl AppSettingsUpdater {
   }
 }
 
+#[derive(Clone)]
+pub struct AppStoreSync {
+  settings: Store<AppSettings>,
+  servers: Store<Vec<StoredServer>>,
+  identity: Store<Option<LocalIdentity>>,
+  user_audio_preferences: Store<UserAudioPreferences>,
+}
+
+impl AppStoreSync {
+  pub fn new(
+    settings: Store<AppSettings>,
+    servers: Store<Vec<StoredServer>>,
+    identity: Store<Option<LocalIdentity>>,
+    user_audio_preferences: Store<UserAudioPreferences>,
+  ) -> Self {
+    Self {
+      settings,
+      servers,
+      identity,
+      user_audio_preferences,
+    }
+  }
+
+  pub fn sync_imported_storage(&self, storage: &Storage) -> Option<AppSettings> {
+    let settings = storage.load_settings().ok();
+    if let Some(settings) = settings.as_ref() {
+      self.settings.set(settings.clone());
+    }
+    if let Ok(servers) = storage.load_servers() {
+      self.servers.set(servers);
+    }
+    if let Ok(identity) = storage.load_identity() {
+      self.identity.set(identity);
+    }
+    if let Ok(preferences) = storage.load_user_audio_preferences() {
+      self.user_audio_preferences.set(preferences);
+    }
+    settings
+  }
+}
+
 pub fn update_app_settings(
   settings_store: &Store<AppSettings>,
   storage: Option<&Storage>,
