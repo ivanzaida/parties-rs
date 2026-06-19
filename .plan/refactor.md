@@ -512,6 +512,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed rail stream control:
   - mounted the rail stream button as its own component;
   - scoped stop-stream pending-state reads to the button instead of the full controls row.
+- Moved stream watch pending reads into cards:
+  - removed watch-action pending reads from stream browser grid and watched-stream switcher parents;
+  - scoped those reads to the mounted stream card components that render the clickable watch target.
 
 ## Non-Goals
 

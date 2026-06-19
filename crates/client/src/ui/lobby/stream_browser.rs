@@ -193,7 +193,6 @@ fn merged_lobby_grid(
     .into_iter()
     .map(|stream| (stream.share.sharer_user_id, stream))
     .collect::<std::collections::HashMap<_, _>>();
-  let watch_pending = watch_stream.state().get().is_pending();
   let mut cards = Vec::new();
 
   for user in users {
@@ -205,7 +204,6 @@ fn merged_lobby_grid(
         watching_user_id,
         debug_user_ids,
         watch_stream,
-        watch_pending,
         card_width,
       ));
     } else {
@@ -221,7 +219,6 @@ fn merged_lobby_grid(
       watching_user_id,
       debug_user_ids,
       watch_stream,
-      watch_pending,
       card_width,
     ));
   }
@@ -282,7 +279,6 @@ fn merged_stream_card(
   watching_user_id: Option<UserId>,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
-  watch_pending: bool,
   card_width: f32,
 ) -> Element {
   let sharer_user_id = stream.share.sharer_user_id;
@@ -290,7 +286,6 @@ fn merged_stream_card(
   ctx.mount_keyed::<StreamBrowserStreamCard>(
     &key,
     StreamBrowserStreamCardProps {
-      can_watch: watching_user_id != Some(sharer_user_id) && !watch_pending,
       watching: watching_user_id == Some(sharer_user_id),
       stream,
       debug_user_ids,
@@ -306,7 +301,6 @@ struct StreamBrowserStreamCardProps {
   watching: bool,
   debug_user_ids: bool,
   watch_stream: WatchStreamAction,
-  can_watch: bool,
   card_width: f32,
 }
 
@@ -315,7 +309,6 @@ impl PartialEq for StreamBrowserStreamCardProps {
     self.stream == other.stream
       && self.watching == other.watching
       && self.debug_user_ids == other.debug_user_ids
-      && self.can_watch == other.can_watch
       && self.card_width == other.card_width
   }
 }
@@ -345,6 +338,7 @@ fn stream_browser_stream_card(ctx: &mut Ctx, props: StreamBrowserStreamCardProps
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let footer_meta = stream_footer_meta(ctx, &name, &props.stream.share);
   let action = props.watch_stream.clone();
+  let watch_pending = props.watch_stream.state().get().is_pending();
 
   let mut card = Column::new()
     .width(props.card_width)
@@ -396,7 +390,7 @@ fn stream_browser_stream_card(ctx: &mut Ctx, props: StreamBrowserStreamCardProps
         ),
     );
 
-  if props.can_watch {
+  if !props.watching && !watch_pending {
     card = card.on_click(move |_| action.run(sharer_id));
   }
 

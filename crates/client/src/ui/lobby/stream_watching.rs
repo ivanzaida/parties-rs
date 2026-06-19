@@ -464,7 +464,6 @@ fn stream_switcher(
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
 ) -> Element {
-  let watch_pending = watch_stream.state().get().is_pending();
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .height(126.0)
@@ -478,7 +477,6 @@ fn stream_switcher(
       watched_user_id,
       debug_user_ids,
       watch_stream,
-      watch_pending,
     ));
   }
 
@@ -491,14 +489,12 @@ fn switcher_card(
   watched_user_id: UserId,
   debug_user_ids: bool,
   watch_stream: &WatchStreamAction,
-  watch_pending: bool,
 ) -> Element {
   let sharer_user_id = stream.share.sharer_user_id;
   let key = format!("stream-switcher-{}", stream.share.sharer_user_id);
   ctx.mount_keyed::<StreamSwitcherCard>(
     &key,
     StreamSwitcherCardProps {
-      can_watch: sharer_user_id != watched_user_id && !watch_pending,
       stream,
       watching: sharer_user_id == watched_user_id,
       debug_user_ids,
@@ -513,15 +509,11 @@ struct StreamSwitcherCardProps {
   watching: bool,
   debug_user_ids: bool,
   watch_stream: WatchStreamAction,
-  can_watch: bool,
 }
 
 impl PartialEq for StreamSwitcherCardProps {
   fn eq(&self, other: &Self) -> bool {
-    self.stream == other.stream
-      && self.watching == other.watching
-      && self.debug_user_ids == other.debug_user_ids
-      && self.can_watch == other.can_watch
+    self.stream == other.stream && self.watching == other.watching && self.debug_user_ids == other.debug_user_ids
   }
 }
 
@@ -549,6 +541,7 @@ fn stream_switcher_card(ctx: &mut Ctx, props: StreamSwitcherCardProps) -> Elemen
   let title = ctx.t_args("lobby.stream_browser.watching.screen_name", [("user", name.clone())]);
   let speaking = stream_speaking(&props.stream);
   let action = props.watch_stream.clone();
+  let watch_pending = props.watch_stream.state().get().is_pending();
   let mut card = Column::new()
     .width(168.0)
     .height(126.0)
@@ -588,7 +581,7 @@ fn stream_switcher_card(ctx: &mut Ctx, props: StreamSwitcherCardProps) -> Elemen
         ),
     );
 
-  if props.can_watch {
+  if !props.watching && !watch_pending {
     card = card.on_click(move |_| action.run(sharer_id));
   }
 
