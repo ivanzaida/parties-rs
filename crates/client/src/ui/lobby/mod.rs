@@ -18,7 +18,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
-  storage::{AppSettings, Storage, UserAudioPreferences},
+  storage::{AppDebugModeEnabled, AppSettings, Storage, UserAudioPreferences},
   theme,
   ui::{loader::loader, settings::SettingsPopupHandle},
 };
@@ -150,6 +150,7 @@ impl Component for LobbyScreen {
     };
     let storage = ctx.use_context::<Storage>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let debug_mode_store = ctx.use_context::<Store<AppDebugModeEnabled>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<crate::storage::StoredServer>>>();
@@ -167,9 +168,9 @@ impl Component for LobbyScreen {
       }
       return empty_lobby(ctx);
     }
-    let debug_mode_enabled = settings_store
+    let debug_mode_enabled = debug_mode_store
       .as_ref()
-      .is_some_and(|settings| settings.with(|settings| settings.debug_mode_enabled));
+      .is_some_and(|debug_mode| debug_mode.with(|debug_mode| debug_mode.value));
 
     if self.shell_model_store.with(Option::is_none) {
       apply_current_model(&self.shell_model_store, &session, lobby_shell_model);

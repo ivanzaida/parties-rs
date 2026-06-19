@@ -35,7 +35,7 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences},
+  storage::{AppDebugModeEnabled, AppDisplayName, AppSettings, Storage, StoredServer, UserAudioPreferences},
   theme,
   ui::{
     app_chrome::{FrameRateSignal, modal_layer, wrap_window_chrome},
@@ -69,6 +69,8 @@ pub struct App {
   session: ServerSession,
   storage: Signal<Option<Storage>>,
   settings: Store<AppSettings>,
+  display_name: Store<AppDisplayName>,
+  debug_mode_enabled: Store<AppDebugModeEnabled>,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
   user_audio_preferences: Store<UserAudioPreferences>,
@@ -120,6 +122,8 @@ impl Component for App {
     let startup_identity = load_identity_from_storage(props.startup_storage.as_ref());
     let startup_user_audio_preferences = load_user_audio_preferences_from_storage(props.startup_storage.as_ref());
     let settings = ctx.store(startup_settings);
+    let display_name = ctx.store(display_name_setting(&settings.get()));
+    let debug_mode_enabled = ctx.store(debug_mode_setting(&settings.get()));
     let servers = ctx.store(startup_servers);
     let identity = ctx.store(startup_identity);
     let user_audio_preferences = ctx.store(startup_user_audio_preferences);
@@ -127,6 +131,8 @@ impl Component for App {
     apply_settings_locale(&settings.get(), &i18n);
     ctx.watch(&storage, {
       let settings = settings.clone();
+      let display_name = display_name.clone();
+      let debug_mode_enabled = debug_mode_enabled.clone();
       let servers = servers.clone();
       let identity = identity.clone();
       let user_audio_preferences = user_audio_preferences.clone();
@@ -134,6 +140,7 @@ impl Component for App {
       move |storage| {
         let next_settings = load_settings_from_storage(storage.as_ref());
         settings.set(next_settings.clone());
+        sync_focused_settings(&next_settings, &display_name, &debug_mode_enabled);
         servers.set(load_servers_from_storage(storage.as_ref()));
         identity.set(load_identity_from_storage(storage.as_ref()));
         user_audio_preferences.set(load_user_audio_preferences_from_storage(storage.as_ref()));
@@ -234,6 +241,8 @@ impl Component for App {
       session,
       storage,
       settings,
+      display_name,
+      debug_mode_enabled,
       servers,
       identity,
       user_audio_preferences,
@@ -253,6 +262,8 @@ impl Component for App {
     ctx.provide(self.session.clone());
     ctx.provide(self.global_hotkeys.clone());
     ctx.provide(self.settings.clone());
+    ctx.provide(self.display_name.clone());
+    ctx.provide(self.debug_mode_enabled.clone());
     ctx.provide(self.servers.clone());
     ctx.provide(self.identity.clone());
     ctx.provide(self.user_audio_preferences.clone());
@@ -282,6 +293,7 @@ impl Component for App {
       self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
     let settings = self.settings.get();
+    sync_focused_settings(&settings, &self.display_name, &self.debug_mode_enabled);
     apply_settings_locale(&settings, ctx.i18n());
     logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
     self.session.set_notification_audio_settings(&settings);
@@ -493,6 +505,34 @@ fn load_user_audio_preferences_from_storage(storage: Option<&Storage>) -> UserAu
   storage
     .and_then(|storage| storage.load_user_audio_preferences().ok())
     .unwrap_or_default()
+}
+
+fn display_name_setting(settings: &AppSettings) -> AppDisplayName {
+  AppDisplayName {
+    value: settings.display_name.clone(),
+  }
+}
+
+fn debug_mode_setting(settings: &AppSettings) -> AppDebugModeEnabled {
+  AppDebugModeEnabled {
+    value: settings.debug_mode_enabled,
+  }
+}
+
+fn sync_focused_settings(
+  settings: &AppSettings,
+  display_name: &Store<AppDisplayName>,
+  debug_mode_enabled: &Store<AppDebugModeEnabled>,
+) {
+  let next_display_name = display_name_setting(settings);
+  if display_name.with(|current| current != &next_display_name) {
+    display_name.set(next_display_name);
+  }
+
+  let next_debug_mode = debug_mode_setting(settings);
+  if debug_mode_enabled.with(|current| current != &next_debug_mode) {
+    debug_mode_enabled.set(next_debug_mode);
+  }
 }
 
 fn apply_settings_locale(settings: &AppSettings, i18n: &lurq::app::i18n::I18n) {

@@ -571,6 +571,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Removed connection-path storage reads for store-owned data:
   - manual connect/test-connection auth now uses the identity store only;
   - saved-server metadata, reconnect, and update-resume lookups now use the saved-server store instead of DB fallback reads.
+- Added focused settings stores for common cross-screen fields:
+  - provided `Store<AppDisplayName>` and `Store<AppDebugModeEnabled>` from the app root;
+  - kept the focused stores synchronized from `Store<AppSettings>` without dirtying them when their selected values are unchanged;
+  - migrated connect, saved-server list, update-resume display fallback, and lobby debug-mode reads away from full `AppSettings` where they only needed one field.
 
 ## Current Residual Reads
 

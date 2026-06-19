@@ -22,8 +22,8 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS, ROUTE_TOFU_WARNING},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession, TofuWarning},
   storage::{
-    AppSettings, Storage, StoredServer, UserAudioPreferences, server_user_audio_preferences, stored_server_by_address,
-    upsert_stored_server,
+    AppDisplayName, Storage, StoredServer, UserAudioPreferences, server_user_audio_preferences,
+    stored_server_by_address, upsert_stored_server,
   },
   theme,
   ui::{
@@ -89,8 +89,8 @@ impl Component for ConnectServerScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     let display_name = ctx
-      .use_context::<Store<AppSettings>>()
-      .map(|settings| settings.with(|settings| settings.display_name.clone()))
+      .use_context::<Store<AppDisplayName>>()
+      .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
       .unwrap_or_default();
 
     Self {

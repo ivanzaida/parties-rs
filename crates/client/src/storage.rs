@@ -92,6 +92,16 @@ pub struct AppSettings {
   pub locale: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppDisplayName {
+  pub value: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppDebugModeEnabled {
+  pub value: bool,
+}
+
 impl Default for AppSettings {
   fn default() -> Self {
     Self {

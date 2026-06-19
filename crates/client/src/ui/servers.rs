@@ -20,7 +20,7 @@ use crate::{
   network::server_query::{ServerQueryInfo, query_server},
   routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_TOFU_WARNING},
   session::{ConnectedServerInfo, ServerSession},
-  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences},
+  storage::{AppDisplayName, Storage, StoredServer, UserAudioPreferences},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -92,7 +92,7 @@ impl Component for SavedServersScreen {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let display_name_store = ctx.use_context::<Store<AppDisplayName>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
@@ -102,15 +102,15 @@ impl Component for SavedServersScreen {
       let storage = storage.clone();
       let session = session.clone();
       let connect_errors = connect_errors.clone();
-      let settings_store = settings_store.clone();
+      let display_name_store = display_name_store.clone();
       let identity_store = identity_store.clone();
       let user_audio_preferences = user_audio_preferences.clone();
       let servers_store = servers_store.clone();
       async move {
         let display_name = if server.display_name.trim().is_empty() {
-          settings_store
+          display_name_store
             .as_ref()
-            .map(|settings| settings.with(|settings| settings.display_name.clone()))
+            .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
             .unwrap_or_default()
         } else {
           server.display_name.clone()
@@ -464,8 +464,8 @@ fn top_bar(ctx: &mut Ctx) -> impl Into<Element> {
   let metrics = servers_layout_metrics(ctx);
   let settings_popup = ctx.use_context::<SettingsPopupHandle>();
   let identity_name = ctx
-    .use_context::<Store<AppSettings>>()
-    .map(|settings| settings.with(|settings| settings.display_name.trim().to_owned()))
+    .use_context::<Store<AppDisplayName>>()
+    .map(|display_name| display_name.with(|display_name| display_name.value.trim().to_owned()))
     .filter(|name| !name.is_empty())
     .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
   let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));

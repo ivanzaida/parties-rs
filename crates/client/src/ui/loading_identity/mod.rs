@@ -23,7 +23,7 @@ use crate::{
     updater::{StartupUpdateStatus, restart_into_update},
   },
   session::ServerSession,
-  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
+  storage::{AppDisplayName, AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
   theme,
   ui::{
     brand_logo::logo_mark,
@@ -152,6 +152,7 @@ impl Component for LoadingIdentityScreen {
     };
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let display_name_store = ctx.use_context::<Store<AppDisplayName>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
@@ -160,6 +161,7 @@ impl Component for LoadingIdentityScreen {
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
       let settings_store = settings_store.clone();
+      let display_name_store = display_name_store.clone();
       let identity_store = identity_store.clone();
       let user_audio_preferences = user_audio_preferences.clone();
       let servers_store = servers_store.clone();
@@ -171,6 +173,7 @@ impl Component for LoadingIdentityScreen {
           user_audio_preferences,
           servers_store,
           settings_store,
+          display_name_store,
           session,
           errors,
         )
@@ -271,6 +274,7 @@ async fn restore_update_resume_after_restart(
   user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
+  display_name_store: Option<Store<AppDisplayName>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
 ) -> Result<bool, String> {
@@ -299,7 +303,11 @@ async fn restore_update_resume_after_restart(
   };
   let fallback_display_name = settings_store
     .as_ref()
-    .map(|settings| settings.with(|settings| settings.display_name.clone()))
+    .and_then(|settings| Some(settings.with(|settings| settings.display_name.clone())));
+  let fallback_display_name = display_name_store
+    .as_ref()
+    .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
+    .or(fallback_display_name)
     .unwrap_or_default();
   let display_name = if server.display_name.trim().is_empty() {
     fallback_display_name
