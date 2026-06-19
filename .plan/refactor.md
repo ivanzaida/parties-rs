@@ -588,6 +588,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added a focused hotkey settings store:
   - provided `Store<AppHotkeySettings>` for push-to-talk, toggle mute, and toggle deafen bindings;
   - moved audio settings page initialization off full `AppSettings` by reading `Store<AppAudioSettings>` plus `Store<AppHotkeySettings>`.
+- Moved notification settings page reads to focused stores:
+  - initialized notification volume and sound overrides from `Store<AppAudioSettings>`;
+  - used `Store<AppAudioSettings>` for notification preview playback while keeping `Store<AppSettings>` only for persisted writes.
 
 ## Current Residual Reads
 
