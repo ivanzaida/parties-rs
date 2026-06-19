@@ -478,6 +478,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed voice channel row rendering:
   - mounted each voice channel group and channel header as keyed components;
   - kept user rows componentized so channel/header props can skip rerenders when unrelated users update.
+- Narrowed text channel row rendering:
+  - mounted each text channel row as a keyed component with only row model and select action props.
 
 ## Non-Goals
 

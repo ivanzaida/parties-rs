@@ -112,12 +112,40 @@ impl Component for TextChannels {
         section = section.with_children(ctx.for_each(
           props.channels,
           |row| row.channel.id,
-          move |ctx, row| text_channel_row(ctx, &row, props.select_channel.clone()),
+          move |ctx, row| {
+            ctx.mount::<TextChannelRow>(TextChannelRowProps {
+              model: row,
+              select_channel: props.select_channel.clone(),
+            })
+          },
         ));
       }
     }
 
     section
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct TextChannelRowProps {
+  model: TextChannelRowModel,
+  select_channel: Option<SelectTextChannelAction>,
+}
+
+impl DevtoolsInspectable for TextChannelRowProps {}
+
+struct TextChannelRow;
+
+impl Component for TextChannelRow {
+  type Props = TextChannelRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    text_channel_row(ctx, &props.model, props.select_channel)
   }
 }
 
