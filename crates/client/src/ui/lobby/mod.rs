@@ -18,7 +18,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
-  storage::{AppDebugModeEnabled, AppSettings, Storage, UserAudioPreferences},
+  storage::{AppDebugModeEnabled, AppSettings, AppStreamSettings, Storage, UserAudioPreferences},
   theme,
   ui::{loader::loader, settings::SettingsPopupHandle},
 };
@@ -151,6 +151,7 @@ impl Component for LobbyScreen {
     let storage = ctx.use_context::<Storage>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
     let debug_mode_store = ctx.use_context::<Store<AppDebugModeEnabled>>();
+    let stream_settings_store = ctx.use_context::<Store<AppStreamSettings>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<crate::storage::StoredServer>>>();
@@ -208,7 +209,7 @@ impl Component for LobbyScreen {
       history: chat_history.clone(),
       send: send_chat.clone(),
     };
-    let start_stream = start_stream_action(ctx, settings_store.clone(), session.clone());
+    let start_stream = start_stream_action(ctx, stream_settings_store.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
     let watch_stream = watch_stream_action(ctx, settings_store.clone(), session.clone());
     let rail_stream_actions = RailStreamActions {
@@ -250,10 +251,10 @@ impl Component for LobbyScreen {
     let modal_source_kind = self.stream_source_kind.clone();
     let modal_source_index = self.stream_source_index.clone();
     let modal_audio_enabled = self.stream_audio_enabled.clone();
-    let modal_stream_codec = settings_store
+    let modal_stream_codec = stream_settings_store
       .as_ref()
       .map(|settings| settings.with(stream_modal_codec_label))
-      .unwrap_or_else(|| stream_modal_codec_label(&AppSettings::default()));
+      .unwrap_or_else(|| stream_modal_codec_label(&AppStreamSettings::default()));
     let mut body = Row::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
@@ -376,7 +377,7 @@ fn empty_spy_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
-fn stream_modal_codec_label(settings: &AppSettings) -> String {
+fn stream_modal_codec_label(settings: &AppStreamSettings) -> String {
   let codec = settings.video_codec.clone();
   match codec.trim() {
     "H.265" | "H.264" => codec.trim().to_owned(),

@@ -575,6 +575,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - provided `Store<AppDisplayName>` and `Store<AppDebugModeEnabled>` from the app root;
   - kept the focused stores synchronized from `Store<AppSettings>` without dirtying them when their selected values are unchanged;
   - migrated connect, saved-server list, update-resume display fallback, and lobby debug-mode reads away from full `AppSettings` where they only needed one field.
+- Added a focused stream settings store:
+  - provided `Store<AppStreamSettings>` for stream codec, scale, FPS, and bitrate;
+  - moved lobby stream-start and stream-modal codec reads off full `AppSettings`.
 
 ## Current Residual Reads
 

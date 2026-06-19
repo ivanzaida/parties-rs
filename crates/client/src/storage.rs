@@ -102,6 +102,26 @@ pub struct AppDebugModeEnabled {
   pub value: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
+pub struct AppStreamSettings {
+  pub video_codec: String,
+  pub video_scale_percent: i32,
+  pub video_fps: i32,
+  pub video_bitrate_mbps: f32,
+}
+
+impl Default for AppStreamSettings {
+  fn default() -> Self {
+    let settings = AppSettings::default();
+    Self {
+      video_codec: settings.video_codec,
+      video_scale_percent: settings.video_scale_percent,
+      video_fps: settings.video_fps,
+      video_bitrate_mbps: settings.video_bitrate_mbps,
+    }
+  }
+}
+
 impl Default for AppSettings {
   fn default() -> Self {
     Self {

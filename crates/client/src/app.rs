@@ -35,7 +35,9 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::{AppDebugModeEnabled, AppDisplayName, AppSettings, Storage, StoredServer, UserAudioPreferences},
+  storage::{
+    AppDebugModeEnabled, AppDisplayName, AppSettings, AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
+  },
   theme,
   ui::{
     app_chrome::{FrameRateSignal, modal_layer, wrap_window_chrome},
@@ -71,6 +73,7 @@ pub struct App {
   settings: Store<AppSettings>,
   display_name: Store<AppDisplayName>,
   debug_mode_enabled: Store<AppDebugModeEnabled>,
+  stream_settings: Store<AppStreamSettings>,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
   user_audio_preferences: Store<UserAudioPreferences>,
@@ -124,6 +127,7 @@ impl Component for App {
     let settings = ctx.store(startup_settings);
     let display_name = ctx.store(display_name_setting(&settings.get()));
     let debug_mode_enabled = ctx.store(debug_mode_setting(&settings.get()));
+    let stream_settings = ctx.store(stream_settings(&settings.get()));
     let servers = ctx.store(startup_servers);
     let identity = ctx.store(startup_identity);
     let user_audio_preferences = ctx.store(startup_user_audio_preferences);
@@ -133,6 +137,7 @@ impl Component for App {
       let settings = settings.clone();
       let display_name = display_name.clone();
       let debug_mode_enabled = debug_mode_enabled.clone();
+      let stream_settings = stream_settings.clone();
       let servers = servers.clone();
       let identity = identity.clone();
       let user_audio_preferences = user_audio_preferences.clone();
@@ -140,7 +145,7 @@ impl Component for App {
       move |storage| {
         let next_settings = load_settings_from_storage(storage.as_ref());
         settings.set(next_settings.clone());
-        sync_focused_settings(&next_settings, &display_name, &debug_mode_enabled);
+        sync_focused_settings(&next_settings, &display_name, &debug_mode_enabled, &stream_settings);
         servers.set(load_servers_from_storage(storage.as_ref()));
         identity.set(load_identity_from_storage(storage.as_ref()));
         user_audio_preferences.set(load_user_audio_preferences_from_storage(storage.as_ref()));
@@ -243,6 +248,7 @@ impl Component for App {
       settings,
       display_name,
       debug_mode_enabled,
+      stream_settings,
       servers,
       identity,
       user_audio_preferences,
@@ -264,6 +270,7 @@ impl Component for App {
     ctx.provide(self.settings.clone());
     ctx.provide(self.display_name.clone());
     ctx.provide(self.debug_mode_enabled.clone());
+    ctx.provide(self.stream_settings.clone());
     ctx.provide(self.servers.clone());
     ctx.provide(self.identity.clone());
     ctx.provide(self.user_audio_preferences.clone());
@@ -293,7 +300,12 @@ impl Component for App {
       self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
     let settings = self.settings.get();
-    sync_focused_settings(&settings, &self.display_name, &self.debug_mode_enabled);
+    sync_focused_settings(
+      &settings,
+      &self.display_name,
+      &self.debug_mode_enabled,
+      &self.stream_settings,
+    );
     apply_settings_locale(&settings, ctx.i18n());
     logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
     self.session.set_notification_audio_settings(&settings);
@@ -519,10 +531,20 @@ fn debug_mode_setting(settings: &AppSettings) -> AppDebugModeEnabled {
   }
 }
 
+fn stream_settings(settings: &AppSettings) -> AppStreamSettings {
+  AppStreamSettings {
+    video_codec: settings.video_codec.clone(),
+    video_scale_percent: settings.video_scale_percent,
+    video_fps: settings.video_fps,
+    video_bitrate_mbps: settings.video_bitrate_mbps,
+  }
+}
+
 fn sync_focused_settings(
   settings: &AppSettings,
   display_name: &Store<AppDisplayName>,
   debug_mode_enabled: &Store<AppDebugModeEnabled>,
+  stream_settings_store: &Store<AppStreamSettings>,
 ) {
   let next_display_name = display_name_setting(settings);
   if display_name.with(|current| current != &next_display_name) {
@@ -532,6 +554,11 @@ fn sync_focused_settings(
   let next_debug_mode = debug_mode_setting(settings);
   if debug_mode_enabled.with(|current| current != &next_debug_mode) {
     debug_mode_enabled.set(next_debug_mode);
+  }
+
+  let next_stream_settings = stream_settings(settings);
+  if stream_settings_store.with(|current| current != &next_stream_settings) {
+    stream_settings_store.set(next_stream_settings);
   }
 }
 

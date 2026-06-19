@@ -18,7 +18,7 @@ use crate::{
     ConnectedServerInfo, ServerSession,
     chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError, ChatCommandSource},
   },
-  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
+  storage::{AppSettings, AppStreamSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
 
@@ -321,17 +321,17 @@ fn local_user_id(session: &ServerSession) -> Result<UserId, String> {
 
 pub(super) fn start_stream_action(
   ctx: &mut Ctx,
-  settings_store: Option<Store<AppSettings>>,
+  stream_settings_store: Option<Store<AppStreamSettings>>,
   session: ServerSession,
 ) -> StartStreamAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |input: StartStreamInput| {
-    let settings_store = settings_store.clone();
+    let stream_settings_store = stream_settings_store.clone();
     let session = session.clone();
     let copy = copy.clone();
     async move {
       let server = session.server().ok_or(copy.no_connected_server.clone())?;
-      let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
+      let settings = stream_settings_store.as_ref().map(Store::get).unwrap_or_default();
       let codec = stream_codec_id(&settings.video_codec, &copy.video_codec_invalid)?;
       if input.width == 0 || input.height == 0 {
         return Err(copy.stream_no_dimensions.clone());
