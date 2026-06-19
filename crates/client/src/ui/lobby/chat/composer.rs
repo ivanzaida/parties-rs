@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use lurq::{
   animation::Transition,
   app::{
+    component::{Component, DevtoolsInspectable},
     ctx::{Ctx, Timeout},
     events::KeyboardEvent,
   },
@@ -340,22 +341,40 @@ pub(super) fn chat_command_suggestions(
       .to_string()
   };
 
-  let mut list = Column::new().width(Dimension::Pct(100.0)).padding_bottom(6.0);
-
-  for (index, command) in commands.into_iter().enumerate() {
-    let validate_arguments = invalid_feedback_phase != 0 && exact_command_name == Some(command.name.as_ref());
-    list = list.child(command_suggestion_row(
-      ctx,
-      command,
-      input.clone(),
-      message_input.clone(),
-      selected_index.clone(),
-      index,
-      index == active_index,
-      invalid_feedback_phase,
-      validate_arguments,
+  let rows = commands
+    .into_iter()
+    .enumerate()
+    .map(|(index, command)| {
+      let validate_arguments = invalid_feedback_phase != 0 && exact_command_name == Some(command.name.as_ref());
+      let usage_parts = command_usage_parts(command.usage.as_ref(), &input, validate_arguments);
+      let row_invalid_feedback_phase = if usage_parts
+        .iter()
+        .any(|part| matches!(part, CommandUsagePart::Argument { invalid: true, .. }))
+      {
+        invalid_feedback_phase
+      } else {
+        0
+      };
+      CommandSuggestionRowProps {
+        fill: command_fill_text(command.name.as_ref()),
+        description: command_description(ctx, command),
+        usage_parts,
+        message_input: message_input.clone(),
+        selected_index: selected_index.clone(),
+        index,
+        selected: index == active_index,
+        invalid_feedback_phase: row_invalid_feedback_phase,
+      }
+    })
+    .collect::<Vec<_>>();
+  let list = Column::new()
+    .width(Dimension::Pct(100.0))
+    .padding_bottom(6.0)
+    .with_children(ctx.for_each(
+      rows,
+      |row| row.fill.clone(),
+      |ctx, row| ctx.mount::<CommandSuggestionRow>(row),
     ));
-  }
 
   Some(
     Column::new()
@@ -409,24 +428,49 @@ fn ensure_command_selection_visible(scroll_state: &ScrollState, active_index: us
   scroll_state.set_scroll_pending(scroll_state.scroll_x(), next_scroll);
 }
 
-fn command_suggestion_row(
-  ctx: &mut Ctx,
-  command: &CommandDefinition,
-  input: String,
+#[derive(Clone)]
+struct CommandSuggestionRowProps {
+  fill: String,
+  description: String,
+  usage_parts: Vec<CommandUsagePart>,
   message_input: Signal<String>,
   selected_index: Signal<usize>,
   index: usize,
   selected: bool,
   invalid_feedback_phase: u8,
-  validate_arguments: bool,
-) -> Element {
-  let fill = command_fill_text(command.name.as_ref());
-  let description = if command.description_is_i18n_key {
-    ctx.t(&command.description_key).to_string()
-  } else {
-    command.description_key.to_string()
-  };
-  let background = if selected {
+}
+
+impl PartialEq for CommandSuggestionRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.fill == other.fill
+      && self.description == other.description
+      && self.usage_parts == other.usage_parts
+      && self.index == other.index
+      && self.selected == other.selected
+      && self.invalid_feedback_phase == other.invalid_feedback_phase
+  }
+}
+
+impl DevtoolsInspectable for CommandSuggestionRowProps {}
+
+struct CommandSuggestionRow;
+
+impl Component for CommandSuggestionRow {
+  type Props = CommandSuggestionRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    command_suggestion_row(ctx, props)
+  }
+}
+
+fn command_suggestion_row(ctx: &mut Ctx, props: CommandSuggestionRowProps) -> Element {
+  let fill = props.fill.clone();
+  let background = if props.selected {
     BackgroundColor::Color(Color::from_hex("#232830"))
   } else {
     BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)
@@ -443,25 +487,30 @@ fn command_suggestion_row(
     .transition(Transition::background_color().duration_ms(120))
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#2B313A"))))
-    .on_mouse_enter(move || selected_index.set(index))
-    .on_click(move |_| message_input.set(fill.clone()))
+    .on_mouse_enter(move || props.selected_index.set(props.index))
+    .on_click(move |_| props.message_input.set(fill.clone()))
     .child(command_icon(ctx))
     .child(
       Column::new()
         .width(Dimension::Pct(100.0))
         .flex(1.0)
         .spacing(theme::SpacingSize::Xs)
-        .child(command_usage_row(
-          command_usage_parts(command.usage.as_ref(), &input, validate_arguments),
-          invalid_feedback_phase,
-        ))
+        .child(command_usage_row(props.usage_parts, props.invalid_feedback_phase))
         .child(
-          Text::new(&description)
+          Text::new(&props.description)
             .variant(theme::TypographyStyle::Link)
             .color(theme::PaletteColor::TextSecondary),
         ),
     )
     .into()
+}
+
+fn command_description(ctx: &mut Ctx, command: &CommandDefinition) -> String {
+  if command.description_is_i18n_key {
+    ctx.t(&command.description_key).to_string()
+  } else {
+    command.description_key.to_string()
+  }
 }
 
 fn command_icon(ctx: &mut Ctx) -> Element {
@@ -519,6 +568,7 @@ fn command_usage_row(parts: Vec<CommandUsagePart>, invalid_feedback_phase: u8) -
   row.into()
 }
 
+#[derive(Clone, PartialEq, Eq)]
 enum CommandUsagePart {
   Name(Arc<str>),
   Argument { label: Arc<str>, invalid: bool },

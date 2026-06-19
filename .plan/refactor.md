@@ -488,6 +488,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed stream modal source card rendering:
   - mounted each share source card as a component with explicit source, selection, codec, and metric props;
   - kept the source selection signal as an action handle outside card equality.
+- Narrowed chat command suggestion rows:
+  - mounted command suggestion rows as keyed components with derived fill text, description, and usage parts;
+  - kept input, registry, and invalid-feedback animation details out of row props unless they affect the rendered row.
 
 ## Non-Goals
 
