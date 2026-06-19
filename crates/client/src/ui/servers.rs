@@ -68,7 +68,7 @@ pub struct SavedServersScreen {
   failed: Signal<Option<String>>,
   failure_message: Signal<Option<String>>,
   query_signature: Signal<String>,
-  query_results: Signal<Vec<ServerQueryEntry>>,
+  query_results: Store<Vec<ServerQueryEntry>>,
 }
 
 impl Component for SavedServersScreen {
@@ -84,7 +84,7 @@ impl Component for SavedServersScreen {
       failed,
       failure_message: ctx.signal(None::<String>),
       query_signature: ctx.signal(String::new()),
-      query_results: ctx.signal(Vec::new()),
+      query_results: ctx.store(Vec::new()),
     }
   }
 
@@ -173,7 +173,7 @@ impl SavedServersScreen {
     }
 
     if let Some(data) = state.data
-      && self.query_results.get_untracked() != data
+      && self.query_results.with(|current| current != &data)
     {
       self.query_results.set(data);
     }

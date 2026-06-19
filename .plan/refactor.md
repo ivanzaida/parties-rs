@@ -544,6 +544,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - derived server glance counts, channel lists, and active members from lobby updates;
   - stored those page models in `Store<Option<_>>` fields instead of cloning `LobbyState` in render;
   - changed the updater resume save path to read only the selected channel id.
+- Moved saved-server query results into a store:
+  - kept async server query output in `Store<Vec<ServerQueryEntry>>`;
+  - left the query signature as local control state while server cards consume the stored query model.
 
 ## Current Residual Reads
 
