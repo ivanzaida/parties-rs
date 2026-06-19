@@ -166,6 +166,7 @@ pub(super) fn start_stream_modal(
     settings_popup,
     start_stream,
     start_submitted,
+    start_state.is_pending(),
   ));
 
   Column::new()
@@ -808,6 +809,7 @@ fn stream_modal_actions(
   settings_popup: Option<SettingsPopupHandle>,
   start_stream: StartStreamAction,
   start_submitted: Signal<bool>,
+  pending: bool,
 ) -> Element {
   let close = open.clone();
   let settings_submitted = start_submitted.clone();
@@ -815,7 +817,6 @@ fn stream_modal_actions(
   let cancel_submitted = start_submitted.clone();
   let run_submitted = start_submitted.clone();
   let run_close = open.clone();
-  let pending = start_stream.state().get().is_pending();
   let start_source_kind = source_kind.clone();
   let start_source_index = source_index.clone();
   let start_audio_enabled = audio_enabled.clone();

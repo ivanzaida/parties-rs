@@ -503,6 +503,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed watched-stream back control:
   - mounted the top-bar back button as its own component;
   - scoped stop-watching pending-state reads to the button instead of the watched-stream top bar.
+- Removed duplicate stream modal action-state reads:
+  - reused the start-stream state already read by the modal for the actions row pending flag;
+  - avoided an extra `start_stream.state().get()` inside modal actions.
 
 ## Non-Goals
 
