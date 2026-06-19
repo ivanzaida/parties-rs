@@ -993,6 +993,7 @@ impl ServerSession {
   fn handle_dx12_video_frame(
     &self,
     sender_id: UserId,
+    frame_number: u32,
     codec: crate::network::protocol::VideoCodecId,
     width: u16,
     height: u16,
@@ -1000,7 +1001,7 @@ impl ServerSession {
   ) {
     self
       .video_sink
-      .present_dx12_frame(sender_id, codec, width, height, surface);
+      .present_dx12_frame(sender_id, frame_number, codec, width, height, surface);
   }
 
   fn take_video_pixel_buffer(&self, user_id: UserId, width: u16, height: u16) -> Option<Vec<u8>> {
@@ -1011,11 +1012,15 @@ impl ServerSession {
     self.video_sink.has_frame(user_id, width, height)
   }
 
-  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
+  pub fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
     self
       .video_sink
       .image_data(user_id)
       .map(|image| (image.id(), image.version()))
+  }
+
+  pub fn video_render_stats(&self, user_id: UserId) -> (u32, Option<u32>, u32) {
+    self.video_sink.render_stats(user_id)
   }
 
   pub fn mark_lobby_error(&self, message: String) {
@@ -1311,12 +1316,13 @@ impl video::VideoReceiverSession for ServerSession {
   fn present_dx12_video_frame(
     &self,
     sender_id: UserId,
+    frame_number: u32,
     codec: crate::network::protocol::VideoCodecId,
     width: u16,
     height: u16,
     surface: Arc<lurq::app::dx12_render::Dx12Nv12Surface>,
   ) {
-    ServerSession::handle_dx12_video_frame(self, sender_id, codec, width, height, surface);
+    ServerSession::handle_dx12_video_frame(self, sender_id, frame_number, codec, width, height, surface);
   }
 }
 

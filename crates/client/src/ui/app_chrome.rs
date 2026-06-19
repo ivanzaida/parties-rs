@@ -1,6 +1,6 @@
 use lurq::{
   app::{
-    component::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
+    component::{Component, ComponentInfo, DevtoolsFormatter, DevtoolsInspectable},
     ctx::Ctx,
     events::MouseEvent,
   },
@@ -115,6 +115,24 @@ fn window_chrome_props() -> WindowChromeProps {
 }
 
 fn titlebar_identity(ctx: &mut Ctx, frame_rate: FrameRateSignal) -> Element {
+  ctx.mount::<TitlebarIdentity>(frame_rate)
+}
+
+struct TitlebarIdentity;
+
+impl Component for TitlebarIdentity {
+  type Props = FrameRateSignal;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    titlebar_identity_content(ctx, ctx.props::<Self::Props>().clone())
+  }
+}
+
+fn titlebar_identity_content(ctx: &mut Ctx, frame_rate: FrameRateSignal) -> Element {
   let fps_label = format!("{} FPS", frame_rate.0.get());
 
   Row::new()

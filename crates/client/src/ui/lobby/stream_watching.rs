@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+  sync::{Arc, Mutex},
+  time::Duration,
+};
 
 use lurq::{
   app::{
@@ -36,6 +39,7 @@ const STREAM_VOLUME_CONTROL_WIDTH: f32 = 168.0;
 const STREAM_VOLUME_TRACK_WIDTH: f32 = 104.0;
 const STREAM_VOLUME_VALUE_WIDTH: f32 = 36.0;
 const STREAM_VOLUME_VALUE_SPACING: f32 = 8.0;
+const STREAM_RENDER_FPS_REFRESH: Duration = Duration::from_millis(500);
 
 pub(super) fn stream_watching_top_bar(
   ctx: &mut Ctx,
@@ -424,7 +428,100 @@ fn watched_stream_stage(
     );
   }
 
+  stage = stage.child(stream_render_fps_overlay(ctx, stream.share.sharer_user_id, session));
+
   stage.into()
+}
+
+fn stream_render_fps_overlay(ctx: &mut Ctx, user_id: UserId, session: &ServerSession) -> Element {
+  let session_key = session_address(session).unwrap_or_else(|| "unknown".to_owned());
+  let key = format!("stream-render-fps-{session_key}-{user_id}");
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(Dimension::Pct(100.0))
+    .justify(Justify::Center)
+    .align_items(Alignment::Start)
+    .padding(14.0)
+    .child(ctx.mount_keyed::<StreamRenderFpsBadge>(
+      &key,
+      StreamRenderFpsBadgeProps {
+        user_id,
+        session: session.clone(),
+      },
+    ))
+    .into()
+}
+
+#[derive(Clone)]
+struct StreamRenderFpsBadgeProps {
+  user_id: UserId,
+  session: ServerSession,
+}
+
+impl PartialEq for StreamRenderFpsBadgeProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.user_id == other.user_id && same_session(&self.session, &other.session)
+  }
+}
+
+impl DevtoolsInspectable for StreamRenderFpsBadgeProps {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.buffer_mut().push(ComponentInfo::with_value(
+      "user_id",
+      std::any::type_name::<UserId>(),
+      self.user_id.to_string(),
+    ));
+  }
+}
+
+struct StreamRenderFpsBadge {
+  label: Signal<String>,
+}
+
+impl Component for StreamRenderFpsBadge {
+  type Props = StreamRenderFpsBadgeProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let props = ctx.props::<Self::Props>().clone();
+    let label = ctx.signal(stream_render_stats_label(
+      props.session.video_render_stats(props.user_id),
+    ));
+    {
+      let label = label.clone();
+      let session = props.session;
+      let user_id = props.user_id;
+      let interval = ctx.create_interval(STREAM_RENDER_FPS_REFRESH, move || {
+        label.set(stream_render_stats_label(session.video_render_stats(user_id)));
+      });
+      interval.start();
+    }
+    Self { label }
+  }
+
+  fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
+    let label = self.label.get();
+
+    Row::new()
+      .height(22.0)
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .padding_horizontal(8.0)
+      .rounded(4.0)
+      .background(BackgroundColor::Color(Color::from_hex("#000000A6")))
+      .child(
+        Text::new(&label)
+          .variant(theme::TypographyStyle::Mono)
+          .color(theme::PaletteColor::TextSecondary)
+          .nowrap(),
+      )
+  }
+}
+
+fn stream_render_stats_label((fps, frame_number, old_frames): (u32, Option<u32>, u32)) -> String {
+  match frame_number {
+    Some(frame_number) => format!("{fps} FPS #{frame_number} old:{old_frames}"),
+    None => format!("{fps} FPS old:{old_frames}"),
+  }
 }
 
 pub(super) fn apply_stream_video_frame(

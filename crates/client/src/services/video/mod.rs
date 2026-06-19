@@ -57,6 +57,7 @@ pub struct VideoDecodeConfig {
 
 pub struct DecodedVideoFrame {
   pub sender_id: u32,
+  pub frame_number: u32,
   pub codec: VideoCodecId,
   pub width: u16,
   pub height: u16,
@@ -265,6 +266,7 @@ impl VideoDecoder {
     let decoded = self.inner.decode_frame(&frame.frame, output, output_buffer)?;
     Ok(decoded.map(|decoded| DecodedVideoFrame {
       sender_id: frame.sender_id,
+      frame_number: frame.frame.frame_number,
       codec: frame.frame.codec,
       width: frame.frame.width,
       height: frame.frame.height,

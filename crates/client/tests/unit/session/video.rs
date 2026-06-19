@@ -32,9 +32,9 @@ fn video_packet_queue_drops_oldest_packets_when_full() {
     queue.push(queued_video_packet(7, frame_number));
   }
 
-  let dropped = queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders);
+  let dropped = queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders, WATCHED_STREAM_QUEUE_IDLE_WAIT);
 
-  assert_eq!(dropped, Some(2));
+  assert!(matches!(dropped, VideoPacketPopResult::Batch(2)));
   assert_eq!(dropped_senders.get(&7), Some(&2));
   assert_eq!(batch.len(), MAX_QUEUED_VIDEO_PACKETS);
   assert_eq!(batch.first().map(|packet| packet.frame.frame_number), Some(2));
@@ -54,7 +54,9 @@ fn video_packet_queue_ignores_push_after_close() {
   queue.close();
   queue.push(queued_video_packet(7, 1));
 
-  assert_eq!(queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders), None);
+  let result = queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders, WATCHED_STREAM_QUEUE_IDLE_WAIT);
+
+  assert!(matches!(result, VideoPacketPopResult::Closed));
   assert!(batch.is_empty());
   assert!(dropped_senders.is_empty());
 }
@@ -66,7 +68,9 @@ fn video_packet_queue_returns_none_when_stopped_without_packets() {
   let mut batch = Vec::new();
   let mut dropped_senders = HashMap::new();
 
-  assert_eq!(queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders), None);
+  let result = queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders, WATCHED_STREAM_QUEUE_IDLE_WAIT);
+
+  assert!(matches!(result, VideoPacketPopResult::Closed));
   assert!(batch.is_empty());
   assert!(dropped_senders.is_empty());
 }
@@ -101,6 +105,30 @@ fn watched_video_batch_orders_frames_from_expected_number() {
     .map(|packet| packet.frame.frame_number)
     .collect::<Vec<_>>();
   assert_eq!(frames, vec![11, 12, 13, 10]);
+}
+
+#[test]
+fn watched_stream_pacer_waits_initial_buffer_and_uses_target_interval() {
+  let mut pacer = WatchedStreamPacer::new();
+  pacer.push(queued_video_packet(7, 0));
+  pacer.push(queued_video_packet(7, 17));
+  pacer.push(queued_video_packet(7, 34));
+  pacer.push(queued_video_packet(7, 51));
+
+  assert!(pacer.pop_due(Instant::now()).is_none());
+
+  let playback_start = Instant::now() + WATCHED_STREAM_PACER_START_DELAY + Duration::from_millis(5);
+  assert_eq!(
+    pacer.pop_due(playback_start).map(|packet| packet.frame.frame_number),
+    Some(0)
+  );
+  assert!(pacer.pop_due(playback_start + Duration::from_millis(16)).is_none());
+  assert_eq!(
+    pacer
+      .pop_due(playback_start + Duration::from_millis(17))
+      .map(|packet| packet.frame.frame_number),
+    Some(17)
+  );
 }
 
 #[test]

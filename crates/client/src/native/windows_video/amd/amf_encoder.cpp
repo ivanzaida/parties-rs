@@ -184,6 +184,7 @@ bool AmfEncoder::set_common_properties(VideoCodecId codec, uint32_t bitrate) {
     }
 
     const uint32_t vbv_bits = (std::max)(bitrate / (std::max)(fps_, 1u), 64'000u);
+    const amf_int64 long_gop_frames = static_cast<amf_int64>((std::max)(fps_, 1u)) * 60 * 60;
     if (codec == VideoCodecId::AV1) {
         return set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_USAGE, AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED) &&
@@ -195,6 +196,8 @@ bool AmfEncoder::set_common_properties(VideoCodecId codec, uint32_t bitrate) {
                set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_bits) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE, AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_LOWEST_LATENCY) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT, 0) &&
+               set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_GOP_SIZE, 0) &&
+               set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_INTRA_PERIOD, 0) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE, AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE_FRAME);
     }
     if (codec == VideoCodecId::H265) {
@@ -208,6 +211,8 @@ bool AmfEncoder::set_common_properties(VideoCodecId codec, uint32_t bitrate) {
                set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_bits) &&
                set_bool(encoder_, AMF_VIDEO_ENCODER_HEVC_LOWLATENCY_MODE, true) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT, 0) &&
+               set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, long_gop_frames) &&
+               set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, 0) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE, AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED) &&
                set_i64(encoder_, AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE, AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE_FRAME);
     }
@@ -222,6 +227,9 @@ bool AmfEncoder::set_common_properties(VideoCodecId codec, uint32_t bitrate) {
            set_i64(encoder_, AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_bits) &&
            set_bool(encoder_, AMF_VIDEO_ENCODER_LOWLATENCY_MODE, true) &&
            set_i64(encoder_, AMF_VIDEO_ENCODER_QUERY_TIMEOUT, 0) &&
+           set_i64(encoder_, AMF_VIDEO_ENCODER_IDR_PERIOD, long_gop_frames) &&
+           set_i64(encoder_, AMF_VIDEO_ENCODER_INTRA_PERIOD, long_gop_frames) &&
+           set_i64(encoder_, AMF_VIDEO_ENCODER_HEADER_INSERTION_SPACING, 0) &&
            set_i64(encoder_, AMF_VIDEO_ENCODER_OUTPUT_MODE, AMF_VIDEO_ENCODER_OUTPUT_MODE_FRAME);
 }
 

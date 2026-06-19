@@ -1,6 +1,10 @@
 #[cfg(target_os = "windows")]
 use std::collections::VecDeque;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+  collections::HashMap,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
 use lurq::images::{ImageData, StreamingImage};
 use parking_lot::Mutex;
@@ -73,10 +77,19 @@ pub(super) struct VideoFrameSink {
   frames: Arc<Mutex<HashMap<UserId, VideoFrameImage>>>,
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
+  render_fps: Arc<Mutex<HashMap<UserId, VideoRenderFpsCounter>>>,
   lobby: Arc<Mutex<LobbyState>>,
   lobby_updates: LobbyUpdatePublisher,
   #[cfg(target_os = "windows")]
   dx12_video_surfaces: Option<lurq::app::dx12_render::Dx12VideoSurfaceAllocator>,
+}
+
+struct VideoRenderFpsCounter {
+  window_started_at: Instant,
+  frames: u32,
+  fps: u32,
+  last_frame_number: Option<u32>,
+  old_frames: u32,
 }
 
 impl VideoFrameSink {
@@ -85,6 +98,7 @@ impl VideoFrameSink {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
+      render_fps: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       lobby_updates,
       #[cfg(target_os = "windows")]
@@ -102,6 +116,7 @@ impl VideoFrameSink {
       frames: Arc::new(Mutex::new(HashMap::new())),
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
+      render_fps: Arc::new(Mutex::new(HashMap::new())),
       lobby,
       lobby_updates,
       dx12_video_surfaces: Some(dx12_video_surfaces),
@@ -112,6 +127,7 @@ impl VideoFrameSink {
     self.frames.lock().clear();
     self.errors.lock().clear();
     self.metadata.lock().clear();
+    self.render_fps.lock().clear();
   }
 
   pub(super) fn image_data(&self, user_id: UserId) -> Option<ImageData> {
@@ -122,20 +138,32 @@ impl VideoFrameSink {
     self.errors.lock().get(&user_id).cloned()
   }
 
+  pub(super) fn render_stats(&self, user_id: UserId) -> (u32, Option<u32>, u32) {
+    let now = Instant::now();
+    let mut counters = self.render_fps.lock();
+    let counter = counters
+      .entry(user_id)
+      .or_insert_with(|| VideoRenderFpsCounter::new(now));
+    counter.sample(now)
+  }
+
   pub(super) fn retain_user(&self, watched_user_id: Option<UserId>) {
     let mut frames = self.frames.lock();
     let mut errors = self.errors.lock();
     let mut metadata = self.metadata.lock();
+    let mut render_fps = self.render_fps.lock();
     match watched_user_id {
       Some(user_id) => {
         frames.retain(|cached_user_id, _| *cached_user_id == user_id);
         errors.retain(|cached_user_id, _| *cached_user_id == user_id);
         metadata.retain(|cached_user_id, _| *cached_user_id == user_id);
+        render_fps.retain(|cached_user_id, _| *cached_user_id == user_id);
       }
       None => {
         frames.clear();
         errors.clear();
         metadata.clear();
+        render_fps.clear();
       }
     }
   }
@@ -214,6 +242,7 @@ impl VideoFrameSink {
         },
       );
       self.publish_lobby_update();
+      self.record_rendered_frame(frame.sender_id, frame.frame_number);
       return;
     }
 
@@ -250,6 +279,15 @@ impl VideoFrameSink {
               }
             }
           };
+          tracing::info!(
+            target: "video::watch",
+            "watched stream cpu image replace user={} image_id={} size={}x{} format={:?}",
+            frame.sender_id,
+            image.image_data().id(),
+            frame.width,
+            frame.height,
+            frame.format
+          );
           frames.insert(frame.sender_id, VideoFrameImage::Cpu(image));
         }
       }
@@ -267,6 +305,7 @@ impl VideoFrameSink {
     if should_publish_update {
       self.publish_lobby_update();
     }
+    self.record_rendered_frame(frame.sender_id, frame.frame_number);
   }
 
   #[cfg(target_os = "windows")]
@@ -327,12 +366,14 @@ impl VideoFrameSink {
           height,
           surface_cache.len() + 1
         );
-        if surface_cache.len() >= video::SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT {
-          surface_cache.retain(|(cached_user_id, cached_y_handle, cached_uv_handle), _| {
-            *cached_user_id == user_id && *cached_y_handle == y_shared_handle && *cached_uv_handle == uv_shared_handle
-          });
+        let current_key = (user_id, y_shared_handle, uv_shared_handle);
+        while surface_cache.len() >= video::SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT {
+          let Some(stale_key) = surface_cache.keys().copied().find(|key| *key != current_key) else {
+            break;
+          };
+          surface_cache.remove(&stale_key);
         }
-        surface_cache.insert((user_id, y_shared_handle, uv_shared_handle), surface.clone());
+        surface_cache.insert(current_key, surface.clone());
         Some(surface)
       }
       Ok(None) => {
@@ -386,6 +427,7 @@ impl VideoFrameSink {
   pub(super) fn present_dx12_frame(
     &self,
     sender_id: UserId,
+    frame_number: u32,
     codec: crate::network::protocol::VideoCodecId,
     width: u16,
     height: u16,
@@ -395,7 +437,7 @@ impl VideoFrameSink {
     let dx12_image = surface.dx12_nv12_image();
     let shared_handle = surface.y_shared_handle_raw();
     let packed_nv12 = surface.is_packed_nv12();
-    let (previous_version, bumped_version, replace) = {
+    let (image_id, previous_version, bumped_version, replace) = {
       let mut frames = self.frames.lock();
       match frames.get_mut(&sender_id) {
         Some(VideoFrameImage::Dx12Surface { image, native, slot })
@@ -406,7 +448,8 @@ impl VideoFrameSink {
           let previous_version = native.version();
           slot.set_image(dx12_image);
           native.bump_version();
-          (previous_version, native.version(), false)
+          let bumped_version = native.version();
+          (image.id(), previous_version, bumped_version, false)
         }
         _ => {
           let slot = lurq::images::Dx12Nv12ImageSlot::new(dx12_image);
@@ -416,13 +459,26 @@ impl VideoFrameSink {
           let previous_version = native.version();
           native.bump_version();
           let bumped_version = native.version();
+          let image_id = image.id();
           frames.insert(sender_id, VideoFrameImage::Dx12Surface { image, native, slot });
-          (previous_version, bumped_version, true)
+          (image_id, previous_version, bumped_version, true)
         }
       }
     };
     {
       if replace {
+        tracing::info!(
+          target: "video::watch",
+          "watched stream dx12 image replace user={} image_id={} size={}x{} packed={} handle=0x{:x} version={}->{}",
+          sender_id,
+          image_id,
+          width,
+          height,
+          packed_nv12,
+          shared_handle,
+          previous_version,
+          bumped_version
+        );
         tracing::debug!(target: "video::decode",
           "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
         );
@@ -443,6 +499,16 @@ impl VideoFrameSink {
     if should_publish_update {
       self.publish_lobby_update();
     }
+    self.record_rendered_frame(sender_id, frame_number);
+  }
+
+  fn record_rendered_frame(&self, user_id: UserId, frame_number: u32) {
+    let now = Instant::now();
+    let mut counters = self.render_fps.lock();
+    counters
+      .entry(user_id)
+      .or_insert_with(|| VideoRenderFpsCounter::new(now))
+      .record(now, frame_number);
   }
 
   #[cfg(target_os = "windows")]
@@ -481,6 +547,51 @@ impl VideoFrameSink {
   fn publish_lobby_update(&self) {
     self.lobby_updates.publish();
   }
+}
+
+impl VideoRenderFpsCounter {
+  fn new(now: Instant) -> Self {
+    Self {
+      window_started_at: now,
+      frames: 0,
+      fps: 0,
+      last_frame_number: None,
+      old_frames: 0,
+    }
+  }
+
+  fn record(&mut self, now: Instant, frame_number: u32) {
+    if self
+      .last_frame_number
+      .is_some_and(|last_frame_number| frame_number_before(frame_number, last_frame_number))
+    {
+      self.old_frames = self.old_frames.saturating_add(1);
+    }
+    self.last_frame_number = Some(frame_number);
+    self.frames = self.frames.saturating_add(1);
+    self.refresh(now);
+  }
+
+  fn sample(&mut self, now: Instant) -> (u32, Option<u32>, u32) {
+    self.refresh(now);
+    (self.fps, self.last_frame_number, self.old_frames)
+  }
+
+  fn refresh(&mut self, now: Instant) {
+    let elapsed = now.duration_since(self.window_started_at);
+    if elapsed < Duration::from_secs(1) {
+      return;
+    }
+    let elapsed_secs = elapsed.as_secs_f32().max(0.001);
+    self.fps = ((self.frames as f32) / elapsed_secs).round() as u32;
+    self.frames = 0;
+    self.window_started_at = now;
+  }
+}
+
+fn frame_number_before(frame_number: u32, previous_frame_number: u32) -> bool {
+  let delta = previous_frame_number.wrapping_sub(frame_number);
+  delta != 0 && delta < (u32::MAX / 2)
 }
 
 fn decoded_pixel_format_to_lurq(format: DecodedVideoPixelFormat) -> lurq::images::ImagePixelFormat {

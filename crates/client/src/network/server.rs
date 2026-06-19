@@ -3,7 +3,7 @@ use std::{
   fmt,
   net::SocketAddr,
   sync::{
-    Arc,
+    Arc, Mutex as StdMutex,
     atomic::{AtomicBool, Ordering},
   },
   time::{Duration, Instant},
@@ -66,6 +66,9 @@ pub enum VideoFrameSend {
 }
 
 const MAX_PENDING_VIDEO_DATAGRAMS: usize = 24;
+const VIDEO_STREAM_FLOW_CONTROL_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
+const VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD: Duration = Duration::from_millis(16);
+const VIDEO_STREAM_RECEIVE_CADENCE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 impl fmt::Display for ServerError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -166,10 +169,46 @@ pub struct Server {
   control_recv: Mutex<quinn::RecvStream>,
   video_send: Mutex<quinn::SendStream>,
   video_recv: Mutex<quinn::RecvStream>,
+  video_recv_stats: StdMutex<VideoStreamReceiveStats>,
   pending_audio_datagrams: Mutex<VecDeque<ReceivedAudioPacket>>,
   pending_audio_notify: Notify,
   pending_video_datagrams: Mutex<VecDeque<ReceivedVideoDatagram>>,
   pending_video_notify: Notify,
+}
+
+#[derive(Debug)]
+struct VideoStreamReceiveStats {
+  started_at: Instant,
+  last_packet_at: Option<Instant>,
+  packets: u64,
+  bytes_total: u64,
+  bytes_max: usize,
+  gap_total: Duration,
+  gap_max: Duration,
+  lock_wait_max: Duration,
+  len_read_max: Duration,
+  body_read_max: Duration,
+  total_read_max: Duration,
+  total_read_total: Duration,
+}
+
+impl VideoStreamReceiveStats {
+  fn new(now: Instant) -> Self {
+    Self {
+      started_at: now,
+      last_packet_at: None,
+      packets: 0,
+      bytes_total: 0,
+      bytes_max: 0,
+      gap_total: Duration::ZERO,
+      gap_max: Duration::ZERO,
+      lock_wait_max: Duration::ZERO,
+      len_read_max: Duration::ZERO,
+      body_read_max: Duration::ZERO,
+      total_read_max: Duration::ZERO,
+      total_read_total: Duration::ZERO,
+    }
+  }
 }
 
 impl Server {
@@ -189,6 +228,8 @@ impl Server {
     transport.max_idle_timeout(Some(
       quinn::IdleTimeout::try_from(Duration::from_secs(60)).expect("valid timeout"),
     ));
+    transport.stream_receive_window(VarInt::from_u32(VIDEO_STREAM_FLOW_CONTROL_WINDOW_BYTES as u32));
+    transport.send_window(VIDEO_STREAM_FLOW_CONTROL_WINDOW_BYTES);
     client_config.transport_config(Arc::new(transport));
 
     let bind_addr = if addr.is_ipv6() {
@@ -210,6 +251,7 @@ impl Server {
       control_recv: Mutex::new(control_recv),
       video_send: Mutex::new(video_send),
       video_recv: Mutex::new(video_recv),
+      video_recv_stats: StdMutex::new(VideoStreamReceiveStats::new(Instant::now())),
       pending_audio_datagrams: Mutex::new(VecDeque::new()),
       pending_audio_notify: Notify::new(),
       pending_video_datagrams: Mutex::new(VecDeque::new()),
@@ -465,16 +507,95 @@ impl Server {
   }
 
   pub async fn recv_video_packet(&self) -> Result<Vec<u8>, ServerError> {
+    let started_at = Instant::now();
     let mut recv = self.video_recv.lock().await;
+    let lock_wait = started_at.elapsed();
 
     let mut len_buf = [0u8; 4];
+    let len_started_at = Instant::now();
     recv.read_exact(&mut len_buf).await?;
+    let len_read = len_started_at.elapsed();
     let packet_len = u32::from_le_bytes(len_buf) as usize;
     validate_video_stream_packet_len(packet_len)?;
 
     let mut packet = vec![0u8; packet_len];
+    let body_started_at = Instant::now();
     recv.read_exact(&mut packet).await?;
+    let body_read = body_started_at.elapsed();
+    let total_read = started_at.elapsed();
+    drop(recv);
+
+    self.log_video_stream_receive(packet_len, lock_wait, len_read, body_read, total_read);
     Ok(packet)
+  }
+
+  fn log_video_stream_receive(
+    &self,
+    packet_len: usize,
+    lock_wait: Duration,
+    len_read: Duration,
+    body_read: Duration,
+    total_read: Duration,
+  ) {
+    let now = Instant::now();
+    let mut stats = match self.video_recv_stats.lock() {
+      Ok(stats) => stats,
+      Err(error) => error.into_inner(),
+    };
+
+    let gap = stats.last_packet_at.map(|last| now.duration_since(last));
+    stats.last_packet_at = Some(now);
+    stats.packets += 1;
+    stats.bytes_total += packet_len as u64;
+    stats.bytes_max = stats.bytes_max.max(packet_len);
+    if let Some(gap) = gap {
+      stats.gap_total += gap;
+      stats.gap_max = stats.gap_max.max(gap);
+    }
+    stats.lock_wait_max = stats.lock_wait_max.max(lock_wait);
+    stats.len_read_max = stats.len_read_max.max(len_read);
+    stats.body_read_max = stats.body_read_max.max(body_read);
+    stats.total_read_max = stats.total_read_max.max(total_read);
+    stats.total_read_total += total_read;
+
+    if gap.is_some_and(|gap| gap >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD)
+      || len_read >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD
+      || body_read >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD
+      || total_read >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD
+    {
+      tracing::info!(
+        target: "video::watch",
+        "watched stream packet receive jitter packet_bytes={} gap_ms={:.1} total_read_ms={:.1} lock_wait_ms={:.1} len_read_ms={:.1} body_read_ms={:.1}",
+        packet_len,
+        gap.map(duration_ms).unwrap_or(0.0),
+        duration_ms(total_read),
+        duration_ms(lock_wait),
+        duration_ms(len_read),
+        duration_ms(body_read),
+      );
+    }
+
+    if now.duration_since(stats.started_at) < VIDEO_STREAM_RECEIVE_CADENCE_LOG_INTERVAL {
+      return;
+    }
+
+    let packets = stats.packets.max(1);
+    tracing::info!(
+      target: "video::watch",
+      "watched stream packet receive cadence packets={} bytes_avg={} bytes_max={} gap_avg_ms={:.1} gap_max_ms={:.1} total_read_avg_ms={:.1} total_read_max_ms={:.1} lock_wait_max_ms={:.1} len_read_max_ms={:.1} body_read_max_ms={:.1}",
+      stats.packets,
+      stats.bytes_total / packets,
+      stats.bytes_max,
+      duration_ms(stats.gap_total / packets as u32),
+      duration_ms(stats.gap_max),
+      duration_ms(stats.total_read_total / packets as u32),
+      duration_ms(stats.total_read_max),
+      duration_ms(stats.lock_wait_max),
+      duration_ms(stats.len_read_max),
+      duration_ms(stats.body_read_max),
+    );
+
+    *stats = VideoStreamReceiveStats::new(now);
   }
 
   pub async fn recv_video(&self) -> Result<ReceivedVideoPacket, ServerError> {
@@ -802,6 +923,10 @@ fn validate_video_codec(codec: VideoCodecId) -> Result<(), DecodeError> {
       value: codec as u8,
     })
   }
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }
 
 fn decode_video_stream_packet(packet: Vec<u8>) -> Result<ReceivedVideoPacket, ServerError> {

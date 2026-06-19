@@ -966,8 +966,8 @@ SharedNv12CopyResult copy_decoded_surface_to_shared_nv12_planes(
         }
     }
     bridge->context->Flush();
-    const HRESULT uv_release = target.uv_mutex->ReleaseSync(0);
-    const HRESULT y_release = target.y_mutex->ReleaseSync(0);
+    const HRESULT uv_release = target.uv_mutex->ReleaseSync(1);
+    const HRESULT y_release = target.y_mutex->ReleaseSync(1);
     if (FAILED(y_release) || FAILED(uv_release)) {
         native_log_warn(
             "AMF decoder dropped shared NV12 planes frame: failed to release producer keyed mutex slot={} y_result={} uv_result={}",

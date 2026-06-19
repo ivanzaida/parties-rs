@@ -147,7 +147,7 @@ impl Component for SavedServersScreen {
       .child(if servers.is_empty() {
         self.empty_state(ctx).into()
       } else {
-        self.servers_state(ctx, servers).into()
+        self.servers_state(ctx, servers, &connect).into()
       })
   }
 }
@@ -287,13 +287,14 @@ impl SavedServersScreen {
       ))
   }
 
-  fn servers_state(&self, ctx: &mut Ctx, servers: Vec<StoredServer>) -> impl Into<Element> {
+  fn servers_state(&self, ctx: &mut Ctx, servers: Vec<StoredServer>, connect: &ConnectAction) -> impl Into<Element> {
     let metrics = servers_layout_metrics(ctx);
     let count = servers.len();
     let connecting = self.connecting.get();
     let failed = self.failed.get();
     let failure_message = self.failure_message.get();
     let connecting_signal = self.connecting.clone();
+    let running_signal = self.running.clone();
     let failed_signal = self.failed.clone();
     let query_results = self.query_results.get();
     let querying = self
@@ -327,7 +328,9 @@ impl SavedServersScreen {
             None
           },
           connecting: connecting_signal.clone(),
+          running: running_signal.clone(),
           failed: failed_signal.clone(),
+          connect: connect.clone(),
         },
       ));
     }

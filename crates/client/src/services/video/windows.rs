@@ -80,10 +80,46 @@ const STREAM_AUDIO_BITRATE: i32 = 64_000;
 const STREAM_AUDIO_MAX_PACKET_BYTES: usize = 1_275;
 const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 const AMD_VENDOR_ID: u32 = 0x1002;
+const LOCAL_STREAM_SEND_CADENCE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 #[repr(C)]
 struct NvdecBridge {
   _private: [u8; 0],
+}
+
+#[derive(Debug)]
+struct LocalStreamSendCadence {
+  started_at: Instant,
+  samples: u32,
+  frame_delta_total: u64,
+  keyframes: u32,
+  datagrams: u32,
+  stream_fallbacks: u32,
+  dropped: u32,
+  bytes_total: u64,
+  bytes_max: usize,
+  send_delta_total: Duration,
+  send_delta_max: Duration,
+  send_delta_samples: u32,
+}
+
+impl LocalStreamSendCadence {
+  fn new(now: Instant) -> Self {
+    Self {
+      started_at: now,
+      samples: 0,
+      frame_delta_total: 0,
+      keyframes: 0,
+      datagrams: 0,
+      stream_fallbacks: 0,
+      dropped: 0,
+      bytes_total: 0,
+      bytes_max: 0,
+      send_delta_total: Duration::ZERO,
+      send_delta_max: Duration::ZERO,
+      send_delta_samples: 0,
+    }
+  }
 }
 
 #[repr(C)]
@@ -417,6 +453,8 @@ fn run_broadcast_loop(
   let mut logged_stream_fallback = false;
   let mut dropped_live_frames = 0u64;
   let mut handled_keyframe_requests = keyframe_requests.load(Ordering::Relaxed);
+  let mut last_sent_frame = None::<(u32, Instant)>;
+  let mut send_cadence = LocalStreamSendCadence::new(Instant::now());
 
   while !stop.load(Ordering::Relaxed) {
     let loop_started_at = Instant::now();
@@ -496,6 +534,23 @@ fn run_broadcast_loop(
           .block_on(server.send_live_video_frame(&frame))
           .map_err(|error| VideoError::new(format!("Failed to send video frame: {error}")))?
       };
+      let sent_at = Instant::now();
+      let previous_sent_frame = last_sent_frame;
+      let send_delta = previous_sent_frame.map(|(_, previous_at)| sent_at.duration_since(previous_at));
+      let frame_delta = previous_sent_frame
+        .map(|(previous_frame, _)| frame_number.wrapping_sub(previous_frame))
+        .unwrap_or(0);
+      log_local_stream_send_cadence(
+        &mut send_cadence,
+        frame_number,
+        frame_delta,
+        sample_len,
+        sample_keyframe,
+        send_result,
+        send_delta,
+        frame_interval,
+        encoder.backend_label(),
+      );
       if send_result == VideoFrameSend::Dropped {
         dropped_live_frames += 1;
         if dropped_live_frames == 1 || dropped_live_frames % 120 == 0 {
@@ -510,8 +565,23 @@ fn run_broadcast_loop(
       if let Some(loopback) = &loopback {
         loopback(frame);
       }
+      if let Some(send_delta) = send_delta {
+        if send_delta > frame_interval + (frame_interval / 2) {
+          tracing::info!(
+            target: "video::encode::windows",
+            "[video:encode/windows] local stream send jitter frame={} frame_delta={} send_delta_ms={:.1} target_frame_ms={:.1} backend={} transport={:?}",
+            frame_number,
+            frame_delta,
+            duration_ms(send_delta),
+            duration_ms(frame_interval),
+            encoder.backend_label(),
+            send_result
+          );
+        }
+      }
+      last_sent_frame = Some((frame_number, sent_at));
       if send_result == VideoFrameSend::StreamFallback && !logged_stream_fallback {
-        tracing::debug!(target: "video::encode::windows", "[video:encode/windows] live video datagrams unavailable or too large; using reliable stream fallback");
+        tracing::info!(target: "video::encode::windows", "[video:encode/windows] live video datagrams unavailable or too large; using reliable stream fallback");
         logged_stream_fallback = true;
       }
       if !logged_first_frame {
@@ -550,6 +620,63 @@ fn run_broadcast_loop(
   Ok(())
 }
 
+fn log_local_stream_send_cadence(
+  cadence: &mut LocalStreamSendCadence,
+  frame_number: u32,
+  frame_delta: u32,
+  sample_len: usize,
+  keyframe: bool,
+  send_result: VideoFrameSend,
+  send_delta: Option<Duration>,
+  target_frame_interval: Duration,
+  backend: &str,
+) {
+  cadence.samples += 1;
+  cadence.frame_delta_total += u64::from(frame_delta);
+  cadence.bytes_total += sample_len as u64;
+  cadence.bytes_max = cadence.bytes_max.max(sample_len);
+  if keyframe {
+    cadence.keyframes += 1;
+  }
+  match send_result {
+    VideoFrameSend::Datagram => cadence.datagrams += 1,
+    VideoFrameSend::StreamFallback => cadence.stream_fallbacks += 1,
+    VideoFrameSend::Dropped => cadence.dropped += 1,
+  }
+  if let Some(send_delta) = send_delta {
+    cadence.send_delta_samples += 1;
+    cadence.send_delta_total += send_delta;
+    cadence.send_delta_max = cadence.send_delta_max.max(send_delta);
+  }
+
+  let now = Instant::now();
+  if now.duration_since(cadence.started_at) < LOCAL_STREAM_SEND_CADENCE_LOG_INTERVAL {
+    return;
+  }
+
+  let samples = cadence.samples.max(1);
+  let send_delta_samples = cadence.send_delta_samples.max(1);
+  tracing::info!(
+    target: "video::encode::windows",
+    "[video:encode/windows] local stream send cadence backend={} last_frame={} samples={} frame_delta_total={} keyframes={} datagrams={} stream_fallbacks={} dropped={} bytes_avg={} bytes_max={} send_delta_avg_ms={:.1} send_delta_max_ms={:.1} target_frame_ms={:.1}",
+    backend,
+    frame_number,
+    cadence.samples,
+    cadence.frame_delta_total,
+    cadence.keyframes,
+    cadence.datagrams,
+    cadence.stream_fallbacks,
+    cadence.dropped,
+    cadence.bytes_total / u64::from(samples),
+    cadence.bytes_max,
+    duration_ms(cadence.send_delta_total / send_delta_samples),
+    duration_ms(cadence.send_delta_max),
+    duration_ms(target_frame_interval)
+  );
+
+  *cadence = LocalStreamSendCadence::new(now);
+}
+
 fn log_encoder_ready(encoder: &BroadcastEncoder, config: &VideoBroadcastConfig) {
   tracing::debug!(target: "video::encode::windows",
     "[video:encode/windows] encoder ready: backend={} codec={:?} source={}x{} output={}x{} fps={} bitrate={}kbps",
@@ -562,6 +689,10 @@ fn log_encoder_ready(encoder: &BroadcastEncoder, config: &VideoBroadcastConfig) 
     config.fps,
     config.bitrate_kbps
   );
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }
 
 fn bitstream_probe(bytes: &[u8]) -> String {
