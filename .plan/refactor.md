@@ -585,6 +585,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added focused scalar settings stores:
   - provided `Store<AppSentryReportsEnabled>` and `Store<AppLocale>` alongside the existing display/debug focused stores;
   - moved settings overview render state and identity display-name initialization off full `AppSettings`, leaving full settings handles only where the component writes persisted settings.
+- Added a focused hotkey settings store:
+  - provided `Store<AppHotkeySettings>` for push-to-talk, toggle mute, and toggle deafen bindings;
+  - moved audio settings page initialization off full `AppSettings` by reading `Store<AppAudioSettings>` plus `Store<AppHotkeySettings>`.
 
 ## Current Residual Reads
 

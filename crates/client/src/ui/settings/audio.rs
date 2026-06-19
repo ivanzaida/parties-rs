@@ -30,7 +30,7 @@ use crate::{
     hotkeys,
   },
   session::ServerSession,
-  storage::{AppAudioSettings, AppSettings, Storage, update_app_settings},
+  storage::{AppAudioSettings, AppHotkeySettings, AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -87,24 +87,28 @@ impl Component for SettingsAudioScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let settings = ctx
-      .use_context::<Store<AppSettings>>()
+    let audio_settings = ctx
+      .use_context::<Store<AppAudioSettings>>()
       .map(|settings| settings.get())
-      .unwrap_or_else(AppSettings::default);
-    let input_device = ctx.signal(settings.audio_input_device);
-    let output_device = ctx.signal(settings.audio_output_device);
+      .unwrap_or_else(AppAudioSettings::default);
+    let hotkey_settings = ctx
+      .use_context::<Store<AppHotkeySettings>>()
+      .map(|settings| settings.get())
+      .unwrap_or_else(AppHotkeySettings::default);
+    let input_device = ctx.signal(audio_settings.audio_input_device);
+    let output_device = ctx.signal(audio_settings.audio_output_device);
     let input_level = ctx.signal(0.0_f32);
     let input_level_meter_active = ctx.signal(false);
-    let noise_cancellation = settings.noise_cancellation;
-    let voice_normalization = settings.voice_normalization;
-    let voice_normalization_target_level = settings.voice_normalization_target_level.clamp(0, 100);
-    let echo_cancellation = settings.echo_cancellation;
-    let voice_activation_threshold = settings.voice_activation_threshold.clamp(0, 100);
-    let push_to_talk = settings.push_to_talk;
-    let push_to_talk_release_delay_ms = settings.push_to_talk_release_delay_ms.clamp(0, 2000);
-    let hotkey_push_to_talk = settings.hotkey_push_to_talk;
-    let hotkey_toggle_mute = settings.hotkey_toggle_mute;
-    let hotkey_toggle_deafen = settings.hotkey_toggle_deafen;
+    let noise_cancellation = audio_settings.noise_cancellation;
+    let voice_normalization = audio_settings.voice_normalization;
+    let voice_normalization_target_level = audio_settings.voice_normalization_target_level.clamp(0, 100);
+    let echo_cancellation = audio_settings.echo_cancellation;
+    let voice_activation_threshold = audio_settings.voice_activation_threshold.clamp(0, 100);
+    let push_to_talk = audio_settings.push_to_talk;
+    let push_to_talk_release_delay_ms = audio_settings.push_to_talk_release_delay_ms.clamp(0, 2000);
+    let hotkey_push_to_talk = hotkey_settings.push_to_talk;
+    let hotkey_toggle_mute = hotkey_settings.toggle_mute;
+    let hotkey_toggle_deafen = hotkey_settings.toggle_deafen;
     let input_devices = ctx.store(audio_devices::input_device_names());
     let output_devices = ctx.store(audio_devices::output_device_names());
     let input_level_meter = Arc::new(Mutex::new(None));

@@ -112,6 +112,13 @@ pub struct AppLocale {
   pub value: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppHotkeySettings {
+  pub push_to_talk: String,
+  pub toggle_mute: String,
+  pub toggle_deafen: String,
+}
+
 #[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
 pub struct AppStreamSettings {
   pub video_codec: String,

@@ -36,8 +36,8 @@ use crate::{
   },
   session::ServerSession,
   storage::{
-    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppLocale, AppSentryReportsEnabled, AppSettings,
-    AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
+    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppHotkeySettings, AppLocale, AppSentryReportsEnabled,
+    AppSettings, AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -76,6 +76,7 @@ pub struct App {
   debug_mode_enabled: Store<AppDebugModeEnabled>,
   sentry_reports_enabled: Store<AppSentryReportsEnabled>,
   locale: Store<AppLocale>,
+  hotkey_settings: Store<AppHotkeySettings>,
   audio_settings: Store<AppAudioSettings>,
   stream_settings: Store<AppStreamSettings>,
   servers: Store<Vec<StoredServer>>,
@@ -133,6 +134,7 @@ impl Component for App {
     let debug_mode_enabled = ctx.store(debug_mode_setting(&settings.get()));
     let sentry_reports_enabled = ctx.store(sentry_reports_setting(&settings.get()));
     let locale = ctx.store(locale_setting(&settings.get()));
+    let hotkey_settings = ctx.store(hotkey_settings(&settings.get()));
     let audio_settings = ctx.store(audio_settings(&settings.get()));
     let stream_settings = ctx.store(stream_settings(&settings.get()));
     let servers = ctx.store(startup_servers);
@@ -146,6 +148,7 @@ impl Component for App {
       let debug_mode_enabled = debug_mode_enabled.clone();
       let sentry_reports_enabled = sentry_reports_enabled.clone();
       let locale = locale.clone();
+      let hotkey_settings = hotkey_settings.clone();
       let audio_settings = audio_settings.clone();
       let stream_settings = stream_settings.clone();
       let servers = servers.clone();
@@ -161,6 +164,7 @@ impl Component for App {
           &debug_mode_enabled,
           &sentry_reports_enabled,
           &locale,
+          &hotkey_settings,
           &audio_settings,
           &stream_settings,
         );
@@ -268,6 +272,7 @@ impl Component for App {
       debug_mode_enabled,
       sentry_reports_enabled,
       locale,
+      hotkey_settings,
       audio_settings,
       stream_settings,
       servers,
@@ -293,6 +298,7 @@ impl Component for App {
     ctx.provide(self.debug_mode_enabled.clone());
     ctx.provide(self.sentry_reports_enabled.clone());
     ctx.provide(self.locale.clone());
+    ctx.provide(self.hotkey_settings.clone());
     ctx.provide(self.audio_settings.clone());
     ctx.provide(self.stream_settings.clone());
     ctx.provide(self.servers.clone());
@@ -330,6 +336,7 @@ impl Component for App {
       &self.debug_mode_enabled,
       &self.sentry_reports_enabled,
       &self.locale,
+      &self.hotkey_settings,
       &self.audio_settings,
       &self.stream_settings,
     );
@@ -570,6 +577,14 @@ fn locale_setting(settings: &AppSettings) -> AppLocale {
   }
 }
 
+fn hotkey_settings(settings: &AppSettings) -> AppHotkeySettings {
+  AppHotkeySettings {
+    push_to_talk: settings.hotkey_push_to_talk.clone(),
+    toggle_mute: settings.hotkey_toggle_mute.clone(),
+    toggle_deafen: settings.hotkey_toggle_deafen.clone(),
+  }
+}
+
 fn audio_settings(settings: &AppSettings) -> AppAudioSettings {
   AppAudioSettings::from(settings)
 }
@@ -589,6 +604,7 @@ fn sync_focused_settings(
   debug_mode_enabled: &Store<AppDebugModeEnabled>,
   sentry_reports_enabled: &Store<AppSentryReportsEnabled>,
   locale: &Store<AppLocale>,
+  hotkey_settings_store: &Store<AppHotkeySettings>,
   audio_settings_store: &Store<AppAudioSettings>,
   stream_settings_store: &Store<AppStreamSettings>,
 ) {
@@ -610,6 +626,11 @@ fn sync_focused_settings(
   let next_locale = locale_setting(settings);
   if locale.with(|current| current != &next_locale) {
     locale.set(next_locale);
+  }
+
+  let next_hotkey_settings = hotkey_settings(settings);
+  if hotkey_settings_store.with(|current| current != &next_hotkey_settings) {
+    hotkey_settings_store.set(next_hotkey_settings);
   }
 
   let next_audio_settings = audio_settings(settings);
