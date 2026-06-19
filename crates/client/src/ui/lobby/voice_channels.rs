@@ -244,17 +244,21 @@ impl Component for VoiceChannels {
         props.channels,
         |channel| channel.channel.id,
         move |ctx, channel| {
-          ctx.mount::<ChannelGroup>(ChannelGroupProps {
-            model: channel,
-            join_channel: join_channel.clone(),
-            watch_stream: watch_stream.clone(),
-            session: session_for_channels.clone(),
-            context_user_id: context_user_id.clone(),
-            context_menu_open: context_menu_open.clone(),
-            context_menu_anchor: context_menu_anchor.clone(),
-            role_menu_user_id: role_menu_user_id.clone(),
-            debug_user_ids,
-          })
+          let key = format!("voice-channel-{}", channel.channel.id);
+          ctx.mount_keyed::<ChannelGroup>(
+            &key,
+            ChannelGroupProps {
+              model: channel,
+              join_channel: join_channel.clone(),
+              watch_stream: watch_stream.clone(),
+              session: session_for_channels.clone(),
+              context_user_id: context_user_id.clone(),
+              context_menu_open: context_menu_open.clone(),
+              context_menu_anchor: context_menu_anchor.clone(),
+              role_menu_user_id: role_menu_user_id.clone(),
+              debug_user_ids,
+            },
+          )
         },
       );
       body = body.with_children(channel_groups);
@@ -441,26 +445,34 @@ fn channel_group(ctx: &mut Ctx, props: ChannelGroupProps) -> Element {
     users,
     |row| row.user.user_id,
     move |ctx, row| {
-      ctx.mount::<ChannelUserRow>(ChannelUserRowProps {
-        model: row,
-        watch_stream: watch_stream.clone(),
-        context_user_id: context_user_id.clone(),
-        context_menu_open: context_menu_open.clone(),
-        context_menu_anchor: context_menu_anchor.clone(),
-        role_menu_user_id: role_menu_user_id.clone(),
-        debug_user_ids,
-      })
+      let key = format!("voice-user-{}", row.user.user_id);
+      ctx.mount_keyed::<ChannelUserRow>(
+        &key,
+        ChannelUserRowProps {
+          model: row,
+          watch_stream: watch_stream.clone(),
+          context_user_id: context_user_id.clone(),
+          context_menu_open: context_menu_open.clone(),
+          context_menu_anchor: context_menu_anchor.clone(),
+          role_menu_user_id: role_menu_user_id.clone(),
+          debug_user_ids,
+        },
+      )
     },
   );
+  let header_key = format!("voice-channel-header-{}", header_model.channel.id);
 
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(2.0)
-    .child(ctx.mount::<ChannelRow>(ChannelRowProps {
-      model: header_model,
-      join_channel: props.join_channel,
-      session: props.session,
-    }))
+    .child(ctx.mount_keyed::<ChannelRow>(
+      &header_key,
+      ChannelRowProps {
+        model: header_model,
+        join_channel: props.join_channel,
+        session: props.session,
+      },
+    ))
     .with_children(user_rows)
     .into()
 }

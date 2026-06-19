@@ -113,10 +113,14 @@ impl Component for TextChannels {
           props.channels,
           |row| row.channel.id,
           move |ctx, row| {
-            ctx.mount::<TextChannelRow>(TextChannelRowProps {
-              model: row,
-              select_channel: props.select_channel.clone(),
-            })
+            let key = format!("text-channel-{}", row.channel.id);
+            ctx.mount_keyed::<TextChannelRow>(
+              &key,
+              TextChannelRowProps {
+                model: row,
+                select_channel: props.select_channel.clone(),
+              },
+            )
           },
         ));
       }

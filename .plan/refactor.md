@@ -524,6 +524,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Keyed command suggestion row components:
   - mounted filtered command suggestion rows by command fill identity;
   - kept row component instances stable when suggestion filtering changes.
+- Added explicit channel row component keys:
+  - keyed text channel rows, voice channel groups, voice channel headers, and voice user rows by channel/user identity;
+  - kept component identity stable even inside keyed list rendering helpers.
 
 ## Current Residual Reads
 
