@@ -20,6 +20,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   routes::{
     ROUTE_CHOOSE_SERVER, ROUTE_CONNECT_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_IMPORT_LEGACY_CONFIG,
     ROUTE_IMPORT_PRIVATE_KEY, ROUTE_LOADING, ROUTE_LOBBY, ROUTE_RESTORE_IDENTITY, ROUTE_SEED_PHRASE,
@@ -69,6 +70,7 @@ pub struct App {
   storage: Signal<Option<Storage>>,
   settings: Store<AppSettings>,
   servers: Store<Vec<StoredServer>>,
+  identity: Store<Option<LocalIdentity>>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
   active_toggle_hotkeys: Store<Vec<String>>,
@@ -114,18 +116,22 @@ impl Component for App {
     let storage = ctx.signal(props.startup_storage.clone());
     let startup_settings = load_settings_from_storage(props.startup_storage.as_ref());
     let startup_servers = load_servers_from_storage(props.startup_storage.as_ref());
+    let startup_identity = load_identity_from_storage(props.startup_storage.as_ref());
     let settings = ctx.store(startup_settings);
     let servers = ctx.store(startup_servers);
+    let identity = ctx.store(startup_identity);
     let i18n = ctx.i18n().clone();
     apply_settings_locale(&settings.get(), &i18n);
     ctx.watch(&storage, {
       let settings = settings.clone();
       let servers = servers.clone();
+      let identity = identity.clone();
       let i18n = i18n.clone();
       move |storage| {
         let next_settings = load_settings_from_storage(storage.as_ref());
         settings.set(next_settings.clone());
         servers.set(load_servers_from_storage(storage.as_ref()));
+        identity.set(load_identity_from_storage(storage.as_ref()));
         apply_settings_locale(&next_settings, &i18n);
       }
     });
@@ -224,6 +230,7 @@ impl Component for App {
       storage,
       settings,
       servers,
+      identity,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
       active_toggle_hotkeys: ctx.store(Vec::new()),
@@ -241,16 +248,14 @@ impl Component for App {
     ctx.provide(self.global_hotkeys.clone());
     ctx.provide(self.settings.clone());
     ctx.provide(self.servers.clone());
+    ctx.provide(self.identity.clone());
     let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
     ctx.provide(settings_popup.clone());
     let storage = self.storage.get();
     if let Some(storage) = storage.clone() {
       ctx.provide(storage);
     }
-    if storage
-      .as_ref()
-      .is_some_and(|storage| !storage.has_identity().unwrap_or(true))
-    {
+    if self.identity.with(Option::is_none) {
       let path = self.router.path().get();
       if route_requires_identity(path.as_ref()) {
         if self.settings_open.get_untracked() {
@@ -471,6 +476,10 @@ fn load_servers_from_storage(storage: Option<&Storage>) -> Vec<StoredServer> {
   storage
     .and_then(|storage| storage.load_servers().ok())
     .unwrap_or_default()
+}
+
+fn load_identity_from_storage(storage: Option<&Storage>) -> Option<LocalIdentity> {
+  storage.and_then(|storage| storage.load_identity().ok()).flatten()
 }
 
 fn apply_settings_locale(settings: &AppSettings, i18n: &lurq::app::i18n::I18n) {

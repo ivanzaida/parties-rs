@@ -13,7 +13,7 @@ use lurq::{
 };
 
 use crate::{
-  identity::auth_identity,
+  identity::{LocalIdentity, auth_identity},
   network::{
     protocol::{DEFAULT_PORT, S2C},
     server::Server,
@@ -130,14 +130,28 @@ impl Component for ConnectServerScreen {
     };
 
     let errors = ConnectErrorCopy::from_ctx(ctx);
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let route_session = session.clone();
     let connect = ctx.future_action(move |(address, seed, display_name): (String, String, String)| {
       let storage = storage.clone();
+      let identity_store = identity_store.clone();
       let servers_store = servers_store.clone();
       let session = session.clone();
       let errors = errors.clone();
-      async move { connect_and_store(address, seed, display_name, storage, servers_store, session, errors).await }
+      async move {
+        connect_and_store(
+          address,
+          seed,
+          display_name,
+          storage,
+          identity_store,
+          servers_store,
+          session,
+          errors,
+        )
+        .await
+      }
     });
 
     let state = connect.state().get();
@@ -350,6 +364,7 @@ pub async fn connect_and_store(
   seed: String,
   display_name: String,
   storage: Option<Storage>,
+  identity_store: Option<Store<Option<LocalIdentity>>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
@@ -362,12 +377,7 @@ pub async fn connect_and_store(
     display_name
   );
 
-  let identity = storage
-    .as_ref()
-    .ok_or_else(|| errors.storage_unavailable.clone())?
-    .load_identity()
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| errors.identity_missing.clone())?;
+  let identity = identity_from_store_or_storage(identity_store.as_ref(), storage.as_ref(), &errors)?;
 
   let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
@@ -531,17 +541,13 @@ pub async fn test_connection(
   seed: String,
   display_name: String,
   storage: Option<Storage>,
+  identity_store: Option<Store<Option<LocalIdentity>>>,
   errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
   let address = with_default_port(&address);
   let display_name = display_name.trim().to_owned();
 
-  let identity = storage
-    .as_ref()
-    .ok_or_else(|| errors.storage_unavailable.clone())?
-    .load_identity()
-    .map_err(|error| error.to_string())?
-    .ok_or_else(|| errors.identity_missing.clone())?;
+  let identity = identity_from_store_or_storage(identity_store.as_ref(), storage.as_ref(), &errors)?;
 
   let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
@@ -570,6 +576,22 @@ pub async fn test_connection(
     role: response.role,
     certificate_fingerprint: fingerprint,
   })
+}
+
+fn identity_from_store_or_storage(
+  identity_store: Option<&Store<Option<LocalIdentity>>>,
+  storage: Option<&Storage>,
+  errors: &ConnectErrorCopy,
+) -> Result<LocalIdentity, String> {
+  if let Some(identity) = identity_store.and_then(Store::get) {
+    return Ok(identity);
+  }
+
+  storage
+    .ok_or_else(|| errors.storage_unavailable.clone())?
+    .load_identity()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| errors.identity_missing.clone())
 }
 
 enum AuthAttempt {

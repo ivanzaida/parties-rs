@@ -16,6 +16,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP, ROUTE_LOBBY, ROUTE_SENTRY_REPORTS, ROUTE_TOFU_WARNING},
   services::{
     startup::{StartupProgress, StartupProgressLabels, load_startup_data},
@@ -151,15 +152,20 @@ impl Component for LoadingIdentityScreen {
     };
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let resume_errors = ConnectErrorCopy::from_ctx(ctx);
     let route_session = session.clone();
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
       let settings_store = settings_store.clone();
+      let identity_store = identity_store.clone();
       let servers_store = servers_store.clone();
       let errors = resume_errors.clone();
-      async move { restore_update_resume_after_restart(storage, servers_store, settings_store, session, errors).await }
+      async move {
+        restore_update_resume_after_restart(storage, identity_store, servers_store, settings_store, session, errors)
+          .await
+      }
     });
     let restore_update_resume_state = restore_update_resume.state().get();
     let startup_error = startup.as_ref().and_then(|startup| startup.error.clone());
@@ -251,6 +257,7 @@ impl Component for LoadingIdentityScreen {
 
 async fn restore_update_resume_after_restart(
   storage: Storage,
+  identity_store: Option<Store<Option<LocalIdentity>>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: Option<ServerSession>,
@@ -301,6 +308,7 @@ async fn restore_update_resume_after_restart(
     server.server_password,
     display_name,
     Some(storage.clone()),
+    identity_store,
     servers_store,
     Some(session.clone()),
     errors,

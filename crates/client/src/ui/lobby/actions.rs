@@ -11,6 +11,7 @@ use super::{
   },
 };
 use crate::{
+  identity::LocalIdentity,
   network::protocol::{ChannelId, UserId, VideoCodecId},
   services::video::VideoBroadcastConfig,
   session::{
@@ -503,6 +504,7 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
 pub(super) fn reconnect_action(
   ctx: &mut Ctx,
   storage: Option<Storage>,
+  identity_store: Option<Store<Option<LocalIdentity>>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
@@ -510,6 +512,7 @@ pub(super) fn reconnect_action(
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |request: ReconnectRequest| {
     let storage = storage.clone();
+    let identity_store = identity_store.clone();
     let servers_store = servers_store.clone();
     let settings_store = settings_store.clone();
     let session = session.clone();
@@ -528,6 +531,7 @@ pub(super) fn reconnect_action(
       reconnect_saved_server(
         server,
         storage,
+        identity_store,
         servers_store,
         settings_store,
         session,
@@ -541,6 +545,7 @@ pub(super) fn reconnect_action(
 async fn reconnect_saved_server(
   server: StoredServer,
   storage: Storage,
+  identity_store: Option<Store<Option<LocalIdentity>>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
@@ -560,6 +565,7 @@ async fn reconnect_saved_server(
     server.server_password,
     display_name,
     Some(storage.clone()),
+    identity_store,
     servers_store,
     Some(session.clone()),
     errors,

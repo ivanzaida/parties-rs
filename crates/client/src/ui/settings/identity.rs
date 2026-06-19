@@ -17,10 +17,10 @@ use lurq::{
 };
 
 use crate::{
-  identity::{public_key_fingerprint, secret_key_to_hex},
+  identity::{LocalIdentity, public_key_fingerprint, secret_key_to_hex},
   routes::ROUTE_IDENTITY_SETUP,
   session::ServerSession,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::{AppSettings, Storage, delete_local_identity, update_app_settings},
   theme,
   ui::{
     common::{
@@ -65,12 +65,10 @@ impl Component for SettingsIdentityScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let session = ctx.use_context::<ServerSession>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
-    let identity = storage
-      .as_ref()
-      .and_then(|storage| storage.load_identity().ok())
-      .flatten();
+    let identity = identity_store.as_ref().and_then(Store::get);
     let navigator = ctx.navigator();
     let public_id = identity
       .as_ref()
@@ -172,13 +170,12 @@ impl Component for SettingsIdentityScreen {
       .into();
 
     let confirm_storage = storage.clone();
+    let confirm_identity_store = identity_store.clone();
     let confirm_session = session.clone();
     let confirm_settings_popup = settings_popup.clone();
     let confirm_navigator = navigator.clone();
     let on_remove: ConfirmAction = Arc::new(move || {
-      if let Some(storage) = confirm_storage.as_ref() {
-        let _ = storage.delete_identity();
-      }
+      let _ = delete_local_identity(confirm_identity_store.as_ref(), confirm_storage.as_ref());
       if let Some(navigator) = confirm_navigator.as_ref() {
         navigator.replace(ROUTE_IDENTITY_SETUP);
       }

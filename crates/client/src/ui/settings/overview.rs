@@ -7,6 +7,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   routes::{ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS},
   services::logger,
   session::ServerSession,
@@ -56,15 +57,13 @@ impl Component for SettingsOverviewScreen {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let storage = ctx.use_context::<Storage>();
     let settings = ctx
       .use_context::<Store<AppSettings>>()
       .map(|settings| settings.get())
       .unwrap_or_default();
-    let identity = storage
-      .as_ref()
-      .and_then(|storage| storage.load_identity().ok())
-      .flatten();
+    let identity = ctx
+      .use_context::<Store<Option<LocalIdentity>>>()
+      .and_then(|identity| identity.get());
     let servers = ctx
       .use_context::<Store<Vec<crate::storage::StoredServer>>>()
       .map(|servers| servers.get())

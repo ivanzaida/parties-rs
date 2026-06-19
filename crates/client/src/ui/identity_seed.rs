@@ -2,7 +2,7 @@ use lurq::{
   app::{component::Component, ctx::Ctx, theme::Breakpoint},
   clipboard,
   components::{Column, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
@@ -10,7 +10,7 @@ use lurq::{
 use crate::{
   identity::{LocalIdentity, generate_identity},
   routes::ROUTE_CHOOSE_SERVER,
-  storage::Storage,
+  storage::{Storage, save_local_identity},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -82,6 +82,7 @@ impl IdentitySeedScreen {
     let identity = self.identity.clone();
     let navigator = ctx.navigator();
     let storage = ctx.use_context::<Storage>();
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let copied_signal = self.copied.clone();
     let hidden_signal = self.hidden.clone();
 
@@ -111,9 +112,7 @@ impl IdentitySeedScreen {
     let continue_button = if confirmed {
       continue_button.on_click(move |_| {
         let _ = clipboard::copy_to_clipboard(&continue_phrase);
-        if let Some(storage) = storage.as_ref() {
-          let _ = storage.save_identity(&continue_identity);
-        }
+        let _ = save_local_identity(identity_store.as_ref(), storage.as_ref(), continue_identity.clone());
         if let Some(navigator) = navigator.as_ref() {
           navigator.replace(ROUTE_CHOOSE_SERVER);
         }

@@ -7,6 +7,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
   services::logger,
   storage::{AppSettings, Storage, update_app_settings},
@@ -160,6 +161,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
   };
   let storage = ctx.use_context::<Storage>();
   let settings_store = ctx.use_context::<Store<AppSettings>>();
+  let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
   let navigator = ctx.navigator();
 
   let mut button = Row::new()
@@ -178,7 +180,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
     .on_click(move |_| {
       save_sentry_reports_choice(settings_store.as_ref(), storage.as_ref(), enabled);
       if let Some(navigator) = navigator.as_ref() {
-        navigator.replace(route_after_consent(storage.as_ref()));
+        navigator.replace(route_after_consent(identity_store.as_ref()));
       }
     });
 
@@ -210,8 +212,8 @@ fn save_sentry_reports_choice(settings_store: Option<&Store<AppSettings>>, stora
   }
 }
 
-fn route_after_consent(storage: Option<&Storage>) -> &'static str {
-  if storage.is_some_and(|storage| storage.has_identity().unwrap_or(false)) {
+fn route_after_consent(identity_store: Option<&Store<Option<LocalIdentity>>>) -> &'static str {
+  if identity_store.is_some_and(|identity| identity.with(Option::is_some)) {
     ROUTE_CHOOSE_SERVER
   } else {
     ROUTE_IDENTITY_SETUP

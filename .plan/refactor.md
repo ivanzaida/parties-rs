@@ -556,6 +556,11 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - loaded saved servers into `Store<Vec<StoredServer>>` at app startup and provided it through context;
   - changed saved-server list/settings/overview reads to use the store instead of storage reads in render;
   - centralized saved-server upsert/delete helpers so storage writes update the in-memory list.
+- Moved local identity into an in-memory store:
+  - loaded identity into `Store<Option<LocalIdentity>>` at app startup and provided it through context;
+  - changed identity overview/settings/sentry routing and onboarding import/restore/create flows to read/write the store;
+  - changed manual connect, saved-server reconnect, update-resume reconnect, and test-connection auth paths to use the store first with storage as a fallback;
+  - centralized identity save/delete helpers so storage writes update the in-memory identity.
 
 ## Current Residual Reads
 
@@ -563,6 +568,7 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
 - Saved-server storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
+- Identity storage reads remain only in startup/bootstrap, auth fallback, and storage-owned helpers.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
   - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;
   - stream modal lifecycle/error handling;

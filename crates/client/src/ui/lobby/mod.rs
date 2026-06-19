@@ -13,6 +13,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   network::protocol::{ChannelId, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
@@ -149,6 +150,7 @@ impl Component for LobbyScreen {
     };
     let storage = ctx.use_context::<Storage>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let servers_store = ctx.use_context::<Store<Vec<crate::storage::StoredServer>>>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
 
@@ -216,6 +218,7 @@ impl Component for LobbyScreen {
     let reconnect = reconnect_action(
       ctx,
       storage.clone(),
+      identity_store.clone(),
       servers_store.clone(),
       settings_store.clone(),
       session.clone(),

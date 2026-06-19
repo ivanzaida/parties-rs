@@ -19,6 +19,7 @@ use lurq::{
 };
 
 use crate::{
+  identity::LocalIdentity,
   network::protocol::Role,
   routes::ROUTE_CONNECT_SERVER,
   session::ConnectedServerInfo,
@@ -535,12 +536,14 @@ impl Component for EditSavedServerModal {
 
 fn edit_server_test_action(ctx: &mut Ctx) -> EditServerTestAction {
   let storage = ctx.use_context::<Storage>();
+  let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
   let errors = ConnectErrorCopy::from_ctx(ctx);
   ctx.future_action(move |(address, seed, display_name): EditServerInput| {
     let storage = storage.clone();
+    let identity_store = identity_store.clone();
     let errors = errors.clone();
     async move {
-      let info = test_connection(address, seed, display_name, storage, errors).await?;
+      let info = test_connection(address, seed, display_name, storage, identity_store, errors).await?;
       Ok(info)
     }
   })

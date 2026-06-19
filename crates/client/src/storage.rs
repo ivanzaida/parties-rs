@@ -126,6 +126,7 @@ impl Default for AppSettings {
 }
 
 impl DevtoolsInspectable for AppSettings {}
+impl DevtoolsInspectable for LocalIdentity {}
 
 pub fn update_app_settings(
   settings_store: &Store<AppSettings>,
@@ -258,6 +259,37 @@ pub fn delete_stored_server(
     if servers.len() != original_len {
       servers_store.set(servers);
     }
+  }
+
+  Ok(())
+}
+
+pub fn save_local_identity(
+  identity_store: Option<&Store<Option<LocalIdentity>>>,
+  storage: Option<&Storage>,
+  identity: LocalIdentity,
+) -> Result<(), StorageError> {
+  if let Some(storage) = storage {
+    storage.save_identity(&identity)?;
+  }
+
+  if let Some(identity_store) = identity_store {
+    identity_store.set(Some(identity));
+  }
+
+  Ok(())
+}
+
+pub fn delete_local_identity(
+  identity_store: Option<&Store<Option<LocalIdentity>>>,
+  storage: Option<&Storage>,
+) -> Result<(), StorageError> {
+  if let Some(storage) = storage {
+    storage.delete_identity()?;
+  }
+
+  if let Some(identity_store) = identity_store {
+    identity_store.set(None);
   }
 
   Ok(())

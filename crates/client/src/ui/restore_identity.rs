@@ -1,15 +1,15 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text, TextInput},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
 
 use crate::{
-  identity::{first_invalid_seed_word, restore_seed_phrase, validate_seed_phrase},
+  identity::{LocalIdentity, first_invalid_seed_word, restore_seed_phrase, validate_seed_phrase},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
-  storage::Storage,
+  storage::{Storage, save_local_identity},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -130,6 +130,7 @@ impl RestoreIdentityScreen {
     let back_navigator = navigator.clone();
     let restore_navigator = navigator;
     let storage = ctx.use_context::<Storage>();
+    let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let phrase = self.phrase.clone();
     let can_restore = validate_seed_phrase(&phrase.get()).is_ok();
     let restore_button = action_button(
@@ -147,9 +148,7 @@ impl RestoreIdentityScreen {
         let Ok(identity) = restore_seed_phrase(&phrase.get_untracked()) else {
           return;
         };
-        if let Some(storage) = storage.as_ref() {
-          let _ = storage.save_identity(&identity);
-        }
+        let _ = save_local_identity(identity_store.as_ref(), storage.as_ref(), identity);
         if let Some(navigator) = restore_navigator.as_ref() {
           navigator.replace(ROUTE_CHOOSE_SERVER);
         }
