@@ -127,6 +127,16 @@ pub struct AppStreamSettings {
   pub video_bitrate_mbps: f32,
 }
 
+#[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
+pub struct AppVideoSettings {
+  pub video_webcam_device: String,
+  pub video_codec: String,
+  pub video_scale_percent: i32,
+  pub video_fps: i32,
+  pub video_bitrate_mbps: f32,
+  pub video_hardware_decoding: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub struct AppAudioSettings {
   pub start_muted_when_joining: bool,
@@ -152,6 +162,25 @@ impl Default for AppStreamSettings {
       video_scale_percent: settings.video_scale_percent,
       video_fps: settings.video_fps,
       video_bitrate_mbps: settings.video_bitrate_mbps,
+    }
+  }
+}
+
+impl Default for AppVideoSettings {
+  fn default() -> Self {
+    Self::from(&AppSettings::default())
+  }
+}
+
+impl From<&AppSettings> for AppVideoSettings {
+  fn from(settings: &AppSettings) -> Self {
+    Self {
+      video_webcam_device: settings.video_webcam_device.clone(),
+      video_codec: settings.video_codec.clone(),
+      video_scale_percent: settings.video_scale_percent,
+      video_fps: settings.video_fps,
+      video_bitrate_mbps: settings.video_bitrate_mbps,
+      video_hardware_decoding: settings.video_hardware_decoding,
     }
   }
 }

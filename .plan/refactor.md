@@ -591,6 +591,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved notification settings page reads to focused stores:
   - initialized notification volume and sound overrides from `Store<AppAudioSettings>`;
   - used `Store<AppAudioSettings>` for notification preview playback while keeping `Store<AppSettings>` only for persisted writes.
+- Added a focused video settings store:
+  - provided `Store<AppVideoSettings>` for webcam device, broadcast settings, and hardware decoding;
+  - moved stream/video settings page initialization off full `AppSettings` while keeping `Store<AppStreamSettings>` narrow for lobby broadcast reads.
 
 ## Current Residual Reads
 

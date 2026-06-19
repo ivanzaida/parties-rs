@@ -14,7 +14,7 @@ use lurq::{
 use crate::{
   services::webcam_devices::{self, WebcamDevice},
   session::ServerSession,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::{AppSettings, AppVideoSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -54,9 +54,9 @@ impl Component for SettingsStreamScreen {
 
   fn create(ctx: &mut Ctx) -> Self {
     let settings = ctx
-      .use_context::<Store<AppSettings>>()
+      .use_context::<Store<AppVideoSettings>>()
       .map(|settings| settings.get())
-      .unwrap_or_else(AppSettings::default);
+      .unwrap_or_else(AppVideoSettings::default);
 
     let webcam_device = ctx.signal(settings.video_webcam_device);
     let codec = video_codec_value(&settings.video_codec);

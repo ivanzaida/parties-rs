@@ -37,7 +37,7 @@ use crate::{
   session::ServerSession,
   storage::{
     AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppHotkeySettings, AppLocale, AppSentryReportsEnabled,
-    AppSettings, AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
+    AppSettings, AppStreamSettings, AppVideoSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -79,6 +79,7 @@ pub struct App {
   hotkey_settings: Store<AppHotkeySettings>,
   audio_settings: Store<AppAudioSettings>,
   stream_settings: Store<AppStreamSettings>,
+  video_settings: Store<AppVideoSettings>,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
   user_audio_preferences: Store<UserAudioPreferences>,
@@ -137,6 +138,7 @@ impl Component for App {
     let hotkey_settings = ctx.store(hotkey_settings(&settings.get()));
     let audio_settings = ctx.store(audio_settings(&settings.get()));
     let stream_settings = ctx.store(stream_settings(&settings.get()));
+    let video_settings = ctx.store(video_settings(&settings.get()));
     let servers = ctx.store(startup_servers);
     let identity = ctx.store(startup_identity);
     let user_audio_preferences = ctx.store(startup_user_audio_preferences);
@@ -151,6 +153,7 @@ impl Component for App {
       let hotkey_settings = hotkey_settings.clone();
       let audio_settings = audio_settings.clone();
       let stream_settings = stream_settings.clone();
+      let video_settings = video_settings.clone();
       let servers = servers.clone();
       let identity = identity.clone();
       let user_audio_preferences = user_audio_preferences.clone();
@@ -167,6 +170,7 @@ impl Component for App {
           &hotkey_settings,
           &audio_settings,
           &stream_settings,
+          &video_settings,
         );
         servers.set(load_servers_from_storage(storage.as_ref()));
         identity.set(load_identity_from_storage(storage.as_ref()));
@@ -275,6 +279,7 @@ impl Component for App {
       hotkey_settings,
       audio_settings,
       stream_settings,
+      video_settings,
       servers,
       identity,
       user_audio_preferences,
@@ -301,6 +306,7 @@ impl Component for App {
     ctx.provide(self.hotkey_settings.clone());
     ctx.provide(self.audio_settings.clone());
     ctx.provide(self.stream_settings.clone());
+    ctx.provide(self.video_settings.clone());
     ctx.provide(self.servers.clone());
     ctx.provide(self.identity.clone());
     ctx.provide(self.user_audio_preferences.clone());
@@ -339,6 +345,7 @@ impl Component for App {
       &self.hotkey_settings,
       &self.audio_settings,
       &self.stream_settings,
+      &self.video_settings,
     );
     apply_settings_locale(&settings, ctx.i18n());
     logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
@@ -598,6 +605,10 @@ fn stream_settings(settings: &AppSettings) -> AppStreamSettings {
   }
 }
 
+fn video_settings(settings: &AppSettings) -> AppVideoSettings {
+  AppVideoSettings::from(settings)
+}
+
 fn sync_focused_settings(
   settings: &AppSettings,
   display_name: &Store<AppDisplayName>,
@@ -607,6 +618,7 @@ fn sync_focused_settings(
   hotkey_settings_store: &Store<AppHotkeySettings>,
   audio_settings_store: &Store<AppAudioSettings>,
   stream_settings_store: &Store<AppStreamSettings>,
+  video_settings_store: &Store<AppVideoSettings>,
 ) {
   let next_display_name = display_name_setting(settings);
   if display_name.with(|current| current != &next_display_name) {
@@ -641,6 +653,11 @@ fn sync_focused_settings(
   let next_stream_settings = stream_settings(settings);
   if stream_settings_store.with(|current| current != &next_stream_settings) {
     stream_settings_store.set(next_stream_settings);
+  }
+
+  let next_video_settings = video_settings(settings);
+  if video_settings_store.with(|current| current != &next_video_settings) {
+    video_settings_store.set(next_video_settings);
   }
 }
 
