@@ -506,6 +506,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Removed duplicate stream modal action-state reads:
   - reused the start-stream state already read by the modal for the actions row pending flag;
   - avoided an extra `start_stream.state().get()` inside modal actions.
+- Narrowed voice user row watch props:
+  - removed unused channel id/count props from voice user rows;
+  - read watch-stream pending state once at the channel group boundary and passed row-specific availability.
 
 ## Non-Goals
 
