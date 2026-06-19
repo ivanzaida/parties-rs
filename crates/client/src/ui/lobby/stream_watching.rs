@@ -361,10 +361,7 @@ fn watched_stream_stage(
   session: &ServerSession,
   hovered: Signal<bool>,
 ) -> Element {
-  let image = session.video_frame(stream.share.sharer_user_id);
-  let video_error = session.video_error(stream.share.sharer_user_id);
-
-  let mut stage = Stack::new()
+  let stage = Stack::new()
     .stack_align(StackAlignment::Center)
     .width(Dimension::Pct(100.0))
     .flex(1.0)
@@ -380,19 +377,14 @@ fn watched_stream_stage(
       let hovered = hovered.clone();
       move || hovered.set(false)
     });
-
-  if let Some(image) = image {
-    stage = stage.background_image(image).background_contain();
-  } else if let Some(error) = video_error {
-    let (title, message) = stream_error_text(ctx, &error);
-    stage = stage.child(stream_error_panel(ctx, &title, &message));
-  } else {
-    stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon: "monitor",
-      size: 72.0,
-      color: Color::from_hex("#2E333B"),
-    }));
-  }
+  let mut stage = apply_stream_video_frame(
+    ctx,
+    stage,
+    stream.share.sharer_user_id,
+    session,
+    72.0,
+    Color::from_hex("#2E333B"),
+  );
 
   if hovered.get() {
     let name = stream_name(ctx, stream, debug_user_ids);
@@ -433,6 +425,31 @@ fn watched_stream_stage(
   }
 
   stage.into()
+}
+
+pub(super) fn apply_stream_video_frame(
+  ctx: &mut Ctx,
+  stage: Stack,
+  user_id: UserId,
+  session: &ServerSession,
+  placeholder_icon_size: f32,
+  placeholder_icon_color: Color,
+) -> Stack {
+  let image = session.video_frame(user_id);
+  let video_error = session.video_error(user_id);
+
+  if let Some(image) = image {
+    stage.background_image(image).background_contain()
+  } else if let Some(error) = video_error {
+    let (title, message) = stream_error_text(ctx, &error);
+    stage.child(stream_error_panel(ctx, &title, &message))
+  } else {
+    stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
+      icon: "monitor",
+      size: placeholder_icon_size,
+      color: placeholder_icon_color,
+    }))
+  }
 }
 
 fn stream_error_text(ctx: &mut Ctx, error: &crate::session::VideoStreamError) -> (String, String) {

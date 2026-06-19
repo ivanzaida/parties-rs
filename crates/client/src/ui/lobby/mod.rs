@@ -3,7 +3,7 @@ use lurq::{
     component::Component,
     ctx::{Ctx, Modal, Root},
   },
-  components::{Column, Rect, Row, Text},
+  components::{Column, Rect, Row, Stack, Text},
   core::{Signal, Store},
   layout::{
     Alignment,
@@ -316,14 +316,17 @@ impl Component for LobbyScreen {
       );
     }
 
-    body = body.child(floating_stream_preview(
-      ctx,
-      debug_mode_enabled,
-      session.clone(),
-      &stop_watching,
-    ));
-
-    body.into()
+    Stack::new()
+      .width(Dimension::Pct(100.0))
+      .height(Dimension::Pct(100.0))
+      .child(body)
+      .child(floating_stream_preview(
+        ctx,
+        debug_mode_enabled,
+        session.clone(),
+        &stop_watching,
+      ))
+      .into()
   }
 }
 

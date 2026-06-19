@@ -1,13 +1,15 @@
 use lurq::{
   app::{
     component::{Component, DevtoolsInspectable},
-    ctx::{Ctx, Modal, Root},
+    ctx::Ctx,
     events::MouseEvent,
   },
   components::{Column, Rect, Row, Stack, Text, TextOverflow},
   core::Store,
   layout::{Alignment, StackAlignment, layout_kind::Justify},
-  node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
+  node::{
+    BackgroundColor, CursorIcon, Element, HitTestBehavior, Style, border::Border, color::Color, dimension::Dimension,
+  },
 };
 
 use super::{
@@ -15,6 +17,7 @@ use super::{
   model::{WatchedChannelScreenShare, floating_stream_preview_model, stream_speaking},
   session_identity::same_session,
   stream_shared::{live_badge, resolution_badge, stream_avatar, stream_name},
+  stream_watching::apply_stream_video_frame,
   subscription::{LobbyModelSubscription, apply_current_optional_model, apply_optional_model},
 };
 use crate::{
@@ -86,21 +89,18 @@ impl Component for FloatingStreamPreviewPane {
       return empty;
     };
 
-    let preview: Element = Column::new()
-      .width(0.0)
-      .height(0.0)
+    let preview: Element = Stack::new()
+      .width(Dimension::Pct(100.0))
+      .height(Dimension::Pct(100.0))
+      .hit_test(HitTestBehavior::ContentOnly)
       .child(subscriber)
-      .child(
-        Modal::new(floating_stream_preview_view(
-          ctx,
-          watched,
-          props.debug_user_ids,
-          props.session,
-          &props.stop_watching,
-        ))
-        .target(Root)
-        .dismiss_on_escape(false),
-      )
+      .child(floating_stream_preview_view(
+        ctx,
+        watched,
+        props.debug_user_ids,
+        props.session,
+        &props.stop_watching,
+      ))
       .into();
     preview
   }
@@ -228,31 +228,19 @@ fn preview_image(
   session: &ServerSession,
   stop_watching: &StopWatchingAction,
 ) -> Element {
-  let image = session.video_frame(watched.stream.share.sharer_user_id);
-  let video_error = session.video_error(watched.stream.share.sharer_user_id);
-  let mut stage = Stack::new()
+  let stage = Stack::new()
     .stack_align(StackAlignment::Center)
     .width(Dimension::Pct(100.0))
     .height(PREVIEW_HEIGHT - PREVIEW_FOOTER_HEIGHT)
     .background(BackgroundColor::Color(Color::from_hex("#090A0D")));
-
-  if let Some(image) = image {
-    stage = stage.background_image(image).background_cover();
-  } else {
-    stage = stage.child(ctx.mount::<LucideIcon>(LucideIconProps {
-      icon: if video_error.is_some() {
-        "triangle-alert"
-      } else {
-        "monitor"
-      },
-      size: 34.0,
-      color: if video_error.is_some() {
-        theme::palette().danger
-      } else {
-        Color::from_hex("#343943")
-      },
-    }));
-  }
+  let stage = apply_stream_video_frame(
+    ctx,
+    stage,
+    watched.stream.share.sharer_user_id,
+    session,
+    34.0,
+    Color::from_hex("#343943"),
+  );
 
   stage
     .child(
