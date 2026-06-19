@@ -602,6 +602,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved audio settings writes to `AppSettingsUpdater`:
   - removed direct `Store<AppSettings>` write handles from audio controls;
   - reused the updater-returned settings snapshot for voice restart instead of reading the full settings store again.
+- Moved stream/video settings writes to `AppSettingsUpdater`:
+  - removed direct `Store<AppSettings>` write handles from webcam, hardware decoding, dropdown, and bitrate controls.
 
 ## Current Residual Reads
 
