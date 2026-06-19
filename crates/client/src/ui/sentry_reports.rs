@@ -10,7 +10,7 @@ use crate::{
   identity::LocalIdentity,
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_IDENTITY_SETUP},
   services::logger,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::AppSettingsUpdater,
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -159,8 +159,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
       false,
     ),
   };
-  let storage = ctx.use_context::<Storage>();
-  let settings_store = ctx.use_context::<Store<AppSettings>>();
+  let settings_updater = ctx.use_context::<AppSettingsUpdater>();
   let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
   let navigator = ctx.navigator();
 
@@ -178,7 +177,7 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
     .hovered_style(Style::new().background(hover_background.clone()))
     .active_style(Style::new().background(hover_background))
     .on_click(move |_| {
-      save_sentry_reports_choice(settings_store.as_ref(), storage.as_ref(), enabled);
+      save_sentry_reports_choice(settings_updater.as_ref(), enabled);
       if let Some(navigator) = navigator.as_ref() {
         navigator.replace(route_after_consent(identity_store.as_ref()));
       }
@@ -200,9 +199,9 @@ fn consent_button(ctx: &mut Ctx, icon: Option<&'static str>, label: &str, tone: 
   )
 }
 
-fn save_sentry_reports_choice(settings_store: Option<&Store<AppSettings>>, storage: Option<&Storage>, enabled: bool) {
-  if let Some(settings_store) = settings_store {
-    update_app_settings(settings_store, storage, |settings| {
+fn save_sentry_reports_choice(settings_updater: Option<&AppSettingsUpdater>, enabled: bool) {
+  if let Some(settings_updater) = settings_updater {
+    settings_updater.update(|settings| {
       settings.sentry_reports_enabled = Some(enabled);
     });
   }
