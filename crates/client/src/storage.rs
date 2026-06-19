@@ -102,6 +102,16 @@ pub struct AppDebugModeEnabled {
   pub value: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppSentryReportsEnabled {
+  pub value: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppLocale {
+  pub value: String,
+}
+
 #[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
 pub struct AppStreamSettings {
   pub video_codec: String,

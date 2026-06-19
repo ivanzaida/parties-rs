@@ -11,7 +11,10 @@ use crate::{
   routes::{ROUTE_SETTINGS_IDENTITY, ROUTE_SETTINGS_SERVERS},
   services::logger,
   session::ServerSession,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::{
+    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppLocale, AppSentryReportsEnabled, AppSettings, Storage,
+    update_app_settings,
+  },
   theme,
   ui::{
     common::{
@@ -39,14 +42,20 @@ impl Component for SettingsOverviewScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let settings = ctx
-      .use_context::<Store<AppSettings>>()
-      .map(|settings| settings.get())
-      .unwrap_or_default();
-    let start_muted_when_joining = settings.start_muted_when_joining;
-    let sentry_reports_enabled = settings.sentry_reports_enabled.unwrap_or(false);
-    let debug_mode_enabled = settings.debug_mode_enabled;
-    let locale = settings.locale;
+    let start_muted_when_joining = ctx
+      .use_context::<Store<AppAudioSettings>>()
+      .is_some_and(|settings| settings.with(|settings| settings.start_muted_when_joining));
+    let sentry_reports_enabled = ctx
+      .use_context::<Store<AppSentryReportsEnabled>>()
+      .and_then(|settings| settings.with(|settings| settings.value))
+      .unwrap_or(false);
+    let debug_mode_enabled = ctx
+      .use_context::<Store<AppDebugModeEnabled>>()
+      .is_some_and(|settings| settings.with(|settings| settings.value));
+    let locale = ctx
+      .use_context::<Store<AppLocale>>()
+      .map(|settings| settings.with(|settings| settings.value.clone()))
+      .unwrap_or_else(|| AppSettings::default().locale);
 
     Self {
       start_muted_when_joining,
@@ -57,13 +66,13 @@ impl Component for SettingsOverviewScreen {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let settings = ctx
-      .use_context::<Store<AppSettings>>()
-      .map(|settings| settings.get())
-      .unwrap_or_default();
     let identity = ctx
       .use_context::<Store<Option<LocalIdentity>>>()
       .and_then(|identity| identity.get());
+    let display_name = ctx
+      .use_context::<Store<AppDisplayName>>()
+      .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
+      .unwrap_or_default();
     let servers = ctx
       .use_context::<Store<Vec<crate::storage::StoredServer>>>()
       .map(|servers| servers.get())
@@ -74,7 +83,7 @@ impl Component for SettingsOverviewScreen {
       .as_ref()
       .map(|identity| format_public_id(&identity.public_key))
       .unwrap_or_else(|| ctx.t("settings.identity.missing").to_string());
-    let identity_name = Some(settings.display_name.trim().to_owned())
+    let identity_name = Some(display_name.trim().to_owned())
       .filter(|name| !name.is_empty())
       .unwrap_or_else(|| ctx.t("servers.user.name").to_string());
     let identity_initials = initials_for(&identity_name, &ctx.t("servers.user.initials"));

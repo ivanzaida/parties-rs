@@ -36,8 +36,8 @@ use crate::{
   },
   session::ServerSession,
   storage::{
-    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppSettings, AppStreamSettings, Storage, StoredServer,
-    UserAudioPreferences,
+    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppLocale, AppSentryReportsEnabled, AppSettings,
+    AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -74,6 +74,8 @@ pub struct App {
   settings: Store<AppSettings>,
   display_name: Store<AppDisplayName>,
   debug_mode_enabled: Store<AppDebugModeEnabled>,
+  sentry_reports_enabled: Store<AppSentryReportsEnabled>,
+  locale: Store<AppLocale>,
   audio_settings: Store<AppAudioSettings>,
   stream_settings: Store<AppStreamSettings>,
   servers: Store<Vec<StoredServer>>,
@@ -129,6 +131,8 @@ impl Component for App {
     let settings = ctx.store(startup_settings);
     let display_name = ctx.store(display_name_setting(&settings.get()));
     let debug_mode_enabled = ctx.store(debug_mode_setting(&settings.get()));
+    let sentry_reports_enabled = ctx.store(sentry_reports_setting(&settings.get()));
+    let locale = ctx.store(locale_setting(&settings.get()));
     let audio_settings = ctx.store(audio_settings(&settings.get()));
     let stream_settings = ctx.store(stream_settings(&settings.get()));
     let servers = ctx.store(startup_servers);
@@ -140,6 +144,8 @@ impl Component for App {
       let settings = settings.clone();
       let display_name = display_name.clone();
       let debug_mode_enabled = debug_mode_enabled.clone();
+      let sentry_reports_enabled = sentry_reports_enabled.clone();
+      let locale = locale.clone();
       let audio_settings = audio_settings.clone();
       let stream_settings = stream_settings.clone();
       let servers = servers.clone();
@@ -153,6 +159,8 @@ impl Component for App {
           &next_settings,
           &display_name,
           &debug_mode_enabled,
+          &sentry_reports_enabled,
+          &locale,
           &audio_settings,
           &stream_settings,
         );
@@ -258,6 +266,8 @@ impl Component for App {
       settings,
       display_name,
       debug_mode_enabled,
+      sentry_reports_enabled,
+      locale,
       audio_settings,
       stream_settings,
       servers,
@@ -281,6 +291,8 @@ impl Component for App {
     ctx.provide(self.settings.clone());
     ctx.provide(self.display_name.clone());
     ctx.provide(self.debug_mode_enabled.clone());
+    ctx.provide(self.sentry_reports_enabled.clone());
+    ctx.provide(self.locale.clone());
     ctx.provide(self.audio_settings.clone());
     ctx.provide(self.stream_settings.clone());
     ctx.provide(self.servers.clone());
@@ -316,6 +328,8 @@ impl Component for App {
       &settings,
       &self.display_name,
       &self.debug_mode_enabled,
+      &self.sentry_reports_enabled,
+      &self.locale,
       &self.audio_settings,
       &self.stream_settings,
     );
@@ -544,6 +558,18 @@ fn debug_mode_setting(settings: &AppSettings) -> AppDebugModeEnabled {
   }
 }
 
+fn sentry_reports_setting(settings: &AppSettings) -> AppSentryReportsEnabled {
+  AppSentryReportsEnabled {
+    value: settings.sentry_reports_enabled,
+  }
+}
+
+fn locale_setting(settings: &AppSettings) -> AppLocale {
+  AppLocale {
+    value: settings.locale.clone(),
+  }
+}
+
 fn audio_settings(settings: &AppSettings) -> AppAudioSettings {
   AppAudioSettings::from(settings)
 }
@@ -561,6 +587,8 @@ fn sync_focused_settings(
   settings: &AppSettings,
   display_name: &Store<AppDisplayName>,
   debug_mode_enabled: &Store<AppDebugModeEnabled>,
+  sentry_reports_enabled: &Store<AppSentryReportsEnabled>,
+  locale: &Store<AppLocale>,
   audio_settings_store: &Store<AppAudioSettings>,
   stream_settings_store: &Store<AppStreamSettings>,
 ) {
@@ -572,6 +600,16 @@ fn sync_focused_settings(
   let next_debug_mode = debug_mode_setting(settings);
   if debug_mode_enabled.with(|current| current != &next_debug_mode) {
     debug_mode_enabled.set(next_debug_mode);
+  }
+
+  let next_sentry_reports = sentry_reports_setting(settings);
+  if sentry_reports_enabled.with(|current| current != &next_sentry_reports) {
+    sentry_reports_enabled.set(next_sentry_reports);
+  }
+
+  let next_locale = locale_setting(settings);
+  if locale.with(|current| current != &next_locale) {
+    locale.set(next_locale);
   }
 
   let next_audio_settings = audio_settings(settings);

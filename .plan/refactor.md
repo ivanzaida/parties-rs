@@ -582,6 +582,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - provided `Store<AppAudioSettings>` for voice devices, voice processing, activation/PTT timing, start-muted behavior, and notification sound fields;
   - moved lobby rail join, stream watch playback, reconnect voice restore, and loading restart-resume voice restore off full `AppSettings`;
   - changed session voice/playback APIs to accept `AppAudioSettings` instead of the persisted all-settings record.
+- Added focused scalar settings stores:
+  - provided `Store<AppSentryReportsEnabled>` and `Store<AppLocale>` alongside the existing display/debug focused stores;
+  - moved settings overview render state and identity display-name initialization off full `AppSettings`, leaving full settings handles only where the component writes persisted settings.
 
 ## Current Residual Reads
 

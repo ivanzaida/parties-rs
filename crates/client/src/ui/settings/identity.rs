@@ -20,7 +20,7 @@ use crate::{
   identity::{LocalIdentity, public_key_fingerprint, secret_key_to_hex},
   routes::ROUTE_IDENTITY_SETUP,
   session::ServerSession,
-  storage::{AppSettings, Storage, delete_local_identity, update_app_settings},
+  storage::{AppDisplayName, AppSettings, Storage, delete_local_identity, update_app_settings},
   theme,
   ui::{
     common::{
@@ -47,11 +47,10 @@ impl Component for SettingsIdentityScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    let settings = ctx
-      .use_context::<Store<AppSettings>>()
-      .map(|settings| settings.get())
-      .unwrap_or_else(AppSettings::default);
-    let display_name = settings.display_name;
+    let display_name = ctx
+      .use_context::<Store<AppDisplayName>>()
+      .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
+      .unwrap_or_default();
 
     Self {
       public_id_copied: ctx.signal(false),
