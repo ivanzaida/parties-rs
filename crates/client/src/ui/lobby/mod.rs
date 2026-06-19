@@ -18,7 +18,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
-  storage::{AppDebugModeEnabled, AppSettings, AppStreamSettings, Storage, UserAudioPreferences},
+  storage::{AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppStreamSettings, Storage, UserAudioPreferences},
   theme,
   ui::{loader::loader, settings::SettingsPopupHandle},
 };
@@ -149,8 +149,9 @@ impl Component for LobbyScreen {
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let display_name_store = ctx.use_context::<Store<AppDisplayName>>();
     let debug_mode_store = ctx.use_context::<Store<AppDebugModeEnabled>>();
+    let audio_settings_store = ctx.use_context::<Store<AppAudioSettings>>();
     let stream_settings_store = ctx.use_context::<Store<AppStreamSettings>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
@@ -211,7 +212,7 @@ impl Component for LobbyScreen {
     };
     let start_stream = start_stream_action(ctx, stream_settings_store.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
-    let watch_stream = watch_stream_action(ctx, settings_store.clone(), session.clone());
+    let watch_stream = watch_stream_action(ctx, audio_settings_store.clone(), session.clone());
     let rail_stream_actions = RailStreamActions {
       start_stream_modal_open: self.start_stream_modal_open.clone(),
       stop_stream: stop_stream.clone(),
@@ -224,7 +225,8 @@ impl Component for LobbyScreen {
       identity_store.clone(),
       user_audio_preferences.clone(),
       servers_store.clone(),
-      settings_store.clone(),
+      display_name_store.clone(),
+      audio_settings_store.clone(),
       session.clone(),
     );
 

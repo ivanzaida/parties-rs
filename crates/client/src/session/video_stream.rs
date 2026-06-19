@@ -15,14 +15,14 @@ use crate::{
     server::Server,
   },
   services::video::{NativeVideoBackend, VideoBroadcast, VideoBroadcastConfig, VideoError, VideoFrameLoopback},
-  storage::AppSettings,
+  storage::AppAudioSettings,
 };
 
 pub(super) trait StreamWatchSession: Clone + Send + Sync + 'static {
   fn server(&self) -> Option<Arc<Server>>;
   fn reconnect_watch_target_available(&self, user_id: UserId) -> bool;
   fn set_watching_user(&self, user_id: Option<UserId>);
-  fn ensure_stream_audio_playback(&self, settings: AppSettings) -> Result<(), String>;
+  fn ensure_stream_audio_playback(&self, settings: AppAudioSettings) -> Result<(), String>;
 }
 
 pub(super) struct StreamRuntime {
@@ -128,8 +128,12 @@ impl StreamRuntime {
     }
   }
 
-  pub(super) async fn restore_pending_reconnect_watch<S>(&self, session: S, settings: AppSettings, timeout: Duration)
-  where
+  pub(super) async fn restore_pending_reconnect_watch<S>(
+    &self,
+    session: S,
+    settings: AppAudioSettings,
+    timeout: Duration,
+  ) where
     S: StreamWatchSession,
   {
     let Some(user_id) = self.pending_reconnect_watch_user_id() else {

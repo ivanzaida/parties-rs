@@ -12,7 +12,10 @@ use cpal::{
 };
 use minimp3::{Decoder, Error as Mp3Error, Frame};
 
-use crate::{services::audio_devices, storage::AppSettings};
+use crate::{
+  services::audio_devices,
+  storage::{AppAudioSettings, AppSettings},
+};
 
 const JOIN_CHANNEL_MP3: &[u8] = include_bytes!("../../assets/audio/join_channel.mp3");
 const LEAVE_CHANNEL_MP3: &[u8] = include_bytes!("../../assets/audio/leave_channel.mp3");
@@ -334,6 +337,14 @@ pub struct NotificationAudioSettings {
 
 impl NotificationAudioSettings {
   pub fn from_app_settings(settings: &AppSettings) -> Self {
+    Self {
+      output_device: settings.audio_output_device.clone(),
+      volume: settings.notification_volume,
+      sound_overrides: settings.notification_sound_overrides.clone(),
+    }
+  }
+
+  pub fn from_audio_settings(settings: &AppAudioSettings) -> Self {
     Self {
       output_device: settings.audio_output_device.clone(),
       volume: settings.notification_volume,

@@ -164,9 +164,9 @@ fn voice_activation_gate_holds_after_speech() {
 
 #[test]
 fn outgoing_sound_active_bypasses_voice_activation_gate() {
-  let settings = AppSettings {
+  let settings = AppAudioSettings {
     voice_activation_threshold: 100,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
   let control = VoiceControlState::new(&settings, false, false);
   let mut gate = VoiceActivationGate::default();
@@ -178,10 +178,10 @@ fn outgoing_sound_active_bypasses_voice_activation_gate() {
 
 #[test]
 fn push_to_talk_release_delay_keeps_transmit_open_until_deadline() {
-  let mut settings = AppSettings {
+  let mut settings = AppAudioSettings {
     push_to_talk: true,
     push_to_talk_release_delay_ms: 500,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
   let control = VoiceControlState::new(&settings, false, false);
 
@@ -206,9 +206,9 @@ fn push_to_talk_release_delay_keeps_transmit_open_until_deadline() {
 
 #[test]
 fn push_to_talk_ignores_activation_while_muted_or_deafened() {
-  let settings = AppSettings {
+  let settings = AppAudioSettings {
     push_to_talk: true,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
 
   let control = VoiceControlState::new(&settings, true, false);
@@ -224,9 +224,9 @@ fn push_to_talk_ignores_activation_while_muted_or_deafened() {
 
 #[test]
 fn outgoing_sound_transmit_ignores_push_to_talk_but_respects_mute_and_deafen() {
-  let settings = AppSettings {
+  let settings = AppAudioSettings {
     push_to_talk: true,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
   let control = VoiceControlState::new(&settings, false, false);
 
@@ -242,10 +242,10 @@ fn outgoing_sound_transmit_ignores_push_to_talk_but_respects_mute_and_deafen() {
 
 #[test]
 fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
-  let settings = AppSettings {
+  let settings = AppAudioSettings {
     push_to_talk: true,
     push_to_talk_release_delay_ms: 500,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
 
   let control = VoiceControlState::new(&settings, false, false);
@@ -266,7 +266,7 @@ fn muting_or_deafening_clears_push_to_talk_latch_and_release_delay() {
 
 #[test]
 fn muting_or_deafening_clears_outgoing_sound_active() {
-  let settings = AppSettings::default();
+  let settings = AppAudioSettings::default();
 
   let control = VoiceControlState::new(&settings, false, false);
   control.set_outgoing_sound_active(true);
@@ -289,7 +289,7 @@ fn normalization_raises_quiet_frames_toward_target() {
 
 #[test]
 fn voice_normalization_does_not_enable_capture_processing_by_itself() {
-  let mut settings = AppSettings::default();
+  let mut settings = AppAudioSettings::default();
   settings.noise_cancellation = false;
   settings.echo_cancellation = false;
   settings.voice_normalization = true;

@@ -25,7 +25,7 @@ impl StreamWatchSession for TestStreamWatchSession {
     self.set_watching_calls.lock().push(user_id);
   }
 
-  fn ensure_stream_audio_playback(&self, _settings: AppSettings) -> Result<(), String> {
+  fn ensure_stream_audio_playback(&self, _settings: AppAudioSettings) -> Result<(), String> {
     self.ensure_audio_calls.fetch_add(1, Ordering::Relaxed);
     Ok(())
   }
@@ -36,7 +36,7 @@ fn block_on_restore(runtime: &StreamRuntime, session: TestStreamWatchSession, ti
     .enable_time()
     .build()
     .unwrap()
-    .block_on(runtime.restore_pending_reconnect_watch(session, AppSettings::default(), timeout));
+    .block_on(runtime.restore_pending_reconnect_watch(session, AppAudioSettings::default(), timeout));
 }
 
 #[test]

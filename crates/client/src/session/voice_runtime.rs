@@ -16,7 +16,7 @@ use crate::{
     server::{ReceivedAudioPacket, Server, ServerError},
   },
   services::voice::{LocalSpeakingActivityCallback, LocalVoiceCallback, VoiceEngine},
-  storage::AppSettings,
+  storage::AppAudioSettings,
 };
 
 const DEFAULT_USER_VOLUME: i32 = 100;
@@ -335,7 +335,7 @@ impl VoiceRuntime {
   pub(super) fn start_capture(
     &self,
     server: Arc<Server>,
-    settings: AppSettings,
+    settings: AppAudioSettings,
     muted: bool,
     deafened: bool,
     on_local_voice: LocalVoiceCallback,
@@ -348,7 +348,7 @@ impl VoiceRuntime {
     Ok(captures_voice)
   }
 
-  pub(super) fn ensure_stream_playback(&self, settings: AppSettings, deafened: bool) -> Result<bool, String> {
+  pub(super) fn ensure_stream_playback(&self, settings: AppAudioSettings, deafened: bool) -> Result<bool, String> {
     if self.engine.lock().is_some() {
       return Ok(false);
     }

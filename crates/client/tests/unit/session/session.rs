@@ -20,9 +20,9 @@ fn connected_info(role: Role) -> ConnectedServerInfo {
 
 fn connected_session() -> ServerSession {
   let session = ServerSession::default();
-  let settings = AppSettings {
+  let settings = AppAudioSettings {
     notification_volume: 0,
-    ..AppSettings::default()
+    ..AppAudioSettings::default()
   };
   session.set_notification_audio_settings(&settings);
   session

@@ -30,7 +30,7 @@ use crate::{
     hotkeys,
   },
   session::ServerSession,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::{AppAudioSettings, AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     common::{
@@ -393,7 +393,7 @@ impl Component for AudioDeviceSetting {
         if matches!(setting, AudioStringSetting::AudioOutputDevice)
           && let Some(session) = session.as_ref()
         {
-          session.set_notification_audio_settings(&settings);
+          session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
         }
         restart_voice_for_audio_setting(settings_store, session.as_ref());
       }
@@ -1136,7 +1136,7 @@ fn restart_voice_for_audio_setting(settings_store: &Store<AppSettings>, session:
       if !session.voice_active() || session.selected_channel_id().is_none() {
         return;
       }
-      if let Err(error) = session.start_voice(settings, "") {
+      if let Err(error) = session.start_voice(AppAudioSettings::from(&settings), "") {
         tracing::debug!(target: "voice", "[voice] failed to restart local voice engine after audio setting change: {error}");
       }
     })

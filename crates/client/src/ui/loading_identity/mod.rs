@@ -23,7 +23,7 @@ use crate::{
     updater::{StartupUpdateStatus, restart_into_update},
   },
   session::ServerSession,
-  storage::{AppDisplayName, AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
+  storage::{AppAudioSettings, AppDisplayName, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
   theme,
   ui::{
     brand_logo::logo_mark,
@@ -151,7 +151,7 @@ impl Component for LoadingIdentityScreen {
       )
     };
     let session = ctx.use_context::<ServerSession>();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let audio_settings_store = ctx.use_context::<Store<AppAudioSettings>>();
     let display_name_store = ctx.use_context::<Store<AppDisplayName>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
     let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
@@ -160,7 +160,7 @@ impl Component for LoadingIdentityScreen {
     let route_session = session.clone();
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
-      let settings_store = settings_store.clone();
+      let audio_settings_store = audio_settings_store.clone();
       let display_name_store = display_name_store.clone();
       let identity_store = identity_store.clone();
       let user_audio_preferences = user_audio_preferences.clone();
@@ -172,7 +172,7 @@ impl Component for LoadingIdentityScreen {
           identity_store,
           user_audio_preferences,
           servers_store,
-          settings_store,
+          audio_settings_store,
           display_name_store,
           session,
           errors,
@@ -273,7 +273,7 @@ async fn restore_update_resume_after_restart(
   identity_store: Option<Store<Option<LocalIdentity>>>,
   user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
-  settings_store: Option<Store<AppSettings>>,
+  audio_settings_store: Option<Store<AppAudioSettings>>,
   display_name_store: Option<Store<AppDisplayName>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
@@ -301,13 +301,9 @@ async fn restore_update_resume_after_restart(
     );
     return Ok(false);
   };
-  let fallback_display_name = settings_store
-    .as_ref()
-    .and_then(|settings| Some(settings.with(|settings| settings.display_name.clone())));
   let fallback_display_name = display_name_store
     .as_ref()
     .map(|display_name| display_name.with(|display_name| display_name.value.clone()))
-    .or(fallback_display_name)
     .unwrap_or_default();
   let display_name = if server.display_name.trim().is_empty() {
     fallback_display_name
@@ -378,7 +374,7 @@ async fn restore_update_resume_after_restart(
     return Ok(true);
   }
   session.set_local_voice_state(muted, deafened);
-  let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
+  let settings = audio_settings_store.as_ref().map(Store::get).unwrap_or_default();
   match session.start_voice(settings, "") {
     Ok(()) => tracing::debug!(
       target: "updater",

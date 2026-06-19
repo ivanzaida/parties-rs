@@ -110,6 +110,23 @@ pub struct AppStreamSettings {
   pub video_bitrate_mbps: f32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, lurq::DevtoolsInspectable)]
+pub struct AppAudioSettings {
+  pub start_muted_when_joining: bool,
+  pub audio_input_device: String,
+  pub audio_output_device: String,
+  pub notification_volume: i32,
+  pub notification_sound_overrides: String,
+  pub noise_cancellation: bool,
+  pub voice_normalization: bool,
+  pub voice_normalization_target_level: i32,
+  pub echo_cancellation: bool,
+  pub voice_activation: bool,
+  pub voice_activation_threshold: i32,
+  pub push_to_talk: bool,
+  pub push_to_talk_release_delay_ms: i32,
+}
+
 impl Default for AppStreamSettings {
   fn default() -> Self {
     let settings = AppSettings::default();
@@ -118,6 +135,32 @@ impl Default for AppStreamSettings {
       video_scale_percent: settings.video_scale_percent,
       video_fps: settings.video_fps,
       video_bitrate_mbps: settings.video_bitrate_mbps,
+    }
+  }
+}
+
+impl Default for AppAudioSettings {
+  fn default() -> Self {
+    Self::from(&AppSettings::default())
+  }
+}
+
+impl From<&AppSettings> for AppAudioSettings {
+  fn from(settings: &AppSettings) -> Self {
+    Self {
+      start_muted_when_joining: settings.start_muted_when_joining,
+      audio_input_device: settings.audio_input_device.clone(),
+      audio_output_device: settings.audio_output_device.clone(),
+      notification_volume: settings.notification_volume,
+      notification_sound_overrides: settings.notification_sound_overrides.clone(),
+      noise_cancellation: settings.noise_cancellation,
+      voice_normalization: settings.voice_normalization,
+      voice_normalization_target_level: settings.voice_normalization_target_level,
+      echo_cancellation: settings.echo_cancellation,
+      voice_activation: settings.voice_activation,
+      voice_activation_threshold: settings.voice_activation_threshold,
+      push_to_talk: settings.push_to_talk,
+      push_to_talk_release_delay_ms: settings.push_to_talk_release_delay_ms,
     }
   }
 }

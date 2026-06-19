@@ -19,7 +19,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::{ConnectedServerInfo, LobbyConnectionWarningKind, ServerSession},
-  storage::{AppSettings, Storage, UserAudioPreferences},
+  storage::{AppAudioSettings, Storage, UserAudioPreferences},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -119,8 +119,8 @@ impl Component for LobbyRail {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    let settings_store = ctx.use_context::<Store<AppSettings>>();
-    let join_channel = join_channel_action(ctx, props.session.clone(), settings_store);
+    let audio_settings_store = ctx.use_context::<Store<AppAudioSettings>>();
+    let join_channel = join_channel_action(ctx, props.session.clone(), audio_settings_store);
     let voice_control = voice_control_action(ctx, props.session.clone());
     let select_text_channel = SelectTextChannelAction::new(props.session.clone());
     let select_debug_chat = SelectDebugChatAction::new(props.session.clone());
@@ -177,18 +177,18 @@ impl Component for LobbyRail {
 fn join_channel_action(
   ctx: &mut Ctx,
   session: ServerSession,
-  settings_store: Option<Store<AppSettings>>,
+  audio_settings_store: Option<Store<AppAudioSettings>>,
 ) -> JoinChannelAction {
   let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();
   let task_session = session.clone();
   let task = ctx.future_action(move |request: JoinChannelRequest| {
     let session = task_session.clone();
-    let settings_store = settings_store.clone();
+    let audio_settings_store = audio_settings_store.clone();
     let no_connected_server = no_connected_server.clone();
     async move {
       let channel_id = request.channel_id;
       let server = session.server().ok_or(no_connected_server.clone())?;
-      let settings = settings_store.as_ref().map(Store::get).unwrap_or_default();
+      let settings = audio_settings_store.as_ref().map(Store::get).unwrap_or_default();
       let already_in_voice = request.previous_channel_id.is_some();
       let (mut muted, deafened) = session.local_voice_state().unwrap_or((false, false));
       if !already_in_voice {

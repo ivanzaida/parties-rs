@@ -2,7 +2,7 @@ use parking_lot::Mutex;
 
 use crate::{
   services::notifications::{self, NotificationAudioSettings, NotificationSound},
-  storage::AppSettings,
+  storage::AppAudioSettings,
 };
 
 pub(super) struct VoiceState {
@@ -41,8 +41,8 @@ impl VoiceState {
     self.muted_before_deafen.lock().take()
   }
 
-  pub(super) fn set_notification_audio_settings(&self, settings: &AppSettings) {
-    *self.notification_audio_settings.lock() = NotificationAudioSettings::from_app_settings(settings);
+  pub(super) fn set_notification_audio_settings(&self, settings: &AppAudioSettings) {
+    *self.notification_audio_settings.lock() = NotificationAudioSettings::from_audio_settings(settings);
   }
 
   pub(super) fn play_notification_sound(&self, sound: NotificationSound) {

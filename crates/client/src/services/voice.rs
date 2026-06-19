@@ -31,7 +31,7 @@ use crate::{
     },
     server::Server,
   },
-  storage::AppSettings,
+  storage::AppAudioSettings,
 };
 
 #[cfg(target_os = "macos")]
@@ -131,7 +131,7 @@ pub struct VoicePacketStatus {
 impl VoiceEngine {
   pub fn start(
     server: Arc<Server>,
-    settings: AppSettings,
+    settings: AppAudioSettings,
     muted: bool,
     deafened: bool,
     on_local_voice: LocalVoiceCallback,
@@ -177,7 +177,7 @@ impl VoiceEngine {
     })
   }
 
-  pub fn start_playback(settings: AppSettings, deafened: bool) -> Result<Self, VoiceError> {
+  pub fn start_playback(settings: AppAudioSettings, deafened: bool) -> Result<Self, VoiceError> {
     let stop = Arc::new(AtomicBool::new(false));
     let control = Arc::new(VoiceControlState::new(&settings, true, deafened));
     let mixer = Arc::new(Mutex::new(VoiceMixer::default()));
@@ -495,7 +495,7 @@ struct VoiceControlState {
 }
 
 impl VoiceControlState {
-  fn new(settings: &AppSettings, muted: bool, deafened: bool) -> Self {
+  fn new(settings: &AppAudioSettings, muted: bool, deafened: bool) -> Self {
     Self {
       muted: AtomicBool::new(muted),
       deafened: AtomicBool::new(deafened),
@@ -599,7 +599,7 @@ impl VoiceControlState {
   }
 }
 
-fn build_audio_processing(settings: &AppSettings) -> Option<Arc<Mutex<AudioProcessing>>> {
+fn build_audio_processing(settings: &AppAudioSettings) -> Option<Arc<Mutex<AudioProcessing>>> {
   if !settings.noise_cancellation && !settings.echo_cancellation {
     return None;
   }
@@ -673,7 +673,7 @@ fn frames_for_duration(sample_rate: u32, duration_ms: u32) -> u32 {
 
 fn build_input_path(
   server: Arc<Server>,
-  settings: &AppSettings,
+  settings: &AppAudioSettings,
   control: Arc<VoiceControlState>,
   stop: Arc<AtomicBool>,
   on_local_voice: LocalVoiceCallback,
@@ -1283,7 +1283,7 @@ impl NormalizationState {
 }
 
 fn build_output_stream(
-  settings: &AppSettings,
+  settings: &AppAudioSettings,
   control: Arc<VoiceControlState>,
   mixer: Arc<Mutex<VoiceMixer>>,
 ) -> Result<cpal::Stream, VoiceError> {

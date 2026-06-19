@@ -15,7 +15,7 @@ use lurq::{
 use crate::{
   services::notifications::{self, NotificationSound},
   session::ServerSession,
-  storage::{AppSettings, Storage, update_app_settings},
+  storage::{AppAudioSettings, AppSettings, Storage, update_app_settings},
   theme,
   ui::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
@@ -705,7 +705,7 @@ fn notification_sound_action_menu(
         let settings =
           save_notification_sound_override(settings_store, choose_storage.as_ref(), sound, notifications::SOUND_CHOICE_CUSTOM);
         if let Some(session) = choose_session.as_ref() {
-          session.set_notification_audio_settings(&settings);
+          session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
         }
       }
     });
@@ -730,7 +730,7 @@ fn notification_sound_action_menu(
           notifications::SOUND_CHOICE_DEFAULT,
         );
         if let Some(session) = reset_session.as_ref() {
-          session.set_notification_audio_settings(&settings);
+          session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
         }
       }
     });
@@ -809,7 +809,7 @@ fn outgoing_voice_join_sound_action_menu(
         let settings =
           save_outgoing_voice_join_sound_override(settings_store, choose_storage.as_ref(), notifications::SOUND_CHOICE_CUSTOM);
         if let Some(session) = choose_session.as_ref() {
-          session.set_notification_audio_settings(&settings);
+          session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
         }
       }
     });
@@ -833,7 +833,7 @@ fn outgoing_voice_join_sound_action_menu(
           notifications::SOUND_CHOICE_DEFAULT,
         );
         if let Some(session) = reset_session.as_ref() {
-          session.set_notification_audio_settings(&settings);
+          session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
         }
       }
     });
@@ -979,7 +979,7 @@ fn notification_volume_save_action(
         settings.notification_volume = value.clamp(0, 100);
       });
       if let Some(session) = session.as_ref() {
-        session.set_notification_audio_settings(&settings);
+        session.set_notification_audio_settings(&AppAudioSettings::from(&settings));
       }
     }
   })

@@ -26,7 +26,7 @@ use crate::{
     video::{DecodedVideoFrame, VideoBroadcastConfig, VideoDecodeConfig, VideoFrameLoopback},
     voice::{LocalSpeakingActivityCallback, LocalVoiceCallback},
   },
-  storage::AppSettings,
+  storage::AppAudioSettings,
 };
 
 pub mod chat_commands;
@@ -108,7 +108,7 @@ pub struct ServerSession {
   speaking: Arc<speaking::SpeakingTracker>,
   voice: Arc<voice_runtime::VoiceRuntime>,
   voice_state: Arc<voice_state::VoiceState>,
-  voice_settings: Arc<Mutex<AppSettings>>,
+  voice_settings: Arc<Mutex<AppAudioSettings>>,
   streams: Arc<video_stream::StreamRuntime>,
   video_sink: Arc<video_sink::VideoFrameSink>,
   video_hardware_decoding: Arc<AtomicBool>,
@@ -126,7 +126,7 @@ impl Default for ServerSession {
       speaking: Arc::new(speaking::SpeakingTracker::new()),
       voice: Arc::new(voice_runtime::VoiceRuntime::new()),
       voice_state: Arc::new(voice_state::VoiceState::new()),
-      voice_settings: Arc::new(Mutex::new(AppSettings::default())),
+      voice_settings: Arc::new(Mutex::new(AppAudioSettings::default())),
       streams: Arc::new(video_stream::StreamRuntime::new()),
       video_sink: Arc::new(video_sink::VideoFrameSink::new(lobby, lobby_updates.clone())),
       video_hardware_decoding: Arc::new(AtomicBool::new(true)),
@@ -371,7 +371,7 @@ impl ServerSession {
     self.voice.set_push_to_talk_release_delay_ms(value);
   }
 
-  pub fn set_notification_audio_settings(&self, settings: &AppSettings) {
+  pub fn set_notification_audio_settings(&self, settings: &AppAudioSettings) {
     self.voice_state.set_notification_audio_settings(settings);
     let mut voice_settings = self.voice_settings.lock();
     voice_settings
@@ -395,7 +395,7 @@ impl ServerSession {
     self.play_notification_sound(NotificationSound::VoiceJoin);
   }
 
-  pub fn queue_voice_join_sound_to_channel(&self, settings: &AppSettings) {
+  pub fn queue_voice_join_sound_to_channel(&self, settings: &AppAudioSettings) {
     match self.voice.queue_outgoing_voice_join_sound(
       &settings.notification_sound_overrides,
       settings.notification_volume,
@@ -690,7 +690,7 @@ impl ServerSession {
     self.streams.has_pending_reconnect_watch()
   }
 
-  pub async fn restore_pending_reconnect_watch(&self, settings: AppSettings, timeout: Duration) {
+  pub async fn restore_pending_reconnect_watch(&self, settings: AppAudioSettings, timeout: Duration) {
     self
       .streams
       .restore_pending_reconnect_watch(self.clone(), settings, timeout)
@@ -746,7 +746,7 @@ impl ServerSession {
     self.video_sink.clear_error(user_id);
   }
 
-  pub fn start_voice(&self, settings: AppSettings, no_connected_server: &str) -> Result<(), String> {
+  pub fn start_voice(&self, settings: AppAudioSettings, no_connected_server: &str) -> Result<(), String> {
     *self.voice_settings.lock() = settings.clone();
     let server = self.server().ok_or_else(|| no_connected_server.to_owned())?;
     let (muted, deafened) = self.local_voice_state().unwrap_or((false, false));
@@ -802,7 +802,7 @@ impl ServerSession {
     Ok(())
   }
 
-  pub fn ensure_stream_audio_playback(&self, settings: AppSettings) -> Result<(), String> {
+  pub fn ensure_stream_audio_playback(&self, settings: AppAudioSettings) -> Result<(), String> {
     *self.voice_settings.lock() = settings.clone();
     if self.voice.has_engine() {
       return Ok(());
@@ -1217,7 +1217,7 @@ impl video_stream::StreamWatchSession for ServerSession {
     ServerSession::set_watching_user(self, user_id);
   }
 
-  fn ensure_stream_audio_playback(&self, settings: AppSettings) -> Result<(), String> {
+  fn ensure_stream_audio_playback(&self, settings: AppAudioSettings) -> Result<(), String> {
     ServerSession::ensure_stream_audio_playback(self, settings)
   }
 }

@@ -578,6 +578,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added a focused stream settings store:
   - provided `Store<AppStreamSettings>` for stream codec, scale, FPS, and bitrate;
   - moved lobby stream-start and stream-modal codec reads off full `AppSettings`.
+- Added a focused audio settings store:
+  - provided `Store<AppAudioSettings>` for voice devices, voice processing, activation/PTT timing, start-muted behavior, and notification sound fields;
+  - moved lobby rail join, stream watch playback, reconnect voice restore, and loading restart-resume voice restore off full `AppSettings`;
+  - changed session voice/playback APIs to accept `AppAudioSettings` instead of the persisted all-settings record.
 
 ## Current Residual Reads
 
