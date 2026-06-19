@@ -467,6 +467,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed rail header and bottom component boundaries:
   - mounted rail header and bottom status/control areas as explicit components;
   - passed each section only the model fields and action handles it renders, reducing rerenders from unrelated rail model changes.
+- Split rail section subscriptions:
+  - added header, channel-list, and bottom/status rail models with dedicated selectors;
+  - replaced the combined rail model subscription with separate local stores and subscribers for each rail section.
 
 ## Non-Goals
 

@@ -18,7 +18,7 @@ use crate::{
   network::protocol::{Role, UserId},
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
-  session::{ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyConnectionWarningKind, ServerSession},
+  session::{ConnectedServerInfo, LobbyConnectionWarningKind, ServerSession},
   storage::{AppSettings, Storage},
   theme,
   ui::{
@@ -26,9 +26,11 @@ use crate::{
     lobby::{
       debug_channels::{DebugChannels, DebugChannelsProps, SelectDebugChatAction},
       layout::{RAIL_DIVIDER_WIDTH, lobby_layout_metrics},
-      model::{LobbyRailModel, lobby_rail_model},
+      model::{
+        RailBottomModel, RailChannelsModel, RailHeaderModel, rail_bottom_model, rail_channels_model, rail_header_model,
+      },
       session_identity::{same_optional_session, same_session},
-      subscription::{LobbyModelSubscription, apply_current_model, apply_model},
+      subscription::{LobbyModelSubscription, apply_current_model, apply_model, current_model},
       text_channels::{SelectTextChannelAction, TextChannels, TextChannelsProps},
       voice_channels::{JoinChannelAction, JoinChannelRequest, VoiceChannelActions, VoiceChannels, VoiceChannelsProps},
     },
@@ -97,8 +99,9 @@ impl DevtoolsInspectable for LobbyRailProps {
 }
 
 pub(super) struct LobbyRail {
-  model_store: Store<Option<LobbyRailModel>>,
-  subscription: LobbyModelSubscription,
+  header_store: Store<Option<RailHeaderModel>>,
+  channels_store: Store<Option<RailChannelsModel>>,
+  bottom_store: Store<Option<RailBottomModel>>,
 }
 
 impl Component for LobbyRail {
@@ -106,8 +109,9 @@ impl Component for LobbyRail {
 
   fn create(ctx: &mut Ctx) -> Self {
     Self {
-      model_store: ctx.store(None),
-      subscription: LobbyModelSubscription::new(ctx),
+      header_store: ctx.store(None),
+      channels_store: ctx.store(None),
+      bottom_store: ctx.store(None),
     }
   }
 
@@ -118,45 +122,40 @@ impl Component for LobbyRail {
     let select_text_channel = SelectTextChannelAction::new(props.session.clone());
     let select_debug_chat = SelectDebugChatAction::new(props.session.clone());
     let local_voice_state = props.session.local_voice_state();
-    apply_current_model(&self.model_store, &props.session, |lobby| {
-      lobby_rail_model(&props.info, lobby)
+    let (header_model, channels_model, bottom_model) = current_model(&props.session, |lobby| {
+      (
+        rail_header_model(&props.info, lobby),
+        rail_channels_model(&props.info, lobby),
+        rail_bottom_model(&props.info, lobby),
+      )
     });
-    let info = props.info.clone();
-    if let Some((_snapshot_generation, model)) =
-      self
-        .subscription
-        .next_model(ctx, props.session.clone(), move |snapshot| {
-          lobby_rail_model(&info, &snapshot.lobby)
-        })
-    {
-      let selected_channel_id = model.selected_voice_channel.as_ref().map(|channel| channel.id);
-      let selected_channel_users = selected_channel_id
-        .and_then(|channel_id| {
-          model
-            .voice_channels
-            .iter()
-            .find(|channel| channel.channel.id == channel_id)
-            .map(|channel| channel.users.len())
-        })
-        .unwrap_or(0);
-      tracing::info!(
-        target: "lobby::voice",
-        "[lobby:voice] lobby rail model applied: generation={_snapshot_generation} selected={selected_channel_id:?} local_user_in_voice={} selected_channel_users={} voice_channels={}",
-        model.local_user_in_voice,
-        selected_channel_users,
-        model.voice_channels.len()
-      );
-      apply_model(&self.model_store, model);
-    }
-    let subscriber = empty_subscriber_node();
-    let Some(model) = self.model_store.get() else {
-      return empty_rail(ctx, subscriber);
+    apply_model(&self.header_store, header_model);
+    apply_model(&self.channels_store, channels_model);
+    apply_model(&self.bottom_store, bottom_model);
+    let subscribers = RailSubscribers {
+      header: ctx.mount::<RailHeaderModelSubscriber>(RailHeaderModelSubscriberProps {
+        info: props.info.clone(),
+        session: props.session.clone(),
+        model_store: self.header_store.clone(),
+      }),
+      channels: ctx.mount::<RailChannelsModelSubscriber>(RailChannelsModelSubscriberProps {
+        info: props.info.clone(),
+        session: props.session.clone(),
+        model_store: self.channels_store.clone(),
+      }),
+      bottom: ctx.mount::<RailBottomModelSubscriber>(RailBottomModelSubscriberProps {
+        info: props.info.clone(),
+        session: props.session.clone(),
+        model_store: self.bottom_store.clone(),
+      }),
     };
 
     rail(
       ctx,
-      subscriber,
-      &model,
+      subscribers,
+      self.header_store.clone(),
+      self.channels_store.clone(),
+      self.bottom_store.clone(),
       props.debug_mode_enabled,
       props.settings_popup,
       &props.stream_actions,
@@ -248,10 +247,18 @@ fn voice_control_action(ctx: &mut Ctx, session: ServerSession) -> VoiceControlFu
   VoiceControlFuture { session, task }
 }
 
+struct RailSubscribers {
+  header: Element,
+  channels: Element,
+  bottom: Element,
+}
+
 fn rail(
   ctx: &mut Ctx,
-  subscriber: Element,
-  model: &LobbyRailModel,
+  subscribers: RailSubscribers,
+  header_store: Store<Option<RailHeaderModel>>,
+  channels_store: Store<Option<RailChannelsModel>>,
+  bottom_store: Store<Option<RailBottomModel>>,
   debug_mode_enabled: bool,
   settings_popup: Option<SettingsPopupHandle>,
   stream_actions: &RailStreamActions,
@@ -269,30 +276,31 @@ fn rail(
     .width(metrics.rail_width)
     .height(Dimension::Pct(100.0))
     .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-    .child(subscriber)
+    .child(subscribers.header)
+    .child(subscribers.channels)
+    .child(subscribers.bottom)
     .child(
       Column::new()
         .width(metrics.rail_width - RAIL_DIVIDER_WIDTH)
         .height(Dimension::Pct(100.0))
         .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
         .child(ctx.mount::<RailHeader>(RailHeaderProps {
-          model: RailHeaderModel::from(model),
+          model_store: header_store,
           debug_user_ids: debug_mode_enabled,
           leave_session: leave_session.clone(),
         }))
-        .child(rail_channels(
-          ctx,
-          model,
+        .child(ctx.mount::<RailChannels>(RailChannelsProps {
+          model_store: channels_store,
           debug_mode_enabled,
           storage,
-          leave_session.clone(),
+          session: leave_session.clone(),
           select_text_channel,
           select_debug_chat,
-          join_channel,
-          &stream_actions.watch_stream,
-        ))
+          join_channel: join_channel.cloned(),
+          watch_stream: stream_actions.watch_stream.clone(),
+        }))
         .child(ctx.mount::<RailBottom>(RailBottomProps {
-          model: RailBottomModel::from(model),
+          model_store: bottom_store,
           debug_user_ids: debug_mode_enabled,
           settings_popup,
           start_stream_modal_open: stream_actions.start_stream_modal_open.clone(),
@@ -309,53 +317,194 @@ fn rail(
     .into()
 }
 
-fn empty_rail(ctx: &mut Ctx, subscriber: Element) -> Element {
-  let metrics = lobby_layout_metrics(ctx);
-  Row::new()
-    .border_right(Border::inside(1.0, theme::PaletteColor::Border))
-    .width(metrics.rail_width)
-    .height(Dimension::Pct(100.0))
-    .background(BackgroundColor::Color(Color::from_hex("#0C0D0F")))
-    .child(subscriber)
-    .into()
-}
-
 fn empty_subscriber_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct RailHeaderModel {
-  server_name: String,
-  display_name: String,
-  user_id: UserId,
-  role: Role,
-  local_user_name: Option<String>,
+#[derive(Clone)]
+struct RailHeaderModelSubscriberProps {
+  info: ConnectedServerInfo,
+  session: ServerSession,
+  model_store: Store<Option<RailHeaderModel>>,
 }
 
-impl From<&LobbyRailModel> for RailHeaderModel {
-  fn from(model: &LobbyRailModel) -> Self {
+impl PartialEq for RailHeaderModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info && same_session(&self.session, &other.session)
+  }
+}
+
+impl DevtoolsInspectable for RailHeaderModelSubscriberProps {}
+
+struct RailHeaderModelSubscriber {
+  subscription: LobbyModelSubscription,
+}
+
+impl Component for RailHeaderModelSubscriber {
+  type Props = RailHeaderModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
     Self {
-      server_name: model.server_name.clone(),
-      display_name: model.display_name.clone(),
-      user_id: model.user_id,
-      role: model.role,
-      local_user_name: model.local_user_name.clone(),
+      subscription: LobbyModelSubscription::new(ctx),
     }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let info = props.info.clone();
+    apply_current_model(&props.model_store, &props.session, |lobby| {
+      rail_header_model(&info, lobby)
+    });
+
+    let info = props.info.clone();
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          rail_header_model(&info, &snapshot.lobby)
+        })
+    {
+      apply_model(&props.model_store, model);
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+#[derive(Clone)]
+struct RailChannelsModelSubscriberProps {
+  info: ConnectedServerInfo,
+  session: ServerSession,
+  model_store: Store<Option<RailChannelsModel>>,
+}
+
+impl PartialEq for RailChannelsModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info && same_session(&self.session, &other.session)
+  }
+}
+
+impl DevtoolsInspectable for RailChannelsModelSubscriberProps {}
+
+struct RailChannelsModelSubscriber {
+  subscription: LobbyModelSubscription,
+}
+
+impl Component for RailChannelsModelSubscriber {
+  type Props = RailChannelsModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      subscription: LobbyModelSubscription::new(ctx),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let info = props.info.clone();
+    apply_current_model(&props.model_store, &props.session, |lobby| {
+      rail_channels_model(&info, lobby)
+    });
+
+    let info = props.info.clone();
+    if let Some((snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          rail_channels_model(&info, &snapshot.lobby)
+        })
+    {
+      log_rail_channels_model(snapshot_generation, &model);
+      apply_model(&props.model_store, model);
+    }
+
+    empty_subscriber_node()
+  }
+}
+
+fn log_rail_channels_model(snapshot_generation: u64, model: &RailChannelsModel) {
+  let selected_channel_id = model
+    .voice_channels
+    .iter()
+    .find(|channel| channel.selected)
+    .map(|channel| channel.channel.id);
+  let selected_channel_users = selected_channel_id
+    .and_then(|channel_id| {
+      model
+        .voice_channels
+        .iter()
+        .find(|channel| channel.channel.id == channel_id)
+        .map(|channel| channel.users.len())
+    })
+    .unwrap_or(0);
+  tracing::info!(
+    target: "lobby::voice",
+    "[lobby:voice] rail channels model applied: generation={snapshot_generation} selected={selected_channel_id:?} selected_channel_users={} voice_channels={}",
+    selected_channel_users,
+    model.voice_channels.len()
+  );
+}
+
+#[derive(Clone)]
+struct RailBottomModelSubscriberProps {
+  info: ConnectedServerInfo,
+  session: ServerSession,
+  model_store: Store<Option<RailBottomModel>>,
+}
+
+impl PartialEq for RailBottomModelSubscriberProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.info == other.info && same_session(&self.session, &other.session)
+  }
+}
+
+impl DevtoolsInspectable for RailBottomModelSubscriberProps {}
+
+struct RailBottomModelSubscriber {
+  subscription: LobbyModelSubscription,
+}
+
+impl Component for RailBottomModelSubscriber {
+  type Props = RailBottomModelSubscriberProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    Self {
+      subscription: LobbyModelSubscription::new(ctx),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let info = props.info.clone();
+    apply_current_model(&props.model_store, &props.session, |lobby| {
+      rail_bottom_model(&info, lobby)
+    });
+
+    let info = props.info.clone();
+    if let Some((_snapshot_generation, model)) =
+      self
+        .subscription
+        .next_model(ctx, props.session.clone(), move |snapshot| {
+          rail_bottom_model(&info, &snapshot.lobby)
+        })
+    {
+      apply_model(&props.model_store, model);
+    }
+
+    empty_subscriber_node()
   }
 }
 
 #[derive(Clone)]
 struct RailHeaderProps {
-  model: RailHeaderModel,
+  model_store: Store<Option<RailHeaderModel>>,
   debug_user_ids: bool,
   leave_session: Option<ServerSession>,
 }
 
 impl PartialEq for RailHeaderProps {
   fn eq(&self, other: &Self) -> bool {
-    self.model == other.model
-      && self.debug_user_ids == other.debug_user_ids
+    self.debug_user_ids == other.debug_user_ids
       && same_optional_session(self.leave_session.as_ref(), other.leave_session.as_ref())
   }
 }
@@ -373,7 +522,10 @@ impl Component for RailHeader {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
-    rail_header(ctx, &props.model, props.debug_user_ids, props.leave_session)
+    let Some(model) = props.model_store.get() else {
+      return empty_subscriber_node();
+    };
+    rail_header(ctx, &model, props.debug_user_ids, props.leave_session)
   }
 }
 
@@ -477,17 +629,50 @@ fn leave_button(ctx: &mut Ctx, session: Option<ServerSession>) -> Element {
   button.into()
 }
 
-fn rail_channels(
-  ctx: &mut Ctx,
-  model: &LobbyRailModel,
+#[derive(Clone)]
+struct RailChannelsProps {
+  model_store: Store<Option<RailChannelsModel>>,
   debug_mode_enabled: bool,
   storage: Option<Storage>,
   session: Option<ServerSession>,
   select_text_channel: Option<SelectTextChannelAction>,
   select_debug_chat: Option<SelectDebugChatAction>,
-  join_channel: Option<&JoinChannelAction>,
-  watch_stream: &WatchStreamAction,
-) -> Element {
+  join_channel: Option<JoinChannelAction>,
+  watch_stream: WatchStreamAction,
+}
+
+impl PartialEq for RailChannelsProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.debug_mode_enabled == other.debug_mode_enabled
+      && self.storage.is_some() == other.storage.is_some()
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
+      && self.select_text_channel == other.select_text_channel
+      && self.select_debug_chat == other.select_debug_chat
+      && self.join_channel == other.join_channel
+  }
+}
+
+impl DevtoolsInspectable for RailChannelsProps {}
+
+struct RailChannels;
+
+impl Component for RailChannels {
+  type Props = RailChannelsProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    let Some(model) = props.model_store.get() else {
+      return empty_subscriber_node();
+    };
+    rail_channels(ctx, &model, props)
+  }
+}
+
+fn rail_channels(ctx: &mut Ctx, model: &RailChannelsModel, props: RailChannelsProps) -> Element {
   let metrics = lobby_layout_metrics(ctx);
   let mut channels = Column::new()
     .width(Dimension::Pct(100.0))
@@ -496,7 +681,7 @@ fn rail_channels(
     .padding_horizontal(metrics.rail_padding_x)
     .child(ctx.mount::<TextChannels>(TextChannelsProps {
       channels: model.text_channels.clone(),
-      select_channel: select_text_channel,
+      select_channel: props.select_text_channel,
     }));
 
   channels = channels.child(ctx.mount::<VoiceChannels>(VoiceChannelsProps {
@@ -504,19 +689,19 @@ fn rail_channels(
     disconnected: model.disconnected,
     local_user_id: model.user_id,
     local_role: model.role,
-    debug_user_ids: debug_mode_enabled,
-    storage,
+    debug_user_ids: props.debug_mode_enabled,
+    storage: props.storage,
     actions: VoiceChannelActions {
-      session,
-      join_channel: join_channel.cloned(),
-      watch_stream: Some(watch_stream.clone()),
+      session: props.session,
+      join_channel: props.join_channel,
+      watch_stream: Some(props.watch_stream),
     },
   }));
 
-  if debug_mode_enabled {
+  if props.debug_mode_enabled {
     channels = channels.child(ctx.mount::<DebugChannels>(DebugChannelsProps {
       selected: model.debug_chat_selected,
-      select_debug_chat,
+      select_debug_chat: props.select_debug_chat,
     }));
   }
 
@@ -549,42 +734,9 @@ fn rail_scrollbar_style() -> ScrollBarStyle {
   }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct RailBottomModel {
-  selected_voice_channel: Option<LobbyChannel>,
-  connection_warning: Option<LobbyConnectionWarning>,
-  disconnected: bool,
-  display_name: String,
-  user_id: UserId,
-  role: Role,
-  local_user_name: Option<String>,
-  ping_ms: Option<u32>,
-  local_voice_state: (bool, bool),
-  local_user_in_voice: bool,
-  local_streaming: bool,
-}
-
-impl From<&LobbyRailModel> for RailBottomModel {
-  fn from(model: &LobbyRailModel) -> Self {
-    Self {
-      selected_voice_channel: model.selected_voice_channel.clone(),
-      connection_warning: model.connection_warning.clone(),
-      disconnected: model.disconnected,
-      display_name: model.display_name.clone(),
-      user_id: model.user_id,
-      role: model.role,
-      local_user_name: model.local_user_name.clone(),
-      ping_ms: model.ping_ms,
-      local_voice_state: model.local_voice_state,
-      local_user_in_voice: model.local_user_in_voice,
-      local_streaming: model.local_streaming,
-    }
-  }
-}
-
 #[derive(Clone)]
 struct RailBottomProps {
-  model: RailBottomModel,
+  model_store: Store<Option<RailBottomModel>>,
   debug_user_ids: bool,
   settings_popup: Option<SettingsPopupHandle>,
   start_stream_modal_open: Signal<bool>,
@@ -595,8 +747,7 @@ struct RailBottomProps {
 
 impl PartialEq for RailBottomProps {
   fn eq(&self, other: &Self) -> bool {
-    self.model == other.model
-      && self.debug_user_ids == other.debug_user_ids
+    self.debug_user_ids == other.debug_user_ids
       && self.settings_popup.is_some() == other.settings_popup.is_some()
       && self.local_voice_state == other.local_voice_state
       && self.voice_control == other.voice_control
@@ -616,9 +767,12 @@ impl Component for RailBottom {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
+    let Some(model) = props.model_store.get() else {
+      return empty_subscriber_node();
+    };
     rail_bottom(
       ctx,
-      &props.model,
+      &model,
       props.debug_user_ids,
       props.settings_popup,
       props.start_stream_modal_open,
@@ -1027,16 +1181,6 @@ pub(super) fn server_avatar(name: &str, size: f32, accent: bool) -> Element {
 
 fn server_name<'a>(name: &'a str, fallback: &'a str) -> &'a str {
   if name.trim().is_empty() { fallback } else { name }
-}
-
-fn local_user_label(ctx: &mut Ctx, model: &LobbyRailModel, debug_user_ids: bool) -> String {
-  local_user_label_fields(
-    ctx,
-    model.user_id,
-    &model.display_name,
-    model.local_user_name.as_deref(),
-    debug_user_ids,
-  )
 }
 
 fn local_user_label_fields(
