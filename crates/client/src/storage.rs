@@ -264,6 +264,10 @@ impl AppSettingsUpdater {
   pub fn update(&self, f: impl FnOnce(&mut AppSettings)) -> AppSettings {
     update_app_settings(&self.settings_store, self.storage.as_ref(), f)
   }
+
+  pub fn has_storage(&self) -> bool {
+    self.storage.is_some()
+  }
 }
 
 pub fn update_app_settings(
