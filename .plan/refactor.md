@@ -482,6 +482,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - mounted each text channel row as a keyed component with only row model and select action props.
 - Narrowed debug channel row rendering:
   - mounted the debug chat row as a component with only selected state and select action props.
+- Narrowed rail bottom row rendering:
+  - mounted the local user and control rows as components with focused props;
+  - kept voice, stream, and settings control comparisons scoped to the controls row.
 
 ## Non-Goals
 

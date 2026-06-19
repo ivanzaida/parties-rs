@@ -795,16 +795,25 @@ fn rail_bottom(
     .padding_vertical(metrics.rail_padding_y)
     .padding_horizontal(metrics.rail_padding_x)
     .child(connection_status(ctx, model))
-    .child(local_user_row(ctx, model, debug_user_ids))
-    .child(control_row(
-      ctx,
-      model,
+    .child(ctx.mount::<LocalUserRow>(LocalUserRowProps {
+      display_name: model.display_name.clone(),
+      user_id: model.user_id,
+      role: model.role,
+      local_user_name: model.local_user_name.clone(),
+      ping_ms: model.ping_ms,
+      debug_user_ids,
+    }))
+    .child(ctx.mount::<ControlRow>(ControlRowProps {
+      disconnected: model.disconnected,
+      model_local_voice_state: model.local_voice_state,
+      local_user_in_voice: model.local_user_in_voice,
+      local_streaming: model.local_streaming,
       start_stream_modal_open,
       settings_popup,
-      stop_stream,
+      stop_stream: stop_stream.clone(),
       local_voice_state,
-      voice_control,
-    ))
+      voice_control: voice_control.cloned(),
+    }))
     .into()
 }
 
@@ -924,7 +933,34 @@ fn status_sub(dot_color: Option<theme::PaletteColor>, label: &str) -> Element {
     .into()
 }
 
-fn local_user_row(ctx: &mut Ctx, model: &RailBottomModel, debug_user_ids: bool) -> Element {
+#[derive(Clone, PartialEq, Eq)]
+struct LocalUserRowProps {
+  display_name: String,
+  user_id: UserId,
+  role: Role,
+  local_user_name: Option<String>,
+  ping_ms: Option<u32>,
+  debug_user_ids: bool,
+}
+
+impl DevtoolsInspectable for LocalUserRowProps {}
+
+struct LocalUserRow;
+
+impl Component for LocalUserRow {
+  type Props = LocalUserRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    local_user_row(ctx, props)
+  }
+}
+
+fn local_user_row(ctx: &mut Ctx, model: LocalUserRowProps) -> Element {
   let avatar_name = model.local_user_name.clone().unwrap_or_else(|| {
     let display_name = model.display_name.trim();
     if display_name.is_empty() {
@@ -940,7 +976,7 @@ fn local_user_row(ctx: &mut Ctx, model: &RailBottomModel, debug_user_ids: bool) 
     model.user_id,
     &model.display_name,
     model.local_user_name.as_deref(),
-    debug_user_ids,
+    model.debug_user_ids,
   );
   let role = ctx.t(role_label_lower_key(model.role));
   let ping_label = model
@@ -981,21 +1017,55 @@ fn local_user_row(ctx: &mut Ctx, model: &RailBottomModel, debug_user_ids: bool) 
   row.into()
 }
 
-fn control_row(
-  ctx: &mut Ctx,
-  model: &RailBottomModel,
+#[derive(Clone)]
+struct ControlRowProps {
+  disconnected: bool,
+  model_local_voice_state: (bool, bool),
+  local_user_in_voice: bool,
+  local_streaming: bool,
   start_stream_modal_open: Signal<bool>,
   settings_popup: Option<SettingsPopupHandle>,
-  stop_stream: &StopStreamAction,
+  stop_stream: StopStreamAction,
   local_voice_state: Option<(bool, bool)>,
-  voice_control: Option<&VoiceControlFuture>,
-) -> Element {
-  let (muted, deafened) = local_voice_state.unwrap_or(model.local_voice_state);
+  voice_control: Option<VoiceControlFuture>,
+}
+
+impl PartialEq for ControlRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.disconnected == other.disconnected
+      && self.model_local_voice_state == other.model_local_voice_state
+      && self.local_user_in_voice == other.local_user_in_voice
+      && self.local_streaming == other.local_streaming
+      && self.settings_popup.is_some() == other.settings_popup.is_some()
+      && self.local_voice_state == other.local_voice_state
+      && self.voice_control == other.voice_control
+  }
+}
+
+impl DevtoolsInspectable for ControlRowProps {}
+
+struct ControlRow;
+
+impl Component for ControlRow {
+  type Props = ControlRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    control_row(ctx, props)
+  }
+}
+
+fn control_row(ctx: &mut Ctx, props: ControlRowProps) -> Element {
+  let (muted, deafened) = props.local_voice_state.unwrap_or(props.model_local_voice_state);
   let mic_icon = if muted { "mic-off" } else { "mic" };
   let headphones_icon = if deafened { "headphone-off" } else { "headphones" };
   let mute_locked = muted && deafened;
-  let connected_to_voice = model.local_user_in_voice && !model.disconnected;
-  let local_streaming = model.local_streaming;
+  let connected_to_voice = props.local_user_in_voice && !props.disconnected;
+  let local_streaming = props.local_streaming;
   let mut row = Row::new()
     .width(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -1005,7 +1075,7 @@ fn control_row(
     ctx,
     mic_icon,
     muted,
-    voice_control,
+    props.voice_control.as_ref(),
     Some(VoiceControlAction::ToggleMute),
     mute_locked,
   ));
@@ -1013,14 +1083,14 @@ fn control_row(
     ctx,
     headphones_icon,
     deafened,
-    voice_control,
+    props.voice_control.as_ref(),
     Some(VoiceControlAction::ToggleDeafen),
     false,
   ));
   row = row.child(stream_control_button(
     ctx,
-    start_stream_modal_open,
-    stop_stream,
+    props.start_stream_modal_open,
+    &props.stop_stream,
     local_streaming,
     !connected_to_voice && !local_streaming,
   ));
@@ -1028,12 +1098,12 @@ fn control_row(
     ctx,
     "phone-off",
     connected_to_voice,
-    voice_control,
+    props.voice_control.as_ref(),
     Some(VoiceControlAction::LeaveChannel),
     !connected_to_voice,
   ));
 
-  if let Some(settings_popup) = settings_popup {
+  if let Some(settings_popup) = props.settings_popup {
     row = row.child(icon_button(ctx, "settings", false, false).on_click(move |_| settings_popup.open()));
   } else {
     row = row.child(icon_button(ctx, "settings", false, false));
