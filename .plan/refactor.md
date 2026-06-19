@@ -519,6 +519,17 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - removed the channel-group watch-action pending subscription;
   - scoped pending reads to mounted streaming user rows that can render the watch action.
 
+## Current Residual Reads
+
+- `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
+- Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
+- Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
+  - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;
+  - stream modal lifecycle/error handling;
+  - disconnected reconnect lifecycle/status;
+  - subscription helper future state.
+- No connected-lobby component reads or writes `Store<LobbyState>` directly, and no UI action writes a mirrored lobby store.
+
 ## Non-Goals
 
 - Do not rewrite the transport protocol.
