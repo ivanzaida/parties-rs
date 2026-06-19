@@ -491,22 +491,28 @@ fn stream_source_card(
   stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
-  ctx.mount::<StreamSourceCard>(StreamSourceCardProps {
+  let preview_key = ScreenSharePreviewKey {
     kind: source.kind,
-    preview_key: ScreenSharePreviewKey {
+    id: source.id,
+    width: source.width,
+    height: source.height,
+  };
+  let key = format!("stream-source-{:?}-{}", source.kind, source.id);
+
+  ctx.mount_keyed::<StreamSourceCard>(
+    &key,
+    StreamSourceCardProps {
       kind: source.kind,
-      id: source.id,
-      width: source.width,
-      height: source.height,
+      preview_key,
+      name: source.name.clone(),
+      resolution: source.resolution.clone(),
+      index,
+      selected: selected_index == index,
+      source_index,
+      stream_codec_label: stream_codec_label.to_owned(),
+      metrics,
     },
-    name: source.name.clone(),
-    resolution: source.resolution.clone(),
-    index,
-    selected: selected_index == index,
-    source_index,
-    stream_codec_label: stream_codec_label.to_owned(),
-    metrics,
-  })
+  )
 }
 
 #[derive(Clone)]

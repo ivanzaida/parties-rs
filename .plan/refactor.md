@@ -518,6 +518,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved voice watch pending reads into user rows:
   - removed the channel-group watch-action pending subscription;
   - scoped pending reads to mounted streaming user rows that can render the watch action.
+- Keyed stream modal source cards:
+  - mounted share source cards by source kind/id identity;
+  - preserved per-source component instances across source list changes.
 
 ## Current Residual Reads
 
