@@ -594,6 +594,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added a focused video settings store:
   - provided `Store<AppVideoSettings>` for webcam device, broadcast settings, and hardware decoding;
   - moved stream/video settings page initialization off full `AppSettings` while keeping `Store<AppStreamSettings>` narrow for lobby broadcast reads.
+- Tightened global hotkey settings usage:
+  - changed `GlobalVoiceHotkeys::update_settings` to accept `AppHotkeySettings` plus the push-to-talk enabled flag instead of full `AppSettings`.
 
 ## Current Residual Reads
 

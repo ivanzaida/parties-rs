@@ -353,18 +353,22 @@ impl Component for App {
     self
       .session
       .set_video_hardware_decoding(settings.video_hardware_decoding);
-    let mute_hotkey = settings.hotkey_toggle_mute.clone();
-    let deafen_hotkey = settings.hotkey_toggle_deafen.clone();
+    let voice_hotkeys = hotkey_settings(&settings);
+    let mute_hotkey = voice_hotkeys.toggle_mute.clone();
+    let deafen_hotkey = voice_hotkeys.toggle_deafen.clone();
     let push_to_talk_enabled = settings.push_to_talk;
-    let push_to_talk_hotkey = settings.hotkey_push_to_talk.clone();
+    let push_to_talk_hotkey = voice_hotkeys.push_to_talk.clone();
     let app_focused = ctx.window().is_focused;
     let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
     let local_hotkeys_enabled = app_focused && !settings_active;
     let global_hotkeys_enabled = !app_focused;
     let global_mouse_hotkeys_enabled = !settings_active;
-    self
-      .global_hotkeys
-      .update_settings(Some(&settings), global_hotkeys_enabled, global_mouse_hotkeys_enabled);
+    self.global_hotkeys.update_settings(
+      Some(&voice_hotkeys),
+      push_to_talk_enabled,
+      global_hotkeys_enabled,
+      global_mouse_hotkeys_enabled,
+    );
     let voice_hotkey = ctx.future_action({
       let session = self.session.clone();
       let no_connected_server = ctx.t("lobby.error.no_connected_server").to_string();

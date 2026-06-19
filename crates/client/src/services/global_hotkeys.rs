@@ -20,7 +20,7 @@ use rdev::{Event, EventType};
 use crate::{
   services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::ServerSession,
-  storage::AppSettings,
+  storage::AppHotkeySettings,
 };
 
 #[derive(Clone)]
@@ -111,7 +111,13 @@ impl GlobalVoiceHotkeys {
       .mouse_capture = None;
   }
 
-  pub fn update_settings(&self, settings: Option<&AppSettings>, enabled: bool, mouse_enabled: bool) {
+  pub fn update_settings(
+    &self,
+    settings: Option<&AppHotkeySettings>,
+    push_to_talk_enabled: bool,
+    enabled: bool,
+    mouse_enabled: bool,
+  ) {
     let global_hotkeys_enabled = enabled && settings.is_some();
     let global_mouse_hotkeys_enabled = mouse_enabled && settings.is_some();
     let mut state = self.inner.state.lock().expect("global hotkey lock poisoned");
@@ -119,10 +125,10 @@ impl GlobalVoiceHotkeys {
     state.mouse_enabled = global_mouse_hotkeys_enabled;
 
     if let Some(settings) = settings {
-      state.push_to_talk_enabled = settings.push_to_talk;
-      state.push_to_talk = normalize_hotkey(&settings.hotkey_push_to_talk);
-      state.toggle_mute = normalize_hotkey(&settings.hotkey_toggle_mute);
-      state.toggle_deafen = normalize_hotkey(&settings.hotkey_toggle_deafen);
+      state.push_to_talk_enabled = push_to_talk_enabled;
+      state.push_to_talk = normalize_hotkey(&settings.push_to_talk);
+      state.toggle_mute = normalize_hotkey(&settings.toggle_mute);
+      state.toggle_deafen = normalize_hotkey(&settings.toggle_deafen);
     } else {
       state.push_to_talk_enabled = false;
       state.push_to_talk.clear();
