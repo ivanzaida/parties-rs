@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use lurq::{
   animation::Transition,
-  app::{ctx::Ctx, events::KeyboardEvent},
+  app::{
+    component::{Component, DevtoolsInspectable},
+    ctx::Ctx,
+    events::KeyboardEvent,
+  },
   components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
   core::Signal,
   layout::{
@@ -39,7 +43,7 @@ const STREAM_MODAL_AUDIO_HEIGHT: f32 = 74.0;
 const STREAM_MODAL_ACTIONS_HEIGHT: f32 = 34.0;
 const STREAM_MODAL_ERROR_HEIGHT: f32 = 76.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct StreamModalMetrics {
   dialog_width: f32,
   dialog_height: f32,
@@ -486,45 +490,101 @@ fn stream_source_card(
   stream_codec_label: &str,
   metrics: StreamModalMetrics,
 ) -> Element {
-  let selected = selected_index == index;
-  let select = source_index.clone();
-  let preview_key = ScreenSharePreviewKey {
+  ctx.mount::<StreamSourceCard>(StreamSourceCardProps {
     kind: source.kind,
-    id: source.id,
-    width: source.width,
-    height: source.height,
-  };
+    preview_key: ScreenSharePreviewKey {
+      kind: source.kind,
+      id: source.id,
+      width: source.width,
+      height: source.height,
+    },
+    name: source.name.clone(),
+    resolution: source.resolution.clone(),
+    index,
+    selected: selected_index == index,
+    source_index,
+    stream_codec_label: stream_codec_label.to_owned(),
+    metrics,
+  })
+}
+
+#[derive(Clone)]
+struct StreamSourceCardProps {
+  kind: ScreenShareSourceKind,
+  preview_key: ScreenSharePreviewKey,
+  name: String,
+  resolution: Option<String>,
+  index: usize,
+  selected: bool,
+  source_index: Signal<usize>,
+  stream_codec_label: String,
+  metrics: StreamModalMetrics,
+}
+
+impl PartialEq for StreamSourceCardProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.kind == other.kind
+      && self.preview_key == other.preview_key
+      && self.name == other.name
+      && self.resolution == other.resolution
+      && self.index == other.index
+      && self.selected == other.selected
+      && self.stream_codec_label == other.stream_codec_label
+      && self.metrics == other.metrics
+  }
+}
+
+impl DevtoolsInspectable for StreamSourceCardProps {}
+
+struct StreamSourceCard;
+
+impl Component for StreamSourceCard {
+  type Props = StreamSourceCardProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    stream_source_card_content(ctx, props)
+  }
+}
+
+fn stream_source_card_content(ctx: &mut Ctx, props: StreamSourceCardProps) -> Element {
+  let select = props.source_index.clone();
+  let icon = stream_source_icon(props.kind);
   Column::new()
     .width(Dimension::Pct(100.0))
     .flex(1.0)
-    .height(metrics.source_card_height)
+    .height(props.metrics.source_card_height)
     .spacing(8.0)
     .padding(10.0)
     .rounded(8.0)
     .clip()
-    .background(BackgroundColor::Color(if selected {
+    .background(BackgroundColor::Color(if props.selected {
       Color::from_hex("#121A23")
     } else {
       Color::from_hex("#171A1E")
     }))
     .border_inside(
       1.0,
-      if selected {
+      if props.selected {
         theme::PaletteColor::Accent
       } else {
         theme::PaletteColor::Border
       },
     )
     .cursor(CursorIcon::Pointer)
-    .on_click(move |_| select.set(index))
+    .on_click(move |_| select.set(props.index))
     .child(stream_source_preview(
       ctx,
-      stream_source_icon(source),
-      selected,
-      preview_key,
-      source.resolution.as_deref(),
-      stream_codec_label,
-      metrics,
+      icon,
+      props.selected,
+      props.preview_key,
+      props.resolution.as_deref(),
+      &props.stream_codec_label,
+      props.metrics,
     ))
     .child(
       Row::new()
@@ -533,9 +593,9 @@ fn stream_source_card(
         .align_items(Alignment::Center)
         .spacing(8.0)
         .child(ctx.mount::<LucideIcon>(LucideIconProps {
-          icon: stream_source_icon(source),
+          icon,
           size: 14.0,
-          color: if selected {
+          color: if props.selected {
             theme::palette().accent
           } else {
             theme::palette().text_muted
@@ -543,7 +603,7 @@ fn stream_source_card(
         }))
         .child(
           Text::styled(
-            &source.name,
+            &props.name,
             stream_modal_text_style(13.0, FontWeight::Bold, theme::palette().text_primary),
           )
           .nowrap()
@@ -552,7 +612,7 @@ fn stream_source_card(
           .min_width(0.0)
           .flex(1.0),
         )
-        .child(if selected {
+        .child(if props.selected {
           ctx.mount::<LucideIcon>(LucideIconProps {
             icon: "check",
             size: 14.0,
@@ -565,8 +625,8 @@ fn stream_source_card(
     .into()
 }
 
-fn stream_source_icon(source: &ScreenShareSource) -> &'static str {
-  match &source.kind {
+fn stream_source_icon(kind: ScreenShareSourceKind) -> &'static str {
+  match kind {
     ScreenShareSourceKind::Screen => "monitor",
     ScreenShareSourceKind::Window => "app-window",
     ScreenShareSourceKind::Webcam => "camera",

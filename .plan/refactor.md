@@ -485,6 +485,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed rail bottom row rendering:
   - mounted the local user and control rows as components with focused props;
   - kept voice, stream, and settings control comparisons scoped to the controls row.
+- Narrowed stream modal source card rendering:
+  - mounted each share source card as a component with explicit source, selection, codec, and metric props;
+  - kept the source selection signal as an action handle outside card equality.
 
 ## Non-Goals
 
