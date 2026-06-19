@@ -533,6 +533,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Split server settings member rows:
   - mounted member rows by user id and moved role-picker signal reads into row/modal components;
   - prevented member role-picker changes from dirtying the full server settings screen render.
+- Removed audio settings full lobby snapshot:
+  - reused `ServerSession::selected_channel_id()` for voice restart guards;
+  - avoided cloning the full lobby state from audio settings.
 
 ## Current Residual Reads
 

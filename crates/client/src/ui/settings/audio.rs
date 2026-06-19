@@ -1118,7 +1118,7 @@ fn restart_voice_for_audio_setting(storage: &Storage, session: Option<&ServerSes
   if let Err(error) = thread::Builder::new()
     .name("parties-voice-device-restart".to_owned())
     .spawn(move || {
-      if !session.voice_active() || session.lobby().selected_channel_id.is_none() {
+      if !session.voice_active() || session.selected_channel_id().is_none() {
         return;
       }
       if let Err(error) = session.start_voice(settings, "") {
