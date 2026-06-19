@@ -116,6 +116,19 @@ pub enum SettingsPage {
   Stream,
 }
 
+impl SettingsPage {
+  fn log_name(self) -> &'static str {
+    match self {
+      SettingsPage::Overview => "overview",
+      SettingsPage::Identity => "identity",
+      SettingsPage::Servers => "servers",
+      SettingsPage::Audio => "audio",
+      SettingsPage::Notifications => "notifications",
+      SettingsPage::Stream => "stream",
+    }
+  }
+}
+
 #[derive(Clone)]
 pub struct SettingsPopupHandle {
   open: Signal<bool>,
@@ -171,6 +184,7 @@ pub(super) fn screen_full(ctx: &mut Ctx, page: SettingsPage, content: impl Into<
 }
 
 fn screen_base(ctx: &mut Ctx, page: SettingsPage, content: impl Into<Element>) -> Element {
+  tracing::info!(target: "settings", "setting tab rendering {}", page.log_name());
   let window_height = content_height(ctx);
 
   Row::new()
@@ -408,10 +422,14 @@ fn nav_item(
 
   if let Some(settings_popup) = settings_popup {
     row = row.on_click(move |_| {
+      tracing::info!(target: "settings", "setting tab clicked {}", item_page.log_name());
       settings_popup.open_page(item_page);
     });
   } else if let Some(navigator) = navigator {
-    row = row.on_click(move |_| navigator.push(route));
+    row = row.on_click(move |_| {
+      tracing::info!(target: "settings", "setting tab clicked {}", item_page.log_name());
+      navigator.push(route);
+    });
   }
 
   row.into()

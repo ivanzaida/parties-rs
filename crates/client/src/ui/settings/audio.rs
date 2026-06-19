@@ -79,8 +79,8 @@ pub struct SettingsAudioScreen {
   hotkey_push_to_talk: String,
   hotkey_toggle_mute: String,
   hotkey_toggle_deafen: String,
-  input_devices: Store<Vec<String>>,
-  output_devices: Store<Vec<String>>,
+  input_devices_retry: Signal<u64>,
+  output_devices_retry: Signal<u64>,
 }
 
 impl Component for SettingsAudioScreen {
@@ -109,24 +109,9 @@ impl Component for SettingsAudioScreen {
     let hotkey_push_to_talk = hotkey_settings.push_to_talk;
     let hotkey_toggle_mute = hotkey_settings.toggle_mute;
     let hotkey_toggle_deafen = hotkey_settings.toggle_deafen;
-    let input_devices = ctx.store(audio_devices::input_device_names());
-    let output_devices = ctx.store(audio_devices::output_device_names());
+    let input_devices_retry = ctx.signal(0_u64);
+    let output_devices_retry = ctx.signal(0_u64);
     let input_level_meter = Arc::new(Mutex::new(None));
-    replace_input_level_meter(
-      &input_level_meter,
-      &input_level,
-      &input_level_meter_active,
-      &input_device.get_untracked(),
-    );
-
-    {
-      let meter = input_level_meter.clone();
-      let level = input_level.clone();
-      let active = input_level_meter_active.clone();
-      ctx.watch(&input_device, move |device_name| {
-        replace_input_level_meter(&meter, &level, &active, device_name);
-      });
-    }
 
     {
       let meter = input_level_meter.clone();
@@ -153,14 +138,23 @@ impl Component for SettingsAudioScreen {
       hotkey_push_to_talk,
       hotkey_toggle_mute,
       hotkey_toggle_deafen,
-      input_devices,
-      output_devices,
+      input_devices_retry,
+      output_devices_retry,
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let settings_updater = ctx.use_context::<AppSettingsUpdater>();
     let session = ctx.use_context::<ServerSession>();
+    let input_devices = audio_device_names(ctx, AudioDeviceKind::Input, self.input_devices_retry.get());
+    let output_devices = audio_device_names(ctx, AudioDeviceKind::Output, self.output_devices_retry.get());
+    load_input_level_meter(
+      ctx,
+      self.input_device.get(),
+      self.input_level_meter.clone(),
+      self.input_level.clone(),
+      self.input_level_meter_active.clone(),
+    );
     let (padding_x, padding_y) = settings_content_padding(ctx);
     let section_spacing = settings_section_spacing(ctx);
     let content = ScrollVertical::new(
@@ -183,7 +177,8 @@ impl Component for SettingsAudioScreen {
                 .child(ctx.mount::<AudioDeviceSetting>(AudioDeviceSettingProps {
                   kind: AudioDeviceKind::Input,
                   selected: self.input_device.clone(),
-                  devices: self.input_devices.clone(),
+                  devices: input_devices,
+                  retry: self.input_devices_retry.clone(),
                 }))
                 .child(ctx.mount::<AudioInputLevelSetting>(AudioInputLevelSettingProps {
                   level: self.input_level.clone(),
@@ -198,7 +193,8 @@ impl Component for SettingsAudioScreen {
                 .child(ctx.mount::<AudioDeviceSetting>(AudioDeviceSettingProps {
                   kind: AudioDeviceKind::Output,
                   selected: self.output_device.clone(),
-                  devices: self.output_devices.clone(),
+                  devices: output_devices,
+                  retry: self.output_devices_retry.clone(),
                 })),
             )
             .child(
@@ -315,19 +311,46 @@ impl Component for SettingsAudioScreen {
   }
 }
 
-fn replace_input_level_meter(
-  meter: &Arc<Mutex<Option<audio_devices::InputLevelMeter>>>,
-  level: &Signal<f32>,
-  active: &Signal<bool>,
-  device_name: &str,
+fn audio_device_names(ctx: &mut Ctx, kind: AudioDeviceKind, retry: u64) -> Vec<String> {
+  ctx
+    .future((kind, retry), |(kind, _)| async move {
+      tokio::task::spawn_blocking(move || match kind {
+        AudioDeviceKind::Input => audio_devices::input_device_names(),
+        AudioDeviceKind::Output => audio_devices::output_device_names(),
+      })
+      .await
+      .map_err(|error| error.to_string())
+    })
+    .state()
+    .get()
+    .data
+    .unwrap_or_default()
+}
+
+fn load_input_level_meter(
+  ctx: &mut Ctx,
+  device_name: String,
+  meter: Arc<Mutex<Option<audio_devices::InputLevelMeter>>>,
+  level: Signal<f32>,
+  active: Signal<bool>,
 ) {
-  level.set(0.0);
-  if let Ok(mut meter) = meter.lock() {
-    *meter = audio_devices::input_level_meter(device_name);
-    active.set(meter.is_some());
-  } else {
-    active.set(false);
-  }
+  let _ = ctx.future(device_name, move |device_name| {
+    let meter = meter.clone();
+    let level = level.clone();
+    let active = active.clone();
+    async move {
+      level.set(0.0);
+      active.set(false);
+      let next_meter = tokio::task::spawn_blocking(move || audio_devices::input_level_meter(&device_name))
+        .await
+        .map_err(|error| error.to_string())?;
+      if let Ok(mut meter) = meter.lock() {
+        *meter = next_meter;
+        active.set(meter.is_some());
+      }
+      Ok::<(), String>(())
+    }
+  });
 }
 
 fn poll_input_level_meter(meter: &Arc<Mutex<Option<audio_devices::InputLevelMeter>>>, level: &Signal<f32>) {
@@ -358,12 +381,16 @@ enum AudioDeviceKind {
 struct AudioDeviceSettingProps {
   kind: AudioDeviceKind,
   selected: Signal<String>,
-  devices: Store<Vec<String>>,
+  devices: Vec<String>,
+  retry: Signal<u64>,
 }
 
 impl PartialEq for AudioDeviceSettingProps {
   fn eq(&self, other: &Self) -> bool {
-    self.kind == other.kind && self.selected.id() == other.selected.id()
+    self.kind == other.kind
+      && self.selected.id() == other.selected.id()
+      && self.devices == other.devices
+      && self.retry.id() == other.retry.id()
   }
 }
 
@@ -403,19 +430,10 @@ impl Component for AudioDeviceSetting {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<Self::Props>().clone();
     let system_default = ctx.t("settings.audio.device.system").to_string();
-    let devices = props.devices.get();
     let selected = self.value.get();
-    let (title_key, description_key, refresh_devices) = match props.kind {
-      AudioDeviceKind::Input => (
-        "settings.audio.microphone",
-        "settings.audio.microphone.description",
-        audio_devices::input_device_names as fn() -> Vec<String>,
-      ),
-      AudioDeviceKind::Output => (
-        "settings.audio.speaker",
-        "settings.audio.speaker.description",
-        audio_devices::output_device_names as fn() -> Vec<String>,
-      ),
+    let (title_key, description_key) = match props.kind {
+      AudioDeviceKind::Input => ("settings.audio.microphone", "settings.audio.microphone.description"),
+      AudioDeviceKind::Output => ("settings.audio.speaker", "settings.audio.speaker.description"),
     };
 
     audio_row(
@@ -424,10 +442,9 @@ impl Component for AudioDeviceSetting {
       audio_device_control(
         ctx,
         self.value.clone(),
-        props.devices,
-        device_options(&system_default, &devices, &selected),
+        props.retry,
+        device_options(&system_default, &props.devices, &selected),
         &system_default,
-        refresh_devices,
       ),
       true,
     )
@@ -833,10 +850,9 @@ impl Component for AudioHotkeySetting {
 fn audio_device_control(
   ctx: &mut Ctx,
   selected: Signal<String>,
-  devices: Store<Vec<String>>,
+  retry: Signal<u64>,
   options: Vec<DropdownOption>,
   system_default: &str,
-  refresh_devices: fn() -> Vec<String>,
 ) -> Element {
   let dropdown_width = DEVICE_DROPDOWN_WIDTH - REFRESH_BUTTON_SIZE - REFRESH_BUTTON_SPACING;
 
@@ -845,7 +861,7 @@ fn audio_device_control(
     .align_items(Alignment::Center)
     .spacing(REFRESH_BUTTON_SPACING)
     .child(refresh_button(ctx, move |_| {
-      devices.set(refresh_devices());
+      retry.set(retry.get_untracked().wrapping_add(1));
     }))
     .child(dropdown_menu(selected, options, system_default, dropdown_width))
     .into()
