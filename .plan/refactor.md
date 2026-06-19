@@ -480,6 +480,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - kept user rows componentized so channel/header props can skip rerenders when unrelated users update.
 - Narrowed text channel row rendering:
   - mounted each text channel row as a keyed component with only row model and select action props.
+- Narrowed debug channel row rendering:
+  - mounted the debug chat row as a component with only selected state and select action props.
 
 ## Non-Goals
 

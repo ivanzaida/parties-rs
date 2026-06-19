@@ -84,10 +84,36 @@ impl Component for DebugChannels {
       ));
 
     if is_expanded {
-      section = section.child(debug_chat_row(ctx, props.selected, props.select_debug_chat));
+      section = section.child(ctx.mount::<DebugChatRow>(DebugChatRowProps {
+        selected: props.selected,
+        select_debug_chat: props.select_debug_chat,
+      }));
     }
 
     section
+  }
+}
+
+#[derive(Clone, PartialEq)]
+struct DebugChatRowProps {
+  selected: bool,
+  select_debug_chat: Option<SelectDebugChatAction>,
+}
+
+impl DevtoolsInspectable for DebugChatRowProps {}
+
+struct DebugChatRow;
+
+impl Component for DebugChatRow {
+  type Props = DebugChatRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    debug_chat_row(ctx, props.selected, props.select_debug_chat)
   }
 }
 
