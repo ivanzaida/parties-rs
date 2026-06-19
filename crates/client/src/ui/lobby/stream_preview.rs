@@ -20,7 +20,10 @@ use super::{
 use crate::{
   session::ServerSession,
   theme,
-  ui::common::lucide_icon::{LucideIcon, LucideIconProps},
+  ui::{
+    app_chrome::CHROME_HEIGHT,
+    common::lucide_icon::{LucideIcon, LucideIconProps},
+  },
 };
 
 const PREVIEW_WIDTH: f32 = 324.0;
@@ -172,7 +175,7 @@ fn preview_x(ctx: &Ctx) -> f32 {
 }
 
 fn preview_y() -> f32 {
-  PREVIEW_TOP_GAP
+  CHROME_HEIGHT + PREVIEW_TOP_GAP
 }
 
 fn preview_card(

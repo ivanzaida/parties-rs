@@ -32,6 +32,7 @@ pub(crate) const CHROME_HEIGHT: f32 = if CUSTOM_MACOS_CHROME {
   0.0
 };
 pub(crate) const RESIZE_HANDLE_SIZE: f32 = if CUSTOM_WINDOW_CHROME { 3.0 } else { 0.0 };
+const TITLEBAR_FPS_WIDTH: f32 = 64.0;
 
 #[derive(Clone, Debug)]
 pub struct FrameRateSignal(pub Signal<u32>);
@@ -141,6 +142,7 @@ fn titlebar_identity(ctx: &mut Ctx, frame_rate: FrameRateSignal) -> Element {
     )
     .child(
       Text::new(&fps_label)
+        .width(TITLEBAR_FPS_WIDTH)
         .variant(theme::TypographyStyle::Caption)
         .color(theme::PaletteColor::TextMuted),
     )

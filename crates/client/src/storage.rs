@@ -620,8 +620,7 @@ pub fn upsert_stored_server(
   if let Some(servers_store) = servers_store {
     let mut servers = servers_store.get();
     servers.retain(|existing| existing.address != server.address);
-    servers.push(server);
-    sort_stored_servers(&mut servers);
+    servers.insert(0, server);
     servers_store.set(servers);
   }
 
@@ -778,22 +777,6 @@ fn update_server_user_audio_preferences(
   let mut all_preferences = preferences_store.get();
   update(all_preferences.servers.entry(server_id.to_owned()).or_default());
   preferences_store.set(all_preferences);
-}
-
-fn sort_stored_servers(servers: &mut [StoredServer]) {
-  servers.sort_by(|a, b| {
-    let left = if a.server_name.trim().is_empty() {
-      &a.address
-    } else {
-      &a.server_name
-    };
-    let right = if b.server_name.trim().is_empty() {
-      &b.address
-    } else {
-      &b.server_name
-    };
-    left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
-  });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1152,7 +1135,7 @@ impl Storage {
 
   pub fn save_server(&self, server: &StoredServer) -> Result<(), StorageError> {
     let conn = self.connection()?;
-    let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+    let updated_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
     conn.execute(
       r#"
       INSERT OR REPLACE INTO servers (address, server_name, user_id, role, updated_at, certificate_fingerprint, server_password, display_name)
@@ -1295,7 +1278,7 @@ impl Storage {
       r#"
       SELECT address, server_name, user_id, role, certificate_fingerprint, server_password, display_name
       FROM servers
-      ORDER BY updated_at DESC, server_name ASC, address ASC
+      ORDER BY updated_at DESC, rowid DESC, address ASC
       "#,
     )?;
     let rows = stmt.query_map([], |row| {

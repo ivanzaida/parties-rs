@@ -113,6 +113,60 @@ fn servers_round_trip() {
 }
 
 #[test]
+fn load_servers_orders_latest_save_first() {
+  let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+  let path = env::temp_dir().join(format!("parties-rs-storage-server-order-{nonce}.db"));
+  let storage = Storage::open(&path).unwrap();
+  let first = stored_server_fixture("a.example:7800", "Zulu");
+  let second = stored_server_fixture("b.example:7800", "Alpha");
+
+  storage.save_server(&first).unwrap();
+  storage.save_server(&second).unwrap();
+  storage.save_server(&first).unwrap();
+
+  let servers = storage.load_servers().unwrap();
+  assert_eq!(
+    servers.iter().map(|server| server.address.as_str()).collect::<Vec<_>>(),
+    vec!["a.example:7800", "b.example:7800"]
+  );
+
+  let _ = fs::remove_file(&path);
+  let _ = fs::remove_file(format!("{}-wal", path.display()));
+  let _ = fs::remove_file(format!("{}-shm", path.display()));
+}
+
+#[test]
+fn upsert_stored_server_moves_latest_server_to_front_without_alphabetical_sort() {
+  let first = stored_server_fixture("a.example:7800", "Zulu");
+  let second = stored_server_fixture("b.example:7800", "Alpha");
+  let third = stored_server_fixture("c.example:7800", "Middle");
+  let servers = Store::new(vec![first.clone(), second.clone(), third.clone()]);
+
+  upsert_stored_server(Some(&servers), None, first).unwrap();
+
+  assert_eq!(
+    servers
+      .get()
+      .iter()
+      .map(|server| server.address.as_str())
+      .collect::<Vec<_>>(),
+    vec!["a.example:7800", "b.example:7800", "c.example:7800"]
+  );
+}
+
+fn stored_server_fixture(address: &str, server_name: &str) -> StoredServer {
+  StoredServer {
+    address: address.to_owned(),
+    server_name: server_name.to_owned(),
+    user_id: 7,
+    role: Role::Admin,
+    certificate_fingerprint: "aa:bb".to_owned(),
+    server_password: "secret".to_owned(),
+    display_name: "alice".to_owned(),
+  }
+}
+
+#[test]
 fn update_resume_state_is_consumed_once() {
   let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
   let path = env::temp_dir().join(format!("parties-rs-storage-update-resume-{nonce}.db"));
