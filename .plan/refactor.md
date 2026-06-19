@@ -527,6 +527,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Added explicit channel row component keys:
   - keyed text channel rows, voice channel groups, voice channel headers, and voice user rows by channel/user identity;
   - kept component identity stable even inside keyed list rendering helpers.
+- Keyed server settings voice channel rows:
+  - mounted voice channel settings rows by channel id;
+  - left text settings rows unchanged because they are plain elements rather than mounted components.
 
 ## Current Residual Reads
 

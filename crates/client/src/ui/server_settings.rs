@@ -835,13 +835,17 @@ fn voice_channels_card(
       lobby.channels.clone(),
       |channel| channel.id,
       move |ctx, channel| {
-        ctx.mount::<VoiceChannelSettingsRow>(VoiceChannelSettingsRowProps {
-          channel,
-          action: action.clone(),
-          disabled: pending,
-          delete_open: delete_open.clone(),
-          pending_delete: pending_delete.clone(),
-        })
+        let key = format!("settings-voice-channel-{}", channel.id);
+        ctx.mount_keyed::<VoiceChannelSettingsRow>(
+          &key,
+          VoiceChannelSettingsRowProps {
+            channel,
+            action: action.clone(),
+            disabled: pending,
+            delete_open: delete_open.clone(),
+            pending_delete: pending_delete.clone(),
+          },
+        )
       },
     )
   };
