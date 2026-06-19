@@ -25,7 +25,7 @@ use super::{
 use crate::{
   network::protocol::ChannelId,
   session::{ConnectedServerInfo, LobbyChannel, ServerSession},
-  storage::Storage,
+  storage::{Storage, UserAudioPreferences},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -45,6 +45,7 @@ pub(super) fn main(
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_mode_enabled: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   chat_actions: ChatActions,
   start_stream_modal_open: Signal<bool>,
@@ -78,6 +79,7 @@ pub(super) fn main(
       chat_prepend_settle_anchor,
       debug_mode_enabled,
       storage,
+      user_audio_preferences,
       session,
       chat_actions,
       watch_stream,
@@ -370,6 +372,7 @@ fn main_body(
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_mode_enabled: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   chat_actions: ChatActions,
   watch_stream: &WatchStreamAction,
@@ -388,6 +391,7 @@ fn main_body(
     chat_prepend_settle_anchor,
     debug_mode_enabled,
     storage,
+    user_audio_preferences,
     session,
     chat_actions,
     watch_stream: watch_stream.clone(),
@@ -409,6 +413,7 @@ struct MainBodyProps {
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_mode_enabled: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   chat_actions: ChatActions,
   watch_stream: WatchStreamAction,
@@ -419,6 +424,7 @@ impl PartialEq for MainBodyProps {
     self.info == other.info
       && self.debug_mode_enabled == other.debug_mode_enabled
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && same_session(&self.session, &other.session)
   }
 }
@@ -516,6 +522,7 @@ fn main_body_view(ctx: &mut Ctx, subscriber: Element, model: MainBodyModel, prop
       channel,
       props.debug_mode_enabled,
       props.storage,
+      props.user_audio_preferences,
       props.session,
       &props.watch_stream,
     ),

@@ -35,7 +35,7 @@ use crate::{
     voice_controls::{VoiceControlAction, apply_voice_control},
   },
   session::ServerSession,
-  storage::{AppSettings, Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences},
   theme,
   ui::{
     app_chrome::{FrameRateSignal, modal_layer, wrap_window_chrome},
@@ -71,6 +71,7 @@ pub struct App {
   settings: Store<AppSettings>,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
+  user_audio_preferences: Store<UserAudioPreferences>,
   settings_open: Signal<bool>,
   settings_page: Signal<SettingsPage>,
   active_toggle_hotkeys: Store<Vec<String>>,
@@ -117,21 +118,25 @@ impl Component for App {
     let startup_settings = load_settings_from_storage(props.startup_storage.as_ref());
     let startup_servers = load_servers_from_storage(props.startup_storage.as_ref());
     let startup_identity = load_identity_from_storage(props.startup_storage.as_ref());
+    let startup_user_audio_preferences = load_user_audio_preferences_from_storage(props.startup_storage.as_ref());
     let settings = ctx.store(startup_settings);
     let servers = ctx.store(startup_servers);
     let identity = ctx.store(startup_identity);
+    let user_audio_preferences = ctx.store(startup_user_audio_preferences);
     let i18n = ctx.i18n().clone();
     apply_settings_locale(&settings.get(), &i18n);
     ctx.watch(&storage, {
       let settings = settings.clone();
       let servers = servers.clone();
       let identity = identity.clone();
+      let user_audio_preferences = user_audio_preferences.clone();
       let i18n = i18n.clone();
       move |storage| {
         let next_settings = load_settings_from_storage(storage.as_ref());
         settings.set(next_settings.clone());
         servers.set(load_servers_from_storage(storage.as_ref()));
         identity.set(load_identity_from_storage(storage.as_ref()));
+        user_audio_preferences.set(load_user_audio_preferences_from_storage(storage.as_ref()));
         apply_settings_locale(&next_settings, &i18n);
       }
     });
@@ -231,6 +236,7 @@ impl Component for App {
       settings,
       servers,
       identity,
+      user_audio_preferences,
       settings_open: ctx.signal(false),
       settings_page: ctx.signal(SettingsPage::Overview),
       active_toggle_hotkeys: ctx.store(Vec::new()),
@@ -249,6 +255,7 @@ impl Component for App {
     ctx.provide(self.settings.clone());
     ctx.provide(self.servers.clone());
     ctx.provide(self.identity.clone());
+    ctx.provide(self.user_audio_preferences.clone());
     let settings_popup = SettingsPopupHandle::new(self.settings_open.clone(), self.settings_page.clone());
     ctx.provide(settings_popup.clone());
     let storage = self.storage.get();
@@ -480,6 +487,12 @@ fn load_servers_from_storage(storage: Option<&Storage>) -> Vec<StoredServer> {
 
 fn load_identity_from_storage(storage: Option<&Storage>) -> Option<LocalIdentity> {
   storage.and_then(|storage| storage.load_identity().ok()).flatten()
+}
+
+fn load_user_audio_preferences_from_storage(storage: Option<&Storage>) -> UserAudioPreferences {
+  storage
+    .and_then(|storage| storage.load_user_audio_preferences().ok())
+    .unwrap_or_default()
 }
 
 fn apply_settings_locale(settings: &AppSettings, i18n: &lurq::app::i18n::I18n) {

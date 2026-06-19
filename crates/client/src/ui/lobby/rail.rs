@@ -19,7 +19,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_SERVER_SETTINGS},
   services::voice_controls::{VoiceControlAction, apply_voice_control},
   session::{ConnectedServerInfo, LobbyConnectionWarningKind, ServerSession},
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, UserAudioPreferences},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -74,6 +74,7 @@ pub(super) struct LobbyRailProps {
   pub debug_mode_enabled: bool,
   pub session: ServerSession,
   pub storage: Option<Storage>,
+  pub user_audio_preferences: Option<Store<UserAudioPreferences>>,
   pub settings_popup: Option<SettingsPopupHandle>,
   pub stream_actions: RailStreamActions,
 }
@@ -84,6 +85,7 @@ impl PartialEq for LobbyRailProps {
       && self.debug_mode_enabled == other.debug_mode_enabled
       && same_session(&self.session, &other.session)
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && self.settings_popup.is_some() == other.settings_popup.is_some()
   }
 }
@@ -161,6 +163,7 @@ impl Component for LobbyRail {
       props.settings_popup,
       &props.stream_actions,
       props.storage,
+      props.user_audio_preferences,
       Some(props.session),
       local_voice_state,
       Some(select_text_channel),
@@ -260,6 +263,7 @@ fn rail(
   settings_popup: Option<SettingsPopupHandle>,
   stream_actions: &RailStreamActions,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   leave_session: Option<ServerSession>,
   local_voice_state: Option<(bool, bool)>,
   select_text_channel: Option<SelectTextChannelAction>,
@@ -290,6 +294,7 @@ fn rail(
           model_store: channels_store,
           debug_mode_enabled,
           storage,
+          user_audio_preferences,
           session: leave_session.clone(),
           select_text_channel,
           select_debug_chat,
@@ -631,6 +636,7 @@ struct RailChannelsProps {
   model_store: Store<Option<RailChannelsModel>>,
   debug_mode_enabled: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: Option<ServerSession>,
   select_text_channel: Option<SelectTextChannelAction>,
   select_debug_chat: Option<SelectDebugChatAction>,
@@ -642,6 +648,7 @@ impl PartialEq for RailChannelsProps {
   fn eq(&self, other: &Self) -> bool {
     self.debug_mode_enabled == other.debug_mode_enabled
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.select_text_channel == other.select_text_channel
       && self.select_debug_chat == other.select_debug_chat
@@ -688,6 +695,7 @@ fn rail_channels(ctx: &mut Ctx, model: &RailChannelsModel, props: RailChannelsPr
     local_role: model.role,
     debug_user_ids: props.debug_mode_enabled,
     storage: props.storage,
+    user_audio_preferences: props.user_audio_preferences,
     actions: VoiceChannelActions {
       session: props.session,
       join_channel: props.join_channel,

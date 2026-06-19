@@ -18,7 +18,7 @@ use crate::{
     ConnectedServerInfo, ServerSession,
     chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError, ChatCommandSource},
   },
-  storage::{AppSettings, Storage, StoredServer, stored_server_by_address},
+  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
 
@@ -505,6 +505,7 @@ pub(super) fn reconnect_action(
   ctx: &mut Ctx,
   storage: Option<Storage>,
   identity_store: Option<Store<Option<LocalIdentity>>>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
@@ -513,6 +514,7 @@ pub(super) fn reconnect_action(
   ctx.future_action(move |request: ReconnectRequest| {
     let storage = storage.clone();
     let identity_store = identity_store.clone();
+    let user_audio_preferences = user_audio_preferences.clone();
     let servers_store = servers_store.clone();
     let settings_store = settings_store.clone();
     let session = session.clone();
@@ -532,6 +534,7 @@ pub(super) fn reconnect_action(
         server,
         storage,
         identity_store,
+        user_audio_preferences,
         servers_store,
         settings_store,
         session,
@@ -546,6 +549,7 @@ async fn reconnect_saved_server(
   server: StoredServer,
   storage: Storage,
   identity_store: Option<Store<Option<LocalIdentity>>>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
@@ -566,6 +570,7 @@ async fn reconnect_saved_server(
     display_name,
     Some(storage.clone()),
     identity_store,
+    user_audio_preferences,
     servers_store,
     Some(session.clone()),
     errors,

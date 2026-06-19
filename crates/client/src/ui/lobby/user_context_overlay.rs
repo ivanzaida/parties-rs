@@ -7,7 +7,7 @@ use lurq::{
     events::MouseButton,
   },
   components::{Column, Row, Stack, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, color::Color, dimension::Dimension},
 };
@@ -15,7 +15,10 @@ use lurq::{
 use crate::{
   network::protocol::{Permission, Role, UserId},
   session::{LobbyUser, ServerSession},
-  storage::Storage,
+  storage::{
+    Storage, UserAudioPreferences, save_voice_normalization_override, save_voice_volume_override,
+    server_user_audio_preferences,
+  },
   theme,
   ui::{
     app_chrome::{CHROME_HEIGHT, content_height, modal_y},
@@ -73,6 +76,7 @@ pub(super) struct UserContextOverlayProps {
   pub role_menu_user_id: Signal<Option<UserId>>,
   pub session: Option<ServerSession>,
   pub storage: Option<Storage>,
+  pub user_audio_preferences: Option<Store<UserAudioPreferences>>,
   pub actions: UserMenuActions,
   pub debug_user_ids: bool,
 }
@@ -85,6 +89,7 @@ impl PartialEq for UserContextOverlayProps {
       && self.local_role == other.local_role
       && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && self.actions == other.actions
       && self.debug_user_ids == other.debug_user_ids
   }
@@ -210,6 +215,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
   let normalization_control_key = format!("user-normalization-{target_user_id}");
   let session_for_volume = props.session.clone();
   let storage_for_volume = props.storage.clone();
+  let preferences_for_volume = props.user_audio_preferences.clone();
   let mut menu = Column::new()
     .width(USER_CONTEXT_MENU_WIDTH)
     .spacing(0.0)
@@ -230,6 +236,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
         user_id: target_user_id,
         session: session_for_volume,
         storage: storage_for_volume,
+        user_audio_preferences: preferences_for_volume,
       },
     ))
     .child(ctx.mount_keyed::<UserNormalizationToggle>(
@@ -238,6 +245,7 @@ fn user_context_menu(ctx: &mut Ctx, props: UserContextOverlayProps) -> Column {
         user_id: target_user_id,
         session: props.session.clone(),
         storage: props.storage.clone(),
+        user_audio_preferences: props.user_audio_preferences.clone(),
       },
     ));
 
@@ -464,6 +472,7 @@ struct UserVolumeControlProps {
   user_id: UserId,
   session: Option<ServerSession>,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
 }
 
 impl PartialEq for UserVolumeControlProps {
@@ -471,6 +480,7 @@ impl PartialEq for UserVolumeControlProps {
     self.user_id == other.user_id
       && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
   }
 }
 
@@ -497,6 +507,7 @@ struct UserNormalizationToggleProps {
   user_id: UserId,
   session: Option<ServerSession>,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
 }
 
 impl PartialEq for UserNormalizationToggleProps {
@@ -504,6 +515,7 @@ impl PartialEq for UserNormalizationToggleProps {
     self.user_id == other.user_id
       && same_optional_session(self.session.as_ref(), other.session.as_ref())
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
   }
 }
 
@@ -530,6 +542,7 @@ impl Component for UserNormalizationToggle {
     let props = ctx.props::<Self::Props>().clone();
     let server_id = optional_session_address(props.session.as_ref());
     let initial = load_user_normalization(
+      props.user_audio_preferences.as_ref(),
       props.storage.as_ref(),
       props.session.as_ref(),
       server_id.as_deref(),
@@ -552,6 +565,7 @@ impl Component for UserNormalizationToggle {
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let enabled = load_user_normalization(
+        props.user_audio_preferences.as_ref(),
         props.storage.as_ref(),
         props.session.as_ref(),
         server_id.as_deref(),
@@ -570,6 +584,7 @@ impl Component for UserNormalizationToggle {
       self.enabled.clone(),
       props.session.clone(),
       props.storage,
+      props.user_audio_preferences,
       server_id,
       props.user_id,
     )
@@ -583,6 +598,7 @@ impl Component for UserVolumeControl {
     let props = ctx.props::<Self::Props>().clone();
     let initial_server_id = optional_session_address(props.session.as_ref());
     let initial = load_user_volume(
+      props.user_audio_preferences.as_ref(),
       props.storage.as_ref(),
       props.session.as_ref(),
       initial_server_id.as_deref(),
@@ -635,6 +651,7 @@ impl Component for UserVolumeControl {
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let value = load_user_volume(
+        props.user_audio_preferences.as_ref(),
         props.storage.as_ref(),
         props.session.as_ref(),
         server_id.as_deref(),
@@ -653,6 +670,7 @@ impl Component for UserVolumeControl {
     }
 
     let save_storage = props.storage.clone();
+    let save_preferences = props.user_audio_preferences.clone();
     let save_session = props.session.clone();
     let save_server_id = server_id.clone();
     let save_user_id = props.user_id;
@@ -664,8 +682,14 @@ impl Component for UserVolumeControl {
         if let Some(session) = save_session.as_ref() {
           session.set_user_volume(save_user_id, volume);
         }
-        if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
-          let _ = storage.save_volume_override(server_id, save_user_id, volume);
+        if let Some(server_id) = save_server_id.as_deref() {
+          let _ = save_voice_volume_override(
+            save_preferences.as_ref(),
+            save_storage.as_ref(),
+            server_id,
+            save_user_id,
+            volume,
+          );
         }
       }),
     )
@@ -673,27 +697,29 @@ impl Component for UserVolumeControl {
 }
 
 fn load_user_volume(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
   storage: Option<&Storage>,
   session: Option<&ServerSession>,
   server_id: Option<&str>,
   user_id: UserId,
 ) -> i32 {
-  storage
-    .zip(server_id)
-    .and_then(|(storage, server_id)| storage.load_volume_override(server_id, user_id).ok().flatten())
+  server_id
+    .map(|server_id| server_user_audio_preferences(preferences_store, storage, server_id))
+    .and_then(|preferences| preferences.voice_volumes.get(&user_id).copied())
     .or_else(|| session.map(|session| session.user_volume(user_id)))
     .unwrap_or(DEFAULT_USER_VOLUME)
 }
 
 fn load_user_normalization(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
   storage: Option<&Storage>,
   session: Option<&ServerSession>,
   server_id: Option<&str>,
   user_id: UserId,
 ) -> bool {
-  storage
-    .zip(server_id)
-    .and_then(|(storage, server_id)| storage.load_user_normalization(server_id, user_id).ok())
+  server_id
+    .map(|server_id| server_user_audio_preferences(preferences_store, storage, server_id))
+    .map(|preferences| preferences.normalized_users.contains(&user_id))
     .or_else(|| session.map(|session| session.user_normalization(user_id)))
     .unwrap_or(false)
 }
@@ -703,6 +729,7 @@ fn user_normalization_toggle(
   enabled: Signal<bool>,
   session: Option<ServerSession>,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   server_id: Option<String>,
   user_id: UserId,
 ) -> Element {
@@ -726,8 +753,14 @@ fn user_normalization_toggle(
       if let Some(session) = session.as_ref() {
         session.set_user_normalization(user_id, next);
       }
-      if let (Some(storage), Some(server_id)) = (storage.as_ref(), server_id.as_deref()) {
-        let _ = storage.save_user_normalization(server_id, user_id, next);
+      if let Some(server_id) = server_id.as_deref() {
+        let _ = save_voice_normalization_override(
+          user_audio_preferences.as_ref(),
+          storage.as_ref(),
+          server_id,
+          user_id,
+          next,
+        );
       }
     })
     .child(

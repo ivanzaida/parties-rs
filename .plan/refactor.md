@@ -561,6 +561,10 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - changed identity overview/settings/sentry routing and onboarding import/restore/create flows to read/write the store;
   - changed manual connect, saved-server reconnect, update-resume reconnect, and test-connection auth paths to use the store first with storage as a fallback;
   - centralized identity save/delete helpers so storage writes update the in-memory identity.
+- Moved per-server user audio preferences into an in-memory store:
+  - loaded voice volume, stream volume, and voice-normalization overrides into `Store<UserAudioPreferences>` at app startup;
+  - changed connection/reconnect/resume paths to apply user audio preferences from the store with storage as fallback;
+  - changed voice user volume, stream volume, and normalization controls to update the store and sync storage only on change.
 
 ## Current Residual Reads
 
@@ -569,6 +573,7 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
 - Saved-server storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
 - Identity storage reads remain only in startup/bootstrap, auth fallback, and storage-owned helpers.
+- User audio preference storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
   - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;
   - stream modal lifecycle/error handling;

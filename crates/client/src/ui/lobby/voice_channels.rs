@@ -7,7 +7,7 @@ use lurq::{
     events::{MouseButton, MouseEvent},
   },
   components::{Column, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -26,7 +26,7 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
   session::{LobbyChannel, LobbyUser, ServerSession},
-  storage::Storage,
+  storage::{Storage, UserAudioPreferences},
   theme,
   ui::lobby::{
     channel_section::{aligned_channel_icon, aligned_channel_icon_with_color, section_head},
@@ -95,6 +95,7 @@ pub(super) struct VoiceChannelsProps {
   pub local_role: Role,
   pub debug_user_ids: bool,
   pub storage: Option<Storage>,
+  pub user_audio_preferences: Option<Store<UserAudioPreferences>>,
   pub actions: VoiceChannelActions,
 }
 
@@ -106,6 +107,7 @@ impl PartialEq for VoiceChannelsProps {
       && self.local_role == other.local_role
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && self.actions == other.actions
   }
 }
@@ -292,6 +294,7 @@ impl Component for VoiceChannels {
           role_menu_user_id: modal_role_menu_user_id,
           session: modal_session,
           storage: props.storage.clone(),
+          user_audio_preferences: props.user_audio_preferences.clone(),
           actions: modal_actions,
           debug_user_ids: props.debug_user_ids,
         }))

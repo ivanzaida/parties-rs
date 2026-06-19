@@ -23,7 +23,7 @@ use crate::{
     updater::{StartupUpdateStatus, restart_into_update},
   },
   session::ServerSession,
-  storage::{AppSettings, Storage, StoredServer, stored_server_by_address},
+  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences, stored_server_by_address},
   theme,
   ui::{
     brand_logo::logo_mark,
@@ -153,6 +153,7 @@ impl Component for LoadingIdentityScreen {
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
+    let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let resume_errors = ConnectErrorCopy::from_ctx(ctx);
     let route_session = session.clone();
@@ -160,11 +161,20 @@ impl Component for LoadingIdentityScreen {
       let session = session.clone();
       let settings_store = settings_store.clone();
       let identity_store = identity_store.clone();
+      let user_audio_preferences = user_audio_preferences.clone();
       let servers_store = servers_store.clone();
       let errors = resume_errors.clone();
       async move {
-        restore_update_resume_after_restart(storage, identity_store, servers_store, settings_store, session, errors)
-          .await
+        restore_update_resume_after_restart(
+          storage,
+          identity_store,
+          user_audio_preferences,
+          servers_store,
+          settings_store,
+          session,
+          errors,
+        )
+        .await
       }
     });
     let restore_update_resume_state = restore_update_resume.state().get();
@@ -258,6 +268,7 @@ impl Component for LoadingIdentityScreen {
 async fn restore_update_resume_after_restart(
   storage: Storage,
   identity_store: Option<Store<Option<LocalIdentity>>>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: Option<ServerSession>,
@@ -309,6 +320,7 @@ async fn restore_update_resume_after_restart(
     display_name,
     Some(storage.clone()),
     identity_store,
+    user_audio_preferences,
     servers_store,
     Some(session.clone()),
     errors,

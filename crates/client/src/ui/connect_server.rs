@@ -21,7 +21,10 @@ use crate::{
   },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS, ROUTE_TOFU_WARNING},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession, TofuWarning},
-  storage::{AppSettings, Storage, StoredServer, stored_server_by_address, upsert_stored_server},
+  storage::{
+    AppSettings, Storage, StoredServer, UserAudioPreferences, server_user_audio_preferences, stored_server_by_address,
+    upsert_stored_server,
+  },
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -131,11 +134,13 @@ impl Component for ConnectServerScreen {
 
     let errors = ConnectErrorCopy::from_ctx(ctx);
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
+    let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let route_session = session.clone();
     let connect = ctx.future_action(move |(address, seed, display_name): (String, String, String)| {
       let storage = storage.clone();
       let identity_store = identity_store.clone();
+      let user_audio_preferences = user_audio_preferences.clone();
       let servers_store = servers_store.clone();
       let session = session.clone();
       let errors = errors.clone();
@@ -146,6 +151,7 @@ impl Component for ConnectServerScreen {
           display_name,
           storage,
           identity_store,
+          user_audio_preferences,
           servers_store,
           session,
           errors,
@@ -365,6 +371,7 @@ pub async fn connect_and_store(
   display_name: String,
   storage: Option<Storage>,
   identity_store: Option<Store<Option<LocalIdentity>>>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   servers_store: Option<Store<Vec<StoredServer>>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
@@ -437,14 +444,8 @@ pub async fn connect_and_store(
     role: response.role,
     certificate_fingerprint: fingerprint.clone(),
   };
-  let volume_overrides = storage
-    .as_ref()
-    .and_then(|storage| storage.load_volume_overrides(&info.address).ok())
-    .unwrap_or_default();
-  let normalized_users = storage
-    .as_ref()
-    .and_then(|storage| storage.load_user_normalizations(&info.address).ok())
-    .unwrap_or_default();
+  let audio_preferences =
+    server_user_audio_preferences(user_audio_preferences.as_ref(), storage.as_ref(), &info.address);
   let saved_server = servers_store
     .as_ref()
     .and_then(|servers| stored_server_by_address(&servers.get(), &info.address))
@@ -507,10 +508,13 @@ pub async fn connect_and_store(
       info: info.clone(),
       server: Arc::new(server),
     });
-    for (user_id, volume) in volume_overrides {
+    for (user_id, volume) in audio_preferences.voice_volumes {
       session.set_user_volume(user_id, volume);
     }
-    for user_id in normalized_users {
+    for (user_id, volume) in audio_preferences.stream_volumes {
+      session.set_stream_volume(user_id, volume);
+    }
+    for user_id in audio_preferences.normalized_users {
       session.set_user_normalization(user_id, true);
     }
     if let Some(warning) = tofu_warning {

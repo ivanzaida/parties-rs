@@ -169,6 +169,22 @@ pub struct StoredServer {
   pub display_name: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerUserAudioPreferences {
+  pub voice_volumes: HashMap<UserId, i32>,
+  pub stream_volumes: HashMap<UserId, i32>,
+  pub normalized_users: HashSet<UserId>,
+}
+
+impl DevtoolsInspectable for ServerUserAudioPreferences {}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserAudioPreferences {
+  pub servers: HashMap<String, ServerUserAudioPreferences>,
+}
+
+impl DevtoolsInspectable for UserAudioPreferences {}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, lurq::DevtoolsInspectable)]
 pub struct LegacyPartiesImportSummary {
   pub imported_identity: bool,
@@ -293,6 +309,106 @@ pub fn delete_local_identity(
   }
 
   Ok(())
+}
+
+pub fn server_user_audio_preferences(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  storage: Option<&Storage>,
+  server_id: &str,
+) -> ServerUserAudioPreferences {
+  if let Some(preferences) = preferences_store
+    .as_ref()
+    .and_then(|preferences| preferences.with(|preferences| preferences.servers.get(server_id).cloned()))
+  {
+    return preferences;
+  }
+
+  let preferences = storage
+    .and_then(|storage| storage.load_server_user_audio_preferences(server_id).ok())
+    .unwrap_or_default();
+  if let Some(preferences_store) = preferences_store {
+    let mut all_preferences = preferences_store.get();
+    all_preferences
+      .servers
+      .insert(server_id.to_owned(), preferences.clone());
+    preferences_store.set(all_preferences);
+  }
+  preferences
+}
+
+pub fn save_voice_volume_override(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  storage: Option<&Storage>,
+  server_id: &str,
+  user_id: UserId,
+  volume: i32,
+) -> Result<(), StorageError> {
+  let volume = volume.clamp(0, 100);
+  if let Some(storage) = storage {
+    storage.save_volume_override(server_id, user_id, volume)?;
+  }
+  update_server_user_audio_preferences(preferences_store, server_id, |preferences| {
+    if volume == 100 {
+      preferences.voice_volumes.remove(&user_id);
+    } else {
+      preferences.voice_volumes.insert(user_id, volume);
+    }
+  });
+  Ok(())
+}
+
+pub fn save_stream_volume_override(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  storage: Option<&Storage>,
+  server_id: &str,
+  user_id: UserId,
+  volume: i32,
+) -> Result<(), StorageError> {
+  let volume = volume.clamp(0, 100);
+  if let Some(storage) = storage {
+    storage.save_stream_volume_override(server_id, user_id, volume)?;
+  }
+  update_server_user_audio_preferences(preferences_store, server_id, |preferences| {
+    if volume == 100 {
+      preferences.stream_volumes.remove(&user_id);
+    } else {
+      preferences.stream_volumes.insert(user_id, volume);
+    }
+  });
+  Ok(())
+}
+
+pub fn save_voice_normalization_override(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  storage: Option<&Storage>,
+  server_id: &str,
+  user_id: UserId,
+  enabled: bool,
+) -> Result<(), StorageError> {
+  if let Some(storage) = storage {
+    storage.save_user_normalization(server_id, user_id, enabled)?;
+  }
+  update_server_user_audio_preferences(preferences_store, server_id, |preferences| {
+    if enabled {
+      preferences.normalized_users.insert(user_id);
+    } else {
+      preferences.normalized_users.remove(&user_id);
+    }
+  });
+  Ok(())
+}
+
+fn update_server_user_audio_preferences(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  server_id: &str,
+  update: impl FnOnce(&mut ServerUserAudioPreferences),
+) {
+  let Some(preferences_store) = preferences_store else {
+    return;
+  };
+  let mut all_preferences = preferences_store.get();
+  update(all_preferences.servers.entry(server_id.to_owned()).or_default());
+  preferences_store.set(all_preferences);
 }
 
 fn sort_stored_servers(servers: &mut [StoredServer]) {
@@ -905,6 +1021,23 @@ impl Storage {
     Ok(volume)
   }
 
+  pub fn load_stream_volume_overrides(&self, server_id: &str) -> Result<HashMap<UserId, i32>, StorageError> {
+    let conn = self.connection()?;
+    let mut stmt = conn.prepare("SELECT user_id, volume FROM stream_volume_overrides WHERE server_id = ?1")?;
+    let rows = stmt.query_map(params![server_id], |row| {
+      Ok((row.get::<_, i64>(0)? as UserId, row.get::<_, i32>(1)?.clamp(0, 100)))
+    })?;
+
+    let mut volumes = HashMap::new();
+    for row in rows {
+      let (user_id, volume) = row?;
+      if volume != 100 {
+        volumes.insert(user_id, volume);
+      }
+    }
+    Ok(volumes)
+  }
+
   pub fn save_stream_volume_override(&self, server_id: &str, user_id: UserId, volume: i32) -> Result<(), StorageError> {
     self.save_volume_override_in_table("stream_volume_overrides", server_id, user_id, volume)
   }
@@ -932,6 +1065,43 @@ impl Storage {
       users.insert(row?);
     }
     Ok(users)
+  }
+
+  pub fn load_server_user_audio_preferences(
+    &self,
+    server_id: &str,
+  ) -> Result<ServerUserAudioPreferences, StorageError> {
+    Ok(ServerUserAudioPreferences {
+      voice_volumes: self.load_volume_overrides(server_id)?,
+      stream_volumes: self.load_stream_volume_overrides(server_id)?,
+      normalized_users: self.load_user_normalizations(server_id)?,
+    })
+  }
+
+  pub fn load_user_audio_preferences(&self) -> Result<UserAudioPreferences, StorageError> {
+    let conn = self.connection()?;
+    let mut preferences = HashMap::<String, ServerUserAudioPreferences>::new();
+    load_volume_preferences_table(&conn, "volume_overrides", &mut preferences, |entry| {
+      &mut entry.voice_volumes
+    })?;
+    load_volume_preferences_table(&conn, "stream_volume_overrides", &mut preferences, |entry| {
+      &mut entry.stream_volumes
+    })?;
+
+    let mut stmt = conn.prepare("SELECT server_id, user_id FROM voice_normalization_overrides")?;
+    let rows = stmt.query_map([], |row| {
+      Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as UserId))
+    })?;
+    for row in rows {
+      let (server_id, user_id) = row?;
+      preferences
+        .entry(server_id)
+        .or_default()
+        .normalized_users
+        .insert(user_id);
+    }
+
+    Ok(UserAudioPreferences { servers: preferences })
   }
 
   pub fn save_user_normalization(&self, server_id: &str, user_id: UserId, enabled: bool) -> Result<(), StorageError> {
@@ -1342,6 +1512,31 @@ fn bool_to_int(value: bool) -> i64 {
 
 fn int_to_bool(value: i64) -> bool {
   value != 0
+}
+
+fn load_volume_preferences_table(
+  conn: &Connection,
+  table: &str,
+  preferences: &mut HashMap<String, ServerUserAudioPreferences>,
+  volume_map: impl Fn(&mut ServerUserAudioPreferences) -> &mut HashMap<UserId, i32>,
+) -> Result<(), StorageError> {
+  let sql = format!("SELECT server_id, user_id, volume FROM {table}");
+  let mut stmt = conn.prepare(&sql)?;
+  let rows = stmt.query_map([], |row| {
+    Ok((
+      row.get::<_, String>(0)?,
+      row.get::<_, i64>(1)? as UserId,
+      row.get::<_, i32>(2)?.clamp(0, 100),
+    ))
+  })?;
+
+  for row in rows {
+    let (server_id, user_id, volume) = row?;
+    if volume != 100 {
+      volume_map(preferences.entry(server_id).or_default()).insert(user_id, volume);
+    }
+  }
+  Ok(())
 }
 
 fn validate_legacy_parties_config_schema(conn: &Connection) -> Result<(), StorageError> {

@@ -20,7 +20,7 @@ use crate::{
   network::server_query::{ServerQueryInfo, query_server},
   routes::{ROUTE_CONNECT_SERVER, ROUTE_LOBBY, ROUTE_TOFU_WARNING},
   session::{ConnectedServerInfo, ServerSession},
-  storage::{AppSettings, Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer, UserAudioPreferences},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -94,6 +94,7 @@ impl Component for SavedServersScreen {
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
+    let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let servers = servers_store.as_ref().map(|servers| servers.get()).unwrap_or_default();
     let connect_errors = ConnectErrorCopy::from_ctx(ctx);
@@ -103,6 +104,7 @@ impl Component for SavedServersScreen {
       let connect_errors = connect_errors.clone();
       let settings_store = settings_store.clone();
       let identity_store = identity_store.clone();
+      let user_audio_preferences = user_audio_preferences.clone();
       let servers_store = servers_store.clone();
       async move {
         let display_name = if server.display_name.trim().is_empty() {
@@ -119,6 +121,7 @@ impl Component for SavedServersScreen {
           display_name,
           storage,
           identity_store,
+          user_audio_preferences,
           servers_store,
           session,
           connect_errors,

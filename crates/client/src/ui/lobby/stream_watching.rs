@@ -24,7 +24,7 @@ use super::{
 use crate::{
   network::protocol::{ChannelId, UserId},
   session::{LobbyChannel, LobbyScreenShare, ServerSession},
-  storage::Storage,
+  storage::{Storage, UserAudioPreferences, save_stream_volume_override, server_user_audio_preferences},
   theme,
   ui::common::{
     lucide_icon::{LucideIcon, LucideIconProps},
@@ -77,6 +77,7 @@ pub(super) fn stream_channel_detail(
   channel: LobbyChannel,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -87,6 +88,7 @@ pub(super) fn stream_channel_detail(
       channel,
       debug_user_ids,
       storage,
+      user_audio_preferences,
       session,
       watch_stream: watch_stream.clone(),
     },
@@ -98,6 +100,7 @@ struct StreamWatchingPaneProps {
   channel: LobbyChannel,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   watch_stream: WatchStreamAction,
 }
@@ -107,6 +110,7 @@ impl PartialEq for StreamWatchingPaneProps {
     self.channel == other.channel
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && same_session(&self.session, &other.session)
   }
 }
@@ -161,6 +165,7 @@ impl Component for StreamWatchingPane {
       model,
       props.debug_user_ids,
       props.storage,
+      props.user_audio_preferences,
       props.session,
       &props.watch_stream,
     )
@@ -173,6 +178,7 @@ fn stream_watching_view(
   model: StreamWatchingModel,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
   watch_stream: &WatchStreamAction,
 ) -> Element {
@@ -185,7 +191,14 @@ fn stream_watching_view(
     .spacing(16.0)
     .padding(20.0)
     .child(subscriber)
-    .child(stage(ctx, &stream, debug_user_ids, storage, &session))
+    .child(stage(
+      ctx,
+      &stream,
+      debug_user_ids,
+      storage,
+      user_audio_preferences,
+      &session,
+    ))
     .child(stream_switcher(
       ctx,
       watched_user_id,
@@ -260,6 +273,7 @@ fn stage(
   stream: &ChannelScreenShare,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: &ServerSession,
 ) -> Element {
   let key = format!("watched-stage-{}", stream.share.sharer_user_id);
@@ -270,6 +284,7 @@ fn stage(
       user: stream.user.clone(),
       debug_user_ids,
       storage,
+      user_audio_preferences,
       session: session.clone(),
     },
   )
@@ -281,6 +296,7 @@ struct WatchedStreamStageProps {
   user: Option<crate::session::LobbyUser>,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
 }
 
@@ -290,6 +306,7 @@ impl PartialEq for WatchedStreamStageProps {
       && self.user == other.user
       && self.debug_user_ids == other.debug_user_ids
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
       && same_session(&self.session, &other.session)
   }
 }
@@ -328,6 +345,7 @@ impl Component for WatchedStreamStage {
       &stream,
       props.debug_user_ids,
       props.storage,
+      props.user_audio_preferences,
       &props.session,
       self.hovered.clone(),
     )
@@ -339,6 +357,7 @@ fn watched_stream_stage(
   stream: &ChannelScreenShare,
   debug_user_ids: bool,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: &ServerSession,
   hovered: Signal<bool>,
 ) -> Element {
@@ -402,7 +421,13 @@ fn watched_stream_stage(
             .align_items(Alignment::End)
             .justify(Justify::SpaceBetween)
             .child(streamer_label(&avatar_name, &title, &meta, speaking))
-            .child(stage_controls(ctx, session, storage, stream.share.sharer_user_id)),
+            .child(stage_controls(
+              ctx,
+              session,
+              storage,
+              user_audio_preferences,
+              stream.share.sharer_user_id,
+            )),
         ),
     );
   }
@@ -637,7 +662,13 @@ fn streamer_label(name: &str, title: &str, meta: &str, active: bool) -> Element 
     .into()
 }
 
-fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storage>, user_id: UserId) -> Element {
+fn stage_controls(
+  ctx: &mut Ctx,
+  session: &ServerSession,
+  storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
+  user_id: UserId,
+) -> Element {
   let key = format!("stream-volume-{user_id}");
 
   Row::new()
@@ -653,6 +684,7 @@ fn stage_controls(ctx: &mut Ctx, session: &ServerSession, storage: Option<Storag
         user_id,
         session: session.clone(),
         storage,
+        user_audio_preferences,
       },
     ))
     .into()
@@ -663,6 +695,7 @@ struct StreamVolumeControlProps {
   user_id: UserId,
   session: ServerSession,
   storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
 }
 
 impl PartialEq for StreamVolumeControlProps {
@@ -670,6 +703,7 @@ impl PartialEq for StreamVolumeControlProps {
     self.user_id == other.user_id
       && same_session(&self.session, &other.session)
       && self.storage.is_some() == other.storage.is_some()
+      && self.user_audio_preferences.is_some() == other.user_audio_preferences.is_some()
   }
 }
 
@@ -698,6 +732,7 @@ impl Component for StreamVolumeControl {
     let props = ctx.props::<Self::Props>().clone();
     let server_id = session_address(&props.session);
     let initial = load_stream_volume(
+      props.user_audio_preferences.as_ref(),
       props.storage.as_ref(),
       &props.session,
       server_id.as_deref(),
@@ -745,6 +780,7 @@ impl Component for StreamVolumeControl {
 
     if self.user_id.get_untracked() != props.user_id || self.server_id.get_untracked() != server_id {
       let value = load_stream_volume(
+        props.user_audio_preferences.as_ref(),
         props.storage.as_ref(),
         &props.session,
         server_id.as_deref(),
@@ -762,6 +798,7 @@ impl Component for StreamVolumeControl {
 
     let save_session = props.session.clone();
     let save_storage = props.storage.clone();
+    let save_preferences = props.user_audio_preferences.clone();
     let save_server_id = server_id.clone();
     let save_user_id = props.user_id;
 
@@ -771,8 +808,14 @@ impl Component for StreamVolumeControl {
       Arc::new(move |volume| {
         let volume = volume.clamp(0, 100);
         save_session.set_stream_volume(save_user_id, volume);
-        if let (Some(storage), Some(server_id)) = (save_storage.as_ref(), save_server_id.as_deref()) {
-          let _ = storage.save_stream_volume_override(server_id, save_user_id, volume);
+        if let Some(server_id) = save_server_id.as_deref() {
+          let _ = save_stream_volume_override(
+            save_preferences.as_ref(),
+            save_storage.as_ref(),
+            server_id,
+            save_user_id,
+            volume,
+          );
         }
       }),
     )
@@ -780,14 +823,15 @@ impl Component for StreamVolumeControl {
 }
 
 fn load_stream_volume(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
   storage: Option<&Storage>,
   session: &ServerSession,
   server_id: Option<&str>,
   user_id: UserId,
 ) -> i32 {
-  storage
-    .zip(server_id)
-    .and_then(|(storage, server_id)| storage.load_stream_volume_override(server_id, user_id).ok().flatten())
+  server_id
+    .map(|server_id| server_user_audio_preferences(preferences_store, storage, server_id))
+    .and_then(|preferences| preferences.stream_volumes.get(&user_id).copied())
     .unwrap_or_else(|| session.stream_volume(user_id))
     .clamp(0, 100)
 }

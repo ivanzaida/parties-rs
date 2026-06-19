@@ -18,7 +18,7 @@ use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_TOFU_WARNING},
   services::screen_share_sources::ScreenShareSourceKind,
   session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, UserAudioPreferences},
   theme,
   ui::{loader::loader, settings::SettingsPopupHandle},
 };
@@ -151,6 +151,7 @@ impl Component for LobbyScreen {
     let storage = ctx.use_context::<Storage>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
     let identity_store = ctx.use_context::<Store<Option<LocalIdentity>>>();
+    let user_audio_preferences = ctx.use_context::<Store<UserAudioPreferences>>();
     let servers_store = ctx.use_context::<Store<Vec<crate::storage::StoredServer>>>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
 
@@ -219,6 +220,7 @@ impl Component for LobbyScreen {
       ctx,
       storage.clone(),
       identity_store.clone(),
+      user_audio_preferences.clone(),
       servers_store.clone(),
       settings_store.clone(),
       session.clone(),
@@ -265,6 +267,7 @@ impl Component for LobbyScreen {
         debug_mode_enabled,
         session: session.clone(),
         storage: storage.clone(),
+        user_audio_preferences: user_audio_preferences.clone(),
         settings_popup: settings_popup.clone(),
         stream_actions: rail_stream_actions,
       }))
@@ -283,6 +286,7 @@ impl Component for LobbyScreen {
         self.chat_prepend_settle_anchor.clone(),
         debug_mode_enabled,
         storage,
+        user_audio_preferences,
         session.clone(),
         chat_actions,
         self.start_stream_modal_open.clone(),
