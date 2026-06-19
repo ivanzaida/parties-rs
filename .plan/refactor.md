@@ -475,6 +475,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - replaced the remaining rail action `session.lobby()` clone with the narrower summary method.
 - Removed the legacy combined rail model:
   - deleted the unused `LobbyRailModel` and `lobby_rail_model` selector after rail sections moved to dedicated subscriptions.
+- Narrowed voice channel row rendering:
+  - mounted each voice channel group and channel header as keyed components;
+  - kept user rows componentized so channel/header props can skip rerenders when unrelated users update.
 
 ## Non-Goals
 

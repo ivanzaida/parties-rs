@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, Role, UserId},
-  session::{LobbyUser, ServerSession},
+  session::{LobbyChannel, LobbyUser, ServerSession},
   storage::Storage,
   theme,
   ui::lobby::{
@@ -244,18 +244,17 @@ impl Component for VoiceChannels {
         props.channels,
         |channel| channel.channel.id,
         move |ctx, channel| {
-          channel_group(
-            ctx,
-            &channel,
-            join_channel.as_ref(),
-            watch_stream.as_ref(),
-            session_for_channels.clone(),
-            context_user_id.clone(),
-            context_menu_open.clone(),
-            context_menu_anchor.clone(),
-            role_menu_user_id.clone(),
+          ctx.mount::<ChannelGroup>(ChannelGroupProps {
+            model: channel,
+            join_channel: join_channel.clone(),
+            watch_stream: watch_stream.clone(),
+            session: session_for_channels.clone(),
+            context_user_id: context_user_id.clone(),
+            context_menu_open: context_menu_open.clone(),
+            context_menu_anchor: context_menu_anchor.clone(),
+            role_menu_user_id: role_menu_user_id.clone(),
             debug_user_ids,
-          )
+          })
         },
       );
       body = body.with_children(channel_groups);
@@ -375,18 +374,60 @@ fn kick_user_action(ctx: &mut Ctx, session: ServerSession) -> KickUserAction {
   })
 }
 
-fn channel_group(
-  ctx: &mut Ctx,
-  channel: &VoiceChannelRowModel,
-  join_channel: Option<&JoinChannelAction>,
-  watch_stream: Option<&WatchStreamAction>,
+#[derive(Clone)]
+struct ChannelGroupProps {
+  model: VoiceChannelRowModel,
+  join_channel: Option<JoinChannelAction>,
+  watch_stream: Option<WatchStreamAction>,
   session: Option<ServerSession>,
   context_user_id: Signal<Option<UserId>>,
   context_menu_open: Signal<bool>,
   context_menu_anchor: Signal<Option<(f32, f32)>>,
   role_menu_user_id: Signal<Option<UserId>>,
   debug_user_ids: bool,
-) -> Element {
+}
+
+impl PartialEq for ChannelGroupProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.model == other.model
+      && self.join_channel == other.join_channel
+      && self.watch_stream.is_some() == other.watch_stream.is_some()
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
+      && self.debug_user_ids == other.debug_user_ids
+  }
+}
+
+impl DevtoolsInspectable for ChannelGroupProps {}
+
+struct ChannelGroup;
+
+impl Component for ChannelGroup {
+  type Props = ChannelGroupProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    channel_group(ctx, props)
+  }
+}
+
+fn channel_group(ctx: &mut Ctx, props: ChannelGroupProps) -> Element {
+  let channel = props.model;
+  let channel_id = channel.channel.id;
+  let channel_user_count = channel.users.len();
+  let header_model = VoiceChannelHeaderModel {
+    channel: channel.channel.clone(),
+    selected: channel.selected,
+  };
+  let watch_stream = props.watch_stream.clone();
+  let context_user_id = props.context_user_id.clone();
+  let context_menu_open = props.context_menu_open.clone();
+  let context_menu_anchor = props.context_menu_anchor.clone();
+  let role_menu_user_id = props.role_menu_user_id.clone();
+  let debug_user_ids = props.debug_user_ids;
   let mut users = channel.users.clone();
   users.sort_by(|left, right| {
     left
@@ -403,10 +444,10 @@ fn channel_group(
     |row| row.user.user_id,
     move |ctx, row| {
       ctx.mount::<ChannelUserRow>(ChannelUserRowProps {
-        channel_id: channel.channel.id,
-        channel_user_count: channel.users.len(),
+        channel_id,
+        channel_user_count,
         model: row,
-        watch_stream: watch_stream.cloned(),
+        watch_stream: watch_stream.clone(),
         context_user_id: context_user_id.clone(),
         context_menu_open: context_menu_open.clone(),
         context_menu_anchor: context_menu_anchor.clone(),
@@ -419,14 +460,56 @@ fn channel_group(
   Column::new()
     .width(Dimension::Pct(100.0))
     .spacing(2.0)
-    .child(channel_row(ctx, channel, join_channel, session))
+    .child(ctx.mount::<ChannelRow>(ChannelRowProps {
+      model: header_model,
+      join_channel: props.join_channel,
+      session: props.session,
+    }))
     .with_children(user_rows)
     .into()
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct VoiceChannelHeaderModel {
+  channel: LobbyChannel,
+  selected: bool,
+}
+
+#[derive(Clone)]
+struct ChannelRowProps {
+  model: VoiceChannelHeaderModel,
+  join_channel: Option<JoinChannelAction>,
+  session: Option<ServerSession>,
+}
+
+impl PartialEq for ChannelRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.model == other.model
+      && self.join_channel == other.join_channel
+      && same_optional_session(self.session.as_ref(), other.session.as_ref())
+  }
+}
+
+impl DevtoolsInspectable for ChannelRowProps {}
+
+struct ChannelRow;
+
+impl Component for ChannelRow {
+  type Props = ChannelRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    channel_row(ctx, &props.model, props.join_channel.as_ref(), props.session)
+  }
+}
+
 fn channel_row(
   ctx: &mut Ctx,
-  model: &VoiceChannelRowModel,
+  model: &VoiceChannelHeaderModel,
   join_channel: Option<&JoinChannelAction>,
   session: Option<ServerSession>,
 ) -> Element {
