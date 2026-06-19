@@ -534,6 +534,7 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
+- `server_settings.rs` still snapshots `session.lobby()` in render for settings pages; split this into page-specific subscribed settings models before treating it as part of the hot connected-lobby path.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
   - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;
