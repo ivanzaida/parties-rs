@@ -46,7 +46,7 @@ pub struct SettingsStreamScreen {
   fps: String,
   bitrate_mbps: f32,
   hardware_decoding: bool,
-  webcam_devices: Signal<Vec<WebcamDevice>>,
+  webcam_devices: Store<Vec<WebcamDevice>>,
 }
 
 impl Component for SettingsStreamScreen {
@@ -66,7 +66,7 @@ impl Component for SettingsStreamScreen {
     let hardware_decoding = settings.video_hardware_decoding;
     let webcam_default_label = ctx.t("settings.video.webcam.fallback").to_string();
     let webcam_indexed_label = ctx.t("settings.video.webcam.fallback_indexed").to_string();
-    let webcam_devices = ctx.signal(localized_webcam_devices(&webcam_default_label, &webcam_indexed_label));
+    let webcam_devices = ctx.store(localized_webcam_devices(&webcam_default_label, &webcam_indexed_label));
 
     Self {
       webcam_device,
@@ -149,17 +149,19 @@ impl Component for SettingsStreamScreen {
   }
 }
 
-#[derive(Clone, lurq::DevtoolsInspectable)]
+#[derive(Clone)]
 struct WebcamSettingProps {
   selected: Signal<String>,
-  devices: Signal<Vec<WebcamDevice>>,
+  devices: Store<Vec<WebcamDevice>>,
 }
 
 impl PartialEq for WebcamSettingProps {
   fn eq(&self, other: &Self) -> bool {
-    self.selected.id() == other.selected.id() && self.devices.id() == other.devices.id()
+    self.selected.id() == other.selected.id()
   }
 }
+
+impl DevtoolsInspectable for WebcamSettingProps {}
 
 struct WebcamSetting {
   value: Signal<String>,
@@ -384,7 +386,7 @@ impl Component for VideoBitrateSetting {
 fn webcam_control(
   ctx: &mut Ctx,
   selected: Signal<String>,
-  devices: Signal<Vec<WebcamDevice>>,
+  devices: Store<Vec<WebcamDevice>>,
   options: Vec<DropdownOption>,
   system_default: &str,
   webcam_default_label: &str,

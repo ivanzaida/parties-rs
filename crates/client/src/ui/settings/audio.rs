@@ -79,8 +79,8 @@ pub struct SettingsAudioScreen {
   hotkey_push_to_talk: String,
   hotkey_toggle_mute: String,
   hotkey_toggle_deafen: String,
-  input_devices: Signal<Vec<String>>,
-  output_devices: Signal<Vec<String>>,
+  input_devices: Store<Vec<String>>,
+  output_devices: Store<Vec<String>>,
 }
 
 impl Component for SettingsAudioScreen {
@@ -105,8 +105,8 @@ impl Component for SettingsAudioScreen {
     let hotkey_push_to_talk = settings.hotkey_push_to_talk;
     let hotkey_toggle_mute = settings.hotkey_toggle_mute;
     let hotkey_toggle_deafen = settings.hotkey_toggle_deafen;
-    let input_devices = ctx.signal(audio_devices::input_device_names());
-    let output_devices = ctx.signal(audio_devices::output_device_names());
+    let input_devices = ctx.store(audio_devices::input_device_names());
+    let output_devices = ctx.store(audio_devices::output_device_names());
     let input_level_meter = Arc::new(Mutex::new(None));
     replace_input_level_meter(
       &input_level_meter,
@@ -354,18 +354,20 @@ enum AudioDeviceKind {
   Output,
 }
 
-#[derive(Clone, lurq::DevtoolsInspectable)]
+#[derive(Clone)]
 struct AudioDeviceSettingProps {
   kind: AudioDeviceKind,
   selected: Signal<String>,
-  devices: Signal<Vec<String>>,
+  devices: Store<Vec<String>>,
 }
 
 impl PartialEq for AudioDeviceSettingProps {
   fn eq(&self, other: &Self) -> bool {
-    self.kind == other.kind && self.selected.id() == other.selected.id() && self.devices.id() == other.devices.id()
+    self.kind == other.kind && self.selected.id() == other.selected.id()
   }
 }
+
+impl DevtoolsInspectable for AudioDeviceSettingProps {}
 
 struct AudioDeviceSetting {
   value: Signal<String>,
@@ -840,7 +842,7 @@ impl Component for AudioHotkeySetting {
 fn audio_device_control(
   ctx: &mut Ctx,
   selected: Signal<String>,
-  devices: Signal<Vec<String>>,
+  devices: Store<Vec<String>>,
   options: Vec<DropdownOption>,
   system_default: &str,
   refresh_devices: fn() -> Vec<String>,

@@ -547,6 +547,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Moved saved-server query results into a store:
   - kept async server query output in `Store<Vec<ServerQueryEntry>>`;
   - left the query signature as local control state while server cards consume the stored query model.
+- Moved settings device lists into stores:
+  - kept audio input/output device lists in `Store<Vec<String>>`;
+  - kept webcam device options in `Store<Vec<WebcamDevice>>` while selected device values remain focused signals.
 
 ## Current Residual Reads
 
