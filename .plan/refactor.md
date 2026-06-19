@@ -509,6 +509,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Narrowed voice user row watch props:
   - removed unused channel id/count props from voice user rows;
   - read watch-stream pending state once at the channel group boundary and passed row-specific availability.
+- Narrowed rail stream control:
+  - mounted the rail stream button as its own component;
+  - scoped stop-stream pending-state reads to the button instead of the full controls row.
 
 ## Non-Goals
 

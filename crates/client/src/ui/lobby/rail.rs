@@ -1119,6 +1119,58 @@ fn stream_control_button(
   streaming: bool,
   disabled: bool,
 ) -> Element {
+  ctx.mount::<StreamControlButton>(StreamControlButtonProps {
+    start_stream_modal_open,
+    stop_stream: stop_stream.clone(),
+    streaming,
+    disabled,
+  })
+}
+
+#[derive(Clone)]
+struct StreamControlButtonProps {
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: StopStreamAction,
+  streaming: bool,
+  disabled: bool,
+}
+
+impl PartialEq for StreamControlButtonProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.streaming == other.streaming && self.disabled == other.disabled
+  }
+}
+
+impl DevtoolsInspectable for StreamControlButtonProps {}
+
+struct StreamControlButton;
+
+impl Component for StreamControlButton {
+  type Props = StreamControlButtonProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    stream_control_button_content(
+      ctx,
+      props.start_stream_modal_open,
+      props.stop_stream,
+      props.streaming,
+      props.disabled,
+    )
+  }
+}
+
+fn stream_control_button_content(
+  ctx: &mut Ctx,
+  start_stream_modal_open: Signal<bool>,
+  stop_stream: StopStreamAction,
+  streaming: bool,
+  disabled: bool,
+) -> Element {
   let open = start_stream_modal_open.clone();
   let pending = stop_stream.state().get().is_pending();
   let mut button = icon_button(
@@ -1130,7 +1182,6 @@ fn stream_control_button(
 
   if !disabled && !pending {
     if streaming {
-      let stop_stream = stop_stream.clone();
       button = button.on_click(move |_| stop_stream.run(()));
     } else {
       button = button.on_click(move |_| open.set(true));
