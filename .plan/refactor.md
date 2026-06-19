@@ -473,6 +473,8 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Removed rail join debug snapshot reads:
   - added a field-specific `ServerSession` debug summary for voice-channel join diagnostics;
   - replaced the remaining rail action `session.lobby()` clone with the narrower summary method.
+- Removed the legacy combined rail model:
+  - deleted the unused `LobbyRailModel` and `lobby_rail_model` selector after rail sections moved to dedicated subscriptions.
 
 ## Non-Goals
 

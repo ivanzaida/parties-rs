@@ -77,27 +77,6 @@ pub(super) struct VoiceChannelRowModel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct LobbyRailModel {
-  pub(super) server_name: String,
-  pub(super) display_name: String,
-  pub(super) user_id: UserId,
-  pub(super) role: Role,
-  pub(super) text_channels: Vec<TextChannelRowModel>,
-  pub(super) voice_channels: Vec<VoiceChannelRowModel>,
-  pub(super) debug_chat_selected: bool,
-  pub(super) disconnected: bool,
-  pub(super) selected_voice_channel: Option<LobbyChannel>,
-  pub(super) connection_warning: Option<LobbyConnectionWarning>,
-  pub(super) ping_ms: Option<u32>,
-  pub(super) local_user_name: Option<String>,
-  pub(super) local_voice_state: (bool, bool),
-  pub(super) local_user_in_voice: bool,
-  pub(super) local_streaming: bool,
-}
-
-impl DevtoolsInspectable for LobbyRailModel {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RailHeaderModel {
   pub(super) server_name: String,
   pub(super) display_name: String,
@@ -187,29 +166,6 @@ pub(super) struct LobbyShellModel {
 }
 
 impl DevtoolsInspectable for LobbyShellModel {}
-
-pub(super) fn lobby_rail_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> LobbyRailModel {
-  LobbyRailModel {
-    server_name: info.server_name.clone(),
-    display_name: info.display_name.clone(),
-    user_id: info.user_id,
-    role: info.role,
-    text_channels: text_channel_rows(lobby),
-    voice_channels: voice_channel_rows(lobby, info.user_id),
-    debug_chat_selected: lobby.debug_chat_selected,
-    disconnected: lobby.disconnected,
-    selected_voice_channel: selected_voice_channel(lobby).cloned(),
-    connection_warning: lobby.connection_warning.clone(),
-    ping_ms: lobby.ping_ms,
-    local_user_name: local_user_name(lobby, info.user_id),
-    local_voice_state: local_voice_state(lobby, info.user_id),
-    local_user_in_voice: local_user_in_voice(lobby, info.user_id),
-    local_streaming: lobby
-      .screen_shares
-      .iter()
-      .any(|share| share.sharer_user_id == info.user_id),
-  }
-}
 
 pub(super) fn rail_header_model(info: &ConnectedServerInfo, lobby: &LobbyState) -> RailHeaderModel {
   RailHeaderModel {

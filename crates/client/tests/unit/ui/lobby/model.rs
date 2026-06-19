@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::{
-  chat_pane_model, floating_stream_preview_model, lobby_rail_model, lobby_shell_model, main_body_model,
-  main_top_bar_model, stream_browser_model, stream_watching_model,
+  chat_pane_model, floating_stream_preview_model, lobby_shell_model, main_body_model, main_top_bar_model,
+  rail_bottom_model, rail_channels_model, rail_header_model, stream_browser_model, stream_watching_model,
 };
 use crate::{
   network::protocol::{
@@ -80,7 +80,7 @@ fn chat_message(id: u64, channel_id: ChannelId, sender_id: UserId) -> ChatMessag
 }
 
 #[test]
-fn lobby_rail_model_collects_rail_only_state() {
+fn rail_section_models_collect_rail_only_state() {
   let local = user(7, "local", true, false);
   let remote = user(8, "remote", false, false);
   let lobby = LobbyState {
@@ -102,36 +102,40 @@ fn lobby_rail_model_collects_rail_only_state() {
     ..LobbyState::default()
   };
 
-  let model = lobby_rail_model(&info(7), &lobby);
+  let info = info(7);
+  let header = rail_header_model(&info, &lobby);
+  let channels = rail_channels_model(&info, &lobby);
+  let bottom = rail_bottom_model(&info, &lobby);
 
-  assert_eq!(model.server_name, "Parties");
-  assert_eq!(model.display_name, "Local Display");
-  assert_eq!(model.user_id, 7);
-  assert_eq!(model.role, Role::Moderator);
-  assert_eq!(model.text_channels.len(), 2);
-  assert!(model.text_channels[0].selected);
-  assert!(model.text_channels[1].unread);
-  assert_eq!(model.voice_channels.len(), 2);
-  assert!(model.voice_channels[0].selected);
-  assert!(model.voice_channels[0].users[0].local);
-  assert!(model.voice_channels[0].users[0].streaming);
+  assert_eq!(header.server_name, "Parties");
+  assert_eq!(header.display_name, "Local Display");
+  assert_eq!(header.user_id, 7);
+  assert_eq!(header.role, Role::Moderator);
+  assert_eq!(header.local_user_name.as_deref(), Some("local"));
+  assert_eq!(channels.text_channels.len(), 2);
+  assert!(channels.text_channels[0].selected);
+  assert!(channels.text_channels[1].unread);
+  assert_eq!(channels.voice_channels.len(), 2);
+  assert!(channels.voice_channels[0].selected);
+  assert!(channels.voice_channels[0].users[0].local);
+  assert!(channels.voice_channels[0].users[0].streaming);
+  assert!(channels.debug_chat_selected);
   assert_eq!(
-    model.selected_voice_channel.as_ref().map(|channel| channel.id),
+    bottom.selected_voice_channel.as_ref().map(|channel| channel.id),
     Some(10)
   );
   assert_eq!(
-    model
+    bottom
       .connection_warning
       .as_ref()
       .map(|warning| warning.message.as_str()),
     Some("voice stopped")
   );
-  assert_eq!(model.ping_ms, Some(42));
-  assert_eq!(model.local_user_name.as_deref(), Some("local"));
-  assert_eq!(model.local_voice_state, (true, false));
-  assert!(model.local_user_in_voice);
-  assert!(model.local_streaming);
-  assert!(model.debug_chat_selected);
+  assert_eq!(bottom.ping_ms, Some(42));
+  assert_eq!(bottom.local_user_name.as_deref(), Some("local"));
+  assert_eq!(bottom.local_voice_state, (true, false));
+  assert!(bottom.local_user_in_voice);
+  assert!(bottom.local_streaming);
 }
 
 #[test]
@@ -233,10 +237,18 @@ fn rail_model_ignores_chat_message_only_updates() {
     ..LobbyState::default()
   };
   let info = info(7);
-  let before = lobby_rail_model(&info, &lobby);
+  let before = (
+    rail_header_model(&info, &lobby),
+    rail_channels_model(&info, &lobby),
+    rail_bottom_model(&info, &lobby),
+  );
 
   lobby.chat_messages_by_channel.insert(30, vec![chat_message(1, 30, 8)]);
-  let after = lobby_rail_model(&info, &lobby);
+  let after = (
+    rail_header_model(&info, &lobby),
+    rail_channels_model(&info, &lobby),
+    rail_bottom_model(&info, &lobby),
+  );
 
   assert_eq!(before, after);
 }
