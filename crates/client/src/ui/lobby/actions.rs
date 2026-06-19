@@ -528,7 +528,6 @@ pub(super) fn reconnect_action(
       let server = servers_store
         .as_ref()
         .and_then(|servers| stored_server_by_address(&servers.get(), &request.address))
-        .or_else(|| storage.load_server(&request.address).ok().flatten())
         .ok_or(copy.saved_credentials_missing.clone())?;
       reconnect_saved_server(
         server,

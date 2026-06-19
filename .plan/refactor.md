@@ -568,14 +568,17 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Synced legacy import into the in-memory stores:
   - reloaded imported settings, saved servers, identity, and user audio preferences after legacy DB import completes;
   - applied imported locale to the active i18n context immediately.
+- Removed connection-path storage reads for store-owned data:
+  - manual connect/test-connection auth now uses the identity store only;
+  - saved-server metadata, reconnect, and update-resume lookups now use the saved-server store instead of DB fallback reads.
 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
-- Saved-server storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
-- Identity storage reads remain only in startup/bootstrap, auth fallback, and storage-owned helpers.
+- Saved-server storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.
+- Identity storage reads remain only in startup/bootstrap, legacy import sync, and storage-owned helpers.
 - User audio preference storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
   - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;

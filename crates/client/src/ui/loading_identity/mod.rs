@@ -288,8 +288,7 @@ async fn restore_update_resume_after_restart(
   };
   let server = servers_store
     .as_ref()
-    .and_then(|servers| stored_server_by_address(&servers.get(), &resume.server_address))
-    .or_else(|| storage.load_server(&resume.server_address).ok().flatten());
+    .and_then(|servers| stored_server_by_address(&servers.get(), &resume.server_address));
   let Some(server) = server else {
     tracing::debug!(
       target: "updater",

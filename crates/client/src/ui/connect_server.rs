@@ -384,7 +384,7 @@ pub async fn connect_and_store(
     display_name
   );
 
-  let identity = identity_from_store_or_storage(identity_store.as_ref(), storage.as_ref(), &errors)?;
+  let identity = identity_from_store(identity_store.as_ref(), &errors)?;
 
   let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
@@ -448,13 +448,7 @@ pub async fn connect_and_store(
     server_user_audio_preferences(user_audio_preferences.as_ref(), storage.as_ref(), &info.address);
   let saved_server = servers_store
     .as_ref()
-    .and_then(|servers| stored_server_by_address(&servers.get(), &info.address))
-    .or_else(|| {
-      storage
-        .as_ref()
-        .and_then(|storage| storage.load_server(&info.address).ok())
-        .flatten()
-    });
+    .and_then(|servers| stored_server_by_address(&servers.get(), &info.address));
   let saved_fingerprint = saved_server
     .as_ref()
     .map(|server| server.certificate_fingerprint.clone())
@@ -544,14 +538,13 @@ pub async fn test_connection(
   address: String,
   seed: String,
   display_name: String,
-  storage: Option<Storage>,
   identity_store: Option<Store<Option<LocalIdentity>>>,
   errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
   let address = with_default_port(&address);
   let display_name = display_name.trim().to_owned();
 
-  let identity = identity_from_store_or_storage(identity_store.as_ref(), storage.as_ref(), &errors)?;
+  let identity = identity_from_store(identity_store.as_ref(), &errors)?;
 
   let (server, fingerprint, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
@@ -582,19 +575,13 @@ pub async fn test_connection(
   })
 }
 
-fn identity_from_store_or_storage(
+fn identity_from_store(
   identity_store: Option<&Store<Option<LocalIdentity>>>,
-  storage: Option<&Storage>,
   errors: &ConnectErrorCopy,
 ) -> Result<LocalIdentity, String> {
-  if let Some(identity) = identity_store.and_then(Store::get) {
-    return Ok(identity);
-  }
-
-  storage
+  identity_store
     .ok_or_else(|| errors.storage_unavailable.clone())?
-    .load_identity()
-    .map_err(|error| error.to_string())?
+    .get()
     .ok_or_else(|| errors.identity_missing.clone())
 }
 
