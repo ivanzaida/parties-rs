@@ -8,7 +8,7 @@ use lurq::{
   },
   clipboard,
   components::{Column, Rect, Row, ScrollVertical, Text, TextInput},
-  core::Signal,
+  core::{Signal, Store},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -22,7 +22,7 @@ use crate::{
   network::protocol::Role,
   routes::ROUTE_CONNECT_SERVER,
   session::ConnectedServerInfo,
-  storage::{Storage, StoredServer},
+  storage::{Storage, StoredServer, delete_stored_server, stored_server_by_address, upsert_stored_server},
   theme,
   ui::{
     app_chrome::{content_height, modal_y},
@@ -69,10 +69,8 @@ impl Component for SettingsSavedServersScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let storage = ctx.use_context::<Storage>();
-    let servers = storage
-      .as_ref()
-      .and_then(|storage| storage.load_servers().ok())
-      .unwrap_or_default();
+    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
+    let servers = servers_store.as_ref().map(|servers| servers.get()).unwrap_or_default();
     let count = servers.len();
     let menu_address = self.menu_address.get();
     let pending_address = self.forget_address.get();
@@ -87,10 +85,10 @@ impl Component for SettingsSavedServersScreen {
     if servers.is_empty() {
       list = list.child(empty_state(ctx).into());
     } else {
-      for server in servers {
+      for server in servers.iter() {
         list = list.child(server_row(
           ctx,
-          &server,
+          server,
           self.menu_open.clone(),
           self.menu_address.clone(),
           self.menu_anchor_y.clone(),
@@ -101,10 +99,7 @@ impl Component for SettingsSavedServersScreen {
     let mut modals: Vec<Element> = Vec::new();
 
     if let Some(address) = menu_address
-      && let Some(server) = storage
-        .as_ref()
-        .and_then(|storage| storage.load_server(&address).ok())
-        .flatten()
+      && let Some(server) = stored_server_by_address(&servers, &address)
     {
       let menu = server_action_menu(
         ctx,
@@ -122,18 +117,14 @@ impl Component for SettingsSavedServersScreen {
     }
 
     if let Some(address) = pending_address {
-      let server_name = storage
-        .as_ref()
-        .and_then(|storage| storage.load_server(&address).ok())
-        .flatten()
+      let server_name = stored_server_by_address(&servers, &address)
         .map(|server| display_name(&server).to_owned())
         .unwrap_or_else(|| address.clone());
       let confirm_storage = storage.clone();
+      let confirm_servers = servers_store.clone();
       let confirm_address = address.clone();
       let on_confirm: ConfirmAction = std::sync::Arc::new(move || {
-        if let Some(storage) = confirm_storage.as_ref() {
-          let _ = storage.delete_server(&confirm_address);
-        }
+        let _ = delete_stored_server(confirm_servers.as_ref(), confirm_storage.as_ref(), &confirm_address);
       });
       let props = ConfirmModalProps {
         open: self.forget_open.clone(),
@@ -154,10 +145,7 @@ impl Component for SettingsSavedServersScreen {
     }
 
     if let Some(address) = fingerprint_address
-      && let Some(server) = storage
-        .as_ref()
-        .and_then(|storage| storage.load_server(&address).ok())
-        .flatten()
+      && let Some(server) = stored_server_by_address(&servers, &address)
     {
       let open = self.fingerprint_open.clone();
       modals.push(
@@ -169,10 +157,7 @@ impl Component for SettingsSavedServersScreen {
     }
 
     if let Some(address) = edit_address
-      && let Some(server) = storage
-        .as_ref()
-        .and_then(|storage| storage.load_server(&address).ok())
-        .flatten()
+      && let Some(server) = stored_server_by_address(&servers, &address)
     {
       let props = EditSavedServerModalProps {
         open: self.edit_open.clone(),
@@ -563,17 +548,21 @@ fn edit_server_test_action(ctx: &mut Ctx) -> EditServerTestAction {
 
 fn edit_server_save_action(ctx: &mut Ctx, server: StoredServer) -> EditServerSaveAction {
   let storage = ctx.use_context::<Storage>();
+  let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
   let storage_unavailable = ctx.t("connect_server.error.storage_unavailable").to_string();
   ctx.future_action(move |(address, seed, display_name): EditServerInput| {
     let storage = storage.clone();
+    let servers_store = servers_store.clone();
     let server = server.clone();
     let storage_unavailable = storage_unavailable.clone();
     async move {
       let storage = storage.ok_or(storage_unavailable)?;
       let old_address = server.address.clone();
       let new_address = address.trim().to_owned();
-      storage
-        .save_server(&StoredServer {
+      upsert_stored_server(
+        servers_store.as_ref(),
+        Some(&storage),
+        StoredServer {
           address: new_address.clone(),
           server_name: server.server_name,
           user_id: server.user_id,
@@ -581,10 +570,12 @@ fn edit_server_save_action(ctx: &mut Ctx, server: StoredServer) -> EditServerSav
           certificate_fingerprint: server.certificate_fingerprint,
           server_password: seed,
           display_name: display_name.trim().to_owned(),
-        })
-        .map_err(|error| error.to_string())?;
+        },
+      )
+      .map_err(|error| error.to_string())?;
       if old_address != new_address {
-        storage.delete_server(&old_address).map_err(|error| error.to_string())?;
+        delete_stored_server(servers_store.as_ref(), Some(&storage), &old_address)
+          .map_err(|error| error.to_string())?;
       }
       Ok(())
     }

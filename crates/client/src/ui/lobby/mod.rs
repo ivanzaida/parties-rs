@@ -149,6 +149,7 @@ impl Component for LobbyScreen {
     };
     let storage = ctx.use_context::<Storage>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let servers_store = ctx.use_context::<Store<Vec<crate::storage::StoredServer>>>();
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
 
     let Some(info) = session.info() else {
@@ -212,7 +213,13 @@ impl Component for LobbyScreen {
       watch_stream: watch_stream.clone(),
     };
     let stop_watching = stop_watching_action(ctx, session.clone());
-    let reconnect = reconnect_action(ctx, storage.clone(), settings_store.clone(), session.clone());
+    let reconnect = reconnect_action(
+      ctx,
+      storage.clone(),
+      servers_store.clone(),
+      settings_store.clone(),
+      session.clone(),
+    );
 
     if shell_model.disconnected {
       return disconnected_lobby(

@@ -218,6 +218,67 @@ impl DevtoolsInspectable for StoredServer {
   }
 }
 
+pub fn stored_server_by_address(servers: &[StoredServer], address: &str) -> Option<StoredServer> {
+  servers.iter().find(|server| server.address == address).cloned()
+}
+
+pub fn upsert_stored_server(
+  servers_store: Option<&Store<Vec<StoredServer>>>,
+  storage: Option<&Storage>,
+  server: StoredServer,
+) -> Result<(), StorageError> {
+  if let Some(storage) = storage {
+    storage.save_server(&server)?;
+  }
+
+  if let Some(servers_store) = servers_store {
+    let mut servers = servers_store.get();
+    servers.retain(|existing| existing.address != server.address);
+    servers.push(server);
+    sort_stored_servers(&mut servers);
+    servers_store.set(servers);
+  }
+
+  Ok(())
+}
+
+pub fn delete_stored_server(
+  servers_store: Option<&Store<Vec<StoredServer>>>,
+  storage: Option<&Storage>,
+  address: &str,
+) -> Result<(), StorageError> {
+  if let Some(storage) = storage {
+    storage.delete_server(address)?;
+  }
+
+  if let Some(servers_store) = servers_store {
+    let mut servers = servers_store.get();
+    let original_len = servers.len();
+    servers.retain(|server| server.address != address);
+    if servers.len() != original_len {
+      servers_store.set(servers);
+    }
+  }
+
+  Ok(())
+}
+
+fn sort_stored_servers(servers: &mut [StoredServer]) {
+  servers.sort_by(|a, b| {
+    let left = if a.server_name.trim().is_empty() {
+      &a.address
+    } else {
+      &a.server_name
+    };
+    let right = if b.server_name.trim().is_empty() {
+      &b.address
+    } else {
+      &b.server_name
+    };
+    left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+  });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowState {
   pub x: i32,

@@ -22,7 +22,7 @@ use crate::{
     updater::{StartupUpdateStatus, restart_into_update},
   },
   session::ServerSession,
-  storage::{AppSettings, Storage},
+  storage::{AppSettings, Storage, StoredServer, stored_server_by_address},
   theme,
   ui::{
     brand_logo::logo_mark,
@@ -151,13 +151,15 @@ impl Component for LoadingIdentityScreen {
     };
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
+    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let resume_errors = ConnectErrorCopy::from_ctx(ctx);
     let route_session = session.clone();
     let restore_update_resume = ctx.future_action(move |storage: Storage| {
       let session = session.clone();
       let settings_store = settings_store.clone();
+      let servers_store = servers_store.clone();
       let errors = resume_errors.clone();
-      async move { restore_update_resume_after_restart(storage, settings_store, session, errors).await }
+      async move { restore_update_resume_after_restart(storage, servers_store, settings_store, session, errors).await }
     });
     let restore_update_resume_state = restore_update_resume.state().get();
     let startup_error = startup.as_ref().and_then(|startup| startup.error.clone());
@@ -249,6 +251,7 @@ impl Component for LoadingIdentityScreen {
 
 async fn restore_update_resume_after_restart(
   storage: Storage,
+  servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
@@ -265,20 +268,17 @@ async fn restore_update_resume_after_restart(
     tracing::debug!(target: "updater", "[updater] skipped restart resume: no session context");
     return Ok(false);
   };
-  let server = match storage.load_server(&resume.server_address) {
-    Ok(Some(server)) => server,
-    Ok(None) => {
-      tracing::debug!(
-        target: "updater",
-        "[updater] skipped restart resume: saved server missing address={}",
-        resume.server_address
-      );
-      return Ok(false);
-    }
-    Err(error) => {
-      tracing::debug!(target: "updater", "[updater] failed to load restart resume server: {error}");
-      return Ok(false);
-    }
+  let server = servers_store
+    .as_ref()
+    .and_then(|servers| stored_server_by_address(&servers.get(), &resume.server_address))
+    .or_else(|| storage.load_server(&resume.server_address).ok().flatten());
+  let Some(server) = server else {
+    tracing::debug!(
+      target: "updater",
+      "[updater] skipped restart resume: saved server missing address={}",
+      resume.server_address
+    );
+    return Ok(false);
   };
   let fallback_display_name = settings_store
     .as_ref()
@@ -301,6 +301,7 @@ async fn restore_update_resume_after_restart(
     server.server_password,
     display_name,
     Some(storage.clone()),
+    servers_store,
     Some(session.clone()),
     errors,
   )

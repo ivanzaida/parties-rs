@@ -65,9 +65,9 @@ impl Component for SettingsOverviewScreen {
       .as_ref()
       .and_then(|storage| storage.load_identity().ok())
       .flatten();
-    let servers = storage
-      .as_ref()
-      .and_then(|storage| storage.load_servers().ok())
+    let servers = ctx
+      .use_context::<Store<Vec<crate::storage::StoredServer>>>()
+      .map(|servers| servers.get())
       .unwrap_or_default();
     let server_count = servers.len();
 

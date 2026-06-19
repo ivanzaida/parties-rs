@@ -17,7 +17,7 @@ use crate::{
     ConnectedServerInfo, ServerSession,
     chat_commands::{ChatCommandExpectedType, ChatCommandInvocation, ChatCommandParseError, ChatCommandSource},
   },
-  storage::{AppSettings, Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer, stored_server_by_address},
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
 
@@ -503,12 +503,14 @@ pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> Sto
 pub(super) fn reconnect_action(
   ctx: &mut Ctx,
   storage: Option<Storage>,
+  servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
 ) -> ReconnectAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |request: ReconnectRequest| {
     let storage = storage.clone();
+    let servers_store = servers_store.clone();
     let settings_store = settings_store.clone();
     let session = session.clone();
     let copy = copy.clone();
@@ -518,11 +520,20 @@ pub(super) fn reconnect_action(
       }
 
       let storage = storage.ok_or(copy.storage_unavailable.clone())?;
-      let server = storage
-        .load_server(&request.address)
-        .map_err(|error| error.to_string())?
+      let server = servers_store
+        .as_ref()
+        .and_then(|servers| stored_server_by_address(&servers.get(), &request.address))
+        .or_else(|| storage.load_server(&request.address).ok().flatten())
         .ok_or(copy.saved_credentials_missing.clone())?;
-      reconnect_saved_server(server, storage, settings_store, session, copy.connect_errors).await
+      reconnect_saved_server(
+        server,
+        storage,
+        servers_store,
+        settings_store,
+        session,
+        copy.connect_errors,
+      )
+      .await
     }
   })
 }
@@ -530,6 +541,7 @@ pub(super) fn reconnect_action(
 async fn reconnect_saved_server(
   server: StoredServer,
   storage: Storage,
+  servers_store: Option<Store<Vec<StoredServer>>>,
   settings_store: Option<Store<AppSettings>>,
   session: ServerSession,
   errors: ConnectErrorCopy,
@@ -548,6 +560,7 @@ async fn reconnect_saved_server(
     server.server_password,
     display_name,
     Some(storage.clone()),
+    servers_store,
     Some(session.clone()),
     errors,
   )

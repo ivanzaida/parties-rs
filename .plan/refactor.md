@@ -552,12 +552,17 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - kept webcam device options in `Store<Vec<WebcamDevice>>` while selected device values remain focused signals.
 - Moved active toggle-hotkey tracking into a store:
   - kept the active mute/deafen hotkey latch collection in `Store<Vec<String>>`.
+- Moved saved servers into an in-memory store:
+  - loaded saved servers into `Store<Vec<StoredServer>>` at app startup and provided it through context;
+  - changed saved-server list/settings/overview reads to use the store instead of storage reads in render;
+  - centralized saved-server upsert/delete helpers so storage writes update the in-memory list.
 
 ## Current Residual Reads
 
 - `session.lobby()` remains only in debug report generation and subscription hydration/current-model fallback.
 - Root `ctx.use_context` reads remain in `LobbyScreen` for session, storage, and settings-popup handles.
 - Settings storage reads remain only in app/startup bootstrap and storage-owned migration/update helpers.
+- Saved-server storage reads remain only in startup/bootstrap, store-unavailable fallbacks, and storage-owned helpers.
 - Action `state().get()` reads remain where the rendered control or lifecycle owns the state:
   - mounted rail stream, stream card, stream switcher, floating preview close, watched-stream back, and voice user row controls;
   - stream modal lifecycle/error handling;

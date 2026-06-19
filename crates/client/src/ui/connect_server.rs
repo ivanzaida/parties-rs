@@ -21,7 +21,7 @@ use crate::{
   },
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY, ROUTE_SETTINGS_SERVERS, ROUTE_TOFU_WARNING},
   session::{ConnectedServer, ConnectedServerInfo, ServerSession, TofuWarning},
-  storage::{AppSettings, Storage, StoredServer},
+  storage::{AppSettings, Storage, StoredServer, stored_server_by_address, upsert_stored_server},
   theme,
   ui::{
     common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -130,12 +130,14 @@ impl Component for ConnectServerScreen {
     };
 
     let errors = ConnectErrorCopy::from_ctx(ctx);
+    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let route_session = session.clone();
     let connect = ctx.future_action(move |(address, seed, display_name): (String, String, String)| {
       let storage = storage.clone();
+      let servers_store = servers_store.clone();
       let session = session.clone();
       let errors = errors.clone();
-      async move { connect_and_store(address, seed, display_name, storage, session, errors).await }
+      async move { connect_and_store(address, seed, display_name, storage, servers_store, session, errors).await }
     });
 
     let state = connect.state().get();
@@ -348,6 +350,7 @@ pub async fn connect_and_store(
   seed: String,
   display_name: String,
   storage: Option<Storage>,
+  servers_store: Option<Store<Vec<StoredServer>>>,
   session: Option<ServerSession>,
   errors: ConnectErrorCopy,
 ) -> Result<ConnectedServerInfo, String> {
@@ -432,11 +435,18 @@ pub async fn connect_and_store(
     .as_ref()
     .and_then(|storage| storage.load_user_normalizations(&info.address).ok())
     .unwrap_or_default();
-  let saved_fingerprint = storage
+  let saved_server = servers_store
     .as_ref()
-    .and_then(|storage| storage.load_server(&info.address).ok())
-    .flatten()
-    .map(|server| server.certificate_fingerprint)
+    .and_then(|servers| stored_server_by_address(&servers.get(), &info.address))
+    .or_else(|| {
+      storage
+        .as_ref()
+        .and_then(|storage| storage.load_server(&info.address).ok())
+        .flatten()
+    });
+  let saved_fingerprint = saved_server
+    .as_ref()
+    .map(|server| server.certificate_fingerprint.clone())
     .unwrap_or_default();
   let tofu_warning = certificate_fingerprint_changed(&saved_fingerprint, &fingerprint).then(|| TofuWarning {
     address: info.address.clone(),
@@ -452,8 +462,10 @@ pub async fn connect_and_store(
   if let Some(storage) = storage.as_ref()
     && tofu_warning.is_none()
   {
-    storage
-      .save_server(&StoredServer {
+    upsert_stored_server(
+      servers_store.as_ref(),
+      Some(storage),
+      StoredServer {
         address,
         server_name: response.server_name,
         user_id: response.user_id,
@@ -461,8 +473,9 @@ pub async fn connect_and_store(
         certificate_fingerprint: fingerprint,
         server_password: seed,
         display_name,
-      })
-      .map_err(|error| error.to_string())?;
+      },
+    )
+    .map_err(|error| error.to_string())?;
     tracing::debug!(target: "network::connect",
       "[network/connect] saved server credentials metadata: address={} server='{}' user={}",
       info.address,

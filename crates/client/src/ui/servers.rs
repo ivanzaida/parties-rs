@@ -92,16 +92,15 @@ impl Component for SavedServersScreen {
     let storage = ctx.use_context::<Storage>();
     let session = ctx.use_context::<ServerSession>();
     let settings_store = ctx.use_context::<Store<AppSettings>>();
-    let servers = ctx
-      .use_context::<Storage>()
-      .and_then(|storage| storage.load_servers().ok())
-      .unwrap_or_default();
+    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
+    let servers = servers_store.as_ref().map(|servers| servers.get()).unwrap_or_default();
     let connect_errors = ConnectErrorCopy::from_ctx(ctx);
     let connect = ctx.future_action(move |server: StoredServer| {
       let storage = storage.clone();
       let session = session.clone();
       let connect_errors = connect_errors.clone();
       let settings_store = settings_store.clone();
+      let servers_store = servers_store.clone();
       async move {
         let display_name = if server.display_name.trim().is_empty() {
           settings_store
@@ -116,6 +115,7 @@ impl Component for SavedServersScreen {
           server.server_password.clone(),
           display_name,
           storage,
+          servers_store,
           session,
           connect_errors,
         )

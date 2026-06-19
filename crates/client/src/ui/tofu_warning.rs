@@ -1,7 +1,7 @@
 use lurq::{
   app::{component::Component, ctx::Ctx},
   components::{Column, Row, Text},
-  core::Signal,
+  core::{Signal, Store},
   layout::{Alignment, layout_kind::Justify},
   node::{BackgroundColor, CursorIcon, Element, Style, border::Border, color::Color, dimension::Dimension},
 };
@@ -9,7 +9,7 @@ use lurq::{
 use crate::{
   routes::{ROUTE_CHOOSE_SERVER, ROUTE_LOBBY},
   session::{ServerSession, TofuWarning},
-  storage::{Storage, StoredServer},
+  storage::{Storage, StoredServer, upsert_stored_server},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
 };
@@ -38,6 +38,7 @@ impl Component for TofuWarningScreen {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let session = ctx.use_context::<ServerSession>();
     let storage = ctx.use_context::<Storage>();
+    let servers_store = ctx.use_context::<Store<Vec<StoredServer>>>();
     let navigator = ctx.navigator();
     let Some(warning) = session.as_ref().and_then(ServerSession::tofu_warning) else {
       if let Some(navigator) = navigator.as_ref()
@@ -50,9 +51,12 @@ impl Component for TofuWarningScreen {
       return empty;
     };
     let trust = ctx.future_action(
-      |(storage, session, warning): (Storage, ServerSession, TofuWarning)| async move {
-        trust_certificate(storage, session, warning).await
-      },
+      |(storage, servers_store, session, warning): (
+        Storage,
+        Option<Store<Vec<StoredServer>>>,
+        ServerSession,
+        TofuWarning,
+      )| async move { trust_certificate(storage, servers_store, session, warning).await },
     );
     let trust_state = trust.state().get();
     let pending = trust_state.is_pending();
@@ -87,7 +91,7 @@ impl Component for TofuWarningScreen {
           .child(fingerprints(ctx, &warning))
           .child(media_blocked(ctx))
           .child(error_notice(ctx, self.save_error.get()))
-          .child(actions(ctx, session, storage, warning, trust, pending)),
+          .child(actions(ctx, session, storage, servers_store, warning, trust, pending)),
       )
       .into()
   }
@@ -261,13 +265,19 @@ fn actions(
   ctx: &mut Ctx,
   session: Option<ServerSession>,
   storage: Option<Storage>,
+  servers_store: Option<Store<Vec<StoredServer>>>,
   warning: TofuWarning,
-  trust: lurq::app::ctx::FutureAction<(Storage, ServerSession, TofuWarning), (), String>,
+  trust: lurq::app::ctx::FutureAction<
+    (Storage, Option<Store<Vec<StoredServer>>>, ServerSession, TofuWarning),
+    (),
+    String,
+  >,
   pending: bool,
 ) -> Row {
   let navigator = ctx.navigator();
   let disconnect_session = session.clone();
   let trust_storage = storage.clone();
+  let trust_servers_store = servers_store.clone();
   let trust_session = session.clone();
   Row::new()
     .width(Dimension::Pct(100.0))
@@ -308,7 +318,12 @@ fn actions(
         let (Some(storage), Some(session)) = (trust_storage.as_ref(), trust_session.as_ref()) else {
           return;
         };
-        trust.run((storage.clone(), session.clone(), warning.clone()));
+        trust.run((
+          storage.clone(),
+          trust_servers_store.clone(),
+          session.clone(),
+          warning.clone(),
+        ));
       }),
     )
 }
@@ -374,9 +389,16 @@ fn action_button(ctx: &mut Ctx, icon: &'static str, label: &str, tone: ButtonTon
   button
 }
 
-async fn trust_certificate(storage: Storage, session: ServerSession, warning: TofuWarning) -> Result<(), String> {
-  storage
-    .save_server(&StoredServer {
+async fn trust_certificate(
+  storage: Storage,
+  servers_store: Option<Store<Vec<StoredServer>>>,
+  session: ServerSession,
+  warning: TofuWarning,
+) -> Result<(), String> {
+  upsert_stored_server(
+    servers_store.as_ref(),
+    Some(&storage),
+    StoredServer {
       address: warning.address,
       server_name: warning.server_name,
       user_id: warning.user_id,
@@ -384,8 +406,9 @@ async fn trust_certificate(storage: Storage, session: ServerSession, warning: To
       certificate_fingerprint: warning.received_fingerprint,
       server_password: warning.server_password,
       display_name: warning.display_name,
-    })
-    .map_err(|error| error.to_string())?;
+    },
+  )
+  .map_err(|error| error.to_string())?;
   session.clear_tofu_warning();
   Ok(())
 }
