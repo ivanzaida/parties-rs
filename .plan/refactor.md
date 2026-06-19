@@ -521,6 +521,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
 - Keyed stream modal source cards:
   - mounted share source cards by source kind/id identity;
   - preserved per-source component instances across source list changes.
+- Keyed command suggestion row components:
+  - mounted filtered command suggestion rows by command fill identity;
+  - kept row component instances stable when suggestion filtering changes.
 
 ## Current Residual Reads
 

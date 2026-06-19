@@ -373,7 +373,10 @@ pub(super) fn chat_command_suggestions(
     .with_children(ctx.for_each(
       rows,
       |row| row.fill.clone(),
-      |ctx, row| ctx.mount::<CommandSuggestionRow>(row),
+      |ctx, row| {
+        let key = row.fill.clone();
+        ctx.mount_keyed::<CommandSuggestionRow>(&key, row)
+      },
     ));
 
   Some(
