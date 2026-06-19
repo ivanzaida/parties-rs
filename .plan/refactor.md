@@ -565,6 +565,9 @@ Logs should show one receiver start, no repeated lobby subscription resets, and 
   - loaded voice volume, stream volume, and voice-normalization overrides into `Store<UserAudioPreferences>` at app startup;
   - changed connection/reconnect/resume paths to apply user audio preferences from the store with storage as fallback;
   - changed voice user volume, stream volume, and normalization controls to update the store and sync storage only on change.
+- Synced legacy import into the in-memory stores:
+  - reloaded imported settings, saved servers, identity, and user audio preferences after legacy DB import completes;
+  - applied imported locale to the active i18n context immediately.
 
 ## Current Residual Reads
 
