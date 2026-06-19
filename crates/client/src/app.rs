@@ -36,9 +36,9 @@ use crate::{
   },
   session::ServerSession,
   storage::{
-    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppHotkeySettings, AppLocale, AppSentryReportsEnabled,
-    AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings, AppVideoSettings, Storage, StoredServer,
-    UserAudioPreferences,
+    AppAudioSettings, AppDebugModeEnabled, AppDisplayName, AppFocusedSettingsSync, AppHotkeySettings, AppLocale,
+    AppSentryReportsEnabled, AppSettings, AppSettingsUpdater, AppStoreSync, AppStreamSettings, AppVideoSettings,
+    Storage, StoredServer, UserAudioPreferences,
   },
   theme,
   ui::{
@@ -126,6 +126,7 @@ impl Component for App {
   fn create(ctx: &mut Ctx) -> Self {
     let props = ctx.props::<Self::Props>().clone();
     let tokio = props.tokio.clone();
+    let session = props.session.clone();
     let storage = ctx.signal(props.startup_storage.clone());
     let startup_settings = load_settings_from_storage(props.startup_storage.as_ref());
     let startup_servers = load_servers_from_storage(props.startup_storage.as_ref());
@@ -144,39 +145,33 @@ impl Component for App {
     let identity = ctx.store(startup_identity);
     let user_audio_preferences = ctx.store(startup_user_audio_preferences);
     let i18n = ctx.i18n().clone();
-    apply_settings_locale(&settings.get(), &i18n);
+    apply_settings_runtime_effects(&settings.get(), &i18n, &session);
+    let focused_settings_sync = AppFocusedSettingsSync::new(
+      display_name.clone(),
+      debug_mode_enabled.clone(),
+      sentry_reports_enabled.clone(),
+      locale.clone(),
+      hotkey_settings.clone(),
+      audio_settings.clone(),
+      stream_settings.clone(),
+      video_settings.clone(),
+    );
     ctx.watch(&storage, {
       let settings = settings.clone();
-      let display_name = display_name.clone();
-      let debug_mode_enabled = debug_mode_enabled.clone();
-      let sentry_reports_enabled = sentry_reports_enabled.clone();
-      let locale = locale.clone();
-      let hotkey_settings = hotkey_settings.clone();
-      let audio_settings = audio_settings.clone();
-      let stream_settings = stream_settings.clone();
-      let video_settings = video_settings.clone();
+      let focused_settings_sync = focused_settings_sync.clone();
       let servers = servers.clone();
       let identity = identity.clone();
       let user_audio_preferences = user_audio_preferences.clone();
       let i18n = i18n.clone();
+      let session = session.clone();
       move |storage| {
         let next_settings = load_settings_from_storage(storage.as_ref());
         settings.set(next_settings.clone());
-        sync_focused_settings(
-          &next_settings,
-          &display_name,
-          &debug_mode_enabled,
-          &sentry_reports_enabled,
-          &locale,
-          &hotkey_settings,
-          &audio_settings,
-          &stream_settings,
-          &video_settings,
-        );
+        focused_settings_sync.sync(&next_settings);
+        apply_settings_runtime_effects(&next_settings, &i18n, &session);
         servers.set(load_servers_from_storage(storage.as_ref()));
         identity.set(load_identity_from_storage(storage.as_ref()));
         user_audio_preferences.set(load_user_audio_preferences_from_storage(storage.as_ref()));
-        apply_settings_locale(&next_settings, &i18n);
       }
     });
     let update_status = ctx.signal(StartupUpdateStatus::Idle);
@@ -229,7 +224,6 @@ impl Component for App {
         .fallback(|ctx| ctx.mount::<IdentitySetupScreen>(())),
     );
     router.replace(ROUTE_LOADING);
-    let session = props.session.clone();
     let global_hotkeys = GlobalVoiceHotkeys::new(session.clone(), tokio);
     let poll_global_hotkeys = global_hotkeys.clone();
     let interval = ctx.create_interval(Duration::from_millis(16), move || {
@@ -300,9 +294,14 @@ impl Component for App {
     let storage = self.storage.get();
     ctx.provide(self.session.clone());
     ctx.provide(self.global_hotkeys.clone());
-    ctx.provide(AppSettingsUpdater::new(self.settings.clone(), storage.clone()));
+    let focused_settings_sync = self.focused_settings_sync();
+    ctx.provide(
+      AppSettingsUpdater::new(self.settings.clone(), storage.clone())
+        .with_focused_settings(focused_settings_sync.clone()),
+    );
     ctx.provide(AppStoreSync::new(
       self.settings.clone(),
+      focused_settings_sync,
       self.servers.clone(),
       self.identity.clone(),
       self.user_audio_preferences.clone(),
@@ -342,28 +341,18 @@ impl Component for App {
     } else {
       self.sync_window_full_screen(ctx, startup_window.is_full_screen);
     }
-    let settings = self.settings.get();
-    sync_focused_settings(
-      &settings,
-      &self.display_name,
-      &self.debug_mode_enabled,
-      &self.sentry_reports_enabled,
-      &self.locale,
-      &self.hotkey_settings,
-      &self.audio_settings,
-      &self.stream_settings,
-      &self.video_settings,
-    );
-    apply_settings_locale(&settings, ctx.i18n());
-    logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
-    self.session.set_notification_audio_settings(&audio_settings(&settings));
+    let locale = self.locale.with(|settings| settings.value.clone());
+    ctx.i18n().set_locale(locale);
+    logger::apply_sentry_reports_enabled(self.sentry_reports_enabled.with(|settings| settings.value));
+    let audio_settings = self.audio_settings.get();
+    self.session.set_notification_audio_settings(&audio_settings);
     self
       .session
-      .set_video_hardware_decoding(settings.video_hardware_decoding);
-    let voice_hotkeys = hotkey_settings(&settings);
+      .set_video_hardware_decoding(self.video_settings.with(|settings| settings.video_hardware_decoding));
+    let voice_hotkeys = self.hotkey_settings.get();
     let mute_hotkey = voice_hotkeys.toggle_mute.clone();
     let deafen_hotkey = voice_hotkeys.toggle_deafen.clone();
-    let push_to_talk_enabled = settings.push_to_talk;
+    let push_to_talk_enabled = self.audio_settings.with(|settings| settings.push_to_talk);
     let push_to_talk_hotkey = voice_hotkeys.push_to_talk.clone();
     let app_focused = ctx.window().is_focused;
     let settings_active = self.settings_open.get() || self.router.path().get().starts_with(ROUTE_SETTINGS);
@@ -464,6 +453,19 @@ impl Component for App {
 }
 
 impl App {
+  fn focused_settings_sync(&self) -> AppFocusedSettingsSync {
+    AppFocusedSettingsSync::new(
+      self.display_name.clone(),
+      self.debug_mode_enabled.clone(),
+      self.sentry_reports_enabled.clone(),
+      self.locale.clone(),
+      self.hotkey_settings.clone(),
+      self.audio_settings.clone(),
+      self.stream_settings.clone(),
+      self.video_settings.clone(),
+    )
+  }
+
   fn global_update_pill(&self, ctx: &mut Ctx, status: &StartupUpdateStatus) -> Option<Element> {
     let width = match status {
       StartupUpdateStatus::Downloading { .. } => 216.0,
@@ -620,60 +622,15 @@ fn video_settings(settings: &AppSettings) -> AppVideoSettings {
   AppVideoSettings::from(settings)
 }
 
-fn sync_focused_settings(
-  settings: &AppSettings,
-  display_name: &Store<AppDisplayName>,
-  debug_mode_enabled: &Store<AppDebugModeEnabled>,
-  sentry_reports_enabled: &Store<AppSentryReportsEnabled>,
-  locale: &Store<AppLocale>,
-  hotkey_settings_store: &Store<AppHotkeySettings>,
-  audio_settings_store: &Store<AppAudioSettings>,
-  stream_settings_store: &Store<AppStreamSettings>,
-  video_settings_store: &Store<AppVideoSettings>,
-) {
-  let next_display_name = display_name_setting(settings);
-  if display_name.with(|current| current != &next_display_name) {
-    display_name.set(next_display_name);
-  }
-
-  let next_debug_mode = debug_mode_setting(settings);
-  if debug_mode_enabled.with(|current| current != &next_debug_mode) {
-    debug_mode_enabled.set(next_debug_mode);
-  }
-
-  let next_sentry_reports = sentry_reports_setting(settings);
-  if sentry_reports_enabled.with(|current| current != &next_sentry_reports) {
-    sentry_reports_enabled.set(next_sentry_reports);
-  }
-
-  let next_locale = locale_setting(settings);
-  if locale.with(|current| current != &next_locale) {
-    locale.set(next_locale);
-  }
-
-  let next_hotkey_settings = hotkey_settings(settings);
-  if hotkey_settings_store.with(|current| current != &next_hotkey_settings) {
-    hotkey_settings_store.set(next_hotkey_settings);
-  }
-
-  let next_audio_settings = audio_settings(settings);
-  if audio_settings_store.with(|current| current != &next_audio_settings) {
-    audio_settings_store.set(next_audio_settings);
-  }
-
-  let next_stream_settings = stream_settings(settings);
-  if stream_settings_store.with(|current| current != &next_stream_settings) {
-    stream_settings_store.set(next_stream_settings);
-  }
-
-  let next_video_settings = video_settings(settings);
-  if video_settings_store.with(|current| current != &next_video_settings) {
-    video_settings_store.set(next_video_settings);
-  }
-}
-
 fn apply_settings_locale(settings: &AppSettings, i18n: &lurq::app::i18n::I18n) {
   i18n.set_locale(settings.locale.clone());
+}
+
+fn apply_settings_runtime_effects(settings: &AppSettings, i18n: &lurq::app::i18n::I18n, session: &ServerSession) {
+  apply_settings_locale(settings, i18n);
+  logger::apply_sentry_reports_enabled(settings.sentry_reports_enabled);
+  session.set_notification_audio_settings(&audio_settings(settings));
+  session.set_video_hardware_decoding(settings.video_hardware_decoding);
 }
 
 fn update_status_blocks_poll(status: &StartupUpdateStatus) -> bool {

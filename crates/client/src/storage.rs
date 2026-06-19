@@ -251,6 +251,7 @@ impl DevtoolsInspectable for LocalIdentity {}
 pub struct AppSettingsUpdater {
   settings_store: Store<AppSettings>,
   storage: Option<Storage>,
+  focused_settings: Option<AppFocusedSettingsSync>,
 }
 
 impl AppSettingsUpdater {
@@ -258,11 +259,21 @@ impl AppSettingsUpdater {
     Self {
       settings_store,
       storage,
+      focused_settings: None,
     }
   }
 
+  pub fn with_focused_settings(mut self, focused_settings: AppFocusedSettingsSync) -> Self {
+    self.focused_settings = Some(focused_settings);
+    self
+  }
+
   pub fn update(&self, f: impl FnOnce(&mut AppSettings)) -> AppSettings {
-    update_app_settings(&self.settings_store, self.storage.as_ref(), f)
+    let settings = update_app_settings(&self.settings_store, self.storage.as_ref(), f);
+    if let Some(focused_settings) = self.focused_settings.as_ref() {
+      focused_settings.sync(&settings);
+    }
+    settings
   }
 
   pub fn has_storage(&self) -> bool {
@@ -271,8 +282,107 @@ impl AppSettingsUpdater {
 }
 
 #[derive(Clone)]
+pub struct AppFocusedSettingsSync {
+  display_name: Store<AppDisplayName>,
+  debug_mode_enabled: Store<AppDebugModeEnabled>,
+  sentry_reports_enabled: Store<AppSentryReportsEnabled>,
+  locale: Store<AppLocale>,
+  hotkey_settings: Store<AppHotkeySettings>,
+  audio_settings: Store<AppAudioSettings>,
+  stream_settings: Store<AppStreamSettings>,
+  video_settings: Store<AppVideoSettings>,
+}
+
+impl AppFocusedSettingsSync {
+  pub fn new(
+    display_name: Store<AppDisplayName>,
+    debug_mode_enabled: Store<AppDebugModeEnabled>,
+    sentry_reports_enabled: Store<AppSentryReportsEnabled>,
+    locale: Store<AppLocale>,
+    hotkey_settings: Store<AppHotkeySettings>,
+    audio_settings: Store<AppAudioSettings>,
+    stream_settings: Store<AppStreamSettings>,
+    video_settings: Store<AppVideoSettings>,
+  ) -> Self {
+    Self {
+      display_name,
+      debug_mode_enabled,
+      sentry_reports_enabled,
+      locale,
+      hotkey_settings,
+      audio_settings,
+      stream_settings,
+      video_settings,
+    }
+  }
+
+  pub fn sync(&self, settings: &AppSettings) {
+    let next_display_name = AppDisplayName {
+      value: settings.display_name.clone(),
+    };
+    if self.display_name.with(|current| current != &next_display_name) {
+      self.display_name.set(next_display_name);
+    }
+
+    let next_debug_mode = AppDebugModeEnabled {
+      value: settings.debug_mode_enabled,
+    };
+    if self.debug_mode_enabled.with(|current| current != &next_debug_mode) {
+      self.debug_mode_enabled.set(next_debug_mode);
+    }
+
+    let next_sentry_reports = AppSentryReportsEnabled {
+      value: settings.sentry_reports_enabled,
+    };
+    if self
+      .sentry_reports_enabled
+      .with(|current| current != &next_sentry_reports)
+    {
+      self.sentry_reports_enabled.set(next_sentry_reports);
+    }
+
+    let next_locale = AppLocale {
+      value: settings.locale.clone(),
+    };
+    if self.locale.with(|current| current != &next_locale) {
+      self.locale.set(next_locale);
+    }
+
+    let next_hotkey_settings = AppHotkeySettings {
+      push_to_talk: settings.hotkey_push_to_talk.clone(),
+      toggle_mute: settings.hotkey_toggle_mute.clone(),
+      toggle_deafen: settings.hotkey_toggle_deafen.clone(),
+    };
+    if self.hotkey_settings.with(|current| current != &next_hotkey_settings) {
+      self.hotkey_settings.set(next_hotkey_settings);
+    }
+
+    let next_audio_settings = AppAudioSettings::from(settings);
+    if self.audio_settings.with(|current| current != &next_audio_settings) {
+      self.audio_settings.set(next_audio_settings);
+    }
+
+    let next_stream_settings = AppStreamSettings {
+      video_codec: settings.video_codec.clone(),
+      video_scale_percent: settings.video_scale_percent,
+      video_fps: settings.video_fps,
+      video_bitrate_mbps: settings.video_bitrate_mbps,
+    };
+    if self.stream_settings.with(|current| current != &next_stream_settings) {
+      self.stream_settings.set(next_stream_settings);
+    }
+
+    let next_video_settings = AppVideoSettings::from(settings);
+    if self.video_settings.with(|current| current != &next_video_settings) {
+      self.video_settings.set(next_video_settings);
+    }
+  }
+}
+
+#[derive(Clone)]
 pub struct AppStoreSync {
   settings: Store<AppSettings>,
+  focused_settings: AppFocusedSettingsSync,
   servers: Store<Vec<StoredServer>>,
   identity: Store<Option<LocalIdentity>>,
   user_audio_preferences: Store<UserAudioPreferences>,
@@ -281,12 +391,14 @@ pub struct AppStoreSync {
 impl AppStoreSync {
   pub fn new(
     settings: Store<AppSettings>,
+    focused_settings: AppFocusedSettingsSync,
     servers: Store<Vec<StoredServer>>,
     identity: Store<Option<LocalIdentity>>,
     user_audio_preferences: Store<UserAudioPreferences>,
   ) -> Self {
     Self {
       settings,
+      focused_settings,
       servers,
       identity,
       user_audio_preferences,
@@ -297,6 +409,7 @@ impl AppStoreSync {
     let settings = storage.load_settings().ok();
     if let Some(settings) = settings.as_ref() {
       self.settings.set(settings.clone());
+      self.focused_settings.sync(settings);
     }
     if let Ok(servers) = storage.load_servers() {
       self.servers.set(servers);
