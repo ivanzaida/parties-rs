@@ -231,11 +231,14 @@ impl Component for App {
     );
     router.replace(ROUTE_LOADING);
     let global_hotkeys = GlobalVoiceHotkeys::new(session.clone(), tokio);
-    let poll_global_hotkeys = global_hotkeys.clone();
-    let interval = ctx.create_interval(Duration::from_millis(16), move || {
-      poll_global_hotkeys.poll_events();
-    });
-    interval.start();
+    #[cfg(target_os = "macos")]
+    {
+      let poll_global_hotkeys = global_hotkeys.clone();
+      let interval = ctx.create_interval(Duration::from_millis(16), move || {
+        poll_global_hotkeys.poll_events();
+      });
+      interval.start();
+    }
     let update_poll_in_flight = Arc::new(AtomicBool::new(false));
     let initial_update_status = update_status.clone();
     let initial_update_tokio = props.tokio.clone();

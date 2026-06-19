@@ -113,7 +113,9 @@ fn window_chrome_props() -> WindowChromeProps {
     })
 }
 
-fn titlebar_identity(ctx: &mut Ctx, _frame_rate: FrameRateSignal) -> Element {
+fn titlebar_identity(ctx: &mut Ctx, frame_rate: FrameRateSignal) -> Element {
+  let fps_label = format!("{} FPS", frame_rate.0.get());
+
   Row::new()
     .height(Dimension::Pct(100.0))
     .align_items(Alignment::Center)
@@ -131,6 +133,16 @@ fn titlebar_identity(ctx: &mut Ctx, _frame_rate: FrameRateSignal) -> Element {
       Text::new(&ctx.t("common.app_name"))
         .variant(theme::TypographyStyle::Button)
         .color(theme::PaletteColor::TextSecondary),
+    )
+    .child(
+      Text::new(concat!("v", env!("CARGO_PKG_VERSION")))
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted),
+    )
+    .child(
+      Text::new(&fps_label)
+        .variant(theme::TypographyStyle::Caption)
+        .color(theme::PaletteColor::TextMuted),
     )
     .into()
 }

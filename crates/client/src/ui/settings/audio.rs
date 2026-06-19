@@ -119,7 +119,13 @@ impl Component for SettingsAudioScreen {
       let interval = ctx.create_interval(Duration::from_millis(33), move || {
         poll_input_level_meter(&meter, &level);
       });
-      interval.start();
+      ctx.watch(&input_level_meter_active, move |active| {
+        if *active {
+          interval.start();
+        } else {
+          interval.stop();
+        }
+      });
     }
 
     Self {
@@ -815,7 +821,13 @@ impl Component for AudioHotkeySetting {
           capture_suppress_next_click.set(true);
         }
       });
-      interval.start();
+      ctx.watch(&recording, move |recording| {
+        if *recording {
+          interval.start();
+        } else {
+          interval.stop();
+        }
+      });
     }
 
     Self {
