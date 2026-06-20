@@ -8,7 +8,6 @@ use lurq::{
 
 use crate::{
   network::protocol::{Role, protocol_version_label},
-  session::ConnectedServerInfo,
   storage::StoredServer,
   theme,
   ui::{
@@ -97,10 +96,7 @@ pub struct ServerCardProps {
   pub live: ServerCardLiveInfo,
   pub error_message: Option<String>,
   pub connecting: Signal<Option<String>>,
-  pub running: Signal<Option<String>>,
   pub failed: Signal<Option<String>>,
-  #[devtools_ignore]
-  pub connect: lurq::app::ctx::FutureAction<StoredServer, ConnectedServerInfo, String>,
 }
 
 impl PartialEq for ServerCardProps {
@@ -110,7 +106,6 @@ impl PartialEq for ServerCardProps {
       && self.live == other.live
       && self.error_message == other.error_message
       && self.connecting.id() == other.connecting.id()
-      && self.running.id() == other.running.id()
       && self.failed.id() == other.failed.id()
   }
 }
@@ -147,12 +142,9 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
   let letter = server_letter(&name);
   let address = props.server.address.clone();
   let role = role_label(ctx, props.server.role);
-  let connect = props.connect.clone();
   let connecting = props.connecting.clone();
-  let running = props.running.clone();
   let failed = props.failed.clone();
-  let click_server = props.server.clone();
-  let click_address = click_server.address.clone();
+  let click_address = props.server.address.clone();
   let border = Border::inside(1.0, state_border(props.state));
 
   let mut row = Row::new()
@@ -167,13 +159,11 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
     .cursor(CursorIcon::Pointer)
     .hovered_style(Style::new().background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)))
     .on_click(move |_| {
-      if running.get_untracked().as_deref() == Some(click_address.as_str()) {
+      if connecting.get_untracked().as_deref() == Some(click_address.as_str()) {
         return;
       }
       failed.set(None);
       connecting.set(Some(click_address.clone()));
-      running.set(Some(click_address.clone()));
-      connect.run(click_server.clone());
     });
 
   if props.state != ServerCardState::Error {
@@ -379,21 +369,16 @@ fn live_state_chip(ctx: &mut Ctx, live: &ServerCardLiveInfo) -> impl Into<Elemen
 }
 
 fn retry_button(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
-  let connect = props.connect.clone();
   let connecting = props.connecting.clone();
-  let running = props.running.clone();
   let failed = props.failed.clone();
-  let server = props.server.clone();
-  let address = server.address.clone();
+  let address = props.server.address.clone();
 
   secondary_button(ctx, "rotate-cw", &ctx.t("servers.action.retry")).on_click(move |_| {
-    if running.get_untracked().as_deref() == Some(address.as_str()) {
+    if connecting.get_untracked().as_deref() == Some(address.as_str()) {
       return;
     }
     failed.set(None);
     connecting.set(Some(address.clone()));
-    running.set(Some(address.clone()));
-    connect.run(server.clone());
   })
 }
 

@@ -66,6 +66,7 @@ fn servers_layout_metrics(ctx: &Ctx) -> ServersLayoutMetrics {
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
   running: Signal<Option<String>>,
+  navigated: Signal<bool>,
   failed: Signal<Option<String>>,
   failure_message: Signal<Option<String>>,
   query_signature: Signal<String>,
@@ -82,6 +83,7 @@ impl Component for SavedServersScreen {
     Self {
       connecting,
       running: ctx.signal(None::<String>),
+      navigated: ctx.signal(false),
       failed,
       failure_message: ctx.signal(None::<String>),
       query_signature: ctx.signal(String::new()),
@@ -147,7 +149,7 @@ impl Component for SavedServersScreen {
       .child(if servers.is_empty() {
         self.empty_state(ctx).into()
       } else {
-        self.servers_state(ctx, servers, &connect).into()
+        self.servers_state(ctx, servers).into()
       })
   }
 }
@@ -189,6 +191,23 @@ impl SavedServersScreen {
   fn sync_connection_state(&self, ctx: &mut Ctx, servers: &[StoredServer], connect: &ConnectAction) {
     let state = connect.state().get();
 
+    if state.data.is_some() && self.running.get_untracked().is_some() && !self.navigated.get_untracked() {
+      self.navigated.set(true);
+      if let Some(navigator) = ctx.navigator() {
+        if ctx
+          .use_context::<ServerSession>()
+          .as_ref()
+          .and_then(ServerSession::tofu_warning)
+          .is_some()
+        {
+          navigator.replace(ROUTE_TOFU_WARNING);
+        } else {
+          navigator.replace(ROUTE_LOBBY);
+        }
+      }
+      return;
+    }
+
     if let Some(next_address) = self.connecting.get_untracked()
       && let Some(running_address) = self.running.get_untracked()
       && running_address != next_address
@@ -200,26 +219,10 @@ impl SavedServersScreen {
     }
 
     if let Some(address) = self.running.get_untracked() {
-      if state.is_fulfilled() {
+      if state.is_rejected() {
         self.running.set(None);
         self.connecting.set(None);
-        self.failed.set(None);
-        self.failure_message.set(None);
-        if let Some(navigator) = ctx.navigator() {
-          if ctx
-            .use_context::<ServerSession>()
-            .as_ref()
-            .and_then(ServerSession::tofu_warning)
-            .is_some()
-          {
-            navigator.replace(ROUTE_TOFU_WARNING);
-          } else {
-            navigator.replace(ROUTE_LOBBY);
-          }
-        }
-      } else if state.is_rejected() {
-        self.running.set(None);
-        self.connecting.set(None);
+        self.navigated.set(false);
         self.failed.set(Some(address));
         self.failure_message.set(state.error.clone());
       }
@@ -238,6 +241,7 @@ impl SavedServersScreen {
 
     self.failed.set(None);
     self.failure_message.set(None);
+    self.navigated.set(false);
     self.running.set(Some(address));
     connect.run(server);
   }
@@ -287,14 +291,13 @@ impl SavedServersScreen {
       ))
   }
 
-  fn servers_state(&self, ctx: &mut Ctx, servers: Vec<StoredServer>, connect: &ConnectAction) -> impl Into<Element> {
+  fn servers_state(&self, ctx: &mut Ctx, servers: Vec<StoredServer>) -> impl Into<Element> {
     let metrics = servers_layout_metrics(ctx);
     let count = servers.len();
     let connecting = self.connecting.get();
     let failed = self.failed.get();
     let failure_message = self.failure_message.get();
     let connecting_signal = self.connecting.clone();
-    let running_signal = self.running.clone();
     let failed_signal = self.failed.clone();
     let query_results = self.query_results.get();
     let querying = self
@@ -328,9 +331,7 @@ impl SavedServersScreen {
             None
           },
           connecting: connecting_signal.clone(),
-          running: running_signal.clone(),
           failed: failed_signal.clone(),
-          connect: connect.clone(),
         },
       ));
     }

@@ -20,7 +20,7 @@ use crate::{
   },
   storage::{
     AppAudioSettings, AppDisplayName, AppStreamSettings, Storage, StoredServer, UserAudioPreferences,
-    stored_server_by_address,
+    server_user_audio_preferences, stored_server_by_address,
   },
   ui::connect_server::{ConnectErrorCopy, connect_and_store},
 };
@@ -448,15 +448,20 @@ pub(super) fn stop_stream_action(ctx: &mut Ctx, session: ServerSession) -> StopS
 pub(super) fn watch_stream_action(
   ctx: &mut Ctx,
   audio_settings_store: Option<Store<AppAudioSettings>>,
+  storage: Option<Storage>,
+  user_audio_preferences: Option<Store<UserAudioPreferences>>,
   session: ServerSession,
 ) -> WatchStreamAction {
   let copy = LobbyActionCopy::from_ctx(ctx);
   ctx.future_action(move |user_id| {
     let audio_settings_store = audio_settings_store.clone();
+    let storage = storage.clone();
+    let user_audio_preferences = user_audio_preferences.clone();
     let session = session.clone();
     let copy = copy.clone();
     async move {
       let server = session.server().ok_or(copy.no_connected_server)?;
+      apply_saved_stream_volume(user_audio_preferences.as_ref(), storage.as_ref(), &session, user_id);
       tracing::debug!(target: "video", "[video] requesting stream view for user {user_id}");
       server
         .view_screen_share(user_id)
@@ -484,6 +489,24 @@ pub(super) fn watch_stream_action(
       Ok(())
     }
   })
+}
+
+fn apply_saved_stream_volume(
+  preferences_store: Option<&Store<UserAudioPreferences>>,
+  storage: Option<&Storage>,
+  session: &ServerSession,
+  user_id: UserId,
+) {
+  let Some(info) = session.info() else {
+    return;
+  };
+  let volume = server_user_audio_preferences(preferences_store, storage, &info.address)
+    .stream_volumes
+    .get(&user_id)
+    .copied()
+    .unwrap_or_else(|| session.stream_volume(user_id))
+    .clamp(0, 100);
+  session.set_stream_volume(user_id, volume);
 }
 
 pub(super) fn stop_watching_action(ctx: &mut Ctx, session: ServerSession) -> StopWatchingAction {

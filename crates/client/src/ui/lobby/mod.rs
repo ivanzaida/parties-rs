@@ -212,7 +212,13 @@ impl Component for LobbyScreen {
     };
     let start_stream = start_stream_action(ctx, stream_settings_store.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());
-    let watch_stream = watch_stream_action(ctx, audio_settings_store.clone(), session.clone());
+    let watch_stream = watch_stream_action(
+      ctx,
+      audio_settings_store.clone(),
+      storage.clone(),
+      user_audio_preferences.clone(),
+      session.clone(),
+    );
     let rail_stream_actions = RailStreamActions {
       start_stream_modal_open: self.start_stream_modal_open.clone(),
       stop_stream: stop_stream.clone(),
