@@ -1,6 +1,9 @@
 mod server_card;
 
-use std::time::Duration;
+use std::{
+  sync::LazyLock,
+  time::{Duration, Instant},
+};
 
 use lurq::{
   app::{component::Component, ctx::Ctx, theme::Breakpoint},
@@ -31,6 +34,7 @@ use crate::{
 
 const SERVER_LIST_GAP: f32 = 14.0;
 const SERVER_LIST_QUERY_TIMEOUT: Duration = Duration::from_millis(800);
+static SERVER_CONNECT_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 #[derive(Clone, Copy)]
 struct ServersLayoutMetrics {
@@ -66,6 +70,7 @@ fn servers_layout_metrics(ctx: &Ctx) -> ServersLayoutMetrics {
 pub struct SavedServersScreen {
   connecting: Signal<Option<String>>,
   running: Signal<Option<String>>,
+  connect_started_ms: Signal<Option<u64>>,
   navigated: Signal<bool>,
   failed: Signal<Option<String>>,
   failure_message: Signal<Option<String>>,
@@ -83,6 +88,7 @@ impl Component for SavedServersScreen {
     Self {
       connecting,
       running: ctx.signal(None::<String>),
+      connect_started_ms: ctx.signal(None::<u64>),
       navigated: ctx.signal(false),
       failed,
       failure_message: ctx.signal(None::<String>),
@@ -192,7 +198,15 @@ impl SavedServersScreen {
     let state = connect.state().get();
 
     if state.data.is_some() && self.running.get_untracked().is_some() && !self.navigated.get_untracked() {
+      let elapsed_ms = self
+        .connect_started_ms
+        .get_untracked()
+        .map(|started_ms| server_connect_millis().saturating_sub(started_ms));
       self.navigated.set(true);
+      tracing::debug!(
+        target: "ui::servers",
+        "[servers/connect] saved server connect fulfilled: elapsed_ms={elapsed_ms:?}"
+      );
       if let Some(navigator) = ctx.navigator() {
         if ctx
           .use_context::<ServerSession>()
@@ -200,8 +214,10 @@ impl SavedServersScreen {
           .and_then(ServerSession::tofu_warning)
           .is_some()
         {
+          tracing::debug!(target: "ui::servers", "[servers/connect] navigating to TOFU warning after saved server connect");
           navigator.replace(ROUTE_TOFU_WARNING);
         } else {
+          tracing::debug!(target: "ui::servers", "[servers/connect] navigating to lobby after saved server connect");
           navigator.replace(ROUTE_LOBBY);
         }
       }
@@ -212,16 +228,34 @@ impl SavedServersScreen {
       && let Some(running_address) = self.running.get_untracked()
       && running_address != next_address
     {
+      tracing::debug!(
+        target: "ui::servers",
+        "[servers/connect] saved server connect target changed: running={} next={}",
+        running_address,
+        next_address
+      );
       connect.cancel();
       self.running.set(None);
+      self.connect_started_ms.set(None);
       self.failed.set(None);
       self.failure_message.set(None);
     }
 
     if let Some(address) = self.running.get_untracked() {
       if state.is_rejected() {
+        let elapsed_ms = self
+          .connect_started_ms
+          .get_untracked()
+          .map(|started_ms| server_connect_millis().saturating_sub(started_ms));
+        tracing::debug!(
+          target: "ui::servers",
+          "[servers/connect] saved server connect rejected: address={} elapsed_ms={elapsed_ms:?} error={:?}",
+          address,
+          state.error
+        );
         self.running.set(None);
         self.connecting.set(None);
+        self.connect_started_ms.set(None);
         self.navigated.set(false);
         self.failed.set(Some(address));
         self.failure_message.set(state.error.clone());
@@ -242,7 +276,14 @@ impl SavedServersScreen {
     self.failed.set(None);
     self.failure_message.set(None);
     self.navigated.set(false);
+    self.connect_started_ms.set(Some(server_connect_millis()));
     self.running.set(Some(address));
+    tracing::debug!(
+      target: "ui::servers",
+      "[servers/connect] starting saved server connect: address={} saved_servers={}",
+      server.address,
+      servers.len()
+    );
     connect.run(server);
   }
 
@@ -375,6 +416,13 @@ impl SavedServersScreen {
       style
     })
   }
+}
+
+fn server_connect_millis() -> u64 {
+  SERVER_CONNECT_CLOCK_START
+    .elapsed()
+    .as_millis()
+    .min(u128::from(u64::MAX)) as u64
 }
 
 async fn query_saved_servers(

@@ -1,7 +1,7 @@
 use std::{
   net::SocketAddr,
   sync::Arc,
-  time::{Duration, SystemTime, UNIX_EPOCH},
+  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use lurq::{
@@ -378,29 +378,45 @@ pub async fn connect_and_store(
 ) -> Result<ConnectedServerInfo, String> {
   let address = with_default_port(&address);
   let display_name = display_name.trim().to_owned();
+  let started_at = Instant::now();
   tracing::debug!(target: "network::connect",
-    "[network/connect] connecting to server: address={} display='{}'",
+    "[network/connect] connecting to server: address={} display='{}' password_present={}",
     address,
-    display_name
+    display_name,
+    !seed.trim().is_empty()
   );
 
   let identity = identity_from_store(identity_store.as_ref(), &errors)?;
 
   let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, async {
+    let resolve_started_at = Instant::now();
+    tracing::debug!(target: "network::connect", "[network/connect] resolving server address: address={address}");
     let socket = resolve_address(address.clone(), errors.resolve_failed.clone()).await?;
-    tracing::debug!(target: "network::connect", "[network/connect] resolved server address: address={address} socket={socket}");
+    tracing::debug!(
+      target: "network::connect",
+      "[network/connect] resolved server address: address={address} socket={socket} elapsed_ms={}",
+      resolve_started_at.elapsed().as_millis()
+    );
+
+    let query_started_at = Instant::now();
+    tracing::debug!(target: "network::connect", "[network/connect] querying server info: address={address} socket={socket}");
     let query = query_server(socket, SERVER_QUERY_TIMEOUT).await.unwrap_or(None);
     tracing::debug!(target: "network::connect",
-      "[network/connect] query result: address={} responded={}",
+      "[network/connect] query result: address={} responded={} elapsed_ms={}",
       address,
-      query.is_some()
+      query.is_some(),
+      query_started_at.elapsed().as_millis()
     );
+
+    let transport_started_at = Instant::now();
+    tracing::debug!(target: "network::connect", "[network/connect] opening transport: address={address} socket={socket}");
     let server = Server::connect(socket).await.map_err(|error| error.to_string())?;
     let fingerprint = server.certificate_fingerprint().unwrap_or_default();
     tracing::debug!(target: "network::connect",
-      "[network/connect] transport connected: address={} certificate_fingerprint={}",
+      "[network/connect] transport connected: address={} certificate_fingerprint={} elapsed_ms={}",
       address,
-      fingerprint
+      fingerprint,
+      transport_started_at.elapsed().as_millis()
     );
 
     let timestamp = SystemTime::now()
@@ -408,12 +424,16 @@ pub async fn connect_and_store(
       .map_err(|error| error.to_string())?
       .as_secs();
     let auth = auth_identity(&identity, &display_name, timestamp, seed.clone()).map_err(|error| error.to_string())?;
+    let auth_started_at = Instant::now();
+    tracing::debug!(target: "network::connect", "[network/connect] authenticating: address={address}");
     let response = authenticate_with_query(&server, auth, &errors).await?;
     tracing::debug!(target: "network::connect",
-      "[network/connect] authenticated: server='{}' user={} role={:?}",
+      "[network/connect] authenticated: server='{}' user={} role={:?} elapsed_ms={} total_elapsed_ms={}",
       response.server_name,
       response.user_id,
-      response.role
+      response.role,
+      auth_started_at.elapsed().as_millis(),
+      started_at.elapsed().as_millis()
     );
 
     Ok::<_, String>((server, fingerprint, response))
@@ -422,15 +442,20 @@ pub async fn connect_and_store(
   let (server, fingerprint, response) = match connect_result {
     Ok(Ok(result)) => result,
     Ok(Err(error)) => {
-      tracing::debug!(target: "network::connect", "[network/connect] connection attempt failed: address={address} error={error}");
+      tracing::debug!(
+        target: "network::connect",
+        "[network/connect] connection attempt failed: address={address} elapsed_ms={} error={error}",
+        started_at.elapsed().as_millis()
+      );
       return Err(error);
     }
     Err(_) => {
       tracing::debug!(
         target: "network::connect",
-        "[network/connect] connection attempt timed out: address={} timeout_seconds={}",
+        "[network/connect] connection attempt timed out: address={} timeout_seconds={} elapsed_ms={}",
         address,
-        CONNECT_TIMEOUT.as_secs()
+        CONNECT_TIMEOUT.as_secs(),
+        started_at.elapsed().as_millis()
       );
       return Err(errors.timeout.clone());
     }
@@ -519,10 +544,11 @@ pub async fn connect_and_store(
   }
 
   tracing::debug!(target: "network::connect",
-    "[network/connect] server ready: address={} server='{}' local_user={}",
+    "[network/connect] server ready: address={} server='{}' local_user={} total_elapsed_ms={}",
     info.address,
     info.server_name,
-    info.user_id
+    info.user_id,
+    started_at.elapsed().as_millis()
   );
   Ok(info)
 }

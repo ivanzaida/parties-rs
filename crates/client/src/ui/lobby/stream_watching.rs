@@ -52,7 +52,7 @@ pub(super) fn stream_watching_top_bar(
     .width(Dimension::Pct(100.0))
     .height(56.0)
     .align_items(Alignment::Center)
-    .justify(Justify::SpaceBetween)
+    .spacing(12.0)
     .padding_horizontal(20.0)
     .border_bottom(Border::inside(1.0, theme::PaletteColor::Border))
     .child(subscriber)
@@ -64,10 +64,12 @@ pub(super) fn stream_watching_top_bar(
         .child(
           Text::new(&title)
             .variant(theme::TypographyStyle::Button)
-            .color(theme::PaletteColor::TextPrimary),
+            .color(theme::PaletteColor::TextPrimary)
+            .text_overflow(TextOverflow::Elipsis),
         )
         .child(live_badge(ctx)),
     )
+    .child(Row::new().flex(1.0))
     .child(start_stream_button(ctx, start_stream_modal_open))
     .into()
 }

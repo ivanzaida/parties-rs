@@ -1,3 +1,8 @@
+use std::{
+  sync::atomic::{AtomicU64, Ordering},
+  time::Instant,
+};
+
 use lurq::{
   app::{
     component::Component,
@@ -117,6 +122,8 @@ pub struct LobbyScreen {
   stream_audio_enabled: Signal<bool>,
   reconnect_attempt: Signal<u32>,
   shell_model_store: Store<Option<LobbyShellModel>>,
+  created_at: Instant,
+  render_count: AtomicU64,
 }
 
 impl Component for LobbyScreen {
@@ -141,11 +148,33 @@ impl Component for LobbyScreen {
       stream_audio_enabled: ctx.signal(true),
       reconnect_attempt: ctx.signal(0),
       shell_model_store: ctx.store(None),
+      created_at: Instant::now(),
+      render_count: AtomicU64::new(0),
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let render_started_at = Instant::now();
+    let render_count = self.render_count.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    let since_create_ms = self.created_at.elapsed().as_millis();
+    let should_log_render = render_count <= 8 || render_count % 120 == 0;
+    if should_log_render {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] render start: count={} since_create_ms={}",
+        render_count,
+        since_create_ms
+      );
+    }
+
     let Some(session) = ctx.use_context::<ServerSession>() else {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] missing server session: count={} since_create_ms={} render_ms={}",
+        render_count,
+        since_create_ms,
+        render_started_at.elapsed().as_millis()
+      );
       return empty_lobby(ctx);
     };
     let storage = ctx.use_context::<Storage>();
@@ -159,12 +188,27 @@ impl Component for LobbyScreen {
     let settings_popup = ctx.use_context::<SettingsPopupHandle>();
 
     let Some(info) = session.info() else {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] missing connected server info, redirecting to choose server: count={} since_create_ms={} render_ms={}",
+        render_count,
+        since_create_ms,
+        render_started_at.elapsed().as_millis()
+      );
       if let Some(navigator) = ctx.navigator() {
         navigator.replace(ROUTE_CHOOSE_SERVER);
       }
       return empty_lobby(ctx);
     };
     if session.tofu_warning().is_some() {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] tofu warning pending, redirecting: count={} address={} since_create_ms={} render_ms={}",
+        render_count,
+        info.address,
+        since_create_ms,
+        render_started_at.elapsed().as_millis()
+      );
       if let Some(navigator) = ctx.navigator() {
         navigator.replace(ROUTE_TOFU_WARNING);
       }
@@ -175,18 +219,45 @@ impl Component for LobbyScreen {
       .is_some_and(|debug_mode| debug_mode.with(|debug_mode| debug_mode.value));
 
     if self.shell_model_store.with(Option::is_none) {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] initializing shell model: count={} address={} server='{}' since_create_ms={}",
+        render_count,
+        info.address,
+        info.server_name,
+        since_create_ms
+      );
       apply_current_model(&self.shell_model_store, &session, lobby_shell_model);
     }
     let shell_model = self
       .shell_model_store
       .get()
       .unwrap_or_else(|| current_model(&session, lobby_shell_model));
+    if should_log_render {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] shell model ready: count={} address={} disconnected={} receiver_running={} empty_text_channels={} since_create_ms={}",
+        render_count,
+        info.address,
+        shell_model.disconnected,
+        shell_model.receiver_running,
+        shell_model.empty_text_channel_ids.len(),
+        since_create_ms
+      );
+    }
     let receiver = receiver_action(ctx, session.clone());
     if !session.shutdown_requested()
       && !shell_model.disconnected
       && !shell_model.receiver_running
       && !receiver.state().get().is_pending()
     {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] starting receiver action: count={} address={} since_create_ms={}",
+        render_count,
+        info.address,
+        since_create_ms
+      );
       receiver.run(());
     }
     let chat_history = chat_history_action(ctx, session.clone());
@@ -202,6 +273,14 @@ impl Component for LobbyScreen {
         });
       }
       if !history_requests.is_empty() {
+        tracing::debug!(
+          target: "ui::lobby",
+          "[lobby/render] starting chat history action: count={} address={} requests={} since_create_ms={}",
+          render_count,
+          info.address,
+          history_requests.len(),
+          since_create_ms
+        );
         chat_history.run(history_requests);
       }
     }
@@ -237,7 +316,7 @@ impl Component for LobbyScreen {
     );
 
     if shell_model.disconnected {
-      return disconnected_lobby(
+      let element = disconnected_lobby(
         ctx,
         &info,
         &shell_model,
@@ -245,6 +324,15 @@ impl Component for LobbyScreen {
         &reconnect,
         self.reconnect_attempt.clone(),
       );
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] render disconnected lobby: count={} address={} since_create_ms={} render_ms={}",
+        render_count,
+        info.address,
+        since_create_ms,
+        render_started_at.elapsed().as_millis()
+      );
+      return element;
     } else if self.reconnect_attempt.get_untracked() != 0 {
       self.reconnect_attempt.set(0);
     }
@@ -317,12 +405,12 @@ impl Component for LobbyScreen {
           modal_start_stream,
           modal_start_submitted,
         ))
-        .open(modal_open)
+        .open(modal_open.clone())
         .target(Root),
       );
     }
 
-    Stack::new()
+    let element: Element = Stack::new()
       .width(Dimension::Pct(100.0))
       .height(Dimension::Pct(100.0))
       .child(body)
@@ -332,7 +420,21 @@ impl Component for LobbyScreen {
         session.clone(),
         &stop_watching,
       ))
-      .into()
+      .into();
+    let render_ms = render_started_at.elapsed().as_millis();
+    if should_log_render || render_ms >= 16 {
+      tracing::debug!(
+        target: "ui::lobby",
+        "[lobby/render] render complete: count={} address={} server='{}' modal_open={} since_create_ms={} render_ms={}",
+        render_count,
+        info.address,
+        info.server_name,
+        modal_open.get_untracked(),
+        since_create_ms,
+        render_ms
+      );
+    }
+    element
   }
 }
 

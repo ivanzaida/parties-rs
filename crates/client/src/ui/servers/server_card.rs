@@ -163,6 +163,11 @@ fn card_body(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
         return;
       }
       failed.set(None);
+      tracing::debug!(
+        target: "ui::servers",
+        "[servers/connect] saved server card clicked: address={}",
+        click_address
+      );
       connecting.set(Some(click_address.clone()));
     });
 
@@ -378,6 +383,11 @@ fn retry_button(ctx: &mut Ctx, props: &ServerCardProps) -> impl Into<Element> {
       return;
     }
     failed.set(None);
+    tracing::debug!(
+      target: "ui::servers",
+      "[servers/connect] saved server retry clicked: address={}",
+      address
+    );
     connecting.set(Some(address.clone()));
   })
 }
