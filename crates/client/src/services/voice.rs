@@ -153,6 +153,14 @@ impl VoiceEngine {
     let input_result = build_input_path(server, &settings, control.clone(), stop.clone(), on_local_voice);
     let input_error = input_result.as_ref().err().map(ToString::to_string);
     let input_path = input_result.unwrap_or_default();
+    if let Some(error) = input_error.as_deref() {
+      tracing::error!(
+        target: "audio::encode",
+        "[audio:encode] voice capture input path failed; continuing with playback_only={} error={error} {}",
+        output_stream.is_some(),
+        audio_settings_debug_context(&settings)
+      );
+    }
 
     if input_path.stream.is_none() && output_stream.is_none() {
       return Err(VoiceError::new(
@@ -160,6 +168,13 @@ impl VoiceEngine {
       ));
     }
     let captures_voice = input_path.stream.is_some() || input_path.encoder_thread.is_some();
+    if !captures_voice {
+      tracing::error!(
+        target: "audio::encode",
+        "[audio:encode] voice engine started without active microphone capture {}",
+        audio_settings_debug_context(&settings)
+      );
+    }
 
     Ok(Self {
       _input_stream: input_path.stream,
@@ -681,12 +696,22 @@ fn build_input_path(
   ensure_microphone_authorized()?;
 
   let Some(device) = audio_devices::input_device(&settings.audio_input_device) else {
+    tracing::error!(
+      target: "audio::encode",
+      "[audio:encode] no input device available while starting voice capture {}",
+      audio_settings_debug_context(settings)
+    );
     return Ok(VoiceInputPath::default());
   };
 
-  let supported_config = device
-    .default_input_config()
-    .map_err(|error| VoiceError::new(format!("Failed to read input config: {error}")))?;
+  let supported_config = device.default_input_config().map_err(|error| {
+    tracing::error!(
+      target: "audio::encode",
+      "[audio:encode] failed to read input config while starting voice capture: {error} {}",
+      audio_settings_debug_context(settings)
+    );
+    VoiceError::new(format!("Failed to read input config: {error}"))
+  })?;
   let sample_format = supported_config.sample_format();
   let config = low_latency_stream_config(&supported_config);
   let (frame_tx, frame_rx) = mpsc::sync_channel(INPUT_FRAME_QUEUE);
@@ -733,12 +758,24 @@ fn build_input_path(
     SampleFormat::U64 => {
       build_input_stream::<u64>(&device, config, frame_tx, free_frame_rx, control.clone(), stop.clone())
     }
-    _ => Err(VoiceError::new("Unsupported input sample format.")),
+    _ => {
+      tracing::error!(
+        target: "audio::encode",
+        "[audio:encode] unsupported input sample format while starting voice capture: sample_format={sample_format:?} {}",
+        audio_settings_debug_context(settings)
+      );
+      Err(VoiceError::new("Unsupported input sample format."))
+    }
   }?;
 
-  input_stream
-    .play()
-    .map_err(|error| VoiceError::new(format!("Failed to start input stream: {error}")))?;
+  input_stream.play().map_err(|error| {
+    tracing::error!(
+      target: "audio::encode",
+      "[audio:encode] failed to start input stream for voice capture: {error} {}",
+      audio_settings_debug_context(settings)
+    );
+    VoiceError::new(format!("Failed to start input stream: {error}"))
+  })?;
 
   let encoder_thread = spawn_encoder_thread(server, frame_rx, free_frame_tx, stop, on_local_voice, control)?;
   Ok(VoiceInputPath {
@@ -804,7 +841,7 @@ where
     .build_input_stream::<T, _, _>(
       config,
       move |data, _| state.push_catching(data),
-      move |error| tracing::debug!(target: "audio::encode", "[audio:encode] input stream error: {error}"),
+      move |error| tracing::error!(target: "audio::encode", "[audio:encode] input stream error; voice capture may be stopped until restart: {error}"),
       None,
     )
     .map_err(|error| VoiceError::new(format!("Failed to build input stream: {error}")))
@@ -963,7 +1000,7 @@ fn warn_local_voice_input_idle(
     return;
   }
   *last_warn_at = Some(now);
-  tracing::debug!(
+  tracing::error!(
     target: "audio::encode",
     "[audio:encode] no local voice input frames reached encoder for {}ms while transmit is allowed: input_frames={} sent_packets={} suppressed_frames={} muted={} deafened={} push_to_talk={} push_to_talk_active={} threshold={:.3}",
     idle.as_millis(),
@@ -1171,6 +1208,18 @@ impl InputCaptureState {
       self.spare_frame = Some(frame);
     }
   }
+}
+
+fn audio_settings_debug_context(settings: &AppAudioSettings) -> String {
+  format!(
+    "selected_input_configured={} selected_output_configured={} noise_cancellation={} echo_cancellation={} voice_activation={} push_to_talk={}",
+    !settings.audio_input_device.trim().is_empty(),
+    !settings.audio_output_device.trim().is_empty(),
+    settings.noise_cancellation,
+    settings.echo_cancellation,
+    settings.voice_activation,
+    settings.push_to_talk
+  )
 }
 
 fn pop_front_samples(samples: &mut VecDeque<f32>, count: usize) {

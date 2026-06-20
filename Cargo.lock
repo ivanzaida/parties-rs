@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.1.39"
+version = "0.1.40"
 dependencies = [
  "bip39",
  "bytes",
@@ -2492,9 +2492,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lurq"
-version = "0.15.6"
+version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91afe43d1f8727e996c267278a0e9b3014a32943a8263052dd81eabbb3e6468"
+checksum = "78cbb1154c33d607e2d7c948812dd97b51a3899b7da250c5631aa805d384fdbe"
 dependencies = [
  "arboard",
  "bytemuck",
