@@ -78,6 +78,8 @@ pub(super) struct VideoFrameSink {
   errors: Arc<Mutex<HashMap<UserId, VideoStreamError>>>,
   metadata: Arc<Mutex<HashMap<UserId, ScreenShareMetadata>>>,
   render_fps: Arc<Mutex<HashMap<UserId, VideoRenderFpsCounter>>>,
+  #[cfg(target_os = "windows")]
+  dx12_surface_reuse: Arc<Mutex<Dx12SurfaceReuseTracker>>,
   lobby: Arc<Mutex<LobbyState>>,
   lobby_updates: LobbyUpdatePublisher,
   #[cfg(target_os = "windows")]
@@ -92,6 +94,32 @@ struct VideoRenderFpsCounter {
   old_frames: u32,
 }
 
+#[cfg(target_os = "windows")]
+struct Dx12SurfaceReuseTracker {
+  frames: HashMap<isize, Dx12SurfaceFrameState>,
+  stats: Dx12SurfaceReuseStats,
+}
+
+#[cfg(target_os = "windows")]
+struct Dx12SurfaceFrameState {
+  user_id: UserId,
+  frame_number: u32,
+  updated_at: Instant,
+}
+
+#[cfg(target_os = "windows")]
+struct Dx12SurfaceReuseStats {
+  started_at: Instant,
+  reuses: u32,
+  short_reuses: u32,
+  backwards_reuses: u32,
+  min_frame_delta: Option<u32>,
+  max_frame_delta: u32,
+  min_age: Option<Duration>,
+  max_age: Duration,
+  last_user_id: Option<UserId>,
+}
+
 impl VideoFrameSink {
   pub(super) fn new(lobby: Arc<Mutex<LobbyState>>, lobby_updates: LobbyUpdatePublisher) -> Self {
     Self {
@@ -99,6 +127,8 @@ impl VideoFrameSink {
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
       render_fps: Arc::new(Mutex::new(HashMap::new())),
+      #[cfg(target_os = "windows")]
+      dx12_surface_reuse: Arc::new(Mutex::new(Dx12SurfaceReuseTracker::new())),
       lobby,
       lobby_updates,
       #[cfg(target_os = "windows")]
@@ -117,6 +147,7 @@ impl VideoFrameSink {
       errors: Arc::new(Mutex::new(HashMap::new())),
       metadata: Arc::new(Mutex::new(HashMap::new())),
       render_fps: Arc::new(Mutex::new(HashMap::new())),
+      dx12_surface_reuse: Arc::new(Mutex::new(Dx12SurfaceReuseTracker::new())),
       lobby,
       lobby_updates,
       dx12_video_surfaces: Some(dx12_video_surfaces),
@@ -128,6 +159,8 @@ impl VideoFrameSink {
     self.errors.lock().clear();
     self.metadata.lock().clear();
     self.render_fps.lock().clear();
+    #[cfg(target_os = "windows")]
+    self.dx12_surface_reuse.lock().clear();
   }
 
   pub(super) fn image_data(&self, user_id: UserId) -> Option<ImageData> {
@@ -158,12 +191,16 @@ impl VideoFrameSink {
         errors.retain(|cached_user_id, _| *cached_user_id == user_id);
         metadata.retain(|cached_user_id, _| *cached_user_id == user_id);
         render_fps.retain(|cached_user_id, _| *cached_user_id == user_id);
+        #[cfg(target_os = "windows")]
+        self.dx12_surface_reuse.lock().retain_user(user_id);
       }
       None => {
         frames.clear();
         errors.clear();
         metadata.clear();
         render_fps.clear();
+        #[cfg(target_os = "windows")]
+        self.dx12_surface_reuse.lock().clear();
       }
     }
   }
@@ -172,6 +209,8 @@ impl VideoFrameSink {
     self.frames.lock().remove(&user_id);
     self.errors.lock().remove(&user_id);
     self.metadata.lock().remove(&user_id);
+    #[cfg(target_os = "windows")]
+    self.dx12_surface_reuse.lock().clear_user(user_id);
   }
 
   pub(super) fn set_error(&self, user_id: UserId, error: VideoStreamError) {
@@ -279,7 +318,7 @@ impl VideoFrameSink {
               }
             }
           };
-          tracing::info!(
+          tracing::debug!(
             target: "video::watch",
             "watched stream cpu image replace user={} image_id={} size={}x{} format={:?}",
             frame.sender_id,
@@ -434,10 +473,15 @@ impl VideoFrameSink {
     surface: Arc<lurq::app::dx12_render::Dx12Nv12Surface>,
   ) {
     let mut should_publish_update = false;
-    let dx12_image = surface.dx12_nv12_image();
+    let mut dx12_image = surface.dx12_nv12_image();
+    dx12_image.frame_number = Some(frame_number);
     let shared_handle = surface.y_shared_handle_raw();
+    self
+      .dx12_surface_reuse
+      .lock()
+      .record(sender_id, frame_number, shared_handle);
     let packed_nv12 = surface.is_packed_nv12();
-    let (image_id, previous_version, bumped_version, replace) = {
+    let (image_id, bumped_version, replace) = {
       let mut frames = self.frames.lock();
       match frames.get_mut(&sender_id) {
         Some(VideoFrameImage::Dx12Surface { image, native, slot })
@@ -445,46 +489,41 @@ impl VideoFrameSink {
             && image.height() == u32::from(height)
             && image.format() == lurq::images::ImagePixelFormat::Nv12 =>
         {
-          let previous_version = native.version();
           slot.set_image(dx12_image);
           native.bump_version();
-          let bumped_version = native.version();
-          (image.id(), previous_version, bumped_version, false)
+          (image.id(), u64::from(frame_number), false)
         }
         _ => {
           let slot = lurq::images::Dx12Nv12ImageSlot::new(dx12_image);
           let native =
             lurq::images::NativeImageData::from_dx12_nv12_slot(u32::from(width), u32::from(height), slot.clone());
           let image = native.image_data();
-          let previous_version = native.version();
           native.bump_version();
-          let bumped_version = native.version();
           let image_id = image.id();
           frames.insert(sender_id, VideoFrameImage::Dx12Surface { image, native, slot });
-          (image_id, previous_version, bumped_version, true)
+          (image_id, u64::from(frame_number), true)
         }
       }
     };
     {
       if replace {
-        tracing::info!(
+        tracing::debug!(
           target: "video::watch",
-          "watched stream dx12 image replace user={} image_id={} size={}x{} packed={} handle=0x{:x} version={}->{}",
+          "watched stream dx12 image replace user={} image_id={} size={}x{} packed={} handle=0x{:x} version={}",
           sender_id,
           image_id,
           width,
           height,
           packed_nv12,
           shared_handle,
-          previous_version,
           bumped_version
         );
         tracing::debug!(target: "video::decode",
-          "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=true"
+          "[video:decode] storing DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} replace=true"
         );
       } else if bumped_version == 1 || bumped_version % 120 == 0 {
         tracing::debug!(target: "video::decode",
-          "[video:decode] updating DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={previous_version}->{bumped_version} replace=false"
+          "[video:decode] updating DX12 video frame for user {sender_id}: size={width}x{height} packed={packed_nv12} handle=0x{shared_handle:x} version={bumped_version} replace=false"
         );
       }
     }
@@ -589,9 +628,142 @@ impl VideoRenderFpsCounter {
   }
 }
 
+#[cfg(target_os = "windows")]
+impl Dx12SurfaceReuseTracker {
+  fn new() -> Self {
+    let now = Instant::now();
+    Self {
+      frames: HashMap::new(),
+      stats: Dx12SurfaceReuseStats::new(now),
+    }
+  }
+
+  fn clear(&mut self) {
+    self.frames.clear();
+    self.stats = Dx12SurfaceReuseStats::new(Instant::now());
+  }
+
+  fn retain_user(&mut self, user_id: UserId) {
+    self.frames.retain(|_, state| state.user_id == user_id);
+    self.stats = Dx12SurfaceReuseStats::new(Instant::now());
+  }
+
+  fn clear_user(&mut self, user_id: UserId) {
+    self.frames.retain(|_, state| state.user_id != user_id);
+    self.stats = Dx12SurfaceReuseStats::new(Instant::now());
+  }
+
+  fn record(&mut self, user_id: UserId, frame_number: u32, shared_handle: isize) {
+    let now = Instant::now();
+    let previous = self.frames.insert(
+      shared_handle,
+      Dx12SurfaceFrameState {
+        user_id,
+        frame_number,
+        updated_at: now,
+      },
+    );
+    let Some(previous) = previous else {
+      self.log_if_due(now);
+      return;
+    };
+    if previous.user_id != user_id {
+      self.log_if_due(now);
+      return;
+    }
+
+    let backwards = frame_number_before(frame_number, previous.frame_number);
+    let frame_delta = if backwards {
+      previous.frame_number.wrapping_sub(frame_number)
+    } else {
+      frame_number.wrapping_sub(previous.frame_number)
+    };
+    let age = now.duration_since(previous.updated_at);
+    let short_reuse = frame_delta < 8 || age < Duration::from_millis(80);
+
+    self.stats.reuses = self.stats.reuses.saturating_add(1);
+    self.stats.last_user_id = Some(user_id);
+    self.stats.min_frame_delta = Some(
+      self
+        .stats
+        .min_frame_delta
+        .map_or(frame_delta, |min| min.min(frame_delta)),
+    );
+    self.stats.max_frame_delta = self.stats.max_frame_delta.max(frame_delta);
+    self.stats.min_age = Some(self.stats.min_age.map_or(age, |min| min.min(age)));
+    self.stats.max_age = self.stats.max_age.max(age);
+    if short_reuse {
+      self.stats.short_reuses = self.stats.short_reuses.saturating_add(1);
+    }
+    if backwards {
+      self.stats.backwards_reuses = self.stats.backwards_reuses.saturating_add(1);
+    }
+
+    if short_reuse || backwards {
+      tracing::debug!(
+        target: "video::watch",
+        "watched stream dx12 surface reuse suspicious user={} handle=0x{:x} previous_frame={} current_frame={} frame_delta={} age_ms={:.1} backwards={} short_reuse={}",
+        user_id,
+        shared_handle,
+        previous.frame_number,
+        frame_number,
+        frame_delta,
+        duration_ms(age),
+        backwards,
+        short_reuse
+      );
+    }
+
+    self.log_if_due(now);
+  }
+
+  fn log_if_due(&mut self, now: Instant) {
+    if now.duration_since(self.stats.started_at) < Duration::from_secs(1) {
+      return;
+    }
+    if self.stats.reuses > 0 {
+      tracing::debug!(
+        target: "video::watch",
+        "watched stream dx12 surface reuse cadence user={:?} tracked_surfaces={} reuses={} short_reuses={} backwards_reuses={} min_frame_delta={:?} max_frame_delta={} min_age_ms={:.1} max_age_ms={:.1}",
+        self.stats.last_user_id,
+        self.frames.len(),
+        self.stats.reuses,
+        self.stats.short_reuses,
+        self.stats.backwards_reuses,
+        self.stats.min_frame_delta,
+        self.stats.max_frame_delta,
+        self.stats.min_age.map(duration_ms).unwrap_or(0.0),
+        duration_ms(self.stats.max_age)
+      );
+    }
+    self.stats = Dx12SurfaceReuseStats::new(now);
+  }
+}
+
+#[cfg(target_os = "windows")]
+impl Dx12SurfaceReuseStats {
+  fn new(now: Instant) -> Self {
+    Self {
+      started_at: now,
+      reuses: 0,
+      short_reuses: 0,
+      backwards_reuses: 0,
+      min_frame_delta: None,
+      max_frame_delta: 0,
+      min_age: None,
+      max_age: Duration::ZERO,
+      last_user_id: None,
+    }
+  }
+}
+
 fn frame_number_before(frame_number: u32, previous_frame_number: u32) -> bool {
   let delta = previous_frame_number.wrapping_sub(frame_number);
   delta != 0 && delta < (u32::MAX / 2)
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }
 
 fn decoded_pixel_format_to_lurq(format: DecodedVideoPixelFormat) -> lurq::images::ImagePixelFormat {

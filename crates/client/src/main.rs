@@ -121,7 +121,7 @@ impl FpsSampler {
     }
   }
 
-  fn record_frame(&mut self) -> Option<u32> {
+  fn record_frame(&mut self, update_signal: bool) -> Option<u32> {
     self.frames_since_sample = self.frames_since_sample.saturating_add(1);
     let now = Instant::now();
     let elapsed = now.duration_since(self.last_sample);
@@ -130,7 +130,7 @@ impl FpsSampler {
     }
 
     let fps = (self.frames_since_sample as f32 / elapsed.as_secs_f32()).round() as u32;
-    if self.signal.with_untracked(|current| *current) != fps {
+    if update_signal && self.signal.with_untracked(|current| *current) != fps {
       self.signal.set(fps);
     }
     self.frames_since_sample = 0;
@@ -223,7 +223,8 @@ fn main() {
       WindowCornerRadius::Default
     })
     .on_paint(move |tree, _, report| {
-      if let Some(fps) = fps_sampler.record_frame() {
+      let update_titlebar_fps = !report.reasons.continuous_redraw_image;
+      if let Some(fps) = fps_sampler.record_frame(update_titlebar_fps) {
         if tracing::enabled!(target: "frame-profile", tracing::Level::TRACE) {
           tracing::trace!(
             target: "frame-profile",

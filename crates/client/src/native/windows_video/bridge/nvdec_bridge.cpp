@@ -18,6 +18,7 @@ struct NvdecBridge {
     uint8_t* nv12 = nullptr;
     uintptr_t nv12_len = 0;
     bool decoded = false;
+    int64_t decoded_timestamp = -1;
     bool output_enabled = true;
     bool d3d12_output = false;
 };
@@ -104,12 +105,14 @@ void on_decoded(NvdecBridge* bridge, const DecodedFrame& frame) {
     const uint32_t height = frame.height;
     if (bridge->d3d12_output && frame.nv12 && width > 0 && height > 0 && (width & 1) == 0 && (height & 1) == 0) {
         bridge->decoded = true;
+        bridge->decoded_timestamp = frame.timestamp;
         return;
     }
 
     const uintptr_t y_size = static_cast<uintptr_t>(width) * height;
     if (bridge->nv12 && frame.nv12 && frame.y_plane == bridge->nv12 && frame.u_plane == bridge->nv12 + y_size) {
         bridge->decoded = valid_nv12_target(frame, bridge->nv12, bridge->nv12_len);
+        bridge->decoded_timestamp = bridge->decoded ? frame.timestamp : -1;
         return;
     }
 
@@ -118,6 +121,7 @@ void on_decoded(NvdecBridge* bridge, const DecodedFrame& frame) {
     } else {
         bridge->decoded = i420_to_nv12(frame, bridge->nv12, bridge->nv12_len);
     }
+    bridge->decoded_timestamp = bridge->decoded ? frame.timestamp : -1;
 }
 
 void set_output_enabled(NvdecBridge* bridge, bool enabled) {
@@ -169,6 +173,7 @@ int parties_nvdec_decode(
     bridge->nv12 = nv12;
     bridge->nv12_len = nv12_len;
     bridge->decoded = false;
+    bridge->decoded_timestamp = -1;
     bridge->d3d12_output = false;
     set_output_enabled(bridge, nv12 && nv12_len > 0);
     bridge->decoder.set_output_buffer(nv12, nv12_len);
@@ -193,7 +198,8 @@ int parties_nvdec_decode_to_d3d12(
     uintptr_t uv_handle,
     uint64_t uv_size,
     uint16_t width,
-    uint16_t height) {
+    uint16_t height,
+    int64_t* decoded_timestamp_out) {
     if (!bridge || !data || len == 0 || !y_handle || !uv_handle || width == 0 || height == 0) {
         native_log_error("NVDEC bridge D3D12 decode rejected invalid input");
         return -1;
@@ -202,6 +208,7 @@ int parties_nvdec_decode_to_d3d12(
     bridge->nv12 = nullptr;
     bridge->nv12_len = 0;
     bridge->decoded = false;
+    bridge->decoded_timestamp = -1;
     bridge->d3d12_output = true;
     set_output_enabled(bridge, true);
     if (!bridge->decoder.set_output_d3d12_textures(
@@ -223,6 +230,9 @@ int parties_nvdec_decode_to_d3d12(
     if (!ok) {
         native_log_error("NVDEC bridge decoder rejected D3D12 frame");
         return -1;
+    }
+    if (bridge->decoded && decoded_timestamp_out) {
+        *decoded_timestamp_out = bridge->decoded_timestamp;
     }
     return bridge->decoded ? 1 : 0;
 }

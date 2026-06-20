@@ -93,8 +93,8 @@ pub(super) trait VideoFrameDecoder {
     &mut self,
     _frame: &VideoFrame,
     _surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Result<bool, VideoError> {
-    Ok(false)
+  ) -> Result<Option<u32>, VideoError> {
+    Ok(None)
   }
 
   #[cfg(target_os = "windows")]
@@ -281,7 +281,7 @@ impl VideoDecoder {
     &mut self,
     frame: &ForwardedVideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Result<bool, VideoError> {
+  ) -> Result<Option<u32>, VideoError> {
     let frame_config = VideoDecodeConfig {
       codec: frame.frame.codec,
       width: frame.frame.width,

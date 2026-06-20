@@ -108,30 +108,6 @@ fn watched_video_batch_orders_frames_from_expected_number() {
 }
 
 #[test]
-fn watched_stream_pacer_waits_initial_buffer_and_uses_target_interval() {
-  let mut pacer = WatchedStreamPacer::new();
-  pacer.push(queued_video_packet(7, 0));
-  pacer.push(queued_video_packet(7, 17));
-  pacer.push(queued_video_packet(7, 34));
-  pacer.push(queued_video_packet(7, 51));
-
-  assert!(pacer.pop_due(Instant::now()).is_none());
-
-  let playback_start = Instant::now() + WATCHED_STREAM_PACER_START_DELAY + Duration::from_millis(5);
-  assert_eq!(
-    pacer.pop_due(playback_start).map(|packet| packet.frame.frame_number),
-    Some(0)
-  );
-  assert!(pacer.pop_due(playback_start + Duration::from_millis(16)).is_none());
-  assert_eq!(
-    pacer
-      .pop_due(playback_start + Duration::from_millis(17))
-      .map(|packet| packet.frame.frame_number),
-    Some(17)
-  );
-}
-
-#[test]
 fn video_frame_number_comparison_handles_wraparound() {
   assert!(frame_number_before(u32::MAX, 1));
   assert!(frame_number_after(1, u32::MAX));

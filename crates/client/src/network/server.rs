@@ -17,7 +17,10 @@ use rustls::{
   pki_types::{CertificateDer, ServerName, UnixTime},
 };
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, Notify};
+use tokio::{
+  io::AsyncWriteExt,
+  sync::{Mutex, Notify},
+};
 
 use super::protocol::{
   C2S, ChannelId, ControlFrame, ControlMessageType, DecodeError, Role, S2C, UserId, VideoCodecId,
@@ -67,7 +70,7 @@ pub enum VideoFrameSend {
 
 const MAX_PENDING_VIDEO_DATAGRAMS: usize = 24;
 const VIDEO_STREAM_FLOW_CONTROL_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
-const VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD: Duration = Duration::from_millis(16);
+const VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD: Duration = Duration::from_millis(45);
 const VIDEO_STREAM_RECEIVE_CADENCE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 impl fmt::Display for ServerError {
@@ -467,10 +470,12 @@ impl Server {
 
   pub async fn send_video_packet(&self, packet: &[u8]) -> Result<(), ServerError> {
     validate_video_stream_packet_len(packet.len())?;
-    let len = (packet.len() as u32).to_le_bytes();
+    let mut framed = Vec::with_capacity(4 + packet.len());
+    framed.extend_from_slice(&(packet.len() as u32).to_le_bytes());
+    framed.extend_from_slice(packet);
     let mut send = self.video_send.lock().await;
-    send.write_all(&len).await?;
-    send.write_all(packet).await?;
+    send.write_all(&framed).await?;
+    send.flush().await?;
     Ok(())
   }
 
@@ -563,7 +568,7 @@ impl Server {
       || body_read >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD
       || total_read >= VIDEO_STREAM_RECEIVE_JITTER_THRESHOLD
     {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream packet receive jitter packet_bytes={} gap_ms={:.1} total_read_ms={:.1} lock_wait_ms={:.1} len_read_ms={:.1} body_read_ms={:.1}",
         packet_len,
@@ -580,7 +585,7 @@ impl Server {
     }
 
     let packets = stats.packets.max(1);
-    tracing::info!(
+    tracing::debug!(
       target: "video::watch",
       "watched stream packet receive cadence packets={} bytes_avg={} bytes_max={} gap_avg_ms={:.1} gap_max_ms={:.1} total_read_avg_ms={:.1} total_read_max_ms={:.1} lock_wait_max_ms={:.1} len_read_max_ms={:.1} body_read_max_ms={:.1}",
       stats.packets,

@@ -170,6 +170,7 @@ unsafe extern "C" {
     uv_size: u64,
     width: u16,
     height: u16,
+    decoded_timestamp_out: *mut i64,
   ) -> i32;
   fn parties_nvenc_create(codec: u8, width: u16, height: u16, fps: u32, bitrate: u32) -> *mut NvencBridge;
   fn parties_nvenc_destroy(bridge: *mut NvencBridge);
@@ -364,6 +365,7 @@ pub(super) enum NativeVideoDecoder {
 
 pub(super) struct NvdecVideoDecoder {
   handle: NonNull<NvdecBridge>,
+  last_dx12_reorder_delta: Option<i64>,
 }
 
 pub(super) struct AmdAmfVideoDecoder {
@@ -1835,12 +1837,12 @@ impl VideoFrameDecoder for NativeVideoDecoder {
     &mut self,
     frame: &VideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Result<bool, VideoError> {
+  ) -> Result<Option<u32>, VideoError> {
     match self {
       Self::Nvdec(decoder) => decoder.decode_frame_to_dx12(frame, surface),
       Self::AmdAmf(decoder) => decoder.decode_frame_to_dx12(frame, surface),
-      Self::MftH264(_) => Ok(false),
-      Self::Software(_) => Ok(false),
+      Self::MftH264(_) => Ok(None),
+      Self::Software(_) => Ok(None),
     }
   }
 
@@ -2081,7 +2083,7 @@ impl AmdAmfVideoDecoder {
     &mut self,
     frame: &VideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Result<bool, VideoError> {
+  ) -> Result<Option<u32>, VideoError> {
     let status = {
       let _span = profiler::span("video.ffi.amf_decode_to_d3d12");
       unsafe {
@@ -2110,7 +2112,7 @@ impl AmdAmfVideoDecoder {
       )));
     }
 
-    Ok(status > 0)
+    Ok((status > 0).then_some(frame.frame_number))
   }
 }
 
@@ -2126,7 +2128,10 @@ impl NvdecVideoDecoder {
         codec_label(config.codec)
       ))
     })?;
-    Ok(Self { handle })
+    Ok(Self {
+      handle,
+      last_dx12_reorder_delta: None,
+    })
   }
 
   fn decode_frame(
@@ -2190,7 +2195,8 @@ impl NvdecVideoDecoder {
     &mut self,
     frame: &VideoFrame,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Result<bool, VideoError> {
+  ) -> Result<Option<u32>, VideoError> {
+    let mut decoded_timestamp = -1_i64;
     let status = {
       let _span = profiler::span("video.ffi.nvdec_decode_to_d3d12");
       unsafe {
@@ -2205,6 +2211,7 @@ impl NvdecVideoDecoder {
           surface.uv_allocation_size(),
           frame.width,
           frame.height,
+          &mut decoded_timestamp,
         )
       }
     };
@@ -2217,7 +2224,35 @@ impl NvdecVideoDecoder {
       )));
     }
 
-    Ok(status > 0)
+    if status == 0 {
+      return Ok(None);
+    }
+
+    let decoded_frame_number = u32::try_from(decoded_timestamp).unwrap_or(frame.frame_number);
+    if decoded_frame_number != frame.frame_number {
+      let reorder_delta = i64::from(frame.frame_number) - i64::from(decoded_frame_number);
+      let should_log = self.last_dx12_reorder_delta != Some(reorder_delta);
+      self.last_dx12_reorder_delta = Some(reorder_delta);
+      if should_log {
+        tracing::debug!(
+          target: "video::watch",
+          "watched stream native output reordered codec={:?} input_frame={} output_frame={} delta={}",
+          frame.codec,
+          frame.frame_number,
+          decoded_frame_number,
+          reorder_delta
+        );
+      }
+    } else if self.last_dx12_reorder_delta.take().is_some() {
+      tracing::debug!(
+        target: "video::watch",
+        "watched stream native output reorder cleared codec={:?} frame={}",
+        frame.codec,
+        frame.frame_number
+      );
+    }
+
+    Ok(Some(decoded_frame_number))
   }
 }
 

@@ -1012,11 +1012,8 @@ impl ServerSession {
     self.video_sink.has_frame(user_id, width, height)
   }
 
-  pub fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
-    self
-      .video_sink
-      .image_data(user_id)
-      .map(|image| (image.id(), image.version()))
+  pub fn video_frame_image_id(&self, user_id: UserId) -> Option<u64> {
+    self.video_sink.image_data(user_id).map(|image| image.id())
   }
 
   pub fn video_render_stats(&self, user_id: UserId) -> (u32, Option<u32>, u32) {
@@ -1276,8 +1273,8 @@ impl video::VideoReceiverSession for ServerSession {
     ServerSession::has_video_frame(self, user_id, width, height)
   }
 
-  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)> {
-    ServerSession::video_frame_image_state(self, user_id)
+  fn video_frame_image_id(&self, user_id: UserId) -> Option<u64> {
+    ServerSession::video_frame_image_id(self, user_id)
   }
 
   #[cfg(target_os = "windows")]

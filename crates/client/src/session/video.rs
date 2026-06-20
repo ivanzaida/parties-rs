@@ -30,24 +30,20 @@ const KEYFRAME_REQUEST_RETRY_INTERVAL: Duration = Duration::from_millis(750);
 const SOFTWARE_BACKLOG_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const SLOW_VIDEO_DECODE_LOG_THRESHOLD: Duration = Duration::from_millis(100);
 const SLOW_VIDEO_PRESENT_TIMELINE_THRESHOLD: Duration = Duration::from_millis(30);
-const WATCHED_STREAM_PRESENT_JITTER_THRESHOLD: Duration = Duration::from_millis(16);
-const WATCHED_STREAM_RECEIVE_JITTER_THRESHOLD: Duration = Duration::from_millis(16);
+const WATCHED_STREAM_PRESENT_JITTER_THRESHOLD: Duration = Duration::from_millis(45);
+const WATCHED_STREAM_RECEIVE_JITTER_THRESHOLD: Duration = Duration::from_millis(45);
 const WATCHED_STREAM_CADENCE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const WATCHED_STREAM_QUEUE_IDLE_WAIT: Duration = Duration::from_millis(100);
-const WATCHED_STREAM_PACER_START_DELAY: Duration = Duration::from_millis(120);
-const WATCHED_STREAM_PACER_MAX_BUFFERED_FRAMES: usize = 12;
-const WATCHED_STREAM_PACER_DEFAULT_INTERVAL: Duration = Duration::from_micros(16_667);
-const WATCHED_STREAM_PACER_MIN_INTERVAL: Duration = Duration::from_millis(8);
-const WATCHED_STREAM_PACER_MAX_INTERVAL: Duration = Duration::from_millis(40);
-const WATCHED_STREAM_PACER_LATE_DROP_THRESHOLD: Duration = Duration::from_millis(120);
-const WATCHED_STREAM_PACER_CLOCK_RESET_THRESHOLD: Duration = Duration::from_millis(500);
 const VIDEO_PRESENT_TIMELINE_SAMPLE_INTERVAL_MS: u64 = 1_000;
 static VIDEO_PRESENT_TIMELINE_LAST_INFO_MS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 pub(super) const SHARED_NV12_PLANES_SURFACE_CACHE_LIMIT: usize = 32;
 #[cfg(target_os = "windows")]
-pub(super) const DX12_DECODE_SURFACE_RING_SIZE: usize = 16;
+// The direct watched-stream path can decode bursts faster than the DX12 render
+// queue consumes them. Keep enough native surfaces to avoid reusing a texture
+// while the GPU may still sample it.
+pub(super) const DX12_DECODE_SURFACE_RING_SIZE: usize = 32;
 #[cfg(target_os = "windows")]
 const ENABLE_DX12_NATIVE_STREAM_DECODE: bool = true;
 #[cfg(target_os = "windows")]
@@ -79,6 +75,19 @@ struct QueuedVideoPacket {
   packet: ForwardedVideoFrame,
   received_at: Instant,
   queued_at: Instant,
+  transport: VideoPacketTransport,
+}
+
+#[derive(Debug)]
+struct QueuedVideoDecode {
+  packet: QueuedVideoPacket,
+  output: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoPacketTransport {
+  Stream,
+  Datagram,
 }
 
 #[derive(Debug)]
@@ -94,29 +103,6 @@ struct WatchedStreamCadenceStats {
   recv_to_present_max: Duration,
 }
 
-#[derive(Debug)]
-struct WatchedStreamPacerStats {
-  started_at: Instant,
-  pushed: u32,
-  emitted: u32,
-  dropped_late: u32,
-  dropped_overflow: u32,
-  buffer_max: usize,
-  late_max: Duration,
-}
-
-#[derive(Debug)]
-struct WatchedStreamPacer {
-  user_id: Option<UserId>,
-  packets: VecDeque<QueuedVideoPacket>,
-  started: bool,
-  next_present_at: Option<Instant>,
-  target_interval: Duration,
-  base_frame_number: Option<u32>,
-  base_received_at: Option<Instant>,
-  stats: WatchedStreamPacerStats,
-}
-
 impl QueuedVideoPacket {
   fn from_stream(packet: ForwardedVideoFrame) -> Self {
     let now = Instant::now();
@@ -124,6 +110,7 @@ impl QueuedVideoPacket {
       packet,
       received_at: now,
       queued_at: now,
+      transport: VideoPacketTransport::Stream,
     }
   }
 
@@ -132,6 +119,7 @@ impl QueuedVideoPacket {
       packet: datagram.packet,
       received_at: datagram.received_at,
       queued_at: Instant::now(),
+      transport: VideoPacketTransport::Datagram,
     }
   }
 }
@@ -144,205 +132,11 @@ impl std::ops::Deref for QueuedVideoPacket {
   }
 }
 
-impl WatchedStreamPacer {
-  fn new() -> Self {
-    let now = Instant::now();
-    Self {
-      user_id: None,
-      packets: VecDeque::new(),
-      started: false,
-      next_present_at: None,
-      target_interval: WATCHED_STREAM_PACER_DEFAULT_INTERVAL,
-      base_frame_number: None,
-      base_received_at: None,
-      stats: WatchedStreamPacerStats::new(now),
-    }
-  }
-
-  fn reset(&mut self, user_id: Option<UserId>) {
-    let now = Instant::now();
-    self.user_id = user_id;
-    self.packets.clear();
-    self.started = false;
-    self.next_present_at = None;
-    self.target_interval = WATCHED_STREAM_PACER_DEFAULT_INTERVAL;
-    self.base_frame_number = None;
-    self.base_received_at = None;
-    self.stats = WatchedStreamPacerStats::new(now);
-  }
-
-  fn push(&mut self, packet: QueuedVideoPacket) {
-    if Some(packet.sender_id) != self.user_id {
-      self.reset(Some(packet.sender_id));
-    }
-
-    self.update_target_interval(&packet);
-    let insert_at = self
-      .packets
-      .iter()
-      .position(|queued| frame_number_before(packet.frame.frame_number, queued.frame.frame_number))
-      .unwrap_or(self.packets.len());
-    self.packets.insert(insert_at, packet);
-
-    self.stats.pushed += 1;
-    self.stats.buffer_max = self.stats.buffer_max.max(self.packets.len());
-    while self.packets.len() > WATCHED_STREAM_PACER_MAX_BUFFERED_FRAMES {
-      self.packets.pop_front();
-      self.stats.dropped_overflow += 1;
-    }
-
-    if self.next_present_at.is_none() {
-      self.next_present_at = Some(Instant::now() + WATCHED_STREAM_PACER_START_DELAY);
-    }
-    self.log_stats_if_due(Instant::now());
-  }
-
-  fn wait_timeout(&self, now: Instant) -> Duration {
-    if self.packets.is_empty() {
-      return WATCHED_STREAM_QUEUE_IDLE_WAIT;
-    }
-
-    if self.started {
-      return self.next_present_at.unwrap_or(now).saturating_duration_since(now);
-    }
-
-    let Some(next_present_at) = self.next_present_at else {
-      return Duration::ZERO;
-    };
-    next_present_at.saturating_duration_since(now)
-  }
-
-  fn pop_due(&mut self, now: Instant) -> Option<QueuedVideoPacket> {
-    if self.packets.is_empty() {
-      return None;
-    }
-
-    if !self.started
-      && self.packets.len() < WATCHED_STREAM_PACER_MAX_BUFFERED_FRAMES
-      && self
-        .next_present_at
-        .is_some_and(|next_present_at| now < next_present_at)
-    {
-      return None;
-    }
-
-    if !self.started {
-      self.started = true;
-      self.reset_playback_clock(now);
-    }
-
-    self.reset_if_clock_too_far_ahead(now);
-    self.drop_stale_late_frames(now);
-
-    let due_at = self.next_present_at.unwrap_or(now);
-    if now < due_at {
-      return None;
-    }
-
-    let late = now.duration_since(due_at);
-    self.stats.late_max = self.stats.late_max.max(late);
-    let packet = self.packets.pop_front()?;
-    self.stats.emitted += 1;
-    self.next_present_at = Some(self.next_due_after_emit(due_at, now));
-    self.log_stats_if_due(now);
-    Some(packet)
-  }
-
-  fn reset_playback_clock(&mut self, now: Instant) {
-    self.next_present_at = Some(now);
-  }
-
-  fn reset_if_clock_too_far_ahead(&mut self, now: Instant) {
-    let due_at = self.next_present_at.unwrap_or(now);
-    if due_at.saturating_duration_since(now) > WATCHED_STREAM_PACER_CLOCK_RESET_THRESHOLD {
-      self.reset_playback_clock(now);
-    }
-  }
-
-  fn drop_stale_late_frames(&mut self, now: Instant) {
-    let mut dropped = 0;
-    while self.packets.len() > 1 {
-      let due_at = self.next_present_at.unwrap_or(now);
-      if now.saturating_duration_since(due_at) <= WATCHED_STREAM_PACER_LATE_DROP_THRESHOLD {
-        break;
-      }
-      self.packets.pop_front();
-      self.next_present_at = Some(due_at + self.target_interval);
-      dropped += 1;
-    }
-    self.stats.dropped_late += dropped;
-  }
-
-  fn next_due_after_emit(&self, due_at: Instant, now: Instant) -> Instant {
-    let next_due_at = due_at + self.target_interval;
-    if self.packets.is_empty() && now.saturating_duration_since(next_due_at) > self.target_interval {
-      now + self.target_interval
-    } else {
-      next_due_at
-    }
-  }
-
-  fn log_stats_if_due(&mut self, now: Instant) {
-    if now.duration_since(self.stats.started_at) < WATCHED_STREAM_CADENCE_LOG_INTERVAL {
-      return;
-    }
-    if self.stats.pushed == 0
-      && self.stats.emitted == 0
-      && self.stats.dropped_late == 0
-      && self.stats.dropped_overflow == 0
-    {
-      self.stats = WatchedStreamPacerStats::new(now);
-      return;
-    }
-
-    tracing::info!(
-      target: "video::watch::pacer",
-      "watched stream pacer cadence user={:?} buffered={} buffer_max={} pushed={} emitted={} dropped_late={} dropped_overflow={} target_ms={:.1} late_max_ms={:.1}",
-      self.user_id,
-      self.packets.len(),
-      self.stats.buffer_max,
-      self.stats.pushed,
-      self.stats.emitted,
-      self.stats.dropped_late,
-      self.stats.dropped_overflow,
-      duration_ms(self.target_interval),
-      duration_ms(self.stats.late_max),
-    );
-    self.stats = WatchedStreamPacerStats::new(now);
-  }
-
-  fn update_target_interval(&mut self, packet: &QueuedVideoPacket) {
-    let frame_number = packet.frame.frame_number;
-    let received_at = packet.received_at;
-    match (self.base_frame_number, self.base_received_at) {
-      (Some(base_frame_number), Some(base_received_at)) => {
-        let frame_delta = frame_number.wrapping_sub(base_frame_number);
-        let receive_delta = received_at.saturating_duration_since(base_received_at);
-        if frame_delta >= 12 && receive_delta >= Duration::from_millis(150) {
-          self.target_interval =
-            (receive_delta / frame_delta).clamp(WATCHED_STREAM_PACER_MIN_INTERVAL, WATCHED_STREAM_PACER_MAX_INTERVAL);
-          self.base_frame_number = Some(frame_number);
-          self.base_received_at = Some(received_at);
-        }
-      }
-      _ => {
-        self.base_frame_number = Some(frame_number);
-        self.base_received_at = Some(received_at);
-      }
-    }
-  }
-}
-
-impl WatchedStreamPacerStats {
-  fn new(now: Instant) -> Self {
-    Self {
-      started_at: now,
-      pushed: 0,
-      emitted: 0,
-      dropped_late: 0,
-      dropped_overflow: 0,
-      buffer_max: 0,
-      late_max: Duration::ZERO,
+impl VideoPacketTransport {
+  fn label(self) -> &'static str {
+    match self {
+      Self::Stream => "stream",
+      Self::Datagram => "datagram",
     }
   }
 }
@@ -501,7 +295,7 @@ pub(super) trait VideoReceiverSession: Clone + Send + Sync + 'static {
   fn present_video_frame(&self, frame: DecodedVideoFrame);
   fn take_video_pixel_buffer(&self, user_id: UserId, width: u16, height: u16) -> Option<Vec<u8>>;
   fn has_video_frame(&self, user_id: UserId, width: u16, height: u16) -> bool;
-  fn video_frame_image_state(&self, user_id: UserId) -> Option<(u64, u64)>;
+  fn video_frame_image_id(&self, user_id: UserId) -> Option<u64>;
 
   #[cfg(target_os = "windows")]
   fn shared_nv12_planes_video_surface_for_decode(
@@ -560,6 +354,7 @@ pub(super) fn run_video_receiver<S>(
             if Some(packet.sender_id) == session.watching_user_id() {
               log_watched_stream_read_jitter(
                 &mut last_watched_stream_read,
+                VideoPacketTransport::Stream,
                 packet.sender_id,
                 packet.frame.frame_number,
                 packet.frame.keyframe,
@@ -603,9 +398,25 @@ pub(super) fn run_video_receiver<S>(
     let queue = queue.clone();
     let session = session.clone();
     runtime.spawn(async move {
+      let mut last_watched_datagram_read = None::<(UserId, u32, Instant)>;
       while !stop.load(Ordering::Relaxed) {
+        let read_started_at = Instant::now();
         match server.recv_forwarded_video_datagram_until(stop.as_ref()).await {
           Ok(Some(packet)) => {
+            let read_finished_at = Instant::now();
+            if Some(packet.packet.sender_id) == session.watching_user_id() {
+              log_watched_stream_read_jitter(
+                &mut last_watched_datagram_read,
+                VideoPacketTransport::Datagram,
+                packet.packet.sender_id,
+                packet.packet.frame.frame_number,
+                packet.packet.frame.keyframe,
+                packet.packet.frame.codec,
+                packet.packet.frame.encoded.len(),
+                read_finished_at.duration_since(read_started_at),
+                packet.received_at,
+              );
+            }
             session.mark_video_network_activity();
             queue.push(QueuedVideoPacket::from_datagram(packet));
           }
@@ -648,14 +459,13 @@ pub(super) fn run_video_receiver<S>(
   let mut last_presented_frames = HashMap::<UserId, (u32, Instant, Instant)>::new();
   let mut watched_cadence_stats = HashMap::<UserId, WatchedStreamCadenceStats>::new();
   let mut last_watched_user = session.watching_user_id();
-  let mut watched_pacer = WatchedStreamPacer::new();
   let mut batch = Vec::<QueuedVideoPacket>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
-  let mut process_batch = Vec::<QueuedVideoPacket>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
+  let mut process_batch = Vec::<QueuedVideoDecode>::with_capacity(MAX_QUEUED_VIDEO_PACKETS);
 
   while !stop.load(Ordering::Relaxed) {
     let watched_user = session.watching_user_id();
     if watched_user != last_watched_user {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream target changed previous={:?} next={:?}",
         last_watched_user,
@@ -668,7 +478,6 @@ pub(super) fn run_video_receiver<S>(
       last_keyframes.retain(|user_id, _| Some(*user_id) == watched_user);
       last_presented_frames.retain(|user_id, _| Some(*user_id) == watched_user);
       watched_cadence_stats.retain(|user_id, _| Some(*user_id) == watched_user);
-      watched_pacer.reset(watched_user);
       #[cfg(target_os = "windows")]
       shared_nv12_planes_surfaces.retain(|(user_id, ..), _| Some(*user_id) == watched_user);
       #[cfg(target_os = "windows")]
@@ -701,12 +510,7 @@ pub(super) fn run_video_receiver<S>(
     dropped_senders.clear();
     let (dropped_count, batch_popped_at, has_incoming_batch) = {
       let _span = profiler::span("video.receive.pop_batch");
-      match queue.pop_batch_into(
-        &stop,
-        &mut batch,
-        &mut dropped_senders,
-        watched_pacer.wait_timeout(Instant::now()),
-      ) {
+      match queue.pop_batch_into(&stop, &mut batch, &mut dropped_senders, WATCHED_STREAM_QUEUE_IDLE_WAIT) {
         VideoPacketPopResult::Batch(dropped_count) => (dropped_count, Instant::now(), true),
         VideoPacketPopResult::Empty => (0, Instant::now(), false),
         VideoPacketPopResult::Closed => break,
@@ -736,7 +540,7 @@ pub(super) fn run_video_receiver<S>(
             "[video] watched stream packet dropped but no replacement packet was queued: user={user_id} dropped={}",
             dropped_senders.get(&user_id).copied().unwrap_or_default()
           );
-          tracing::info!(
+          tracing::debug!(
             target: "video::watch",
             "watched stream backlog dropped user={} dropped={} queued_replacement=false",
             user_id,
@@ -787,6 +591,14 @@ pub(super) fn run_video_receiver<S>(
     let last_batch_queued = batch.len();
     if let Some(user_id) = watched_user {
       if last_batch_queued > 1 || dropped_count > 0 {
+        let stream_packets = batch
+          .iter()
+          .filter(|packet| packet.sender_id == user_id && packet.transport == VideoPacketTransport::Stream)
+          .count();
+        let datagram_packets = batch
+          .iter()
+          .filter(|packet| packet.sender_id == user_id && packet.transport == VideoPacketTransport::Datagram)
+          .count();
         let first_frame = batch
           .iter()
           .filter(|packet| packet.sender_id == user_id)
@@ -797,11 +609,13 @@ pub(super) fn run_video_receiver<S>(
           .filter(|packet| packet.sender_id == user_id)
           .map(|packet| packet.frame.frame_number)
           .last();
-        tracing::info!(
+        tracing::debug!(
           target: "video::watch",
-          "watched stream batch user={} queued={} dropped={} first_frame={:?} last_frame={:?} expected_frame={:?} awaiting_keyframe={} awaiting_output={}",
+          "watched stream batch user={} queued={} stream={} datagram={} dropped={} first_frame={:?} last_frame={:?} expected_frame={:?} awaiting_keyframe={} awaiting_output={}",
           user_id,
           last_batch_queued,
+          stream_packets,
+          datagram_packets,
           dropped_count,
           first_frame,
           last_frame,
@@ -815,17 +629,9 @@ pub(super) fn run_video_receiver<S>(
 
     process_batch.clear();
     for packet in batch.drain(..) {
-      if Some(packet.sender_id) == watched_user {
-        watched_pacer.push(packet);
-      } else {
-        process_batch.push(packet);
-      }
+      process_batch.push(QueuedVideoDecode { packet, output: true });
     }
-    if watched_user.is_some()
-      && let Some(packet) = watched_pacer.pop_due(Instant::now())
-    {
-      process_batch.push(packet);
-    } else if !has_incoming_batch {
+    if process_batch.is_empty() && !has_incoming_batch {
       session.set_video_receiver_debug_snapshot(video_receiver_debug_snapshot(
         watched_user,
         last_batch_queued,
@@ -841,7 +647,9 @@ pub(super) fn run_video_receiver<S>(
       continue;
     }
 
-    for packet in process_batch.drain(..) {
+    for queued_decode in process_batch.drain(..) {
+      let output = queued_decode.output;
+      let packet = queued_decode.packet;
       if Some(packet.sender_id) != watched_user {
         decode_pool.remove_user(packet.sender_id);
         awaiting_keyframes.remove(&packet.sender_id);
@@ -863,7 +671,7 @@ pub(super) fn run_video_receiver<S>(
       };
       if decode_pool.decoder_config_mismatch(packet.sender_id, &packet_config) {
         let previous_config = decode_pool.decoder_config(packet.sender_id).cloned();
-        tracing::info!(
+        tracing::debug!(
           target: "video::watch",
           "watched stream decoder reset user={} reason=config changed previous={:?} next={:?}",
           packet.sender_id,
@@ -898,7 +706,7 @@ pub(super) fn run_video_receiver<S>(
         let frames_since_previous =
           previous_keyframe.map(|(previous_frame, _)| frame_number.wrapping_sub(previous_frame));
         let ms_since_previous = previous_keyframe.map(|(_, previous_at)| duration_ms(previous_at.elapsed()));
-        tracing::info!(
+        tracing::debug!(
           target: "video::watch",
           "watched stream keyframe received user={} frame={} codec={:?} size={}x{} hw_decode={} batch_queued={} queue_wait_ms={:.1} expected_frame={:?} awaiting_keyframe={} frames_since_previous={:?} ms_since_previous={:?}",
           packet.sender_id,
@@ -941,7 +749,7 @@ pub(super) fn run_video_receiver<S>(
         }
         awaiting_keyframes.remove(&packet.sender_id);
         decode_pool.clear_user_failures(packet.sender_id);
-        tracing::info!(
+        tracing::debug!(
           target: "video::watch",
           "watched stream keyframe accepted user={} frame={} codec={:?} size={}x{} hw_decode={}",
           packet.sender_id,
@@ -973,10 +781,11 @@ pub(super) fn run_video_receiver<S>(
                 expected_frame_number,
                 packet.frame.frame_number
               );
-              tracing::info!(
+              tracing::debug!(
                 target: "video::watch",
-                "watched stream stale frame dropped user={} expected_frame={} actual_frame={} keyframe={}",
+                "watched stream stale frame dropped user={} transport={} expected_frame={} actual_frame={} keyframe={}",
                 packet.sender_id,
+                packet.transport.label(),
                 expected_frame_number,
                 packet.frame.frame_number,
                 packet.frame.keyframe
@@ -990,10 +799,11 @@ pub(super) fn run_video_receiver<S>(
                 expected_frame_number,
                 packet.frame.frame_number
               );
-              tracing::info!(
+              tracing::debug!(
                 target: "video::watch",
-                "watched stream frame gap user={} expected_frame={} actual_frame={} keyframe={}",
+                "watched stream frame gap user={} transport={} expected_frame={} actual_frame={} keyframe={}",
                 packet.sender_id,
+                packet.transport.label(),
                 expected_frame_number,
                 packet.frame.frame_number,
                 packet.frame.keyframe
@@ -1001,7 +811,7 @@ pub(super) fn run_video_receiver<S>(
             }
           }
           None => {
-            tracing::info!(
+            tracing::debug!(
               target: "video::watch",
               "watched stream decoder reset user={} reason=missing initial keyframe frame={} keyframe={}",
               packet.sender_id,
@@ -1025,19 +835,20 @@ pub(super) fn run_video_receiver<S>(
       }
 
       let received_count = increment_counter(&mut received_counts, packet.sender_id);
-      let output = true;
       let had_known_decoder_failure = decode_pool.has_decoder_failure(packet.sender_id, &packet_config);
       tracing::trace!(
         target: "video::watch::frames",
-        "watched stream packet user={} frame={} keyframe={} codec={:?} size={}x{} hw_decode={} batch_queued={} queue_wait_ms={:.1}",
+        "watched stream packet user={} frame={} transport={} keyframe={} codec={:?} size={}x{} hw_decode={} batch_queued={} receive_to_queue_ms={:.1} queue_wait_ms={:.1}",
         packet.sender_id,
         frame_number,
+        packet.transport.label(),
         keyframe,
         packet.frame.codec,
         packet.frame.width,
         packet.frame.height,
         packet_config.hardware_decoding,
         last_batch_queued,
+        duration_ms(receive_to_queue),
         duration_ms(queue_wait)
       );
       if should_log_video_count(received_count) {
@@ -1055,7 +866,7 @@ pub(super) fn run_video_receiver<S>(
       }
 
       #[cfg(target_os = "windows")]
-      {
+      if output {
         let native_decode_start = Instant::now();
         let native_decode = try_present_windows_native_video_frame(
           &session,
@@ -1069,43 +880,59 @@ pub(super) fn run_video_receiver<S>(
         );
         let native_decode_present = native_decode_start.elapsed();
         match native_decode {
-          WindowsNativeVideoDecode::Presented => {
-            let (image_id, image_version) = session.video_frame_image_state(packet.sender_id).unwrap_or((0, 0));
+          WindowsNativeVideoDecode::Presented {
+            frame_number: presented_frame_number,
+          } => {
+            let image_id = session.video_frame_image_id(packet.sender_id).unwrap_or(0);
+            let presented_keyframe = keyframe && presented_frame_number == frame_number;
             tracing::trace!(
               target: "video::watch::frames",
-              "watched stream presented native user={} frame={} keyframe={} image_id={} image_version={} recv_to_present_ms={:.1} decode_present_ms={:.1}",
+              "watched stream presented native user={} input_frame={} frame={} keyframe={} image_id={} image_version={} recv_to_present_ms={:.1} decode_present_ms={:.1}",
               packet.sender_id,
               frame_number,
-              keyframe,
+              presented_frame_number,
+              presented_keyframe,
               image_id,
-              image_version,
+              0,
               duration_ms(frame_received_at.elapsed()),
               duration_ms(native_decode_present)
             );
+            let native_reorder_delta = frame_number.wrapping_sub(presented_frame_number);
+            if presented_frame_number != frame_number && native_reorder_delta != 1 {
+              tracing::debug!(
+                target: "video::watch",
+                "watched stream native presented reordered user={} input_frame={} presented_frame={} delta={} keyframe={}",
+                packet.sender_id,
+                frame_number,
+                presented_frame_number,
+                native_reorder_delta,
+                keyframe
+              );
+            }
             log_native_video_present_timeline(
               packet.sender_id,
               packet.frame.codec,
               packet.frame.width,
               packet.frame.height,
-              frame_number,
-              keyframe,
+              presented_frame_number,
+              presented_keyframe,
               receive_to_queue,
               queue_wait,
               native_decode_present,
               frame_received_at.elapsed(),
               image_id,
-              image_version,
+              0,
             );
             log_watched_stream_present_jitter(
               &mut last_presented_frames,
               &mut watched_cadence_stats,
               packet.sender_id,
               "native",
-              frame_number,
-              keyframe,
+              presented_frame_number,
+              presented_keyframe,
               frame_received_at,
               image_id,
-              image_version,
+              0,
             );
             awaiting_decoded_output.remove(&packet.sender_id);
             continue;
@@ -1165,7 +992,7 @@ pub(super) fn run_video_receiver<S>(
           }
           let present_start = Instant::now();
           session.present_video_frame(frame);
-          let (image_id, image_version) = session.video_frame_image_state(sender_id).unwrap_or((0, 0));
+          let image_id = session.video_frame_image_id(sender_id).unwrap_or(0);
           tracing::trace!(
             target: "video::watch::frames",
             "watched stream presented cpu user={} frame={} keyframe={} output={} image_id={} image_version={} recv_to_present_ms={:.1} decode_ms={:.1} present_ms={:.1}",
@@ -1174,7 +1001,7 @@ pub(super) fn run_video_receiver<S>(
             keyframe,
             output,
             image_id,
-            image_version,
+            0,
             duration_ms(frame_received_at.elapsed()),
             duration_ms(decode_result.1),
             duration_ms(present_start.elapsed())
@@ -1192,7 +1019,7 @@ pub(super) fn run_video_receiver<S>(
             present_start.elapsed(),
             frame_received_at.elapsed(),
             image_id,
-            image_version,
+            0,
           );
           log_watched_stream_present_jitter(
             &mut last_presented_frames,
@@ -1203,7 +1030,7 @@ pub(super) fn run_video_receiver<S>(
             keyframe,
             frame_received_at,
             image_id,
-            image_version,
+            0,
           );
         }
         Ok(None) => {
@@ -1227,7 +1054,7 @@ pub(super) fn run_video_receiver<S>(
         Err(error) => {
           awaiting_decoded_output.remove(&sender_id);
           expected_frame_numbers.remove(&sender_id);
-          tracing::info!(
+          tracing::debug!(
             target: "video::watch",
             "watched stream decoder reset user={} reason=decode failed frame={} keyframe={} error={}",
             sender_id,
@@ -1277,7 +1104,7 @@ pub(super) fn run_video_receiver<S>(
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowsNativeVideoDecode {
-  Presented,
+  Presented { frame_number: u32 },
   Pending,
   Fallback,
 }
@@ -1326,7 +1153,9 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
             packet.frame.height,
             surface,
           );
-          return WindowsNativeVideoDecode::Presented;
+          return WindowsNativeVideoDecode::Presented {
+            frame_number: packet.frame.frame_number,
+          };
         }
         decode_pool.mark_shared_nv12_planes_failure(packet.sender_id, packet_config);
       }
@@ -1352,14 +1181,16 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
     packet.sender_id,
     packet.frame.width,
     packet.frame.height,
-  ) && let Some(decoded) = decode_pool.decode_to_dx12(packet, packet_config, &surface)
+  ) && let Some(decoded_frame_number) = decode_pool.decode_to_dx12(packet, packet_config, &surface)
   {
-    if decoded {
+    if let Some(decoded_frame_number) = decoded_frame_number {
       let decoded_count = increment_counter(decoded_counts, packet.sender_id);
       if should_log_video_count(decoded_count) {
         tracing::debug!(target: "video::decode",
-          "[video:decode] decoded DX12 frame #{decoded_count} from user {}: codec={:?} size={}x{} format=Nv12",
+          "[video:decode] decoded DX12 frame #{decoded_count} from user {}: input_frame={} output_frame={} codec={:?} size={}x{} format=Nv12",
           packet.sender_id,
+          packet.frame.frame_number,
+          decoded_frame_number,
           packet.frame.codec,
           packet.frame.width,
           packet.frame.height
@@ -1367,13 +1198,15 @@ fn try_present_windows_native_video_frame<S: VideoReceiverSession>(
       }
       session.present_dx12_video_frame(
         packet.sender_id,
-        packet.frame.frame_number,
+        decoded_frame_number,
         packet.frame.codec,
         packet.frame.width,
         packet.frame.height,
         surface,
       );
-      WindowsNativeVideoDecode::Presented
+      WindowsNativeVideoDecode::Presented {
+        frame_number: decoded_frame_number,
+      }
     } else {
       if should_log_video_count(received_count) {
         tracing::debug!(target: "video::decode", "[video:decode] received frame produced no DX12 decoded output yet");
@@ -1422,7 +1255,6 @@ fn frame_number_before(frame_number: u32, expected_frame_number: u32) -> bool {
   delta != 0 && delta < (u32::MAX / 2)
 }
 
-#[cfg(test)]
 fn latest_watched_frame_number(batch: &[QueuedVideoPacket], watched_user_id: Option<UserId>) -> Option<u32> {
   batch
     .iter()
@@ -1437,7 +1269,6 @@ fn latest_watched_frame_number(batch: &[QueuedVideoPacket], watched_user_id: Opt
     })
 }
 
-#[cfg(test)]
 fn frame_number_after(frame_number: u32, previous_frame_number: u32) -> bool {
   let delta = frame_number.wrapping_sub(previous_frame_number);
   delta != 0 && delta < (u32::MAX / 2)
@@ -1445,6 +1276,7 @@ fn frame_number_after(frame_number: u32, previous_frame_number: u32) -> bool {
 
 fn log_watched_stream_read_jitter(
   last_read: &mut Option<(UserId, u32, Instant)>,
+  transport: VideoPacketTransport,
   user_id: UserId,
   frame_number: u32,
   keyframe: bool,
@@ -1468,9 +1300,10 @@ fn log_watched_stream_read_jitter(
     return;
   }
 
-  tracing::info!(
+  tracing::debug!(
     target: "video::watch",
-    "watched stream read jitter user={} frame={} keyframe={} codec={:?} bytes={} frame_delta={} read_wait_ms={:.1} since_previous_read_ms={:.1}",
+    "watched stream read jitter transport={} user={} frame={} keyframe={} codec={:?} bytes={} frame_delta={} read_wait_ms={:.1} since_previous_read_ms={:.1}",
+    transport.label(),
     user_id,
     frame_number,
     keyframe,
@@ -1522,7 +1355,7 @@ fn log_watched_stream_present_jitter(
     return;
   }
 
-  tracing::info!(
+  tracing::debug!(
     target: "video::watch",
     "watched stream present jitter user={} kind={} frame={} keyframe={} frame_delta={} skipped={} receive_delta_ms={:.1} present_delta_ms={:.1} recv_to_present_ms={:.1} image_id={} image_version={}",
     user_id,
@@ -1578,7 +1411,7 @@ fn log_watched_stream_cadence(
   }
 
   let samples = stats.samples.max(1);
-  tracing::info!(
+  tracing::debug!(
     target: "video::watch",
     "watched stream cadence user={} kind={} last_frame={} samples={} frame_delta_total={} skipped={} receive_avg_ms={:.1} receive_max_ms={:.1} present_avg_ms={:.1} present_max_ms={:.1} recv_to_present_max_ms={:.1}",
     user_id,
@@ -1683,7 +1516,7 @@ fn request_keyframe_for(
   last_keyframe_requests.insert(user_id, Instant::now());
   match runtime.block_on(server.view_screen_share(user_id)) {
     Ok(()) => {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream keyframe request user={} reason={} step=view_refresh result=ok",
         user_id,
@@ -1692,7 +1525,7 @@ fn request_keyframe_for(
       tracing::debug!(target: "video", "[video] stream view refreshed for keyframe recovery: user={user_id} reason={reason}");
     }
     Err(error) => {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream keyframe request user={} reason={} step=view_refresh result=error error={}",
         user_id,
@@ -1704,7 +1537,7 @@ fn request_keyframe_for(
   }
   match runtime.block_on(server.request_keyframe_stream(user_id)) {
     Ok(()) => {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream keyframe request user={} reason={} step=stream result=ok",
         user_id,
@@ -1713,7 +1546,7 @@ fn request_keyframe_for(
       tracing::debug!(target: "video", "[video] keyframe requested for user {user_id}: reason={reason}");
     }
     Err(stream_error) => {
-      tracing::info!(
+      tracing::debug!(
         target: "video::watch",
         "watched stream keyframe request user={} reason={} step=stream result=error error={}",
         user_id,
@@ -1723,7 +1556,7 @@ fn request_keyframe_for(
       tracing::debug!(target: "video", "[video] stream keyframe request failed for user {user_id}: reason={reason} error={stream_error}; trying datagram");
       match server.request_keyframe(user_id) {
         Ok(()) => {
-          tracing::info!(
+          tracing::debug!(
             target: "video::watch",
             "watched stream keyframe request user={} reason={} step=datagram result=ok",
             user_id,
@@ -1732,7 +1565,7 @@ fn request_keyframe_for(
           tracing::debug!(target: "video", "[video] datagram keyframe requested for user {user_id}: reason={reason}")
         }
         Err(datagram_error) => {
-          tracing::info!(
+          tracing::debug!(
             target: "video::watch",
             "watched stream keyframe request user={} reason={} step=datagram result=error error={}",
             user_id,
@@ -1933,14 +1766,14 @@ impl VideoDecodePool {
     packet: &ForwardedVideoFrame,
     config: &VideoDecodeConfig,
     surface: &lurq::app::dx12_render::Dx12Nv12Surface,
-  ) -> Option<bool> {
+  ) -> Option<Option<u32>> {
     let failure_key = (packet.sender_id, config.to_owned());
 
     if self.dx12_failures.contains(&failure_key) {
       return None;
     }
     if self.decoder_failures.contains(&failure_key) {
-      return Some(false);
+      return Some(None);
     }
 
     let decoder_needs_start = self
@@ -1968,7 +1801,7 @@ impl VideoDecodePool {
         Err(error) => {
           tracing::debug!(target: "video::decode", "[video:decode] failed to start decoder for user {}: {error}", packet.sender_id);
           self.decoder_failures.insert(failure_key);
-          return Some(false);
+          return Some(None);
         }
       }
     }
