@@ -517,7 +517,25 @@ impl VoiceRuntime {
       );
     }
 
-    let status = self.engine.lock().as_mut().map(|engine| engine.push_packet(packet));
+    let push_started_at = Instant::now();
+    let mut engine = self.engine.lock();
+    let lock_elapsed = push_started_at.elapsed();
+    let status = engine.as_mut().map(|engine| engine.push_packet(packet));
+    let push_elapsed = push_started_at.elapsed();
+    drop(engine);
+    if should_log_audio_count(received_count) || push_elapsed >= Duration::from_millis(4) {
+      tracing::debug!(
+        target: "audio::perf",
+        "[audio:perf] voice packet handled: user={} sequence={} bytes={} queued={} speaking={} lock_ms={:.3} total_ms={:.3}",
+        sender_id,
+        sequence,
+        packet_len,
+        status.is_some_and(|status| status.queued),
+        status.is_some_and(|status| status.speaking),
+        duration_ms(lock_elapsed),
+        duration_ms(push_elapsed)
+      );
+    }
     if status.is_some_and(|status| status.queued) {
       let mut counts = self.voice_audio_queued_counts.lock();
       increment_counter(&mut counts, sender_id);
@@ -631,4 +649,8 @@ fn increment_counter(counters: &mut HashMap<UserId, u64>, user_id: UserId) -> u6
 
 fn should_log_audio_count(count: u64) -> bool {
   count == 1 || count % 100 == 0
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }

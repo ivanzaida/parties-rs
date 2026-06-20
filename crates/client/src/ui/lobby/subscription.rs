@@ -1,19 +1,21 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use lurq::{
   app::{component::DevtoolsInspectable, ctx::Ctx},
-  core::{Signal, Store},
+  core::Store,
 };
 
 use super::session_identity::session_address;
 use crate::session::{LobbySnapshot, LobbyState, ServerSession};
 
 pub(super) struct LobbyModelSubscription {
-  applied_generation: Signal<Option<u64>>,
+  applied_generation: AtomicU64,
 }
 
 impl LobbyModelSubscription {
-  pub(super) fn new(ctx: &mut Ctx) -> Self {
+  pub(super) fn new(_ctx: &mut Ctx) -> Self {
     Self {
-      applied_generation: ctx.signal(None),
+      applied_generation: AtomicU64::new(u64::MAX),
     }
   }
 
@@ -57,10 +59,10 @@ impl LobbyModelSubscription {
     if state.is_fulfilled()
       && let Some((snapshot_generation, model)) = state.data
     {
-      if self.applied_generation.get_untracked() == Some(snapshot_generation) {
+      if self.applied_generation.load(Ordering::Relaxed) == snapshot_generation {
         return None;
       }
-      self.applied_generation.set(Some(snapshot_generation));
+      self.applied_generation.store(snapshot_generation, Ordering::Relaxed);
       return Some((snapshot_generation, model));
     }
 

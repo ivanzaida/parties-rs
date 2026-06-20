@@ -26,6 +26,7 @@ use crate::{
 };
 
 const RECONNECT_STREAM_RESTORE_TIMEOUT: Duration = Duration::from_secs(5);
+const CHAT_HISTORY_PAGE_LIMIT: u16 = 25;
 
 #[derive(Clone)]
 struct LobbyActionCopy {
@@ -134,12 +135,13 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
         tasks.push(tokio::spawn(async move {
           tracing::debug!(
             target: "chat::history",
-            "[chat/history] request send: channel={} before={} limit=50",
+            "[chat/history] request send: channel={} before={} limit={}",
             request.channel_id,
             request.before_id,
+            CHAT_HISTORY_PAGE_LIMIT,
           );
           if let Err(error) = server
-            .request_chat_history(request.channel_id, request.before_id, 50)
+            .request_chat_history(request.channel_id, request.before_id, CHAT_HISTORY_PAGE_LIMIT)
             .await
           {
             tracing::debug!(
@@ -153,9 +155,10 @@ pub(super) fn chat_history_action(ctx: &mut Ctx, session: ServerSession) -> Chat
           }
           tracing::debug!(
             target: "chat::history",
-            "[chat/history] request sent: channel={} before={} limit=50",
+            "[chat/history] request sent: channel={} before={} limit={}",
             request.channel_id,
             request.before_id,
+            CHAT_HISTORY_PAGE_LIMIT,
           );
           Ok(())
         }));

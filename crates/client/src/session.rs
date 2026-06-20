@@ -88,9 +88,19 @@ impl LobbyUpdatePublisher {
   }
 
   fn publish(&self) {
+    let started_at = Instant::now();
     let generation = self.generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     let lobby = self.lobby.lock().clone();
     let _ = self.updates.send(LobbySnapshot { generation, lobby });
+    let elapsed = started_at.elapsed();
+    if elapsed >= Duration::from_millis(4) || generation % 120 == 0 {
+      tracing::debug!(
+        target: "lobby::perf",
+        "[lobby:perf] published lobby snapshot generation={} elapsed_ms={:.3}",
+        generation,
+        duration_ms(elapsed)
+      );
+    }
   }
 }
 
@@ -495,16 +505,31 @@ impl ServerSession {
   }
 
   fn set_user_speaking(&self, user_id: UserId, speaking: bool) {
-    {
+    let changed = {
       let mut lobby = self.lobby.lock();
+      let mut changed = false;
       for users in lobby.users_by_channel.values_mut() {
         if let Some(user) = users.iter_mut().find(|user| user.user_id == user_id) {
-          user.speaking = speaking;
+          if user.speaking != speaking {
+            user.speaking = speaking;
+            changed = true;
+          }
         }
       }
-      lobby::sync_selected_users(&mut lobby);
+      if changed {
+        lobby::sync_selected_users(&mut lobby);
+      }
+      changed
+    };
+    if changed {
+      tracing::debug!(
+        target: "lobby::voice",
+        "[lobby:voice] speaking state changed: user={} speaking={}",
+        user_id,
+        speaking
+      );
+      self.publish_lobby_update();
     }
-    self.publish_lobby_update();
   }
 
   pub fn set_tofu_warning(&self, warning: TofuWarning) {
@@ -1135,6 +1160,10 @@ impl ServerSession {
     }
     self.publish_lobby_update();
   }
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+  duration.as_secs_f64() * 1000.0
 }
 
 impl connection::ConnectionSession for ServerSession {

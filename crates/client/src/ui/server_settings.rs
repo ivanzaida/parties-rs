@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+  collections::BTreeMap,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+  time::Duration,
+};
 
 use lurq::{
   app::{
@@ -82,13 +89,13 @@ struct ServerSettingsMembersModel {
 impl DevtoolsInspectable for ServerSettingsMembersModel {}
 
 struct ServerSettingsLobbySubscription {
-  applied_generation: Signal<Option<u64>>,
+  applied_generation: AtomicU64,
 }
 
 impl ServerSettingsLobbySubscription {
-  fn new(ctx: &mut Ctx) -> Self {
+  fn new(_ctx: &mut Ctx) -> Self {
     Self {
-      applied_generation: ctx.signal(None),
+      applied_generation: AtomicU64::new(u64::MAX),
     }
   }
 
@@ -126,10 +133,10 @@ impl ServerSettingsLobbySubscription {
     if state.is_fulfilled()
       && let Some((snapshot_generation, models)) = state.data
     {
-      if self.applied_generation.get_untracked() == Some(snapshot_generation) {
+      if self.applied_generation.load(Ordering::Relaxed) == snapshot_generation {
         return None;
       }
-      self.applied_generation.set(Some(snapshot_generation));
+      self.applied_generation.store(snapshot_generation, Ordering::Relaxed);
       return Some((snapshot_generation, models));
     }
 
