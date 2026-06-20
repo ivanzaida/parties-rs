@@ -515,6 +515,10 @@ fn install_shutdown_handlers(tokio_runtime: &tokio::runtime::Runtime, session: S
   let default_panic_hook = panic::take_hook();
   panic::set_hook(Box::new(move |info| {
     if services::voice::is_catching_input_capture_callback_panic() {
+      services::voice::record_input_capture_callback_panic(format!(
+        "{info}\nbacktrace:\n{}",
+        std::backtrace::Backtrace::force_capture()
+      ));
       return;
     }
     panic_session.disconnect_for_shutdown();

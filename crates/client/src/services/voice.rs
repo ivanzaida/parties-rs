@@ -1,5 +1,5 @@
 use std::{
-  cell::Cell,
+  cell::{Cell, RefCell},
   collections::{HashMap, HashSet, VecDeque},
   env, fmt,
   panic::{AssertUnwindSafe, catch_unwind},
@@ -70,9 +70,11 @@ const VOICE_SEND_LOG_INTERVAL: u64 = 100;
 const LOCAL_VOICE_INPUT_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
 const LOCAL_VOICE_SEND_IDLE_WARN_AFTER: Duration = Duration::from_secs(10);
 const LOCAL_VOICE_IDLE_WARN_REPEAT: Duration = Duration::from_secs(30);
+const MAX_AUDIO_PROCESSING_RESTARTS: u8 = 3;
 static VOICE_CLOCK_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 thread_local! {
   static CATCHING_INPUT_CAPTURE_CALLBACK_PANIC: Cell<u32> = const { Cell::new(0) };
+  static INPUT_CAPTURE_CALLBACK_PANIC_INFO: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 pub type LocalVoiceCallback = Arc<dyn Fn() + Send + Sync + 'static>;
@@ -80,6 +82,16 @@ pub type LocalSpeakingActivityCallback = Arc<dyn Fn(bool) + Send + Sync + 'stati
 
 pub fn is_catching_input_capture_callback_panic() -> bool {
   CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.get() > 0)
+}
+
+pub fn record_input_capture_callback_panic(info: String) {
+  INPUT_CAPTURE_CALLBACK_PANIC_INFO.with(|panic_info| {
+    *panic_info.borrow_mut() = Some(info);
+  });
+}
+
+fn take_input_capture_callback_panic_info() -> Option<String> {
+  INPUT_CAPTURE_CALLBACK_PANIC_INFO.with(|panic_info| panic_info.borrow_mut().take())
 }
 
 #[derive(Debug)]
@@ -496,6 +508,7 @@ impl Drop for VoiceEngine {
 }
 
 struct VoiceControlState {
+  audio_settings: AppAudioSettings,
   muted: AtomicBool,
   deafened: AtomicBool,
   voice_normalization: AtomicBool,
@@ -512,6 +525,7 @@ struct VoiceControlState {
 impl VoiceControlState {
   fn new(settings: &AppAudioSettings, muted: bool, deafened: bool) -> Self {
     Self {
+      audio_settings: settings.clone(),
       muted: AtomicBool::new(muted),
       deafened: AtomicBool::new(deafened),
       voice_normalization: AtomicBool::new(settings.voice_normalization),
@@ -550,6 +564,14 @@ impl VoiceControlState {
 
   fn audio_processing(&self) -> Option<&Arc<Mutex<AudioProcessing>>> {
     self.audio_processing.as_ref()
+  }
+
+  fn restart_audio_processing(&self, audio_processing: &mut AudioProcessing) -> bool {
+    let Some(next_audio_processing) = build_audio_processing_instance(&self.audio_settings) else {
+      return false;
+    };
+    *audio_processing = next_audio_processing;
+    true
   }
 
   fn set_voice_state(&self, muted: bool, deafened: bool) {
@@ -615,6 +637,10 @@ impl VoiceControlState {
 }
 
 fn build_audio_processing(settings: &AppAudioSettings) -> Option<Arc<Mutex<AudioProcessing>>> {
+  build_audio_processing_instance(settings).map(|audio_processing| Arc::new(Mutex::new(audio_processing)))
+}
+
+fn build_audio_processing_instance(settings: &AppAudioSettings) -> Option<AudioProcessing> {
   if !settings.noise_cancellation && !settings.echo_cancellation {
     return None;
   }
@@ -648,7 +674,7 @@ fn build_audio_processing(settings: &AppAudioSettings) -> Option<Arc<Mutex<Audio
     );
   }
 
-  Some(Arc::new(Mutex::new(audio_processing)))
+  Some(audio_processing)
 }
 
 fn aec_delay_ms() -> i32 {
@@ -1106,6 +1132,7 @@ impl InputCaptureState {
       return;
     }
 
+    let _ = take_input_capture_callback_panic_info();
     CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.set(depth.get().saturating_add(1)));
     let result = catch_unwind(AssertUnwindSafe(|| self.push(data)));
     CATCHING_INPUT_CAPTURE_CALLBACK_PANIC.with(|depth| depth.set(depth.get().saturating_sub(1)));
@@ -1115,7 +1142,11 @@ impl InputCaptureState {
       self.capture_frame.clear();
       self.process_frame.clear();
       self.opus_frame.clear();
-      tracing::error!(target: "audio::encode", "[audio:encode] input capture callback panicked; disabling voice capture until restart");
+      if let Some(panic_info) = take_input_capture_callback_panic_info() {
+        tracing::error!(target: "audio::encode", "[audio:encode] input capture callback panicked; disabling voice capture until restart: {panic_info}");
+      } else {
+        tracing::error!(target: "audio::encode", "[audio:encode] input capture callback panicked; disabling voice capture until restart");
+      }
     }
   }
 
@@ -1244,6 +1275,8 @@ fn trim_front_values<T>(values: &mut VecDeque<T>, max_len: usize) {
 #[derive(Default)]
 struct CaptureProcessor {
   processed_frame: Vec<f32>,
+  audio_processing_failed: bool,
+  audio_processing_restart_attempts: u8,
 }
 
 #[derive(Default)]
@@ -1286,16 +1319,38 @@ impl VoiceActivationGate {
 
 impl CaptureProcessor {
   fn process_capture_frame(&mut self, frame: &mut [f32], control: &VoiceControlState) -> bool {
-    if let Some(audio_processing) = control.audio_processing()
+    if !self.audio_processing_failed
+      && let Some(audio_processing) = control.audio_processing()
       && let Ok(mut audio_processing) = audio_processing.try_lock()
     {
       let src = [&frame[..]];
       self.processed_frame.resize(frame.len(), 0.0);
       let mut dest = [&mut self.processed_frame[..]];
-      if audio_processing.process_capture_f32(&src, &mut dest).is_ok() {
-        frame.copy_from_slice(&self.processed_frame);
+      let result = catch_unwind(AssertUnwindSafe(|| audio_processing.process_capture_f32(&src, &mut dest)));
+      match result {
+        Ok(Ok(())) => frame.copy_from_slice(&self.processed_frame),
+        Ok(Err(error)) => {
+          tracing::warn!(target: "audio::encode", "[audio:encode] voice audio processing failed; continuing with raw microphone frame: {error}");
+        }
+        Err(_) => {
+          self.audio_processing_restart_attempts = self.audio_processing_restart_attempts.saturating_add(1);
+          if let Some(panic_info) = take_input_capture_callback_panic_info() {
+            tracing::error!(target: "audio::encode", "[audio:encode] voice audio processing panicked; restart_attempt={} max_restart_attempts={} {panic_info}", self.audio_processing_restart_attempts, MAX_AUDIO_PROCESSING_RESTARTS);
+          } else {
+            tracing::error!(target: "audio::encode", "[audio:encode] voice audio processing panicked; restart_attempt={} max_restart_attempts={}", self.audio_processing_restart_attempts, MAX_AUDIO_PROCESSING_RESTARTS);
+          }
+
+          if self.audio_processing_restart_attempts <= MAX_AUDIO_PROCESSING_RESTARTS
+            && control.restart_audio_processing(&mut audio_processing)
+          {
+            tracing::warn!(target: "audio::encode", "[audio:encode] voice audio processing restarted after panic; continuing capture with raw frame for this callback");
+          } else {
+            self.audio_processing_failed = true;
+            tracing::error!(target: "audio::encode", "[audio:encode] voice audio processing restart failed or panic limit reached; disabling voice audio processing for this stream and continuing with raw microphone frames");
+          }
+        }
       }
-    } else if control.audio_processing().is_some() {
+    } else if !self.audio_processing_failed && control.audio_processing().is_some() {
       return false;
     }
 
