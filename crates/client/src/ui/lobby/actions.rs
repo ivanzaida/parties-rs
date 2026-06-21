@@ -3,8 +3,9 @@ use std::time::Duration;
 use lurq::{app::ctx::Ctx, core::Store};
 
 use super::{
-  ChatHistoryAction, ChatHistoryRequest, ReceiverAction, ReconnectAction, ReconnectRequest, SendChatAction,
-  SendChatInput, StartStreamAction, StartStreamInput, StopStreamAction, StopWatchingAction, WatchStreamAction,
+  ChatCommandQueryAction, ChatCommandQueryRequest, ChatHistoryAction, ChatHistoryRequest, ReceiverAction,
+  ReconnectAction, ReconnectRequest, SendChatAction, SendChatInput, StartStreamAction, StartStreamInput,
+  StopStreamAction, StopWatchingAction, WatchStreamAction,
   debug_reports::{
     debug_audio_receivers_report, debug_channel_report, debug_stream_report, debug_user_report,
     debug_video_receivers_report, debug_voice_report,
@@ -235,6 +236,28 @@ pub(super) fn send_chat_action(ctx: &mut Ctx, session: ServerSession) -> SendCha
         .await
         .map_err(|error| error.to_string())?;
       Ok(())
+    }
+  })
+}
+
+pub(super) fn chat_command_query_action(ctx: &mut Ctx, session: ServerSession) -> ChatCommandQueryAction {
+  let copy = LobbyActionCopy::from_ctx(ctx);
+  ctx.future_action(move |request: ChatCommandQueryRequest| {
+    let session = session.clone();
+    let copy = copy.clone();
+    async move {
+      let server = session.server().ok_or(copy.no_connected_server)?;
+      server
+        .request_chat_command_query(
+          request.channel_id,
+          request.request_id,
+          request.command_name,
+          request.argument_name,
+          request.query,
+          request.cursor_pos,
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
   })
 }

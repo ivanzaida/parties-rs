@@ -16,7 +16,7 @@ pub use s2c::S2C;
 
 pub const DEFAULT_PORT: u16 = 7800;
 pub const PROTOCOL_VERSION_MAJOR: u8 = 1;
-pub const PROTOCOL_VERSION_MINOR: u8 = 0;
+pub const PROTOCOL_VERSION_MINOR: u8 = 1;
 pub const PROTOCOL_VERSION: u16 = ((PROTOCOL_VERSION_MAJOR as u16) << 8) | PROTOCOL_VERSION_MINOR as u16;
 pub const ALPN: &[u8] = b"parties";
 

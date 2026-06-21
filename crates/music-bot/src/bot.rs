@@ -1,5 +1,6 @@
 use server_plugin::{
-  BotUser, ChannelId, ChatCommandInvocationRef, HostHandle, PluginError, UserId,
+  BotUser, ChannelId, ChatCommandInvocationRef, CommandQueryRequestRef, CommandQueryResponse, CommandQueryResult,
+  HostHandle, PluginError, UserId,
   abi::LogLevel,
   plugin::{Context, Plugin},
 };
@@ -88,6 +89,54 @@ impl Plugin for MusicBot {
     }
   }
 
+  fn on_chat_command_query(&mut self, request: CommandQueryRequestRef<'_>) -> CommandQueryResponse {
+    if request.command_name != "play" || request.argument_name != "query" {
+      return CommandQueryResponse::no_results("");
+    }
+
+    let query = request.query.trim();
+    if query.len() < 2 {
+      return CommandQueryResponse::no_results("Type at least 2 characters.");
+    }
+
+    let Some(sources) = self.sources.as_ref() else {
+      return CommandQueryResponse::plugin_error("Music bot is missing SoundCloud credentials.");
+    };
+
+    if sources.supports(query) {
+      return CommandQueryResponse::ok(vec![CommandQueryResult {
+        id: query.to_owned(),
+        title: query.to_owned(),
+        subtitle: "SoundCloud URL".to_owned(),
+        value: query.to_owned(),
+        kind: "soundcloud".to_owned(),
+        duration_ms: 0,
+        thumbnail_url: String::new(),
+      }]);
+    }
+
+    match sources.search(query, 10) {
+      Ok(requests) => CommandQueryResponse::ok(
+        requests
+          .into_iter()
+          .map(|request| CommandQueryResult {
+            id: request.provider_id.unwrap_or_else(|| request.url.clone()),
+            title: request.loading_title,
+            subtitle: request.url.clone(),
+            value: request.url,
+            kind: "soundcloud".to_owned(),
+            duration_ms: request
+              .duration_ms
+              .and_then(|duration| u32::try_from(duration).ok())
+              .unwrap_or(0),
+            thumbnail_url: String::new(),
+          })
+          .collect(),
+      ),
+      Err(error) => CommandQueryResponse::plugin_error(error),
+    }
+  }
+
   fn shutdown(&mut self) {
     for slot in self.bots.iter_mut() {
       if let Some(worker) = slot.worker.take() {
@@ -119,12 +168,12 @@ impl MusicBot {
   fn handle_play(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {
     self.sync_voice_state(host);
 
-    let Some(url) = invocation
-      .arg("url")
+    let Some(input) = invocation
+      .arg("query")
       .filter(|arg| arg.present)
       .map(|arg| arg.string_value)
     else {
-      self.send_reply(host, invocation.text_channel_id, "Usage: /play {url:string}");
+      self.send_reply(host, invocation.text_channel_id, "Usage: /play {query:string...}");
       return;
     };
 
@@ -140,14 +189,29 @@ impl MusicBot {
       );
       return;
     };
-    if !sources.supports(url) {
-      self.send_reply(
-        host,
-        invocation.text_channel_id,
-        "Only SoundCloud URLs are supported right now.",
-      );
-      return;
-    }
+    let url = if sources.supports(input) {
+      input.to_owned()
+    } else {
+      match sources.search(input, 1) {
+        Ok(requests) => {
+          let Some(request) = requests.into_iter().next() else {
+            self.send_reply(host, invocation.text_channel_id, "No SoundCloud results found.");
+            return;
+          };
+          request.url
+        }
+        Err(error) => {
+          host
+            .log(
+              LogLevel::Warn,
+              &format!("failed to search SoundCloud for /play: {error}"),
+            )
+            .ok();
+          self.send_reply(host, invocation.text_channel_id, "SoundCloud search failed.");
+          return;
+        }
+      }
+    };
 
     let slot_index = match self.acquire_bot_for_voice(host, invocation.user_id, voice_channel_id) {
       Ok(slot_index) => slot_index,
@@ -180,7 +244,7 @@ impl MusicBot {
       return;
     };
 
-    worker.resolve_and_enqueue(url.to_owned(), invocation.text_channel_id);
+    worker.resolve_and_enqueue(url, invocation.text_channel_id);
   }
 
   fn handle_stop(&mut self, host: HostHandle, invocation: ChatCommandInvocationRef<'_>) {

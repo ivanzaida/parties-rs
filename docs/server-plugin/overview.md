@@ -2,7 +2,7 @@
 
 `crates/server-plugin` defines the Rust side of the Parties plugin interface. It is both an ABI contract and a helper crate for plugin authors.
 
-The API version is currently `1.0`.
+The API version is currently `1.1`.
 
 ## Responsibilities
 
@@ -11,4 +11,3 @@ The API version is currently `1.0`.
 - Wrap host callbacks in safer Rust methods.
 - Provide a `Plugin` trait.
 - Provide a registration macro that exports the required native symbols.
-

@@ -138,3 +138,72 @@ fn chat_command_list_decodes_upstream_shape() {
     }
   );
 }
+
+#[test]
+fn chat_command_input_list_decodes_live_query_metadata() {
+  let mut w = BinaryWriter::new();
+  w.write_u16(1);
+  w.write_string("play").unwrap();
+  w.write_u16(1);
+  w.write_string("query").unwrap();
+  w.write_u8(ChatCommandInputMode::LiveQuery.as_u8());
+  w.write_u16(2);
+  w.write_u16(250);
+  w.write_u16(8);
+  w.write_string("Search SoundCloud").unwrap();
+
+  assert_eq!(
+    ChatCommandInputList::decode_payload(w.as_slice()).unwrap(),
+    ChatCommandInputList {
+      commands: vec![ChatCommandInputListEntry {
+        command_name: "play".to_owned(),
+        inputs: vec![ChatCommandInputInfo {
+          argument_name: "query".to_owned(),
+          mode: ChatCommandInputMode::LiveQuery,
+          min_chars: 2,
+          debounce_ms: 250,
+          max_results: 8,
+          placeholder: "Search SoundCloud".to_owned(),
+        }]
+      }]
+    }
+  );
+}
+
+#[test]
+fn chat_command_query_response_decodes_results() {
+  let mut w = BinaryWriter::new();
+  w.write_u64(7);
+  w.write_string("play").unwrap();
+  w.write_string("query").unwrap();
+  w.write_u8(ChatCommandQueryStatus::Ok.as_u8());
+  w.write_string("").unwrap();
+  w.write_u16(1);
+  w.write_string("track-1").unwrap();
+  w.write_string("Track title").unwrap();
+  w.write_string("Artist").unwrap();
+  w.write_string("https://soundcloud.test/track").unwrap();
+  w.write_string("track").unwrap();
+  w.write_u32(1234);
+  w.write_string("https://image.test/thumb.jpg").unwrap();
+
+  assert_eq!(
+    ChatCommandQueryResponse::decode_payload(w.as_slice()).unwrap(),
+    ChatCommandQueryResponse {
+      request_id: 7,
+      command_name: "play".to_owned(),
+      argument_name: "query".to_owned(),
+      status: ChatCommandQueryStatus::Ok,
+      message: "".to_owned(),
+      results: vec![ChatCommandQueryResult {
+        id: "track-1".to_owned(),
+        title: "Track title".to_owned(),
+        subtitle: "Artist".to_owned(),
+        value: "https://soundcloud.test/track".to_owned(),
+        kind: "track".to_owned(),
+        duration_ms: 1234,
+        thumbnail_url: "https://image.test/thumb.jpg".to_owned(),
+      }]
+    }
+  );
+}

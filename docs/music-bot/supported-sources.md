@@ -1,6 +1,6 @@
 # Music Bot Supported Sources
 
-The current music bot source registry supports SoundCloud URLs.
+The current music bot source registry supports SoundCloud search and SoundCloud URLs.
 
 Supported forms include:
 
@@ -21,4 +21,3 @@ The `soundcloud-probe` binary can be used during development to inspect resolver
 ```powershell
 cargo run --package music-bot --bin soundcloud-probe -- <soundcloud-url>
 ```
-

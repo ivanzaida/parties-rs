@@ -5,7 +5,7 @@ Template:
 ```toml
 id = "parties.music_bot"
 name = "Music Bot"
-api_version = "1.0"
+api_version = "1.1"
 library = "music_bot.dll"
 
 [variables]
@@ -23,4 +23,3 @@ permissions = [
 ```
 
 CI replaces `library` with the platform artifact filename and injects `version`.
-

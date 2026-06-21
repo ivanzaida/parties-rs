@@ -11,8 +11,8 @@ use crate::{
   network::protocol::{
     ChannelId, Role, S2C, ServerErrorCode, UserId,
     control::{
-      ChannelInfo, ChannelUser as ProtocolChannelUser, ChatMessage as ProtocolChatMessage, ScreenShareMetadata,
-      TextChannelInfo,
+      ChannelInfo, ChannelUser as ProtocolChannelUser, ChatCommandQueryResponse, ChatMessage as ProtocolChatMessage,
+      ScreenShareMetadata, TextChannelInfo,
     },
   },
   services::notifications::NotificationSound,
@@ -127,6 +127,7 @@ pub struct LobbyState {
   pub chat_history_loading: HashSet<ChannelId>,
   pub chat_history_has_more: HashMap<ChannelId, bool>,
   pub chat_command_registry: ChatCommandRegistry,
+  pub chat_command_query_response: Option<ChatCommandQueryResponse>,
   pub users: Vec<LobbyUser>,
   pub users_by_channel: HashMap<ChannelId, Vec<LobbyUser>>,
   pub screen_shares: Vec<LobbyScreenShare>,
@@ -434,6 +435,30 @@ pub(super) fn apply_server_message(
           .into_iter()
           .map(|command| CommandDefinition::server_advertised(command.name, command.description, command.usage)),
       );
+    }
+    S2C::ChatCommandInputList(list) => {
+      tracing::debug!(
+        target: "lobby",
+        "[lobby] received chat command input list: commands={}",
+        list.commands.len()
+      );
+      for command in list.commands {
+        lobby.chat_command_registry = lobby
+          .chat_command_registry
+          .with_server_inputs(&command.command_name, command.inputs.into_iter().map(Into::into));
+      }
+    }
+    S2C::ChatCommandQueryResp(response) => {
+      tracing::debug!(
+        target: "lobby",
+        "[lobby] received chat command query response: request={} command={} argument={} status={:?} results={}",
+        response.request_id,
+        response.command_name,
+        response.argument_name,
+        response.status,
+        response.results.len()
+      );
+      lobby.chat_command_query_response = Some(response);
     }
     S2C::ChatMessage(message) => {
       let should_notify = local_user_id != Some(message.sender_id);

@@ -51,8 +51,8 @@ mod user_context_overlay;
 mod voice_channels;
 
 use actions::{
-  chat_history_action, receiver_action, reconnect_action, send_chat_action, start_stream_action, stop_stream_action,
-  stop_watching_action, watch_stream_action,
+  chat_command_query_action, chat_history_action, receiver_action, reconnect_action, send_chat_action,
+  start_stream_action, stop_stream_action, stop_watching_action, watch_stream_action,
 };
 use chat::{ChatActions, ChatCommandInvalidFeedback};
 use content::main;
@@ -67,6 +67,7 @@ use subscription::{LobbyModelSubscription, apply_current_model, apply_model, cur
 type ReceiverAction = lurq::app::ctx::FutureAction<(), (), String>;
 type ChatHistoryAction = lurq::app::ctx::FutureAction<Vec<ChatHistoryRequest>, (), String>;
 type SendChatAction = lurq::app::ctx::FutureAction<SendChatInput, (), String>;
+type ChatCommandQueryAction = lurq::app::ctx::FutureAction<ChatCommandQueryRequest, (), String>;
 type StartStreamAction = lurq::app::ctx::FutureAction<StartStreamInput, (), String>;
 type StopStreamAction = lurq::app::ctx::FutureAction<(), (), String>;
 type WatchStreamAction = lurq::app::ctx::FutureAction<UserId, (), String>;
@@ -90,6 +91,16 @@ struct SendChatInput {
 }
 
 #[derive(Clone)]
+struct ChatCommandQueryRequest {
+  channel_id: ChannelId,
+  request_id: u64,
+  command_name: String,
+  argument_name: String,
+  query: String,
+  cursor_pos: u16,
+}
+
+#[derive(Clone)]
 struct StartStreamInput {
   source_kind: ScreenShareSourceKind,
   source_id: u32,
@@ -107,6 +118,9 @@ struct ReconnectRequest {
 pub struct LobbyScreen {
   message_input: Signal<String>,
   chat_command_selected_index: Signal<usize>,
+  chat_command_query_signature: Signal<Option<String>>,
+  chat_command_selection_signature: Signal<Option<String>>,
+  chat_command_query_request_id: Signal<u64>,
   chat_command_scroll_state: ScrollState,
   chat_command_invalid_feedback: ChatCommandInvalidFeedback,
   chat_scroll_state: ScrollState,
@@ -133,6 +147,9 @@ impl Component for LobbyScreen {
     Self {
       message_input: ctx.signal(String::new()),
       chat_command_selected_index: ctx.signal(0),
+      chat_command_query_signature: ctx.signal(None),
+      chat_command_selection_signature: ctx.signal(None),
+      chat_command_query_request_id: ctx.signal(0),
       chat_command_scroll_state: ScrollState::new(),
       chat_command_invalid_feedback: ChatCommandInvalidFeedback::new(ctx),
       chat_scroll_state: ScrollState::new(),
@@ -285,9 +302,14 @@ impl Component for LobbyScreen {
       }
     }
     let send_chat = send_chat_action(ctx, session.clone());
+    let chat_command_query = chat_command_query_action(ctx, session.clone());
     let chat_actions = ChatActions {
       history: chat_history.clone(),
       send: send_chat.clone(),
+      command_query: chat_command_query.clone(),
+      command_query_signature: self.chat_command_query_signature.clone(),
+      command_selection_signature: self.chat_command_selection_signature.clone(),
+      command_query_request_id: self.chat_command_query_request_id.clone(),
     };
     let start_stream = start_stream_action(ctx, stream_settings_store.clone(), session.clone());
     let stop_stream = stop_stream_action(ctx, session.clone());

@@ -67,6 +67,15 @@ impl SourceRegistry {
     Err("Only SoundCloud URLs are supported right now.".to_owned())
   }
 
+  pub(crate) fn search(&self, query: &str, limit: usize) -> Result<Vec<SourceRequest>, String> {
+    #[cfg(test)]
+    if let Some(test_backend) = self.test_backend.as_ref() {
+      return test_backend.search(query, limit);
+    }
+
+    self.soundcloud.search(query, limit)
+  }
+
   pub(crate) fn resolve(&self, request: &SourceRequest) -> Result<ResolvedAudio, String> {
     #[cfg(test)]
     if let Some(test_backend) = self.test_backend.as_ref() {
@@ -87,5 +96,6 @@ impl SourceRegistry {
 pub(crate) trait TestSourceBackend: Send + Sync {
   fn parse(&self, input: &str) -> Result<SourceRequest, String>;
   fn parse_many(&self, input: &str) -> Result<Vec<SourceRequest>, String>;
+  fn search(&self, query: &str, limit: usize) -> Result<Vec<SourceRequest>, String>;
   fn resolve(&self, request: &SourceRequest) -> Result<ResolvedAudio, String>;
 }

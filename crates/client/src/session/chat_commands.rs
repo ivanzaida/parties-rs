@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::network::protocol::control::{ChatCommandInputInfo, ChatCommandInputMode};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatCommandInvocation {
   pub name: Arc<str>,
@@ -13,7 +15,31 @@ pub struct CommandDefinition {
   pub description_key: Arc<str>,
   pub description_is_i18n_key: bool,
   pub usage: Arc<str>,
+  pub inputs: Arc<[CommandInputDefinition]>,
   pub source: ChatCommandSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandInputDefinition {
+  pub argument_name: Arc<str>,
+  pub mode: ChatCommandInputMode,
+  pub min_chars: u16,
+  pub debounce_ms: u16,
+  pub max_results: u16,
+  pub placeholder: Arc<str>,
+}
+
+impl From<ChatCommandInputInfo> for CommandInputDefinition {
+  fn from(input: ChatCommandInputInfo) -> Self {
+    Self {
+      argument_name: Arc::from(input.argument_name),
+      mode: input.mode,
+      min_chars: input.min_chars,
+      debounce_ms: input.debounce_ms,
+      max_results: input.max_results,
+      placeholder: Arc::from(input.placeholder),
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,11 +55,21 @@ impl CommandDefinition {
       description_key: Arc::from(description_key),
       description_is_i18n_key: true,
       usage: Arc::from(usage),
+      inputs: Arc::from([]),
       source: ChatCommandSource::Local,
     }
   }
 
   pub fn server_advertised(name: String, description: String, usage: String) -> Self {
+    Self::server_advertised_with_inputs(name, description, usage, Vec::new())
+  }
+
+  pub fn server_advertised_with_inputs(
+    name: String,
+    description: String,
+    usage: String,
+    inputs: Vec<CommandInputDefinition>,
+  ) -> Self {
     let name = if name.starts_with('/') {
       name
     } else {
@@ -46,7 +82,15 @@ impl CommandDefinition {
       description_key: Arc::from(description),
       description_is_i18n_key: false,
       usage: Arc::from(usage),
+      inputs: Arc::from(inputs),
       source: ChatCommandSource::Server,
+    }
+  }
+
+  fn with_inputs(&self, inputs: Vec<CommandInputDefinition>) -> Self {
+    Self {
+      inputs: Arc::from(inputs),
+      ..self.clone()
     }
   }
 }
@@ -80,6 +124,15 @@ pub struct ChatCommandRegistry {
   definitions: Arc<[CommandDefinition]>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatCommandLiveQuery {
+  pub command_name: String,
+  pub argument_name: String,
+  pub query: String,
+  pub cursor_pos: u16,
+  pub input: CommandInputDefinition,
+}
+
 impl ChatCommandRegistry {
   pub fn from_definitions(definitions: impl IntoIterator<Item = CommandDefinition>) -> Self {
     Self {
@@ -93,6 +146,66 @@ impl ChatCommandRegistry {
 
   pub fn definitions(&self) -> &[CommandDefinition] {
     &self.definitions
+  }
+
+  pub fn with_server_inputs(
+    &self,
+    command_name: &str,
+    inputs: impl IntoIterator<Item = CommandInputDefinition>,
+  ) -> Self {
+    let normalized_name = normalize_command_name(command_name);
+    let inputs = inputs.into_iter().collect::<Vec<_>>();
+    let definitions = self
+      .definitions()
+      .iter()
+      .map(|definition| {
+        if definition.source == ChatCommandSource::Server && definition.name.as_ref() == normalized_name {
+          definition.with_inputs(inputs.clone())
+        } else {
+          definition.clone()
+        }
+      })
+      .collect::<Vec<_>>();
+    Self::from_definitions(definitions)
+  }
+
+  pub fn live_query_for_input(&self, input: &str) -> Option<ChatCommandLiveQuery> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('/') {
+      return None;
+    }
+
+    let command_end = trimmed.find(char::is_whitespace)?;
+    let command_name = &trimmed[..command_end];
+    let definition = self.definition_for(command_name)?;
+    if definition.source != ChatCommandSource::Server {
+      return None;
+    }
+
+    let rest = &trimmed[command_end..];
+    let argument_specs = definition
+      .usage
+      .split_whitespace()
+      .skip(1)
+      .filter_map(command_usage_argument)
+      .collect::<Vec<_>>();
+    let input = definition
+      .inputs
+      .iter()
+      .find(|input| input.mode == ChatCommandInputMode::LiveQuery)
+      .cloned()?;
+    let argument_index = argument_specs
+      .iter()
+      .position(|argument| argument.name == input.argument_name.as_ref())?;
+    let query = active_argument_query(rest, &argument_specs, argument_index)?;
+    let cursor_pos = query.len().min(u16::MAX as usize) as u16;
+    Some(ChatCommandLiveQuery {
+      command_name: command_name.trim_start_matches('/').to_owned(),
+      argument_name: input.argument_name.to_string(),
+      query,
+      cursor_pos,
+      input,
+    })
   }
 
   pub fn parse(&self, input: &str) -> Result<Option<ChatCommandInvocation>, ChatCommandParseError> {
@@ -183,6 +296,31 @@ fn command_usage_argument(part: &str) -> Option<CommandArgument<'_>> {
     ty: ty.strip_prefix('?').unwrap_or(ty),
     required,
   })
+}
+
+fn normalize_command_name(name: &str) -> String {
+  if name.starts_with('/') {
+    name.to_owned()
+  } else {
+    format!("/{name}")
+  }
+}
+
+fn active_argument_query(rest: &str, arguments: &[CommandArgument<'_>], argument_index: usize) -> Option<String> {
+  let rest = rest.trim_start();
+  let argument = arguments.get(argument_index)?;
+  if argument.ty.ends_with("...") {
+    if argument_index == 0 {
+      return Some(rest.to_owned());
+    }
+    return command_tokens(rest)
+      .ok()
+      .and_then(|tokens| tokens.get(argument_index).map(|token| token.to_string()));
+  }
+
+  command_tokens(rest)
+    .ok()
+    .and_then(|tokens| tokens.get(argument_index).map(|token| token.to_string()))
 }
 
 fn validate_argument_value(argument: &CommandArgument<'_>, value: &str) -> Result<(), ChatCommandParseError> {

@@ -1,14 +1,14 @@
 use std::{
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
-  time::Instant,
+  time::{Duration, Instant},
 };
 
 use chrono::Local;
 use lurq::{
   app::{
     component::{Component, DevtoolsInspectable},
-    ctx::{CollisionStrategy, Ctx, Overlay, Placement},
+    ctx::{CollisionStrategy, Ctx, Overlay, Placement, Timeout},
   },
   components::{Column, Rect, Row, ScrollVertical, Text},
   core::{Signal, Store},
@@ -33,8 +33,10 @@ use message::{ChatMessage, ChatMessageProps};
 use scroll::{chat_messages_scroll, preserve_chat_scroll_on_prepend, schedule_chat_scroll_to_bottom};
 use timeline::{chat_day_divider, local_chat_date};
 
+const CHAT_COMMAND_QUERY_DEBOUNCE_MS: u64 = 400;
+
 use super::{
-  ChatHistoryAction, SendChatAction,
+  ChatCommandQueryAction, ChatCommandQueryRequest, ChatHistoryAction, SendChatAction,
   model::{ChatPaneModel, chat_pane_model},
   session_identity::same_session,
   shared::error_notice,
@@ -42,7 +44,7 @@ use super::{
 };
 use crate::{
   network::protocol::{ChannelId, control::ChatMessage as ProtocolChatMessage},
-  session::{ConnectedServerInfo, ServerSession},
+  session::{ConnectedServerInfo, ServerSession, chat_commands::ChatCommandRegistry},
   theme,
   ui::loader::loader,
 };
@@ -51,6 +53,10 @@ use crate::{
 pub(super) struct ChatActions {
   pub history: ChatHistoryAction,
   pub send: SendChatAction,
+  pub command_query: ChatCommandQueryAction,
+  pub command_query_signature: Signal<Option<String>>,
+  pub command_selection_signature: Signal<Option<String>>,
+  pub command_query_request_id: Signal<u64>,
 }
 
 pub(super) fn text_channel_detail(
@@ -123,14 +129,35 @@ impl DevtoolsInspectable for TextChannelDetailProps {}
 
 struct TextChannelDetail {
   model_store: Store<Option<ChatPaneModel>>,
+  pending_command_query: Store<Option<PendingChatCommandQuery>>,
+  command_query_debounce: Timeout,
 }
+
+#[derive(Clone)]
+struct PendingChatCommandQuery {
+  action: ChatCommandQueryAction,
+  request: ChatCommandQueryRequest,
+}
+
+impl DevtoolsInspectable for PendingChatCommandQuery {}
 
 impl Component for TextChannelDetail {
   type Props = TextChannelDetailProps;
 
   fn create(ctx: &mut Ctx) -> Self {
+    let pending_command_query = ctx.store(None::<PendingChatCommandQuery>);
+    let command_query_debounce = ctx.create_timeout(Duration::from_millis(CHAT_COMMAND_QUERY_DEBOUNCE_MS), {
+      let pending_command_query = pending_command_query.clone();
+      move || {
+        if let Some(pending) = pending_command_query.get() {
+          pending.action.run(pending.request);
+        }
+      }
+    });
     Self {
       model_store: ctx.store(None),
+      pending_command_query,
+      command_query_debounce,
     }
   }
 
@@ -176,8 +203,9 @@ impl Component for TextChannelDetail {
       props.chat_prepend_settle_anchor,
       props.debug_user_ids,
       props.session,
-      &props.actions.history,
-      &props.actions.send,
+      &props.actions,
+      &self.pending_command_query,
+      &self.command_query_debounce,
     )
   }
 }
@@ -244,6 +272,82 @@ fn empty_subscriber_node() -> Element {
   Rect::new(0.0, 0.0).into()
 }
 
+fn sync_chat_command_query(
+  channel_id: Option<ChannelId>,
+  message_input: &Signal<String>,
+  command_registry: &ChatCommandRegistry,
+  selected_index: &Signal<usize>,
+  action: &ChatCommandQueryAction,
+  signature: &Signal<Option<String>>,
+  selection_signature: &Signal<Option<String>>,
+  request_id: &Signal<u64>,
+  pending_command_query: &Store<Option<PendingChatCommandQuery>>,
+  command_query_debounce: &Timeout,
+) {
+  let Some(channel_id) = channel_id else {
+    clear_chat_command_query_state(signature, selection_signature, pending_command_query, command_query_debounce);
+    return;
+  };
+  let input = message_input.get();
+  let Some(query) = command_registry.live_query_for_input(&input) else {
+    clear_chat_command_query_state(signature, selection_signature, pending_command_query, command_query_debounce);
+    return;
+  };
+  if query.query.len() < query.input.min_chars as usize {
+    clear_chat_command_query_state(signature, selection_signature, pending_command_query, command_query_debounce);
+    selected_index.set(0);
+    return;
+  }
+
+  let next_signature = format!(
+    "{}\n{}\n{}\n{}",
+    channel_id, query.command_name, query.argument_name, query.query
+  );
+  if selection_signature.get_untracked().as_deref() != Some(next_signature.as_str()) {
+    selected_index.set(0);
+    selection_signature.set(Some(next_signature.clone()));
+  }
+  if signature.get_untracked().as_deref() == Some(next_signature.as_str()) {
+    return;
+  }
+
+  let next_request_id = request_id.get_untracked().saturating_add(1).max(1);
+  request_id.set(next_request_id);
+  signature.set(Some(next_signature));
+  pending_command_query.set(Some(PendingChatCommandQuery {
+    action: action.clone(),
+    request: ChatCommandQueryRequest {
+      channel_id,
+      request_id: next_request_id,
+      command_name: query.command_name,
+      argument_name: query.argument_name,
+      query: query.query,
+      cursor_pos: query.cursor_pos,
+    },
+  }));
+  command_query_debounce.restart();
+}
+
+fn clear_chat_command_query_state(
+  signature: &Signal<Option<String>>,
+  selection_signature: &Signal<Option<String>>,
+  pending_command_query: &Store<Option<PendingChatCommandQuery>>,
+  command_query_debounce: &Timeout,
+) {
+  clear_chat_command_query_signature(signature);
+  clear_chat_command_query_signature(selection_signature);
+  if pending_command_query.get().is_some() {
+    pending_command_query.set(None);
+  }
+  command_query_debounce.cancel();
+}
+
+fn clear_chat_command_query_signature(signature: &Signal<Option<String>>) {
+  if signature.get_untracked().is_some() {
+    signature.set(None);
+  }
+}
+
 fn text_channel_detail_view(
   ctx: &mut Ctx,
   subscriber: Element,
@@ -261,13 +365,26 @@ fn text_channel_detail_view(
   chat_prepend_settle_anchor: Signal<Option<(ChannelId, u64, f32)>>,
   debug_user_ids: bool,
   session: ServerSession,
-  chat_history: &ChatHistoryAction,
-  send_chat: &SendChatAction,
+  actions: &ChatActions,
+  pending_command_query: &Store<Option<PendingChatCommandQuery>>,
+  command_query_debounce: &Timeout,
 ) -> Element {
   let render_start = Instant::now();
   let channel_id = channel.id();
   let command_registry = channel.command_registry();
   let commands_enabled = command_registry.has_commands();
+  sync_chat_command_query(
+    channel.server_channel_id(),
+    &message_input,
+    &command_registry,
+    &command_selected_index,
+    &actions.command_query,
+    &actions.command_query_signature,
+    &actions.command_selection_signature,
+    &actions.command_query_request_id,
+    pending_command_query,
+    command_query_debounce,
+  );
   let messages = model.messages.as_slice();
   let oldest_message_id = messages.first().map(|message| message.id).unwrap_or(0);
   let newest_message_id = messages.last().map(|message| message.id).unwrap_or(0);
@@ -347,7 +464,7 @@ fn text_channel_detail_view(
       chat_bottom_anchor,
       chat_bottom_detached_anchor,
       session,
-      chat_history,
+      &actions.history,
       channel_id,
       oldest_message_id,
       can_page,
@@ -367,7 +484,7 @@ fn text_channel_detail_view(
       chat_bottom_anchor,
       chat_bottom_detached_anchor,
       session,
-      chat_history,
+      &actions.history,
       channel_id,
       oldest_message_id,
       can_page,
@@ -389,7 +506,9 @@ fn text_channel_detail_view(
       command_selected_index.clone(),
       command_invalid_feedback.clone(),
       command_registry.clone(),
-      send_chat,
+      model.command_query_response.clone(),
+      actions.command_query_request_id.get(),
+      &actions.send,
       composer_ref.clone(),
     ));
 
@@ -401,6 +520,8 @@ fn text_channel_detail_view(
       &command_registry,
       command_scroll_state,
       command_invalid_feedback,
+      model.command_query_response.clone(),
+      actions.command_query_request_id.get(),
     ) {
       body = body.child(
         Overlay::new(suggestions)

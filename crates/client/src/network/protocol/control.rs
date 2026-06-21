@@ -48,6 +48,7 @@ pub enum ControlMessageType {
   ChatPinnedReq = 0x0409,
   AdminCreateTextChannel = 0x040A,
   AdminDeleteTextChannel = 0x040B,
+  ChatCommandQuery = 0x040C,
   ChatMessage = 0x0501,
   ChatHistoryResp = 0x0502,
   ChatMessageDeleted = 0x0503,
@@ -57,6 +58,8 @@ pub enum ControlMessageType {
   ChatPinnedResp = 0x0507,
   ChatChannelList = 0x0508,
   ChatCommandList = 0x0509,
+  ChatCommandInputList = 0x050A,
+  ChatCommandQueryResp = 0x050B,
 }
 
 impl ControlMessageType {
@@ -103,6 +106,7 @@ impl ControlMessageType {
       0x0409 => ChatPinnedReq,
       0x040A => AdminCreateTextChannel,
       0x040B => AdminDeleteTextChannel,
+      0x040C => ChatCommandQuery,
       0x0501 => ChatMessage,
       0x0502 => ChatHistoryResp,
       0x0503 => ChatMessageDeleted,
@@ -112,6 +116,8 @@ impl ControlMessageType {
       0x0507 => ChatPinnedResp,
       0x0508 => ChatChannelList,
       0x0509 => ChatCommandList,
+      0x050A => ChatCommandInputList,
+      0x050B => ChatCommandQueryResp,
       _ => return None,
     })
   }
@@ -582,6 +588,42 @@ pub struct ChatCommandInfo {
   pub usage: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChatCommandInputMode {
+  None = 0,
+  LiveQuery = 1,
+  Unknown(u8),
+}
+
+impl ChatCommandInputMode {
+  pub fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::None,
+      1 => Self::LiveQuery,
+      other => Self::Unknown(other),
+    }
+  }
+
+  pub fn as_u8(self) -> u8 {
+    match self {
+      Self::None => 0,
+      Self::LiveQuery => 1,
+      Self::Unknown(value) => value,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandInputInfo {
+  pub argument_name: String,
+  pub mode: ChatCommandInputMode,
+  pub min_chars: u16,
+  pub debounce_ms: u16,
+  pub max_results: u16,
+  pub placeholder: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatCommandList {
   pub commands: Vec<ChatCommandInfo>,
@@ -601,6 +643,138 @@ impl ChatCommandList {
     }
     r.finish()?;
     Ok(Self { commands })
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandInputListEntry {
+  pub command_name: String,
+  pub inputs: Vec<ChatCommandInputInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandInputList {
+  pub commands: Vec<ChatCommandInputListEntry>,
+}
+
+impl ChatCommandInputList {
+  pub fn decode_payload(bytes: &[u8]) -> DecodeResult<Self> {
+    let mut r = BinaryReader::new(bytes);
+    let count = r.read_u16()? as usize;
+    let mut commands = Vec::with_capacity(count);
+    for _ in 0..count {
+      let command_name = r.read_string()?;
+      let input_count = r.read_u16()? as usize;
+      let mut inputs = Vec::with_capacity(input_count);
+      for _ in 0..input_count {
+        inputs.push(ChatCommandInputInfo {
+          argument_name: r.read_string()?,
+          mode: ChatCommandInputMode::from_u8(r.read_u8()?),
+          min_chars: r.read_u16()?,
+          debounce_ms: r.read_u16()?,
+          max_results: r.read_u16()?,
+          placeholder: r.read_string()?,
+        });
+      }
+      commands.push(ChatCommandInputListEntry { command_name, inputs });
+    }
+    r.finish()?;
+    Ok(Self { commands })
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChatCommandQueryStatus {
+  Ok = 0,
+  NoResults = 1,
+  TooShort = 2,
+  RateLimited = 3,
+  PermissionDenied = 4,
+  PluginError = 5,
+  Pending = 6,
+  Unknown(u8),
+}
+
+impl ChatCommandQueryStatus {
+  pub fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::Ok,
+      1 => Self::NoResults,
+      2 => Self::TooShort,
+      3 => Self::RateLimited,
+      4 => Self::PermissionDenied,
+      5 => Self::PluginError,
+      6 => Self::Pending,
+      other => Self::Unknown(other),
+    }
+  }
+
+  pub fn as_u8(self) -> u8 {
+    match self {
+      Self::Ok => 0,
+      Self::NoResults => 1,
+      Self::TooShort => 2,
+      Self::RateLimited => 3,
+      Self::PermissionDenied => 4,
+      Self::PluginError => 5,
+      Self::Pending => 6,
+      Self::Unknown(value) => value,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandQueryResult {
+  pub id: String,
+  pub title: String,
+  pub subtitle: String,
+  pub value: String,
+  pub kind: String,
+  pub duration_ms: u32,
+  pub thumbnail_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCommandQueryResponse {
+  pub request_id: u64,
+  pub command_name: String,
+  pub argument_name: String,
+  pub status: ChatCommandQueryStatus,
+  pub message: String,
+  pub results: Vec<ChatCommandQueryResult>,
+}
+
+impl ChatCommandQueryResponse {
+  pub fn decode_payload(bytes: &[u8]) -> DecodeResult<Self> {
+    let mut r = BinaryReader::new(bytes);
+    let request_id = r.read_u64()?;
+    let command_name = r.read_string()?;
+    let argument_name = r.read_string()?;
+    let status = ChatCommandQueryStatus::from_u8(r.read_u8()?);
+    let message = r.read_string()?;
+    let count = r.read_u16()? as usize;
+    let mut results = Vec::with_capacity(count);
+    for _ in 0..count {
+      results.push(ChatCommandQueryResult {
+        id: r.read_string()?,
+        title: r.read_string()?,
+        subtitle: r.read_string()?,
+        value: r.read_string()?,
+        kind: r.read_string()?,
+        duration_ms: r.read_u32()?,
+        thumbnail_url: r.read_string()?,
+      });
+    }
+    r.finish()?;
+    Ok(Self {
+      request_id,
+      command_name,
+      argument_name,
+      status,
+      message,
+      results,
+    })
   }
 }
 

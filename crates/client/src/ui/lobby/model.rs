@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use lurq::app::component::DevtoolsInspectable;
 
 use crate::{
-  network::protocol::{ChannelId, Role, UserId, control::ChatMessage as ProtocolChatMessage},
+  network::protocol::{
+    ChannelId, Role, UserId,
+    control::{ChatCommandQueryResponse, ChatMessage as ProtocolChatMessage},
+  },
   session::{
     ConnectedServerInfo, LobbyChannel, LobbyConnectionWarning, LobbyScreenShare, LobbyState, LobbyTextChannel,
     LobbyUser, chat_commands::ChatCommandRegistry,
@@ -51,6 +54,7 @@ pub(super) struct ChatPaneModel {
   pub(super) initial_history_loading: bool,
   pub(super) can_page: bool,
   pub(super) error: Option<String>,
+  pub(super) command_query_response: Option<ChatCommandQueryResponse>,
 }
 
 impl DevtoolsInspectable for ChatPaneModel {}
@@ -396,6 +400,7 @@ pub(super) fn chat_pane_model(
       && lobby.chat_history_has_more.get(&channel_id).copied().unwrap_or(true)
       && !lobby.chat_history_loading.contains(&channel_id),
     error: lobby.last_error.clone(),
+    command_query_response: lobby.chat_command_query_response.clone(),
   }
 }
 

@@ -72,6 +72,14 @@ pub enum C2S {
   ChatPinnedReq {
     channel_id: ChannelId,
   },
+  ChatCommandQuery {
+    channel_id: ChannelId,
+    request_id: u64,
+    command_name: String,
+    argument_name: String,
+    query: String,
+    cursor_pos: u16,
+  },
   AdminCreateTextChannel {
     name: String,
   },
@@ -210,6 +218,23 @@ impl C2S {
         let mut w = BinaryWriter::new();
         w.write_u32(*channel_id);
         (M::ChatPinnedReq, w.into_bytes())
+      }
+      Self::ChatCommandQuery {
+        channel_id,
+        request_id,
+        command_name,
+        argument_name,
+        query,
+        cursor_pos,
+      } => {
+        let mut w = BinaryWriter::new();
+        w.write_u32(*channel_id);
+        w.write_u64(*request_id);
+        w.write_string(command_name)?;
+        w.write_string(argument_name)?;
+        w.write_string(query)?;
+        w.write_u16(*cursor_pos);
+        (M::ChatCommandQuery, w.into_bytes())
       }
       Self::AdminCreateTextChannel { name } => {
         let mut w = BinaryWriter::new();

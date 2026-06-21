@@ -843,6 +843,27 @@ impl Server {
     self.send_control(C2S::ChatPinnedReq { channel_id }).await
   }
 
+  pub async fn request_chat_command_query(
+    &self,
+    channel_id: ChannelId,
+    request_id: u64,
+    command_name: String,
+    argument_name: String,
+    query: String,
+    cursor_pos: u16,
+  ) -> Result<(), ServerError> {
+    self
+      .send_control(C2S::ChatCommandQuery {
+        channel_id,
+        request_id,
+        command_name,
+        argument_name,
+        query,
+        cursor_pos,
+      })
+      .await
+  }
+
   // -- admin: text channels --
 
   pub async fn create_text_channel(&self, name: String) -> Result<(), ServerError> {

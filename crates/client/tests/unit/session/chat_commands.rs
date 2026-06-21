@@ -130,3 +130,26 @@ fn server_advertised_commands_are_normalized_for_slash_input() {
   assert!(!command.description_is_i18n_key);
   assert_eq!(command.source, ChatCommandSource::Server);
 }
+
+#[test]
+fn detects_server_live_query_argument() {
+  let registry = ChatCommandRegistry::from_definitions([CommandDefinition::server_advertised_with_inputs(
+    "play".to_owned(),
+    "Play music".to_owned(),
+    "/play {query:string...}".to_owned(),
+    vec![CommandInputDefinition {
+      argument_name: Arc::from("query"),
+      mode: crate::network::protocol::control::ChatCommandInputMode::LiveQuery,
+      min_chars: 2,
+      debounce_ms: 250,
+      max_results: 8,
+      placeholder: Arc::from("Search"),
+    }],
+  )]);
+
+  let query = registry.live_query_for_input("/play black dog").unwrap();
+  assert_eq!(query.command_name, "play");
+  assert_eq!(query.argument_name, "query");
+  assert_eq!(query.query, "black dog");
+  assert_eq!(query.cursor_pos, "black dog".len() as u16);
+}

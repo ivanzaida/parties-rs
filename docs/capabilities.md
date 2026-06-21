@@ -36,16 +36,16 @@ The plugin ABI supports:
 - Sending bot chat.
 - Joining bot voice channels.
 - Sending bot audio.
+- Live query/autocomplete for chat command inputs.
 
 ## Music Bot
 
 The music bot supports:
 
-- `/play {url:string}` for SoundCloud tracks and playlists.
+- `/play {query:string...}` for SoundCloud search, tracks, and playlists.
 - `/stop`
 - `/skip`
 - `/queue`
 - `/nowplaying`
 - Bot user creation and voice-channel-scoped playback.
 - MP3/AAC decoding and Opus output for server voice injection.
-

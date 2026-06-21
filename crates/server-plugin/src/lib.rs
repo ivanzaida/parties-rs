@@ -11,8 +11,8 @@ pub mod abi {
   };
 
   pub const API_VERSION_MAJOR: u16 = 1;
-  pub const API_VERSION_MINOR: u16 = 0;
-  pub const API_VERSION: &str = "1.0";
+  pub const API_VERSION_MINOR: u16 = 1;
+  pub const API_VERSION: &str = "1.1";
 
   #[repr(C)]
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +207,35 @@ pub mod abi {
     pub string_value: *const c_char,
   }
 
+  #[repr(u8)]
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum CommandInputMode {
+    None = 0,
+    LiveQuery = 1,
+  }
+
+  impl CommandInputMode {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+      match value {
+        0 => Some(Self::None),
+        1 => Some(Self::LiveQuery),
+        _ => None,
+      }
+    }
+  }
+
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct CommandInputDefinition {
+    pub abi: AbiHeader,
+    pub argument_name: *const c_char,
+    pub mode: u8,
+    pub min_chars: u16,
+    pub debounce_ms: u16,
+    pub max_results: u16,
+    pub placeholder: *const c_char,
+  }
+
   #[repr(C)]
   #[derive(Debug, Clone, Copy)]
   pub struct CommandDefinition {
@@ -215,6 +244,8 @@ pub mod abi {
     pub description: *const c_char,
     pub usage: *const c_char,
     pub min_role: u8,
+    pub inputs: *const CommandInputDefinition,
+    pub input_count: usize,
   }
 
   #[repr(C)]
@@ -238,6 +269,71 @@ pub mod abi {
     pub raw_text: *const c_char,
     pub parsed_args: *const CommandArgumentValue,
     pub parsed_arg_count: usize,
+  }
+
+  #[repr(u8)]
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  pub enum CommandQueryStatus {
+    Ok = 0,
+    NoResults = 1,
+    TooShort = 2,
+    RateLimited = 3,
+    PluginError = 4,
+    PermissionDenied = 5,
+    Pending = 6,
+  }
+
+  impl CommandQueryStatus {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+      match value {
+        0 => Some(Self::Ok),
+        1 => Some(Self::NoResults),
+        2 => Some(Self::TooShort),
+        3 => Some(Self::RateLimited),
+        4 => Some(Self::PluginError),
+        5 => Some(Self::PermissionDenied),
+        6 => Some(Self::Pending),
+        _ => None,
+      }
+    }
+  }
+
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct CommandQueryRequest {
+    pub abi: AbiHeader,
+    pub session_id: SessionId,
+    pub user_id: UserId,
+    pub text_channel_id: ChannelId,
+    pub caller_role: u8,
+    pub request_id: u64,
+    pub command_name: *const c_char,
+    pub argument_name: *const c_char,
+    pub query: *const c_char,
+    pub cursor_pos: u16,
+  }
+
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct CommandQueryResult {
+    pub abi: AbiHeader,
+    pub id: *const c_char,
+    pub title: *const c_char,
+    pub subtitle: *const c_char,
+    pub value: *const c_char,
+    pub kind: *const c_char,
+    pub duration_ms: u32,
+    pub thumbnail_url: *const c_char,
+  }
+
+  #[repr(C)]
+  #[derive(Debug, Clone, Copy)]
+  pub struct CommandQueryResponse {
+    pub abi: AbiHeader,
+    pub status: u8,
+    pub message: *const c_char,
+    pub results: *const CommandQueryResult,
+    pub result_count: usize,
   }
 
   #[repr(C)]
@@ -354,6 +450,14 @@ pub mod abi {
   pub type BotVoiceChannelFn =
     unsafe extern "C" fn(context: *mut c_void, bot: BotHandle, out_voice_channel_id: *mut ChannelId) -> bool;
   pub type MoveBotToUserVoiceFn = unsafe extern "C" fn(context: *mut c_void, bot: BotHandle, user_id: UserId) -> bool;
+  pub type RespondToCommandQueryFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    session_id: SessionId,
+    request_id: u64,
+    command_name: *const c_char,
+    argument_name: *const c_char,
+    response: *const CommandQueryResponse,
+  ) -> bool;
 
   #[repr(C)]
   #[derive(Clone, Copy)]
@@ -380,6 +484,7 @@ pub mod abi {
     pub list_text_channels: Option<ListChannelsFn>,
     pub bot_voice_channel: Option<BotVoiceChannelFn>,
     pub move_bot_to_user_voice: Option<MoveBotToUserVoiceFn>,
+    pub respond_to_command_query: Option<RespondToCommandQueryFn>,
     pub variables: *const PluginVariable,
     pub variable_count: usize,
   }
@@ -409,6 +514,7 @@ pub mod abi {
         list_text_channels: None,
         bot_voice_channel: None,
         move_bot_to_user_voice: None,
+        respond_to_command_query: None,
         variables: core::ptr::null(),
         variable_count: 0,
       }
@@ -422,6 +528,8 @@ pub mod abi {
     unsafe extern "C" fn(session: SessionId, user_id: UserId, voice_channel_id: ChannelId);
   pub type ChatMessageCallback = unsafe extern "C" fn(message: *const ChatMessage, decision: *mut ChatDecision);
   pub type ChatCommandCallback = unsafe extern "C" fn(invocation: *const ChatCommandInvocation);
+  pub type ChatCommandQueryCallback =
+    unsafe extern "C" fn(request: *const CommandQueryRequest, response: *mut CommandQueryResponse);
 
   #[repr(C)]
   #[derive(Clone, Copy)]
@@ -433,6 +541,7 @@ pub mod abi {
     pub on_session_disconnected: Option<SessionDisconnectedCallback>,
     pub on_chat_message: Option<ChatMessageCallback>,
     pub on_chat_command: Option<ChatCommandCallback>,
+    pub on_chat_command_query: Option<ChatCommandQueryCallback>,
   }
 
   impl Registration {
@@ -445,6 +554,7 @@ pub mod abi {
         on_session_disconnected: None,
         on_chat_message: None,
         on_chat_command: None,
+        on_chat_command_query: None,
       }
     }
   }
@@ -484,7 +594,10 @@ pub enum PluginError {
   MissingPluginVariable(&'static str),
   HostCallFailed(&'static str),
   InvalidCommandName(String),
+  InvalidCommandArgumentName(String),
   UnknownCommandArgType(u8),
+  UnknownCommandInputMode(u8),
+  UnknownCommandQueryStatus(u8),
   NulByte(NulError),
   Utf8(Utf8Error),
 }
@@ -507,7 +620,10 @@ impl std::fmt::Display for PluginError {
       Self::MissingPluginVariable(name) => write!(f, "plugin variable {name} is missing"),
       Self::HostCallFailed(name) => write!(f, "host function {name} returned false"),
       Self::InvalidCommandName(name) => write!(f, "invalid command name: {name}"),
+      Self::InvalidCommandArgumentName(name) => write!(f, "invalid command argument name: {name}"),
       Self::UnknownCommandArgType(value) => write!(f, "unknown command argument type: {value}"),
+      Self::UnknownCommandInputMode(value) => write!(f, "unknown command input mode: {value}"),
+      Self::UnknownCommandQueryStatus(value) => write!(f, "unknown command query status: {value}"),
       Self::NulByte(error) => write!(f, "string contains an interior nul byte: {error}"),
       Self::Utf8(error) => write!(f, "string is not valid UTF-8: {error}"),
     }
@@ -625,6 +741,7 @@ pub struct CommandDefinition {
   pub description: String,
   pub usage: String,
   pub min_role: u8,
+  pub inputs: Vec<CommandInputDefinition>,
 }
 
 impl CommandDefinition {
@@ -634,11 +751,60 @@ impl CommandDefinition {
       description: description.into(),
       usage: usage.into(),
       min_role: 3,
+      inputs: Vec::new(),
     }
   }
 
   pub fn with_min_role(mut self, min_role: u8) -> Self {
     self.min_role = min_role;
+    self
+  }
+
+  pub fn with_input(mut self, input: CommandInputDefinition) -> Self {
+    self.inputs.push(input);
+    self
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandInputDefinition {
+  pub argument_name: String,
+  pub mode: abi::CommandInputMode,
+  pub min_chars: u16,
+  pub debounce_ms: u16,
+  pub max_results: u16,
+  pub placeholder: String,
+}
+
+impl CommandInputDefinition {
+  pub fn live_query(argument_name: impl Into<String>) -> Self {
+    Self {
+      argument_name: argument_name.into(),
+      mode: abi::CommandInputMode::LiveQuery,
+      min_chars: 1,
+      debounce_ms: 250,
+      max_results: 10,
+      placeholder: String::new(),
+    }
+  }
+
+  pub fn with_min_chars(mut self, min_chars: u16) -> Self {
+    self.min_chars = min_chars;
+    self
+  }
+
+  pub fn with_debounce_ms(mut self, debounce_ms: u16) -> Self {
+    self.debounce_ms = debounce_ms;
+    self
+  }
+
+  pub fn with_max_results(mut self, max_results: u16) -> Self {
+    self.max_results = max_results;
+    self
+  }
+
+  pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+    self.placeholder = placeholder.into();
     self
   }
 }
@@ -665,6 +831,82 @@ pub struct CommandArgumentValue {
   pub f64_value: f64,
   pub bool_value: bool,
   pub string_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandQueryRequest {
+  pub session_id: SessionId,
+  pub user_id: UserId,
+  pub text_channel_id: ChannelId,
+  pub caller_role: u8,
+  pub request_id: u64,
+  pub command_name: String,
+  pub argument_name: String,
+  pub query: String,
+  pub cursor_pos: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandQueryResult {
+  pub id: String,
+  pub title: String,
+  pub subtitle: String,
+  pub value: String,
+  pub kind: String,
+  pub duration_ms: u32,
+  pub thumbnail_url: String,
+}
+
+impl CommandQueryResult {
+  pub fn new(title: impl Into<String>, value: impl Into<String>) -> Self {
+    Self {
+      id: String::new(),
+      title: title.into(),
+      subtitle: String::new(),
+      value: value.into(),
+      kind: String::new(),
+      duration_ms: 0,
+      thumbnail_url: String::new(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandQueryResponse {
+  pub status: abi::CommandQueryStatus,
+  pub message: String,
+  pub results: Vec<CommandQueryResult>,
+}
+
+impl CommandQueryResponse {
+  pub fn ok(results: Vec<CommandQueryResult>) -> Self {
+    let status = if results.is_empty() {
+      abi::CommandQueryStatus::NoResults
+    } else {
+      abi::CommandQueryStatus::Ok
+    };
+    Self {
+      status,
+      message: String::new(),
+      results,
+    }
+  }
+
+  pub fn no_results(message: impl Into<String>) -> Self {
+    Self {
+      status: abi::CommandQueryStatus::NoResults,
+      message: message.into(),
+      results: Vec::new(),
+    }
+  }
+
+  pub fn plugin_error(message: impl Into<String>) -> Self {
+    Self {
+      status: abi::CommandQueryStatus::PluginError,
+      message: message.into(),
+      results: Vec::new(),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -875,11 +1117,44 @@ impl<'a> HostRef<'a> {
       if !is_valid_command_name(&command.name) {
         return Err(PluginError::InvalidCommandName(command.name.clone()));
       }
+      for input in &command.inputs {
+        if !is_valid_command_argument_name(&input.argument_name) {
+          return Err(PluginError::InvalidCommandArgumentName(input.argument_name.clone()));
+        }
+      }
     }
 
     let names = cstrings(commands.iter().map(|command| command.name.as_str()))?;
     let descriptions = cstrings(commands.iter().map(|command| command.description.as_str()))?;
     let usages = cstrings(commands.iter().map(|command| command.usage.as_str()))?;
+    let input_name_storage = commands
+      .iter()
+      .map(|command| cstrings(command.inputs.iter().map(|input| input.argument_name.as_str())))
+      .collect::<Result<Vec<_>, _>>()?;
+    let input_placeholder_storage = commands
+      .iter()
+      .map(|command| cstrings(command.inputs.iter().map(|input| input.placeholder.as_str())))
+      .collect::<Result<Vec<_>, _>>()?;
+    let abi_inputs = commands
+      .iter()
+      .enumerate()
+      .map(|(command_index, command)| {
+        command
+          .inputs
+          .iter()
+          .enumerate()
+          .map(|(input_index, input)| abi::CommandInputDefinition {
+            abi: abi::AbiHeader::new::<abi::CommandInputDefinition>(),
+            argument_name: input_name_storage[command_index][input_index].as_ptr(),
+            mode: input.mode as u8,
+            min_chars: input.min_chars,
+            debounce_ms: input.debounce_ms,
+            max_results: input.max_results,
+            placeholder: input_placeholder_storage[command_index][input_index].as_ptr(),
+          })
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
     let abi_commands = commands
       .iter()
       .enumerate()
@@ -889,6 +1164,12 @@ impl<'a> HostRef<'a> {
         description: descriptions[index].as_ptr(),
         usage: usages[index].as_ptr(),
         min_role: commands[index].min_role,
+        inputs: if abi_inputs[index].is_empty() {
+          std::ptr::null()
+        } else {
+          abi_inputs[index].as_ptr()
+        },
+        input_count: abi_inputs[index].len(),
       })
       .collect::<Vec<_>>();
 
@@ -1116,6 +1397,35 @@ impl<'a> HostRef<'a> {
     }
   }
 
+  pub fn respond_to_command_query(
+    &self,
+    request: &CommandQueryRequestRef<'_>,
+    response: CommandQueryResponse,
+  ) -> Result<(), PluginError> {
+    let respond_to_command_query = self
+      .inner
+      .respond_to_command_query
+      .ok_or(PluginError::MissingHostFunction("respond_to_command_query"))?;
+    let command_name = CString::new(request.command_name)?;
+    let argument_name = CString::new(request.argument_name)?;
+    with_abi_command_query_response(response, |abi_response| {
+      if unsafe {
+        respond_to_command_query(
+          self.inner.context,
+          request.session_id,
+          request.request_id,
+          command_name.as_ptr(),
+          argument_name.as_ptr(),
+          abi_response,
+        )
+      } {
+        Ok(())
+      } else {
+        Err(PluginError::HostCallFailed("respond_to_command_query"))
+      }
+    })
+  }
+
   fn get_channel_info(
     &self,
     channel_id: ChannelId,
@@ -1255,6 +1565,14 @@ impl HostHandle {
   pub fn move_bot_to_user_voice(&self, bot: &BotUser, user_id: UserId) -> Result<(), PluginError> {
     self.borrowed().move_bot_to_user_voice(bot, user_id)
   }
+
+  pub fn respond_to_command_query(
+    &self,
+    request: &CommandQueryRequestRef<'_>,
+    response: CommandQueryResponse,
+  ) -> Result<(), PluginError> {
+    self.borrowed().respond_to_command_query(request, response)
+  }
 }
 
 pub struct RegistrationWriter<'a> {
@@ -1306,12 +1624,16 @@ impl<'a> RegistrationWriter<'a> {
   pub fn set_on_chat_command(&mut self, callback: abi::ChatCommandCallback) {
     self.inner.on_chat_command = Some(callback);
   }
+
+  pub fn set_on_chat_command_query(&mut self, callback: abi::ChatCommandQueryCallback) {
+    self.inner.on_chat_command_query = Some(callback);
+  }
 }
 
 pub mod plugin {
   use super::{
-    ChannelInfo, ChatCommandInvocationRef, ChatDecision, ChatMessageRef, CommandDefinition, HostHandle, PluginError,
-    PluginVariableRef, RegistrationWriter, SessionInfo, UserInfo, abi,
+    ChannelInfo, ChatCommandInvocationRef, ChatDecision, ChatMessageRef, CommandDefinition, CommandQueryRequestRef,
+    CommandQueryResponse, HostHandle, PluginError, PluginVariableRef, RegistrationWriter, SessionInfo, UserInfo, abi,
   };
 
   pub trait Plugin: Default + Send + 'static {
@@ -1336,6 +1658,10 @@ pub mod plugin {
     }
 
     fn on_chat_command(&mut self, _invocation: ChatCommandInvocationRef<'_>) {}
+
+    fn on_chat_command_query(&mut self, _request: CommandQueryRequestRef<'_>) -> CommandQueryResponse {
+      CommandQueryResponse::no_results("")
+    }
 
     fn on_chat_message(&mut self, _message: ChatMessageRef<'_>) -> ChatDecision {
       ChatDecision::Continue
@@ -1415,6 +1741,14 @@ pub mod plugin {
     pub fn move_bot_to_user_voice(&self, bot: &super::BotUser, user_id: abi::UserId) -> Result<(), PluginError> {
       self.host.move_bot_to_user_voice(bot, user_id)
     }
+
+    pub fn respond_to_command_query(
+      &self,
+      request: &CommandQueryRequestRef<'_>,
+      response: CommandQueryResponse,
+    ) -> Result<(), PluginError> {
+      self.host.respond_to_command_query(request, response)
+    }
   }
 
   #[macro_export]
@@ -1451,6 +1785,7 @@ pub mod plugin {
         registration.set_on_session_disconnected(parties_plugin_on_session_disconnected);
         registration.set_on_chat_message(parties_plugin_on_chat_message);
         registration.set_on_chat_command(parties_plugin_on_chat_command);
+        registration.set_on_chat_command_query(parties_plugin_on_chat_command_query);
 
         let mut context = $crate::plugin::Context::new(host, registration);
         let Ok(mut plugin) = parties_plugin_instance().lock() else {
@@ -1525,6 +1860,21 @@ pub mod plugin {
           }
         }
       }
+
+      unsafe extern "C" fn parties_plugin_on_chat_command_query(
+        request: *const $crate::abi::CommandQueryRequest,
+        response: *mut $crate::abi::CommandQueryResponse,
+      ) {
+        let Ok(request) = (unsafe { $crate::CommandQueryRequestRef::from_raw(request) }) else {
+          return;
+        };
+        if let Ok(mut plugin) = parties_plugin_instance().lock() {
+          let result = <$plugin as $crate::plugin::Plugin>::on_chat_command_query(&mut *plugin, request);
+          unsafe {
+            $crate::write_command_query_response(response, result);
+          }
+        }
+      }
     };
   }
 
@@ -1583,6 +1933,47 @@ impl<'a> ChatCommandInvocationRef<'a> {
 
   pub fn arg(&self, name: &str) -> Option<&CommandArgumentValueRef<'a>> {
     self.parsed_args.iter().find(|arg| arg.name == name)
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommandQueryRequestRef<'a> {
+  pub session_id: SessionId,
+  pub user_id: UserId,
+  pub text_channel_id: ChannelId,
+  pub caller_role: u8,
+  pub request_id: u64,
+  pub command_name: &'a str,
+  pub argument_name: &'a str,
+  pub query: &'a str,
+  pub cursor_pos: u16,
+}
+
+impl<'a> CommandQueryRequestRef<'a> {
+  /// Converts the ABI callback pointer into borrowed Rust strings.
+  ///
+  /// # Safety
+  ///
+  /// `request` must point to a valid ABI query request whose string pointers
+  /// are valid for the duration of `on_chat_command_query`.
+  pub unsafe fn from_raw(request: *const abi::CommandQueryRequest) -> Result<Self, PluginError> {
+    if request.is_null() {
+      return Err(PluginError::NullPointer("request"));
+    }
+
+    let request = unsafe { &*request };
+    require_compatible_abi::<abi::CommandQueryRequest>("CommandQueryRequest", request.abi)?;
+    Ok(Self {
+      session_id: request.session_id,
+      user_id: request.user_id,
+      text_channel_id: request.text_channel_id,
+      caller_role: request.caller_role,
+      request_id: request.request_id,
+      command_name: required_cstr(request.command_name, "query.command_name")?,
+      argument_name: required_cstr(request.argument_name, "query.argument_name")?,
+      query: required_cstr(request.query, "query.query")?,
+      cursor_pos: request.cursor_pos,
+    })
   }
 }
 
@@ -1652,6 +2043,26 @@ impl<'a> ChatMessageRef<'a> {
 
 thread_local! {
   static CHAT_DECISION_STRINGS: RefCell<Vec<CString>> = const { RefCell::new(Vec::new()) };
+  static COMMAND_QUERY_RESPONSE_STORAGE: RefCell<CommandQueryResponseStorage> = RefCell::new(CommandQueryResponseStorage::default());
+}
+
+#[derive(Default)]
+struct CommandQueryResponseStorage {
+  strings: Vec<CString>,
+  results: Vec<abi::CommandQueryResult>,
+}
+
+impl CommandQueryResponseStorage {
+  fn clear(&mut self) {
+    self.strings.clear();
+    self.results.clear();
+  }
+
+  fn push_string(&mut self, value: &str) -> *const std::ffi::c_char {
+    let value = CString::new(value).unwrap_or_else(|_| CString::new(value.replace('\0', " ")).expect("nul sanitized"));
+    self.strings.push(value);
+    self.strings.last().expect("stored command query string").as_ptr()
+  }
 }
 
 /// Writes a safe Rust chat decision into the ABI output slot.
@@ -1694,12 +2105,81 @@ pub unsafe fn write_chat_decision(decision: *mut abi::ChatDecision, value: ChatD
   });
 }
 
+/// Writes a safe Rust command query response into the ABI output slot.
+///
+/// # Safety
+///
+/// `response` must be null or point to a valid writable
+/// `abi::CommandQueryResponse` provided by the server during
+/// `on_chat_command_query`.
+pub unsafe fn write_command_query_response(response: *mut abi::CommandQueryResponse, value: CommandQueryResponse) {
+  if response.is_null() {
+    return;
+  }
+
+  with_abi_command_query_response(value, |abi_response| {
+    unsafe {
+      *response = *abi_response;
+    }
+    Ok(())
+  })
+  .ok();
+}
+
+fn with_abi_command_query_response<T>(
+  value: CommandQueryResponse,
+  callback: impl FnOnce(*const abi::CommandQueryResponse) -> Result<T, PluginError>,
+) -> Result<T, PluginError> {
+  COMMAND_QUERY_RESPONSE_STORAGE.with(|storage| {
+    let mut storage = storage.borrow_mut();
+    storage.clear();
+
+    for result in &value.results {
+      let id = storage.push_string(&result.id);
+      let title = storage.push_string(&result.title);
+      let subtitle = storage.push_string(&result.subtitle);
+      let result_value = storage.push_string(&result.value);
+      let kind = storage.push_string(&result.kind);
+      let thumbnail_url = storage.push_string(&result.thumbnail_url);
+      storage.results.push(abi::CommandQueryResult {
+        abi: abi::AbiHeader::new::<abi::CommandQueryResult>(),
+        id,
+        title,
+        subtitle,
+        value: result_value,
+        kind,
+        duration_ms: result.duration_ms,
+        thumbnail_url,
+      });
+    }
+
+    let message = storage.push_string(&value.message);
+    let abi_response = abi::CommandQueryResponse {
+      abi: abi::AbiHeader::new::<abi::CommandQueryResponse>(),
+      status: value.status as u8,
+      message,
+      results: if storage.results.is_empty() {
+        std::ptr::null()
+      } else {
+        storage.results.as_ptr()
+      },
+      result_count: storage.results.len(),
+    };
+
+    callback(&abi_response)
+  })
+}
+
 pub fn is_valid_command_name(name: &str) -> bool {
   !name.is_empty()
     && name.len() <= 64
     && name
       .bytes()
       .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+pub fn is_valid_command_argument_name(name: &str) -> bool {
+  !name.is_empty() && name.len() <= 64 && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn require_compatible_abi<T>(ty: &'static str, abi: abi::AbiHeader) -> Result<(), PluginError> {

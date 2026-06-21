@@ -4,7 +4,7 @@ Playback is voice-channel scoped. A command caller must be in a voice channel so
 
 ## Queue Behavior
 
-- `/play` resolves one or more tracks and appends them.
+- `/play` searches or resolves one or more tracks and appends them.
 - Playlists are summarized to avoid flooding chat.
 - `/queue` reports queued tracks.
 - `/nowplaying` reports current track and progress.
@@ -13,5 +13,4 @@ Playback is voice-channel scoped. A command caller must be in a voice channel so
 
 ## Sources
 
-The current source registry supports SoundCloud URLs.
-
+The current source registry supports SoundCloud search and SoundCloud URLs.

@@ -245,6 +245,10 @@ impl SoundCloudResolver {
     Self { token_provider }
   }
 
+  pub(crate) fn search(&self, query: &str, limit: usize) -> Result<Vec<SourceRequest>, String> {
+    search_tracks(query, limit, &self.token_provider)
+  }
+
   pub(crate) fn shutdown(&self) {
     self.token_provider.shutdown();
   }
@@ -409,6 +413,38 @@ fn resolve_requests(url: &str, token_provider: &SoundCloudTokenProvider) -> Resu
   let client = soundcloud_client()?;
   let value = resolve_url_value(&client, token_provider, url)?;
   requests_from_resolved_value(url, value)
+}
+
+fn search_tracks(
+  query: &str,
+  limit: usize,
+  token_provider: &SoundCloudTokenProvider,
+) -> Result<Vec<SourceRequest>, String> {
+  let query = query.trim();
+  if query.is_empty() {
+    return Ok(Vec::new());
+  }
+
+  let client = soundcloud_client()?;
+  let limit = limit.clamp(1, 25).to_string();
+  let endpoint = reqwest::Url::parse_with_params(
+    &format!("{SOUNDCLOUD_API_BASE_URL}/tracks"),
+    [("q", query), ("limit", limit.as_str())],
+  )
+  .map_err(|error| format!("failed to build SoundCloud search URL: {error}"))?;
+  let tracks: Vec<SoundCloudTrack> = soundcloud_get_json(&client, token_provider, endpoint)?;
+  Ok(
+    tracks
+      .into_iter()
+      .filter_map(|track| {
+        if track.kind.as_deref().is_some_and(|kind| kind != "track") || track.streamable == Some(false) {
+          return None;
+        }
+        Some(request_from_track("", track))
+      })
+      .filter(|request| !request.url.is_empty())
+      .collect(),
+  )
 }
 
 fn requests_from_resolved_value(url: &str, value: Value) -> Result<Vec<SourceRequest>, String> {

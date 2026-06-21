@@ -4,7 +4,7 @@
 
 ## Commands
 
-- `/play {url:string}` queues SoundCloud audio.
+- `/play {query:string...}` searches SoundCloud or queues a SoundCloud URL.
 - `/stop` stops playback and clears the queue.
 - `/skip` skips the current track.
 - `/queue` shows queued tracks.
@@ -12,5 +12,4 @@
 
 ## Audio Pipeline
 
-The bot resolves SoundCloud URLs, downloads audio, decodes MP3/AAC where supported, encodes voice audio with Opus, and sends it through the server plugin host.
-
+The bot searches and resolves SoundCloud URLs, downloads audio, decodes MP3/AAC where supported, encodes voice audio with Opus, and sends it through the server plugin host.

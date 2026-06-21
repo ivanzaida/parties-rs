@@ -2,9 +2,9 @@ use super::{
   BinaryReader, ChannelId, ControlFrame, ControlMessageType, DecodeError, DecodeResult, Role, ServerErrorCode, UserId,
   VideoCodecId,
   control::{
-    AdminResult, AuthResponse, ChannelList, ChannelUserList, ChatCommandList, ChatFileUploadResponse,
-    ChatHistoryResponse, ChatMessage, ScreenShareMetadata, ScreenShareStarted, TextChannelInfo, UserJoinedChannel,
-    UserLeftChannel, UserRoleChanged, UserVoiceState,
+    AdminResult, AuthResponse, ChannelList, ChannelUserList, ChatCommandInputList, ChatCommandList,
+    ChatCommandQueryResponse, ChatFileUploadResponse, ChatHistoryResponse, ChatMessage, ScreenShareMetadata,
+    ScreenShareStarted, TextChannelInfo, UserJoinedChannel, UserLeftChannel, UserRoleChanged, UserVoiceState,
   },
 };
 
@@ -53,6 +53,8 @@ pub enum S2C {
     channels: Vec<TextChannelInfo>,
   },
   ChatCommandList(ChatCommandList),
+  ChatCommandInputList(ChatCommandInputList),
+  ChatCommandQueryResp(ChatCommandQueryResponse),
 }
 
 impl S2C {
@@ -152,6 +154,10 @@ impl S2C {
         Ok(Self::ChatChannelList { channels })
       }
       M::ChatCommandList => Ok(Self::ChatCommandList(ChatCommandList::decode_payload(bytes)?)),
+      M::ChatCommandInputList => Ok(Self::ChatCommandInputList(ChatCommandInputList::decode_payload(bytes)?)),
+      M::ChatCommandQueryResp => Ok(Self::ChatCommandQueryResp(ChatCommandQueryResponse::decode_payload(
+        bytes,
+      )?)),
 
       M::AuthIdentity
       | M::ChannelJoin
@@ -178,6 +184,7 @@ impl S2C {
       | M::ChatFileDownloadReq
       | M::ChatSearch
       | M::ChatPinnedReq
+      | M::ChatCommandQuery
       | M::AdminCreateTextChannel
       | M::AdminDeleteTextChannel => Err(DecodeError::InvalidMessageType(frame.ty as u16)),
     }

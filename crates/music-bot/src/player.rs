@@ -948,6 +948,10 @@ mod tests {
       Ok(vec![source_request(10)])
     }
 
+    fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SourceRequest>, String> {
+      Ok(vec![source_request(10)])
+    }
+
     fn resolve(&self, _request: &SourceRequest) -> Result<ResolvedAudio, String> {
       Err("not used".to_owned())
     }
@@ -961,6 +965,10 @@ mod tests {
     }
 
     fn parse_many(&self, _input: &str) -> Result<Vec<SourceRequest>, String> {
+      Ok(vec![source_request(1)])
+    }
+
+    fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SourceRequest>, String> {
       Ok(vec![source_request(1)])
     }
 
@@ -982,6 +990,14 @@ mod tests {
     fn parse_many(&self, _input: &str) -> Result<Vec<SourceRequest>, String> {
       Ok(
         (0..self.count)
+          .map(|offset| source_request(self.first_index + offset))
+          .collect(),
+      )
+    }
+
+    fn search(&self, _query: &str, limit: usize) -> Result<Vec<SourceRequest>, String> {
+      Ok(
+        (0..self.count.min(limit))
           .map(|offset| source_request(self.first_index + offset))
           .collect(),
       )

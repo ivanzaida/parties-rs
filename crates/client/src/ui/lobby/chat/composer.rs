@@ -22,7 +22,10 @@ use super::{
   scroll::chat_scrollbar_style,
 };
 use crate::{
-  network::protocol::ChannelId,
+  network::protocol::{
+    ChannelId,
+    control::{ChatCommandQueryResponse, ChatCommandQueryResult, ChatCommandQueryStatus},
+  },
   session::chat_commands::{ChatCommandRegistry, CommandDefinition},
   theme,
   ui::common::lucide_icon::{LucideIcon, LucideIconProps},
@@ -106,6 +109,8 @@ pub(super) fn chat_composer(
   command_selected_index: Signal<usize>,
   command_invalid_feedback: ChatCommandInvalidFeedback,
   command_registry: ChatCommandRegistry,
+  command_query_response: Option<ChatCommandQueryResponse>,
+  command_query_request_id: u64,
   send_chat: &SendChatAction,
   composer_ref: ElementRef,
 ) -> Element {
@@ -121,6 +126,7 @@ pub(super) fn chat_composer(
   let key_command_selected_index = command_selected_index.clone();
   let key_invalid_feedback = command_invalid_feedback.clone();
   let key_command_registry = command_registry.clone();
+  let key_command_query_response = command_query_response.clone();
   let key_action = send_chat.clone();
   let click_value = message_input.clone();
   let click_command_selected_index = command_selected_index.clone();
@@ -161,6 +167,8 @@ pub(super) fn chat_composer(
                 &key_command_registry,
                 &key_value,
                 &key_command_selected_index,
+                key_command_query_response.as_ref(),
+                command_query_request_id,
                 &event.key,
                 &event.code,
               ) {
@@ -214,6 +222,8 @@ fn handle_chat_command_navigation(
   command_registry: &ChatCommandRegistry,
   message_input: &Signal<String>,
   selected_index: &Signal<usize>,
+  command_query_response: Option<&ChatCommandQueryResponse>,
+  command_query_request_id: u64,
   key: &str,
   code: &str,
 ) -> bool {
@@ -223,6 +233,41 @@ fn handle_chat_command_navigation(
 
   let is_tab_completion = matches!((key, code), ("Tab", _) | (_, "Tab"));
   let is_enter_completion = matches!((key, code), ("Enter", _) | (_, "Enter"));
+  if let Some(results) = active_chat_command_query_results(
+    command_registry,
+    &message_input.get_untracked(),
+    command_query_response,
+    command_query_request_id,
+  ) {
+    if results.is_empty() {
+      selected_index.set(0);
+      return false;
+    }
+    if is_tab_completion {
+      return true;
+    }
+    if is_enter_completion {
+      let result = &results[selected_index.get_untracked().min(results.len().saturating_sub(1))];
+      fill_chat_command_query_result(command_registry, message_input, result);
+      selected_index.set(0);
+      return true;
+    }
+
+    let direction = match (key, code) {
+      ("ArrowDown", _) | (_, "ArrowDown") => 1,
+      ("ArrowUp", _) | (_, "ArrowUp") => -1,
+      _ => return false,
+    };
+    let current = selected_index.get_untracked().min(results.len() - 1);
+    let next = if direction > 0 {
+      (current + 1) % results.len()
+    } else {
+      current.checked_sub(1).unwrap_or(results.len() - 1)
+    };
+    selected_index.set(next);
+    return true;
+  }
+
   if is_tab_completion || is_enter_completion {
     let input = message_input.get_untracked();
     let Some(query) = command_suggestion_query(&input) else {
@@ -310,8 +355,22 @@ pub(super) fn chat_command_suggestions(
   command_registry: &ChatCommandRegistry,
   scroll_state: ScrollState,
   invalid_feedback: ChatCommandInvalidFeedback,
+  command_query_response: Option<ChatCommandQueryResponse>,
+  command_query_request_id: u64,
 ) -> Option<Element> {
   let input = message_input.get();
+  if command_registry.live_query_for_input(&input).is_some() {
+    return chat_command_query_suggestions(
+      ctx,
+      message_input,
+      selected_index,
+      command_registry,
+      scroll_state,
+      command_query_response.as_ref(),
+      command_query_request_id,
+    );
+  }
+
   let query = command_suggestion_query(&input)?;
   let commands = matching_chat_command_definitions(command_registry, &query);
   if commands.is_empty() {
@@ -404,6 +463,274 @@ pub(super) fn chat_command_suggestions(
       )
       .into(),
   )
+}
+
+fn chat_command_query_suggestions(
+  ctx: &mut Ctx,
+  message_input: Signal<String>,
+  selected_index: Signal<usize>,
+  command_registry: &ChatCommandRegistry,
+  scroll_state: ScrollState,
+  response: Option<&ChatCommandQueryResponse>,
+  command_query_request_id: u64,
+) -> Option<Element> {
+  let input = message_input.get();
+  let query = command_registry.live_query_for_input(&input)?;
+  if query.query.len() < query.input.min_chars as usize {
+    selected_index.set(0);
+    let title = if query.input.placeholder.trim().is_empty() {
+      "Search".to_owned()
+    } else {
+      query.input.placeholder.to_string()
+    };
+    let message = if query.input.min_chars > 1 {
+      format!("Type at least {} characters", query.input.min_chars)
+    } else {
+      title.clone()
+    };
+    return Some(command_query_message_panel(&title, &message));
+  }
+
+  let response = active_chat_command_query_response(command_registry, &input, response, command_query_request_id)?;
+  let title = match response.status {
+    ChatCommandQueryStatus::Ok => "Results".to_owned(),
+    _ if !response.message.trim().is_empty() => response.message.clone(),
+    _ => "No results".to_owned(),
+  };
+
+  if response.results.is_empty() {
+    selected_index.set(0);
+    return Some(command_query_message_panel(&title, &title));
+  }
+
+  let active_index = selected_index.get().min(response.results.len().saturating_sub(1));
+  if active_index != selected_index.get_untracked() {
+    selected_index.set(active_index);
+  }
+
+  let list_height = command_suggestion_list_height(response.results.len());
+  ensure_command_selection_visible(&scroll_state, active_index, list_height);
+  let rows = response
+    .results
+    .iter()
+    .cloned()
+    .enumerate()
+    .map(|(index, result)| CommandQueryResultRowProps {
+      result,
+      message_input: message_input.clone(),
+      command_registry: command_registry.clone(),
+      selected_index: selected_index.clone(),
+      index,
+      selected: index == active_index,
+    })
+    .collect::<Vec<_>>();
+  let list = Column::new()
+    .width(Dimension::Pct(100.0))
+    .padding_bottom(6.0)
+    .with_children(ctx.for_each(
+      rows,
+      |row| row.result.id.clone(),
+      |ctx, row| {
+        let key = row.result.id.clone();
+        ctx.mount_keyed::<CommandQueryResultRow>(&key, row)
+      },
+    ));
+
+  Some(command_query_panel(
+    command_suggestion_title(&title),
+    ScrollVertical::new(list)
+      .width(Dimension::Pct(100.0))
+      .height(list_height)
+      .with_scroll_state(scroll_state)
+      .scrollbar(chat_scrollbar_style())
+      .into(),
+    list_height,
+  ))
+}
+
+fn command_query_message_panel(title: &str, message: &str) -> Element {
+  command_query_panel(
+    command_suggestion_title(title),
+    Column::new()
+      .width(Dimension::Pct(100.0))
+      .height(CHAT_COMMAND_SUGGESTION_ROW_HEIGHT)
+      .align_items(Alignment::Center)
+      .padding_horizontal(theme::SpacingSize::Lg)
+      .child(
+        Text::new(message)
+          .variant(theme::TypographyStyle::Link)
+          .color(theme::PaletteColor::TextSecondary)
+          .nowrap(),
+      )
+      .into(),
+    CHAT_COMMAND_SUGGESTION_ROW_HEIGHT + 6.0,
+  )
+}
+
+fn command_query_panel(title: Element, content: Element, content_height: f32) -> Element {
+  let suggestions_height = CHAT_COMMAND_SUGGESTION_TITLE_HEIGHT + content_height + CHAT_COMMAND_SUGGESTION_BOTTOM_GAP;
+  Column::new()
+    .width(Dimension::Pct(100.0))
+    .height(suggestions_height)
+    .padding_left(24.0)
+    .padding_right(24.0)
+    .padding_bottom(CHAT_COMMAND_SUGGESTION_BOTTOM_GAP)
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .rounded(theme::RadiusSize::Lg)
+        .clip()
+        .background(BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised))
+        .border_inside(1.0, theme::PaletteColor::Border)
+        .child(title)
+        .child(content),
+    )
+    .into()
+}
+
+fn active_chat_command_query_response<'a>(
+  command_registry: &ChatCommandRegistry,
+  input: &str,
+  response: Option<&'a ChatCommandQueryResponse>,
+  _command_query_request_id: u64,
+) -> Option<&'a ChatCommandQueryResponse> {
+  let query = command_registry.live_query_for_input(input)?;
+  if query.query.len() < query.input.min_chars as usize {
+    return None;
+  }
+  let response = response?;
+  (response.command_name == query.command_name && response.argument_name == query.argument_name)
+    .then_some(response)
+}
+
+fn active_chat_command_query_results<'a>(
+  command_registry: &ChatCommandRegistry,
+  input: &str,
+  response: Option<&'a ChatCommandQueryResponse>,
+  command_query_request_id: u64,
+) -> Option<&'a [ChatCommandQueryResult]> {
+  let response = active_chat_command_query_response(command_registry, input, response, command_query_request_id)?;
+  (response.status == ChatCommandQueryStatus::Ok && !response.results.is_empty()).then_some(response.results.as_slice())
+}
+
+#[derive(Clone)]
+struct CommandQueryResultRowProps {
+  result: ChatCommandQueryResult,
+  message_input: Signal<String>,
+  command_registry: ChatCommandRegistry,
+  selected_index: Signal<usize>,
+  index: usize,
+  selected: bool,
+}
+
+impl PartialEq for CommandQueryResultRowProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.result == other.result && self.index == other.index && self.selected == other.selected
+  }
+}
+
+impl DevtoolsInspectable for CommandQueryResultRowProps {}
+
+struct CommandQueryResultRow;
+
+impl Component for CommandQueryResultRow {
+  type Props = CommandQueryResultRowProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Self::Props>().clone();
+    command_query_result_row(ctx, props)
+  }
+}
+
+fn command_query_result_row(ctx: &mut Ctx, props: CommandQueryResultRowProps) -> Element {
+  let background = if props.selected {
+    BackgroundColor::Color(Color::from_hex("#232830"))
+  } else {
+    BackgroundColor::Palette(theme::PaletteColor::SurfaceRaised)
+  };
+  let subtitle = command_query_result_subtitle(&props.result);
+  let result = props.result.clone();
+  let registry = props.command_registry.clone();
+  let input = props.message_input.clone();
+
+  Row::new()
+    .width(Dimension::Pct(100.0))
+    .height(CHAT_COMMAND_SUGGESTION_ROW_HEIGHT)
+    .align_items(Alignment::Center)
+    .spacing(theme::SpacingSize::Lg)
+    .padding_vertical(10.0)
+    .padding_horizontal(theme::SpacingSize::Lg)
+    .background(background)
+    .transition(Transition::background_color().duration_ms(120))
+    .cursor(CursorIcon::Pointer)
+    .hovered_style(Style::new().background(BackgroundColor::Color(Color::from_hex("#2B313A"))))
+    .on_mouse_enter(move || props.selected_index.set(props.index))
+    .on_click(move |_| fill_chat_command_query_result(&registry, &input, &result))
+    .child(command_icon(ctx))
+    .child(
+      Column::new()
+        .width(Dimension::Pct(100.0))
+        .flex(1.0)
+        .clip()
+        .spacing(theme::SpacingSize::Xs)
+        .child(
+          Text::new(&props.result.title)
+            .variant(theme::TypographyStyle::Link)
+            .color(theme::PaletteColor::TextPrimary)
+            .nowrap(),
+        )
+        .child(
+          Text::new(&subtitle)
+            .variant(theme::TypographyStyle::Caption)
+            .color(theme::PaletteColor::TextSecondary)
+            .nowrap(),
+        ),
+    )
+    .into()
+}
+
+fn command_query_result_subtitle(result: &ChatCommandQueryResult) -> String {
+  if !result.subtitle.trim().is_empty() {
+    return result.subtitle.clone();
+  }
+  if !result.kind.trim().is_empty() {
+    return result.kind.clone();
+  }
+  result.value.clone()
+}
+
+fn fill_chat_command_query_result(
+  command_registry: &ChatCommandRegistry,
+  message_input: &Signal<String>,
+  result: &ChatCommandQueryResult,
+) {
+  let input = message_input.get_untracked();
+  if command_registry.live_query_for_input(&input).is_none() {
+    return;
+  }
+  let value = if result.value.trim().is_empty() {
+    result.title.trim()
+  } else {
+    result.value.trim()
+  };
+  if value.is_empty() {
+    return;
+  }
+  let trimmed = input.trim_start();
+  let leading_len = input.len().saturating_sub(trimmed.len());
+  let Some(command_end) = trimmed.find(char::is_whitespace) else {
+    return;
+  };
+  message_input.set(format!(
+    "{}{} {}",
+    &input[..leading_len],
+    &trimmed[..command_end],
+    value
+  ));
 }
 
 fn command_suggestion_list_height(command_count: usize) -> f32 {
